@@ -1,3 +1,5 @@
+<meta name="google-site-verification" content="mudU4PLMePevLoqKy28O_-sGqE7ZyjzRKBMqLwmOprI" />
+
 # ring-0
 
 Linux Kernel Visualisation
