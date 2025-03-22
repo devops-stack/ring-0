@@ -21,6 +21,7 @@
         .node-circle { fill: rgba(70, 70, 150, 0.5); stroke: #888; }
         .feature-panel { fill: rgba(45, 45, 45, 0.7); stroke: #555; stroke-width: 1; }
         .feature-text { font-size: 13px; fill: #c5c5c5; }
+        .curve-path { fill: none; stroke: rgba(200,200,200,0.3); stroke-width: 1; }
     </style>
 </head>
 <body>
@@ -138,6 +139,22 @@
             .attr("y1", centerY)
             .attr("x2", randomX)
             .attr("y2", randomY);
+    }
+
+    // More detailed Bézier curves at bottom
+    for (let i = 0; i < 20; i++) {
+        const startX = Math.random() * width;
+        const endX = Math.random() * width;
+        const controlX1 = Math.random() * width;
+        const controlY1 = height - 50 - Math.random() * 100;
+        const controlX2 = Math.random() * width;
+        const controlY2 = height - 50 - Math.random() * 100;
+
+        const path = `M${startX},${height-30} C${controlX1},${controlY1} ${controlX2},${controlY2} ${endX},${height-30}`;
+
+        svg.append("path")
+            .attr("d", path)
+            .attr("class", "curve-path");
     }
 </script>
 
