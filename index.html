@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Futuristic Linux Kernel Visualization</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            background-color: #121212;
+            color: #d0d0d0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        svg { width: 100%; height: 100vh; }
+        .tag-icon { cursor: pointer; opacity: 0.8; }
+        .tag-icon:hover { opacity: 1; }
+        .panel { fill: rgba(45, 45, 45, 0.7); stroke: #555; stroke-width: 1; }
+        .socket-text { font-size: 13px; fill: #c5c5c5; }
+        .connection-line { stroke: rgba(200, 200, 200, 0.4); stroke-width: 1; }
+        .central-circle { fill: rgba(100, 100, 100, 0.6); stroke: #888; stroke-width: 2; }
+        .node-circle { fill: rgba(70, 70, 150, 0.5); stroke: #888; }
+        .feature-panel { fill: rgba(45, 45, 45, 0.7); stroke: #555; stroke-width: 1; }
+        .feature-text { font-size: 13px; fill: #c5c5c5; }
+    </style>
+</head>
+<body>
+
+<svg></svg>
+
+<script>
+    const svg = d3.select("svg");
+
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+
+    const centerX = width / 2;
+    const centerY = height / 2;
+
+    // Futuristic central circle
+    svg.append("circle")
+        .attr("cx", centerX)
+        .attr("cy", centerY)
+        .attr("r", 60)
+        .attr("class", "central-circle");
+
+    // Linux kernel logo
+    svg.append("image")
+        .attr("xlink:href", "https://upload.wikimedia.org/wikipedia/commons/thumb/3/35/Tux.svg/1024px-Tux.svg.png")
+        .attr("x", centerX - 30)
+        .attr("y", centerY - 30)
+        .attr("width", 60)
+        .attr("height", 60);
+
+    // Tag icons placement around central circle
+    const tagIconUrl = 'Icon1.png';
+
+    const numTags = 8;
+    const angleStep = (2 * Math.PI) / numTags;
+    const radius = 180;
+
+    for (let i = 0; i < numTags; i++) {
+        const angle = i * angleStep;
+
+        const tagX = centerX + radius * Math.cos(angle);
+        const tagY = centerY + radius * Math.sin(angle);
+        const rotationAngle = angle * (180 / Math.PI) + 90;
+
+        svg.append("image")
+            .attr("class", "tag-icon")
+            .attr("xlink:href", tagIconUrl)
+            .attr("x", tagX - 30)
+            .attr("y", tagY - 30)
+            .attr("width", 60)
+            .attr("height", 60)
+            .attr("transform", `rotate(${rotationAngle}, ${tagX}, ${tagY})`);
+
+        // Connection lines
+        svg.append("line")
+            .attr("class", "connection-line")
+            .attr("x1", centerX)
+            .attr("y1", centerY)
+            .attr("x2", tagX)
+            .attr("y2", tagY);
+    }
+
+    // Left-side futuristic panel
+    svg.append("rect")
+        .attr("class", "panel")
+        .attr("x", 10)
+        .attr("y", 10)
+        .attr("width", 220)
+        .attr("height", height - 20)
+        .attr("rx", 5)
+        .attr("ry", 5);
+
+    const sockets = ["ESTABLISHED", "LISTENING"];
+    sockets.forEach((state, index) => {
+        svg.append("text")
+            .attr("class", "socket-text")
+            .attr("x", 25)
+            .attr("y", 50 + index * 25)
+            .text(`${state}: Socket ${index + 1}`);
+    });
+
+    // Right-side feature panel
+    svg.append("rect")
+        .attr("class", "feature-panel")
+        .attr("x", width - 180)
+        .attr("y", 10)
+        .attr("width", 170)
+        .attr("height", 120)
+        .attr("rx", 5)
+        .attr("ry", 5);
+
+    const features = ["Filter: Active", "Mode: Analysis", "Nodes: 15"];
+    features.forEach((feature, index) => {
+        svg.append("text")
+            .attr("class", "feature-text")
+            .attr("x", width - 170)
+            .attr("y", 35 + index * 25)
+            .text(feature);
+    });
+
+    // Geometric nodes and network lines
+    for (let i = 0; i < 15; i++) {
+        const randomX = Math.random() * width;
+        const randomY = Math.random() * height;
+
+        svg.append("circle")
+            .attr("cx", randomX)
+            .attr("cy", randomY)
+            .attr("r", 4)
+            .attr("class", "node-circle");
+
+        svg.append("line")
+            .attr("class", "connection-line")
+            .attr("x1", centerX)
+            .attr("y1", centerY)
+            .attr("x2", randomX)
+            .attr("y2", randomY);
+    }
+</script>
+
+</body>
+</html>
