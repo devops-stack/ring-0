@@ -165,6 +165,52 @@
             .attr("d", path)
             .attr("class", "curve-path");
     }
+    // Добавление полукруга с кружками как на примере
+const groupX = -100;
+const groupY = height / 2 + 50;
+
+const semicircleGroup = svg.append("g")
+    .attr("transform", `translate(${groupX}, ${groupY}) scale(1.8)`);
+
+// Полукруг
+const arc = d3.arc()
+    .innerRadius(120)
+    .outerRadius(140)
+    .startAngle(-Math.PI / 2)
+    .endAngle(Math.PI / 2);
+
+semicircleGroup.append("path")
+    .attr("d", arc)
+    .attr("fill", "none")
+    .attr("stroke", "#888")
+    .attr("stroke-width", 2)
+    .attr("transform", "rotate(90)");
+
+// Кружки внутри полукруга
+const circlePositions = [
+    {x: 0, y: -100},
+    {x: 80, y: -60},
+    {x: 110, y: 0},
+    {x: 80, y: 60},
+    {x: 0, y: 100},
+];
+
+circlePositions.forEach(pos => {
+    semicircleGroup.append("circle")
+        .attr("cx", pos.x)
+        .attr("cy", pos.y)
+        .attr("r", 5)
+        .attr("fill", "#d0d0d0");
+
+    // Линии вправо от кружков
+    semicircleGroup.append("line")
+        .attr("x1", pos.x + 5)
+        .attr("y1", pos.y)
+        .attr("x2", pos.x + 60)
+        .attr("y2", pos.y)
+        .attr("stroke", "#888")
+        .attr("stroke-width", 1);
+});
 </script>
 
 </body>
