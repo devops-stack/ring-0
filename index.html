@@ -22,6 +22,7 @@
         .feature-panel { fill: rgba(45, 45, 45, 0.7); stroke: #555; stroke-width: 1; }
         .feature-text { font-size: 13px; fill: #c5c5c5; }
         .curve-path { fill: none; stroke: rgba(200,200,200,0.3); stroke-width: 1; }
+        .item-box { fill: rgba(255,255,255,0.1); stroke: rgba(200,200,200,0.2); stroke-width: 1; rx: 4; }
     </style>
 </head>
 <body>
@@ -52,16 +53,14 @@
         .attr("width", 60)
         .attr("height", 60);
 
-    // Tag icons placement around central circle
+    // Existing tags and lines
     const tagIconUrl = 'Icon1.png';
-
     const numTags = 8;
     const angleStep = (2 * Math.PI) / numTags;
     const radius = 180;
 
     for (let i = 0; i < numTags; i++) {
         const angle = i * angleStep;
-
         const tagX = centerX + radius * Math.cos(angle);
         const tagY = centerY + radius * Math.sin(angle);
         const rotationAngle = angle * (180 / Math.PI) + 90;
@@ -75,7 +74,6 @@
             .attr("height", 60)
             .attr("transform", `rotate(${rotationAngle}, ${tagX}, ${tagY})`);
 
-        // Connection lines
         svg.append("line")
             .attr("class", "connection-line")
             .attr("x1", centerX)
@@ -84,23 +82,34 @@
             .attr("y2", tagY);
     }
 
-    // Left-side futuristic panel
+    // New detailed left panel (as per your screenshot)
     svg.append("rect")
         .attr("class", "panel")
-        .attr("x", 10)
-        .attr("y", 10)
-        .attr("width", 220)
-        .attr("height", height - 20)
-        .attr("rx", 5)
-        .attr("ry", 5);
+        .attr("x", 20)
+        .attr("y", 20)
+        .attr("width", 280)
+        .attr("height", 350)
+        .attr("rx", 10)
+        .attr("ry", 10);
 
-    const sockets = ["ESTABLISHED", "LISTENING"];
-    sockets.forEach((state, index) => {
+    const socketList = [
+        "FT9 166 643218", "FT9 964 016161", "FT9 972 983879", "FT9 989 612075", "FT9 819 540732",
+        "FT9 512 826219", "FT9 025 461491", "FT9 838 475394", "FT9 632 094939", "FT9 417 205788"
+    ];
+
+    socketList.forEach((socket, i) => {
+        svg.append("rect")
+            .attr("class", "item-box")
+            .attr("x", 30)
+            .attr("y", 35 + i * 30)
+            .attr("width", 260)
+            .attr("height", 25);
+
         svg.append("text")
             .attr("class", "socket-text")
-            .attr("x", 25)
-            .attr("y", 50 + index * 25)
-            .text(`${state}: Socket ${index + 1}`);
+            .attr("x", 40)
+            .attr("y", 52 + i * 30)
+            .text(socket);
     });
 
     // Right-side feature panel
