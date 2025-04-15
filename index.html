@@ -210,7 +210,9 @@ circlePositions.forEach(pos => {
         .attr("y2", pos.y)
         .attr("stroke", "#888")
         .attr("stroke-width", 1);
+
 });
+
 
 // Блок с кругом и элементами управления (внизу справа)
 const group = svg.append("g")
@@ -224,17 +226,17 @@ group.append("circle")
 
 // 4 внутренних прямоугольника по кругу
 const rectCoords = [
-    {x: -15, y: -35},
-    {x: 15, y: -15},
-    {x: -15, y: 5},
-    {x: -35, y: -15},
+    {x: -10, y: -38},
+    {x: 20, y: -10},
+    {x: -10, y: 18},
+    {x: -40, y: -10},
 ];
 rectCoords.forEach((pos, i) => {
     group.append("rect")
         .attr("x", pos.x)
         .attr("y", pos.y)
-        .attr("width", 20)
-        .attr("height", 10)
+        .attr("width", 22)
+        .attr("height", 12)
         .attr("fill", "#d0d0d0")
         .attr("rx", 2);
 });
@@ -260,7 +262,7 @@ group.append("circle")
         .attr("r", 6)
         .attr("fill", "#aaa");
 });
-    
+
 </script>
 
 </body>
