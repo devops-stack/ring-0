@@ -2,50 +2,86 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Futuristic Linux Kernel Visualization</title>
+    <title>Linux Kernel Visualization — Futuristic UI</title>
     <script src="https://d3js.org/d3.v7.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
     <style>
         body {
             margin: 0;
-            background-color: #121212;
-            color: #d0d0d0;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f2f2f2;
+            color: #222;
+            font-family: 'Share Tech Mono', monospace;
         }
-        svg { width: 100%; height: 100vh; }
-        .tag-icon { cursor: pointer; opacity: 0.8; }
-        .tag-icon:hover { opacity: 1; }
-        .panel { fill: rgba(45, 45, 45, 0.7); stroke: #555; stroke-width: 1; }
-        .socket-text { font-size: 13px; fill: #c5c5c5; }
-        .connection-line { stroke: rgba(200, 200, 200, 0.4); stroke-width: 1; }
-        .central-circle { fill: rgba(100, 100, 100, 0.6); stroke: #888; stroke-width: 2; }
-        .node-circle { fill: rgba(70, 70, 150, 0.5); stroke: #888; }
-        .feature-panel { fill: rgba(45, 45, 45, 0.7); stroke: #555; stroke-width: 1; }
-        .feature-text { font-size: 13px; fill: #c5c5c5; }
-        .curve-path { fill: none; stroke: rgba(200,200,200,0.3); stroke-width: 1; }
-        .item-box { fill: rgba(255,255,255,0.1); stroke: rgba(200,200,200,0.2); stroke-width: 1; rx: 4; }
+        svg {
+            width: 100%;
+            height: 100vh;
+        }
+        .central-circle {
+            fill: rgba(0, 0, 0, 0.05);
+            stroke: #333;
+            stroke-width: 1.5;
+        }
+        .tag-icon {
+            cursor: pointer;
+            opacity: 0.9;
+        }
+        .tag-icon:hover {
+            opacity: 1;
+            filter: brightness(1.2);
+        }
+        .connection-line {
+            stroke: rgba(60, 60, 60, 0.3);
+            stroke-width: 0.8;
+        }
+        .item-box {
+            fill: rgba(255, 255, 255, 0.04);
+            stroke: #aaa;
+            stroke-width: 0.5;
+        }
+        .socket-text {
+            font-size: 12px;
+            fill: #444;
+        }
+        .feature-panel {
+            fill: rgba(0, 0, 0, 0.03);
+            stroke: #888;
+            stroke-width: 1;
+        }
+        .feature-text {
+            font-size: 12px;
+            fill: #333;
+        }
+        .node-circle {
+            fill: #555;
+            stroke: #222;
+            stroke-width: 0.5;
+        }
+        .curve-path {
+            fill: none;
+            stroke: rgba(100, 100, 100, 0.2);
+            stroke-width: 0.7;
+        }
     </style>
 </head>
 <body>
-
 <svg></svg>
-
 <script>
-    const svg = d3.select("svg");
+const svg = d3.select("svg");
+
+function draw() {
+    svg.selectAll("*").remove();
 
     const width = window.innerWidth;
     const height = window.innerHeight;
-
     const centerX = width / 2;
     const centerY = height / 2;
 
-    // Futuristic central circle
     svg.append("circle")
         .attr("cx", centerX)
         .attr("cy", centerY)
-        .attr("r", 60)
+        .attr("r", 55)
         .attr("class", "central-circle");
 
-    // Linux kernel logo
     svg.append("image")
         .attr("xlink:href", "009.png")
         .attr("x", centerX - 30)
@@ -53,217 +89,109 @@
         .attr("width", 60)
         .attr("height", 60);
 
-    // Existing tags and lines
     const tagIconUrl = 'Icon1.png';
     const numTags = 8;
+    const radius = 160;
     const angleStep = (2 * Math.PI) / numTags;
-    const radius = 180;
 
     for (let i = 0; i < numTags; i++) {
         const angle = i * angleStep;
-        const tagX = centerX + radius * Math.cos(angle);
-        const tagY = centerY + radius * Math.sin(angle);
+        const x = centerX + radius * Math.cos(angle);
+        const y = centerY + radius * Math.sin(angle);
         const rotationAngle = angle * (180 / Math.PI) + 90;
 
         svg.append("image")
-            .attr("class", "tag-icon")
             .attr("xlink:href", tagIconUrl)
-            .attr("x", tagX - 30)
-            .attr("y", tagY - 30)
-            .attr("width", 60)
-            .attr("height", 60)
-            .attr("transform", `rotate(${rotationAngle}, ${tagX}, ${tagY})`);
+            .attr("x", x - 20)
+            .attr("y", y - 20)
+            .attr("width", 40)
+            .attr("height", 40)
+            .attr("class", "tag-icon")
+            .attr("transform", `rotate(${rotationAngle}, ${x}, ${y})`);
 
         svg.append("line")
-            .attr("class", "connection-line")
             .attr("x1", centerX)
             .attr("y1", centerY)
-            .attr("x2", tagX)
-            .attr("y2", tagY);
+            .attr("x2", x)
+            .attr("y2", y)
+            .attr("class", "connection-line");
     }
 
-    // New detailed left panel (as per your screenshot)
     svg.append("rect")
-        .attr("class", "panel")
         .attr("x", 20)
         .attr("y", 20)
-        .attr("width", 280)
-        .attr("height", 350)
-        .attr("rx", 10)
-        .attr("ry", 10);
+        .attr("width", 250)
+        .attr("height", 330)
+        .attr("class", "feature-panel");
 
     const socketList = [
-        "FT9 166 643218", "FT9 964 016161", "FT9 972 983879", "FT9 989 612075", "FT9 819 540732",
-        "FT9 512 826219", "FT9 025 461491", "FT9 838 475394", "FT9 632 094939", "FT9 417 205788"
+        "FT9 166 643218", "FT9 964 016161", "FT9 972 983879",
+        "FT9 989 612075", "FT9 819 540732", "FT9 512 826219",
+        "FT9 025 461491", "FT9 838 475394", "FT9 632 094939", "FT9 417 205788"
     ];
 
-    socketList.forEach((socket, i) => {
+    socketList.forEach((txt, i) => {
         svg.append("rect")
-            .attr("class", "item-box")
             .attr("x", 30)
             .attr("y", 35 + i * 30)
-            .attr("width", 260)
-            .attr("height", 25);
+            .attr("width", 230)
+            .attr("height", 22)
+            .attr("class", "item-box");
 
         svg.append("text")
-            .attr("class", "socket-text")
-            .attr("x", 40)
-            .attr("y", 52 + i * 30)
-            .text(socket);
+            .attr("x", 38)
+            .attr("y", 50 + i * 30)
+            .text(txt)
+            .attr("class", "socket-text");
     });
 
-    // Right-side feature panel
     svg.append("rect")
-        .attr("class", "feature-panel")
         .attr("x", width - 180)
-        .attr("y", 10)
-        .attr("width", 170)
-        .attr("height", 120)
-        .attr("rx", 5)
-        .attr("ry", 5);
+        .attr("y", 20)
+        .attr("width", 150)
+        .attr("height", 100)
+        .attr("class", "feature-panel");
 
-    const features = ["Filter: Active", "Mode: Analysis", "Nodes: 15"];
-    features.forEach((feature, index) => {
+    ["Filter: Active", "Mode: Analysis", "Nodes: 15"].forEach((f, i) => {
         svg.append("text")
-            .attr("class", "feature-text")
             .attr("x", width - 170)
-            .attr("y", 35 + index * 25)
-            .text(feature);
+            .attr("y", 45 + i * 22)
+            .text(f)
+            .attr("class", "feature-text");
     });
 
-    // Geometric nodes and network lines
     for (let i = 0; i < 15; i++) {
-        const randomX = Math.random() * width;
-        const randomY = Math.random() * height;
-
+        const x = Math.random() * width;
+        const y = Math.random() * height;
         svg.append("circle")
-            .attr("cx", randomX)
-            .attr("cy", randomY)
-            .attr("r", 4)
+            .attr("cx", x)
+            .attr("cy", y)
+            .attr("r", 3.5)
             .attr("class", "node-circle");
 
         svg.append("line")
-            .attr("class", "connection-line")
             .attr("x1", centerX)
             .attr("y1", centerY)
-            .attr("x2", randomX)
-            .attr("y2", randomY);
+            .attr("x2", x)
+            .attr("y2", y)
+            .attr("class", "connection-line");
     }
 
-    // More detailed Bézier curves at bottomф
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 25; i++) {
         const startX = Math.random() * width;
         const endX = Math.random() * width;
         const controlX1 = Math.random() * width;
-        const controlY1 = height - 50 - Math.random() * 100;
+        const controlY1 = height - 100 - Math.random() * 60;
         const controlX2 = Math.random() * width;
-        const controlY2 = height - 50 - Math.random() * 100;
+        const controlY2 = height - 100 - Math.random() * 60;
 
-        const path = `M${startX},${height-30} C${controlX1},${controlY1} ${controlX2},${controlY2} ${endX},${height-30}`;
-
-        svg.append("path")
-            .attr("d", path)
-            .attr("class", "curve-path");
+        const path = `M${startX},${height-20} C${controlX1},${controlY1} ${controlX2},${controlY2} ${endX},${height-20}`;
+        svg.append("path").attr("d", path).attr("class", "curve-path");
     }
-    // Добавление полукруга с кружками как на примере
-const groupX = -100;
-const groupY = height / 2 + 50;
+}
 
-const semicircleGroup = svg.append("g")
-    .attr("transform", `translate(${groupX}, ${groupY}) scale(1.8)`);
-
-// Полукруг
-const arc = d3.arc()
-    .innerRadius(120)
-    .outerRadius(140)
-    .startAngle(-Math.PI / 2)
-    .endAngle(Math.PI / 2);
-
-semicircleGroup.append("path")
-    .attr("d", arc)
-    .attr("fill", "none")
-    .attr("stroke", "#888")
-    .attr("stroke-width", 2)
-    .attr("transform", "rotate(90)");
-
-// Кружки внутри полукруга
-const circlePositions = [
-    {x: 0, y: -100},
-    {x: 80, y: -60},
-    {x: 110, y: 0},
-    {x: 80, y: 60},
-    {x: 0, y: 100},
-];
-
-circlePositions.forEach(pos => {
-    semicircleGroup.append("circle")
-        .attr("cx", pos.x)
-        .attr("cy", pos.y)
-        .attr("r", 5)
-        .attr("fill", "#d0d0d0");
-
-    // Линии вправо от кружков
-    semicircleGroup.append("line")
-        .attr("x1", pos.x + 5)
-        .attr("y1", pos.y)
-        .attr("x2", pos.x + 60)
-        .attr("y2", pos.y)
-        .attr("stroke", "#888")
-        .attr("stroke-width", 1);
-
-});
-
-
-// Блок с кругом и элементами управления (внизу справа)
-const group = svg.append("g")
-    .attr("transform", `translate(${width - 250}, ${height - 180})`);
-
-group.append("circle")
-    .attr("r", 45)
-    .attr("fill", "rgba(100,100,100,0.4)")
-    .attr("stroke", "#aaa")
-    .attr("stroke-width", 1.5);
-
-// 4 внутренних прямоугольника по кругу
-const rectCoords = [
-    {x: -10, y: -38},
-    {x: 20, y: -10},
-    {x: -10, y: 18},
-    {x: -40, y: -10},
-];
-rectCoords.forEach((pos, i) => {
-    group.append("rect")
-        .attr("x", pos.x)
-        .attr("y", pos.y)
-        .attr("width", 22)
-        .attr("height", 12)
-        .attr("fill", "#d0d0d0")
-        .attr("rx", 2);
-});
-
-// 2 круга справа
-group.append("circle")
-    .attr("cx", 70)
-    .attr("cy", -15)
-    .attr("r", 8)
-    .attr("fill", "#888");
-
-group.append("circle")
-    .attr("cx", 70)
-    .attr("cy", 15)
-    .attr("r", 8)
-    .attr("fill", "#888");
-
-// 3 круга слева
-[-25, 0, 25].forEach((dy) => {
-    group.append("circle")
-        .attr("cx", -70)
-        .attr("cy", dy)
-        .attr("r", 6)
-        .attr("fill", "#aaa");
-});
-
+draw();
+window.addEventListener("resize", draw);
 </script>
-
 </body>
 </html>
