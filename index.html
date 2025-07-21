@@ -177,17 +177,77 @@ function draw() {
             .attr("class", "connection-line");
     }
 
-    for (let i = 0; i < 25; i++) {
-        const startX = Math.random() * width;
-        const endX = Math.random() * width;
-        const controlX1 = Math.random() * width;
-        const controlY1 = height - 100 - Math.random() * 60;
-        const controlX2 = Math.random() * width;
-        const controlY2 = height - 100 - Math.random() * 60;
+    // for (let i = 0; i < 25; i++) {
+    //     const startX = Math.random() * width;
+    //     const endX = Math.random() * width;
+    //     const controlX1 = Math.random() * width;
+    //     const controlY1 = height - 100 - Math.random() * 60;
+    //     const controlX2 = Math.random() * width;
+    //     const controlY2 = height - 100 - Math.random() * 60;
 
-        const path = `M${startX},${height-20} C${controlX1},${controlY1} ${controlX2},${controlY2} ${endX},${height-20}`;
-        svg.append("path").attr("d", path).attr("class", "curve-path");
+    //     const path = `M${startX},${height-20} C${controlX1},${controlY1} ${controlX2},${controlY2} ${endX},${height-20}`;
+    //     svg.append("path").attr("d", path).attr("class", "curve-path");
+    // }
+
+    function drawBezierWeb(centerX, centerY, numLines = 120, length = 300) {
+    for (let i = 0; i < numLines; i++) {
+        const angle = (Math.PI * 2) * (i / numLines) + (Math.random() - 0.5) * 0.05;
+        const x1 = centerX;
+        const y1 = centerY;
+
+        const x2 = x1 + Math.cos(angle) * length;
+        const y2 = y1 + Math.sin(angle) * length;
+
+        const cx1 = x1 + Math.cos(angle) * (length * 0.3) + (Math.random() - 0.5) * 40;
+        const cy1 = y1 + Math.sin(angle) * (length * 0.3) + (Math.random() - 0.5) * 40;
+        const cx2 = x1 + Math.cos(angle) * (length * 0.7) + (Math.random() - 0.5) * 40;
+        const cy2 = y1 + Math.sin(angle) * (length * 0.7) + (Math.random() - 0.5) * 40;
+
+        const path = `M${x1},${y1} C${cx1},${cy1} ${cx2},${cy2} ${x2},${y2}`;
+
+        svg.append("path")
+            .attr("d", path)
+            .attr("class", "curve-path");
     }
+}
+
+function drawLowerBezierGrid(num = 90) {
+    const yBase = height - 20;
+
+    for (let i = 0; i < num; i++) {
+        const fromLeft = i < num / 2;
+
+        // X стартует либо слева, либо справа от центра
+        const startX = fromLeft
+            ? 300 + Math.random() * 100
+            : width - 300 - Math.random() * 100;
+
+        // точка назначения немного ближе к центру и выше
+        const endX = width / 2 + (Math.random() - 0.5) * 200;
+        const endY = height - 160 - Math.random() * 40;
+
+        // контрольные точки задают плавную дугу
+        const controlX1 = startX + (fromLeft ? 150 : -150) + (Math.random() - 0.5) * 80;
+        const controlY1 = yBase - 60 - Math.random() * 40;
+
+        const controlX2 = endX + (Math.random() - 0.5) * 60;
+        const controlY2 = endY + 40 + Math.random() * 20;
+
+        const path = `M${startX},${yBase} C${controlX1},${controlY1} ${controlX2},${controlY2} ${endX},${endY}`;
+
+        svg.append("path")
+            .attr("d", path)
+            .attr("stroke", "#222")
+            .attr("stroke-width", 0.4)
+            .attr("opacity", 0.05 + Math.random() * 0.03)
+            .attr("fill", "none");
+    }
+}
+
+drawBezierWeb(centerX, centerY);
+drawLowerBezierGrid();
+
+
 }
 
 draw();
