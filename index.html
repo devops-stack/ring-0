@@ -160,22 +160,61 @@ function draw() {
             .attr("class", "feature-text");
     });
 
-    for (let i = 0; i < 15; i++) {
-        const x = Math.random() * width;
-        const y = Math.random() * height;
-        svg.append("circle")
-            .attr("cx", x)
-            .attr("cy", y)
-            .attr("r", 3.5)
-            .attr("class", "node-circle");
+fetch('/api/process-kernel-map')
+  .then(res => res.json())
+  .then(data => {
+    const entries = Object.entries(data);
+    const numProcesses = entries.length;
 
-        svg.append("line")
-            .attr("x1", centerX)
-            .attr("y1", centerY)
-            .attr("x2", x)
-            .attr("y2", y)
-            .attr("class", "connection-line");
-    }
+    entries.forEach(([name, kernel_files], i) => {
+      // Располагаем процессы по кругу
+      const angle = i * 2 * Math.PI / numProcesses;
+      const px = centerX + 200 * Math.cos(angle);
+      const py = centerY + 200 * Math.sin(angle);
+
+      // Линия от центра к процессу
+      svg.append("line")
+        .attr("x1", centerX)
+        .attr("y1", centerY)
+        .attr("x2", px)
+        .attr("y2", py)
+        .attr("class", "connection-line");
+
+      // Кружок процесса
+      svg.append("circle")
+        .attr("cx", px)
+        .attr("cy", py)
+        .attr("r", 7)
+        .attr("class", "node-circle");
+
+    //   // kernel-файлы под процессом
+    //   kernel_files.forEach((file, j) => {
+    //     const fx = px + (j - kernel_files.length / 2) * 40;
+    //     const fy = py + 40;
+
+    //     svg.append("circle")
+    //       .attr("cx", fx)
+    //       .attr("cy", fy)
+    //       .attr("r", 4)
+    //       .attr("class", "node-circle");
+
+    //     svg.append("line")
+    //       .attr("x1", px)
+    //       .attr("y1", py)
+    //       .attr("x2", fx)
+    //       .attr("y2", fy)
+    //       .attr("class", "connection-line");
+    //   });
+    });
+  })
+  .catch(err => {
+    console.error("API error:", err);
+    svg.append("text")
+      .attr("x", 40)
+      .attr("y", 40)
+      .text("Ошибка загрузки данных с backend.")
+      .attr("fill", "red");
+  });
 
     // for (let i = 0; i < 25; i++) {
     //     const startX = Math.random() * width;
