@@ -167,45 +167,40 @@ fetch('/api/process-kernel-map')
     const numProcesses = entries.length;
 
     entries.forEach(([name, kernel_files], i) => {
-      // Располагаем процессы по кругу
+      // расположить процессы по кругу
       const angle = i * 2 * Math.PI / numProcesses;
       const px = centerX + 200 * Math.cos(angle);
       const py = centerY + 200 * Math.sin(angle);
 
-      // Линия от центра к процессу
-      svg.append("line")
-        .attr("x1", centerX)
-        .attr("y1", centerY)
-        .attr("x2", px)
-        .attr("y2", py)
-        .attr("class", "connection-line");
+      const cx1 = centerX + (px - centerX) * 0.3 + (Math.random() - 0.5) * 40;
+      const cy1 = centerY + (py - centerY) * 0.3 + (Math.random() - 0.5) * 40;
+      const cx2 = centerX + (px - centerX) * 0.7 + (Math.random() - 0.5) * 40;
+      const cy2 = centerY + (py - centerY) * 0.7 + (Math.random() - 0.5) * 40;
+
+      const path = `M${centerX},${centerY} C${cx1},${cy1} ${cx2},${cy2} ${px},${py}`;
+
+svg.append("path")
+  .attr("d", path)
+  .attr("class", "curve-path")
+  .attr("opacity", 1 + Math.random() * 0.07);
 
       // Кружок процесса
       svg.append("circle")
         .attr("cx", px)
         .attr("cy", py)
-        .attr("r", 7)
+        .attr("r", 4)
         .attr("class", "node-circle");
 
-    //   // kernel-файлы под процессом
-    //   kernel_files.forEach((file, j) => {
-    //     const fx = px + (j - kernel_files.length / 2) * 40;
-    //     const fy = py + 40;
+       // Название процесса
+  svg.append("text")
+    .attr("x", px)
+    .attr("y", py - 12)
+    .attr("text-anchor", "middle")
+    .attr("font-size", 11)
+    .attr("fill", "#222")
+    .text(name);
 
-    //     svg.append("circle")
-    //       .attr("cx", fx)
-    //       .attr("cy", fy)
-    //       .attr("r", 4)
-    //       .attr("class", "node-circle");
-
-    //     svg.append("line")
-    //       .attr("x1", px)
-    //       .attr("y1", py)
-    //       .attr("x2", fx)
-    //       .attr("y2", fy)
-    //       .attr("class", "connection-line");
-    //   });
-    });
+   });
   })
   .catch(err => {
     console.error("API error:", err);
@@ -228,27 +223,6 @@ fetch('/api/process-kernel-map')
     //     svg.append("path").attr("d", path).attr("class", "curve-path");
     // }
 
-    function drawBezierWeb(centerX, centerY, numLines = 120, length = 300) {
-    for (let i = 0; i < numLines; i++) {
-        const angle = (Math.PI * 2) * (i / numLines) + (Math.random() - 0.5) * 0.05;
-        const x1 = centerX;
-        const y1 = centerY;
-
-        const x2 = x1 + Math.cos(angle) * length;
-        const y2 = y1 + Math.sin(angle) * length;
-
-        const cx1 = x1 + Math.cos(angle) * (length * 0.3) + (Math.random() - 0.5) * 40;
-        const cy1 = y1 + Math.sin(angle) * (length * 0.3) + (Math.random() - 0.5) * 40;
-        const cx2 = x1 + Math.cos(angle) * (length * 0.7) + (Math.random() - 0.5) * 40;
-        const cy2 = y1 + Math.sin(angle) * (length * 0.7) + (Math.random() - 0.5) * 40;
-
-        const path = `M${x1},${y1} C${cx1},${cy1} ${cx2},${cy2} ${x2},${y2}`;
-
-        svg.append("path")
-            .attr("d", path)
-            .attr("class", "curve-path");
-    }
-}
 
 function drawLowerBezierGrid(num = 90) {
     const yBase = height - 20;
@@ -283,7 +257,6 @@ function drawLowerBezierGrid(num = 90) {
     }
 }
 
-drawBezierWeb(centerX, centerY);
 drawLowerBezierGrid();
 
 
