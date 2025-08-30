@@ -1,0 +1,102 @@
+/* Main styles for Linux Kernel Visualization */
+
+body {
+    margin: 0;
+    background-color: #f2f2f2;
+    color: #222;
+    font-family: 'Share Tech Mono', monospace;
+    overflow: hidden;
+}
+
+svg {
+    width: 100%;
+    height: 100vh;
+}
+
+/* Central circle */
+.central-circle {
+    fill: rgba(0, 0, 0, 0.05);
+    stroke: #333;
+    stroke-width: 1.5;
+}
+
+/* Tag icons */
+.tag-icon {
+    cursor: pointer;
+    opacity: 0.9;
+    transition: opacity 0.3s ease;
+}
+
+.tag-icon:hover {
+    opacity: 1;
+    filter: brightness(1.2);
+}
+
+/* Connection lines */
+.connection-line {
+    stroke: rgba(60, 60, 60, 0.3);
+    stroke-width: 0.8;
+}
+
+/* Item blocks */
+.item-box {
+    fill: rgba(255, 255, 255, 0.04);
+    stroke: #aaa;
+    stroke-width: 0.5;
+}
+
+/* Socket text */
+.socket-text {
+    font-size: 12px;
+    fill: #444;
+    font-family: 'Share Tech Mono', monospace;
+}
+
+/* Feature panels */
+.feature-panel {
+    fill: rgba(0, 0, 0, 0.03);
+    stroke: #888;
+    stroke-width: 1;
+}
+
+.feature-text {
+    font-size: 12px;
+    fill: #333;
+    font-family: 'Share Tech Mono', monospace;
+}
+
+/* Node circles */
+.node-circle {
+    fill: #555;
+    stroke: #222;
+    stroke-width: 0.5;
+}
+
+/* Curve paths */
+.curve-path {
+    fill: none;
+    stroke: rgba(100, 100, 100, 0.2);
+    stroke-width: 0.7;
+}
+
+/* Animations */
+@keyframes pulse {
+    0% { opacity: 0.6; }
+    50% { opacity: 1; }
+    100% { opacity: 0.6; }
+}
+
+.pulse {
+    animation: pulse 2s infinite;
+}
+
+/* Responsiveness */
+@media (max-width: 768px) {
+    .socket-text {
+        font-size: 10px;
+    }
+    
+    .feature-text {
+        font-size: 10px;
+    }
+}
