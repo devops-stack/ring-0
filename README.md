@@ -1,8 +1,8 @@
-# Linux Kernel Visualization
+# Ring 0 - Linux Kernel Visualization
 
-🚀 **Real-time Linux Kernel Visualization** - Interactive visualization of Linux kernel processes and system calls in real-time.
+**Real-time Linux Kernel Visualization** - Interactive visualization of Linux kernel.
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 /opt/ring0/kernel-ai/
@@ -27,21 +27,6 @@
 └── docs/                          # Documentation (planned)
 ```
 
-## 🛠 Technologies
-
-### Backend
-- **Flask** - Python web framework
-- **psutil** - System information
-- **OpenAI API** - Process to kernel subsystem mapping (optional)
-
-### Frontend
-- **D3.js** - Interactive visualization
-- **Vanilla JavaScript** - Main logic
-- **CSS3** - Styling
-- **HTML5** - Markup
-
-## 🚀 Installation and Setup
-
 ### 1. Install dependencies
 ```bash
 cd /opt/ring0/kernel-ai
@@ -61,7 +46,7 @@ sudo systemctl reload nginx
 ### 4. Access the application
 Open your browser and navigate to: `http://your-server-ip/`
 
-## 📊 API Endpoints
+## API Endpoints
 
 ### Real-time System Calls
 ```
@@ -89,28 +74,7 @@ Returns:
 - Process to kernel subsystem connections
 - Kernel files used by processes
 
-### Health Check
-```
-GET /health
-```
-Returns application status and system information
-
-## 🎨 Interface Features
-
-### Visual Elements
-- **Central Circle** - Main interface element
-- **Tag Icons** - 8 icons around the center
-- **Panels** - Left and right information panels
-- **System Calls** - Table in the left panel
-- **Processes** - Circles with kernel subsystems
-- **Connection Curves** - Decorative lines
-
-### Responsiveness
-- Automatic scaling when window size changes
-- State preservation during redraw
-- Optimization for different resolutions
-
-## 🔧 Configuration
+## Configuration
 
 ### Environment Variables
 ```bash
@@ -146,7 +110,7 @@ server {
 }
 ```
 
-## 📈 Monitoring
+## Monitoring
 
 ### Logs
 - Flask logs: `app.py` (stdout/stderr)
@@ -159,7 +123,7 @@ server {
 - Process count
 - System calls
 
-## 🧪 Testing
+## Testing
 
 ### API Testing
 ```bash
@@ -182,7 +146,7 @@ curl http://localhost:5001/static/css/main.css
 curl http://localhost:5001/static/js/main.js
 ```
 
-## 🔄 Development
+## Development
 
 ### Code Structure
 - **Modularity** - Each component in separate file
@@ -214,11 +178,11 @@ curl http://localhost:5001/static/js/main.js
 - Optimize API requests
 - Use caching
 
-## 📝 License
+## License
 
 MIT License - see LICENSE file for details.
 
-## 🤝 Contributing
+## Contributing
 
 1. Fork the repository
 2. Create feature branch
@@ -226,14 +190,6 @@ MIT License - see LICENSE file for details.
 4. Add tests
 5. Create Pull Request
 
-## 📞 Support
 
-- **Issues**: GitHub Issues
-- **Email**: your-email@example.com
-- **Documentation**: `/docs/`
-
----
-
-**Version**: 1.0.0  
-**Last Updated**: August 2025  
-**Author**: Linux Kernel Team
+**Version**: 0.0.1  
+**Last Updated**: August 2025
