@@ -158,37 +158,6 @@ def get_mock_process_kernel_map():
         "cron": ["kernel/time/timer.c", "kernel/sched/clock.c"]
     }
 
-def get_nginx_open_files():
-    """Get open files for nginx process"""
-    try:
-        nginx_files = []
-        for proc in psutil.process_iter(["pid", "name"]):
-            if proc.info["name"] == "nginx":
-                try:
-                    files = proc.open_files()
-                    for file in files:
-                        if file.path and os.path.exists(file.path):
-                            nginx_files.append({
-                                "path": file.path,
-                                "fd": file.fd,
-                                "pid": proc.info["pid"]
-                            })
-                except (psutil.AccessDenied, psutil.NoSuchProcess):
-                    continue
-        return get_mock_nginx_files()
-    except Exception as e:
-        print(f"Error getting nginx files: {e}")
-        return get_mock_nginx_files()
-
-def get_mock_nginx_files():
-    """Mock data for nginx open files"""
-    return [
-        {"path": "/etc/nginx/nginx.conf", "fd": 0, "pid": 123},
-        {"path": "/var/log/nginx/access.log", "fd": 1, "pid": 123},
-        {"path": "/var/log/nginx/error.log", "fd": 2, "pid": 123},
-        {"path": "/var/www/html/index.html", "fd": 3, "pid": 123},
-        {"path": "/etc/nginx/sites-enabled/default", "fd": 4, "pid": 123}
-    ]
 # API Endpoints
 
 @app.route('/')
@@ -249,14 +218,6 @@ def health_check():
     })
 
 # Static files handling
-@app.route("/api/nginx-files")
-def nginx_files():
-    """API for nginx open files"""
-    try:
-        files = get_nginx_open_files()
-        return jsonify({"files": files})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 @app.route('/static/<path:filename>')
 def static_files(filename):
     """Serve static files"""
