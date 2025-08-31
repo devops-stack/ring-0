@@ -161,23 +161,6 @@ curl http://localhost:5001/static/js/main.js
 4. Add styles in main.css
 5. Update documentation
 
-## 🐛 Troubleshooting
-
-### API Issues
-- Check if Flask application is running
-- Check logs: `tail -f /var/log/nginx/error.log`
-- Check port: `netstat -tlnp | grep 5001`
-
-### Display Issues
-- Check browser console (F12)
-- Check static files loading
-- Check CORS settings
-
-### Performance Issues
-- Reduce update frequency
-- Optimize API requests
-- Use caching
-
 ## License
 
 MIT License - see LICENSE file for details.
