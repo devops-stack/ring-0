@@ -1,4 +1,4 @@
-# Ring 0 - Linux Kernel Visualization
+# Ring 0 - Linux Kernel AI
 
 **Real-time Linux Kernel Visualization** - Interactive visualization of Linux kernel.
 
