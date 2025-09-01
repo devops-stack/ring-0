@@ -84,13 +84,13 @@ class NginxFilesManager {
     calculateLabelPositions(numFiles, centerX, height) {
         const positions = [];
         const baseY = height - 160; // Синхронизируем с краем кривых Безье
-        const spacing = 40;
+        const spacing = 13; // Сокращаем расстояние между файлами на одну треть
         
         for (let i = 0; i < numFiles; i++) {
             const offset = (i - (numFiles - 1) / 2) * spacing;
             positions.push({
-                x: window.innerWidth - 150 + offset,
-                y: baseY + (i % 2) * 15
+                x: centerX + 530 + offset, // Сдвигаем файлы вправо на 80px
+                y: baseY + 20 // Опускаем файлы на 20px ниже
             });
         }
         
