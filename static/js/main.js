@@ -83,7 +83,7 @@ class NginxFilesManager {
     // Calculate positions for file labels
     calculateLabelPositions(numFiles, centerX, height) {
         const positions = [];
-        const baseY = height - 250;
+        const baseY = height - 160; // Синхронизируем с краем кривых Безье
         const spacing = 40;
         
         for (let i = 0; i < numFiles; i++) {
@@ -409,7 +409,7 @@ function drawLowerBezierGrid(num = 90) {
             : width - 300 - Math.random() * 100;
 
         const endX = width / 2 + (Math.random() - 0.5) * 200;
-        const endY = height - 160 - Math.random() * 40;
+        const endY = height - 160 - Math.random() * 40; // КРАЙ кривых Безье - здесь заканчиваются кривые
 
         const controlX1 = startX + (fromLeft ? 150 : -150) + (Math.random() - 0.5) * 80;
         const controlY1 = yBase - 60 - Math.random() * 40;
