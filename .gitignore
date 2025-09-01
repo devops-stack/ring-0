@@ -191,3 +191,11 @@ docs/_build/
 
 # PyBuilder
 target/
+
+# Backup files
+*.backup*
+app.py.backup*
+
+# Documentation files (temporary)
+DEPLOYMENT_SETUP.md
+PROJECT_STRUCTURE_GUIDE.md
