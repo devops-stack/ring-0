@@ -69,6 +69,7 @@ class NginxFilesManager {
                     .attr("font-size", "11px")
                     .attr("fill", "#222")
                     .attr("opacity", 1)
+                    .attr("transform", `rotate(90 ${pos.x} ${pos.y})`)
                     .text(fileName);
                 
                 
@@ -82,13 +83,13 @@ class NginxFilesManager {
     // Calculate positions for file labels
     calculateLabelPositions(numFiles, centerX, height) {
         const positions = [];
-        const baseY = height - 40;
-        const spacing = 120;
+        const baseY = height - 250;
+        const spacing = 40;
         
         for (let i = 0; i < numFiles; i++) {
             const offset = (i - (numFiles - 1) / 2) * spacing;
             positions.push({
-                x: centerX + offset,
+                x: window.innerWidth - 150 + offset,
                 y: baseY + (i % 2) * 15
             });
         }
@@ -398,7 +399,7 @@ function drawLowerBezierGrid(num = 90) {
         window.nginxFilesManager.init();
     }
     const height = window.innerHeight;
-    const yBase = height - 80;
+    const yBase = height - 200;
 
     for (let i = 0; i < num; i++) {
         const fromLeft = i < num / 2;
@@ -414,7 +415,7 @@ function drawLowerBezierGrid(num = 90) {
         const controlY1 = yBase - 60 - Math.random() * 40;
 
         const controlX2 = endX + (Math.random() - 0.5) * 60;
-        const controlY2 = endY + 40 + Math.random() * 20;
+        const controlY2 = endY + 40 + Math.random() * 220;
 
         const path = `M${startX},${yBase} C${controlX1},${controlY1} ${controlX2},${controlY2} ${endX},${endY}`;
 
