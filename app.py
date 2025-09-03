@@ -158,37 +158,6 @@ def get_mock_process_kernel_map():
         "cron": ["kernel/time/timer.c", "kernel/sched/clock.c"]
     }
 
-def get_nginx_open_files():
-    """Get open files for nginx process"""
-    try:
-        nginx_files = []
-        for proc in psutil.process_iter(["pid", "name"]):
-            if proc.info["name"] == "nginx":
-                try:
-                    files = proc.open_files()
-                    for file in files:
-                        if file.path and os.path.exists(file.path):
-                            nginx_files.append({
-                                "path": file.path,
-                                "fd": file.fd,
-                                "pid": proc.info["pid"]
-                            })
-                except (psutil.AccessDenied, psutil.NoSuchProcess):
-                    continue
-        return get_mock_nginx_files()
-    except Exception as e:
-        print(f"Error getting nginx files: {e}")
-        return get_mock_nginx_files()
-
-def get_mock_nginx_files():
-    """Mock data for nginx open files"""
-    return [
-        {"path": "/etc/nginx/nginx.conf", "fd": 0, "pid": 123},
-        {"path": "/var/log/nginx/access.log", "fd": 1, "pid": 123},
-        {"path": "/var/log/nginx/error.log", "fd": 2, "pid": 123},
-        {"path": "/var/www/html/index.html", "fd": 3, "pid": 123},
-        {"path": "/etc/nginx/sites-enabled/default", "fd": 4, "pid": 123}
-    ]
 # API Endpoints
 
 @app.route('/')
@@ -249,6 +218,63 @@ def health_check():
     })
 
 # Static files handling
+@app.route('/static/<path:filename>')
+def static_files(filename):
+    """Serve static files"""
+    return send_from_directory(app.config['STATIC_FOLDER'], filename)
+
+# Error handling
+# Active connections functions
+# Nginx files functions
+def get_nginx_open_files():
+    """Get open files for Nginx process"""
+    try:
+        import psutil
+        nginx_processes = []
+        for proc in psutil.process_iter(["pid", "name", "open_files"]):
+            try:
+                if proc.info["name"] and "nginx" in proc.info["name"].lower():
+                    nginx_processes.append(proc.info["pid"])
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        
+        if nginx_processes:
+            # Get open files for first nginx process
+            proc = psutil.Process(nginx_processes[0])
+            open_files = proc.open_files()
+            
+            # Filter and format file paths
+            files = []
+            for file in open_files:
+                if file.path:
+                    # Extract relative path from full path
+                    if "/etc/nginx/" in file.path:
+                        rel_path = file.path.split("/etc/nginx/")[-1]
+                        files.append({"path": f"nginx/{rel_path}", "type": "config"})
+                    elif "/var/log/nginx/" in file.path:
+                        rel_path = file.path.split("/var/log/nginx/")[-1]
+                        files.append({"path": f"nginx/logs/{rel_path}", "type": "log"})
+                    else:
+                        files.append({"path": file.path, "type": "other"})
+            
+            return files[:10]  # Limit to 10 files
+        else:
+            return get_mock_nginx_files()
+            
+    except Exception as e:
+        print(f"Error getting nginx files: {e}")
+        return get_mock_nginx_files()
+
+def get_mock_nginx_files():
+    """Mock data for nginx files"""
+    return [
+        {"path": "nginx/nginx.conf", "type": "config"},
+        {"path": "nginx/sites-enabled/default", "type": "config"},
+        {"path": "nginx/conf.d/default.conf", "type": "config"},
+        {"path": "nginx/logs/access.log", "type": "log"},
+        {"path": "nginx/logs/error.log", "type": "log"}
+    ]
+
 @app.route("/api/nginx-files")
 def nginx_files():
     """API for nginx open files"""
@@ -257,12 +283,60 @@ def nginx_files():
         return jsonify({"files": files})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-@app.route('/static/<path:filename>')
-def static_files(filename):
-    """Serve static files"""
-    return send_from_directory(app.config['STATIC_FOLDER'], filename)
+def get_active_connections():
+    """Get active network connections"""
+    try:
+        connections = []
+        # Get TCP connections
+        with open("/proc/net/tcp", "r") as f:
+            lines = f.readlines()[1:]  # Skip header
+            for line in lines:
+                parts = line.strip().split()
+                if len(parts) >= 4:
+                    local_addr = parts[1]
+                    remote_addr = parts[2]
+                    state = parts[3]
+                    
+                    # Convert hex addresses to readable format
+                    local_ip = ".".join([str(int(local_addr.split(":")[0][i:i+2], 16)) for i in range(0, 8, 2)])
+                    local_port = int(local_addr.split(":")[1], 16)
+                    
+                    if remote_addr != "00000000:0000":  # Not listening
+                        remote_ip = ".".join([str(int(remote_addr.split(":")[0][i:i+2], 16)) for i in range(0, 8, 2)])
+                        remote_port = int(remote_addr.split(":")[1], 16)
+                        
+                        connections.append({
+                            "local": f"{local_ip}:{local_port}",
+                            "remote": f"{remote_ip}:{remote_port}",
+                            "state": state,
+                            "type": "TCP"
+                        })
+        
+        # Limit to first 20 connections for display
+        return connections[:20]
+        
+    except Exception as e:
+        print(f"Error getting active connections: {e}")
+        return get_mock_active_connections()
 
-# Error handling
+def get_mock_active_connections():
+    """Mock data for active connections"""
+    return [
+        {"local": "127.0.0.1:22", "remote": "192.168.1.100:54321", "state": "01", "type": "TCP"},
+        {"local": "0.0.0.0:80", "remote": "10.0.0.50:12345", "state": "01", "type": "TCP"},
+        {"local": "127.0.0.1:3306", "remote": "172.16.0.10:65432", "state": "01", "type": "TCP"},
+        {"local": "0.0.0.0:443", "remote": "203.0.113.0:54321", "state": "01", "type": "TCP"},
+        {"local": "127.0.0.1:5001", "remote": "192.168.1.101:12345", "state": "01", "type": "TCP"}
+    ]
+
+@app.route("/api/active-connections")
+def active_connections():
+    """API for active network connections"""
+    try:
+        connections = get_active_connections()
+        return jsonify({"connections": connections})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({'error': 'Not found'}), 404
@@ -282,6 +356,7 @@ if __name__ == '__main__':
     print(f"   - {Config.API_PREFIX}/syscalls-realtime")
     print(f"   - {Config.API_PREFIX}/kernel-data")
     print(f"   - {Config.API_PREFIX}/process-kernel-map")
+    print(f"   - {Config.API_PREFIX}/nginx-files")
     print(f"   - /health")
     
     app.run(
@@ -290,3 +365,4 @@ if __name__ == '__main__':
         debug=Config.DEBUG,
         threaded=True
     )
+

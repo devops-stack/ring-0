@@ -9,7 +9,7 @@ class SyscallsManager {
     // Update system calls data
     async updateSyscallsTable() {
         try {
-            const response = await fetch('/api/syscalls-realtime');
+            const response = await fetch("/api/syscalls-realtime");
             const data = await response.json();
             
             if (data.syscalls) {
@@ -22,7 +22,7 @@ class SyscallsManager {
                 }
             }
         } catch (error) {
-            console.error('Error getting system calls:', error);
+            console.error('Error getting active connections:', error);
             this.useFallbackData();
         }
     }
@@ -68,6 +68,8 @@ class SyscallsManager {
                 .text(displayText)
                 .attr("class", "socket-text syscall-text");
         });
+        // Display active connections below system calls
+        // this.displayActiveConnections();
     }
 
     // Start auto update

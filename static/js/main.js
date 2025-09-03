@@ -179,6 +179,10 @@ function initApp() {
     // Initialize system calls manager
     syscallsManager = new SyscallsManager();
     
+    // Initialize active connections manager
+    const connectionsManager = new ActiveConnectionsManager();
+    connectionsManager.startAutoUpdate(3000);
+    
     window.nginxFilesManager = new NginxFilesManager();
     // Draw main interface
     draw();
@@ -204,6 +208,9 @@ function setupEventListeners() {
     window.addEventListener('beforeunload', () => {
         if (syscallsManager) {
             syscallsManager.stopAutoUpdate();
+        }
+        if (connectionsManager) {
+            connectionsManager.stopAutoUpdate();
         }
     });
 }
