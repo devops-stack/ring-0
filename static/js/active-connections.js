@@ -65,49 +65,40 @@ class ActiveConnectionsManager {
         // Clear old elements
         svg.selectAll('.connection-box, .connection-text, .connection-details, .connection-header').remove();
         
-        // Calculate starting Y position (below system calls)
-        const startY = 35 + 10 * 30 + 20; // 10 system calls * 30px + 20px gap
-        
-        // Add header for active connections
-        svg.append('text')
-            .attr('x', 30)
-            .attr('y', startY - 5)
-            .text('Active Network Connections')
-            .attr('class', 'connection-header')
-            .attr('font-size', '12px')
-            .attr('font-weight', 'bold')
-            .attr('fill', '#333');
+        // Calculate starting Y position (same as system calls, but to the right)
+        const startY = 35; // Same as system calls
         
         // Create new elements for active connections
         this.currentConnections.forEach((connection, i) => {
             const displayText = `${connection.local} → ${connection.remote}`;
             const detailsText = `${connection.type} (${connection.state})`;
             
-            // Connection box
+            // Connection box (positioned to the right of system calls)
             svg.append('rect')
-                .attr('x', 30)
-                .attr('y', startY + i * 35) // Increased spacing
+                .attr('x', 300) // To the right of system calls (30 + 230 + 40 gap)
+                .attr('y', startY + i * 30) // Same spacing as system calls
                 .attr('width', 280) // Wider box for more info
-                .attr('height', 28) // Taller box
+                .attr('height', 26) // Same height as system calls
                 .attr('class', 'item-box connection-box')
                 .attr('rx', 4); // Rounded corners
 
             // Main connection text
             svg.append('text')
-                .attr('x', 38)
-                .attr('y', startY + 15 + i * 35)
+                .attr('x', 308) // Adjusted for new position
+                .attr('y', startY + 15 + i * 30)
                 .text(displayText)
                 .attr('class', 'socket-text connection-text')
                 .attr('font-size', '11px');
 
             // Connection details (type and state)
             svg.append('text')
-                .attr('x', 38)
-                .attr('y', startY + 28 + i * 35)
+                .attr('x', 308) // Adjusted for new position
+                .attr('y', startY + 23 + i * 30)
                 .text(detailsText)
                 .attr('class', 'connection-details')
                 .attr('font-size', '9px')
-                .attr('fill', '#666');
+                .attr('fill', '#666')
+                .attr('font-family', 'monospace');
         });
     }
 
