@@ -1,6 +1,6 @@
 # Ring 0 - Linux Kernel AI
 
-**Real-time Linux Kernel Visualization** - Interactive visualization of Linux kernel.
+**Real-time Linux Kernel Visualization**
 
 ## Project Structure
 
