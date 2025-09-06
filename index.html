@@ -26,6 +26,18 @@
     <!-- Scripts -->
     <script src="/static/js/syscalls.js"></script>
     <script src="/static/js/active-connections.js"></script>
-    <script src="/static/js/main.js?v=30"></script>
+    <script src="/static/js/right-semicircle-menu.js"></script>
+    <script>
+        // Debug: Check if class is loaded
+        console.log('🔍 RightSemicircleMenuManager class loaded:', typeof RightSemicircleMenuManager);
+        if (typeof RightSemicircleMenuManager !== 'undefined') {
+            console.log('✅ Class is available, creating instance...');
+            window.testSemicircle = new RightSemicircleMenuManager();
+            console.log('✅ Instance created:', window.testSemicircle);
+        } else {
+            console.error('❌ RightSemicircleMenuManager class NOT loaded!');
+        }
+    </script>
+    <script src="/static/js/main.js?v=52"></script>
 </body>
 </html>
