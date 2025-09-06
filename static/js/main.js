@@ -171,6 +171,7 @@ const svg = d3.select("svg");
 let syscallsManager;
 let resizeTimeout;
 let nginxFilesManager;
+let rightSemicircleMenuManager;
 
 // Application initialization
 function initApp() {
@@ -184,8 +185,26 @@ function initApp() {
     connectionsManager.startAutoUpdate(3000);
     
     window.nginxFilesManager = new NginxFilesManager();
-    // Draw main interface
+    
+    // Initialize right semicircle menu manager
+    console.log('🎯 RightSemicircleMenuManager class available:', typeof RightSemicircleMenuManager);
+    if (typeof RightSemicircleMenuManager !== 'undefined') {
+        window.rightSemicircleMenuManager = new RightSemicircleMenuManager();
+        console.log('🎯 RightSemicircleMenuManager initialized:', window.rightSemicircleMenuManager);
+    } else {
+        console.error('❌ RightSemicircleMenuManager class not found!');
+    }
+    
+    // Draw main interface FIRST
     draw();
+    
+    // Then render semicircle AFTER draw() completes
+    setTimeout(() => {
+        if (window.rightSemicircleMenuManager) {
+            console.log('🎯 Force rendering semicircle after draw()...');
+            window.rightSemicircleMenuManager.renderRightSemicircleMenu();
+        }
+    }, 100);
     
     // Start updates
     syscallsManager.startAutoUpdate(3000);
@@ -201,6 +220,13 @@ function setupEventListeners() {
         clearTimeout(resizeTimeout);
         resizeTimeout = setTimeout(() => {
             draw();
+            // Render semicircle after draw() completes
+            setTimeout(() => {
+                if (window.rightSemicircleMenuManager) {
+                    console.log('🎯 Force rendering semicircle after resize...');
+                    window.rightSemicircleMenuManager.renderRightSemicircleMenu();
+                }
+            }, 50);
         }, 100);
     });
 
@@ -217,6 +243,7 @@ function setupEventListeners() {
 
 // Main drawing function
 function draw() {
+    // Clear all elements to prevent duplication
     svg.selectAll("*").remove();
 
     const width = window.innerWidth;
@@ -243,6 +270,11 @@ function draw() {
     
     // Draw curves at bottom
     drawLowerBezierGrid();
+    
+    // Render right semicircle menu (after all other elements)
+    if (window.rightSemicircleMenuManager) {
+        window.rightSemicircleMenuManager.renderRightSemicircleMenu();
+    }
 }
 
 // Draw central circle
