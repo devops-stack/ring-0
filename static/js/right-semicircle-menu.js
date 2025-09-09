@@ -33,7 +33,7 @@ class RightSemicircleMenuManager {
 
         // Semicircle parameters - attached to right edge with cut-off edges
         const menuRadius = height * 0.4; // Larger radius for better coverage
-        const menuX = width; // Position exactly at right edge
+        const menuX = width + 40; // Position 40px to the right of screen edge
         const menuY = height / 2; // Vertically centered
 
         // Create the large semicircle path (right side)
