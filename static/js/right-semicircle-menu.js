@@ -74,9 +74,13 @@ class RightSemicircleMenuManager {
                 .on('click', () => this.handleMenuClick(item.id))
                 .on('mouseenter', function() {
                     d3.select(this).style('fill', '#444');
+                    // Show tooltip
+                    showTooltip('in development', itemX, itemY);
                 })
                 .on('mouseleave', function() {
                     d3.select(this).style('fill', '#333');
+                    // Hide tooltip
+                    hideTooltip();
                 });
 
             // SVG icon inside the circle
@@ -204,4 +208,54 @@ class RightSemicircleMenuManager {
         svg.selectAll('.right-semicircle-menu, .right-menu-item, .right-menu-icon, .right-menu-line, .right-menu-label').remove();
         this.isVisible = false;
     }
+}
+<<<<<<< HEAD
+=======
+
+/**
+ * Show tooltip with text
+ */
+function showTooltip(text, x, y) {
+    // Remove existing tooltip
+    d3.selectAll('.tooltip').remove();
+    
+    // Create tooltip
+    const tooltip = d3.select('body')
+        .append('div')
+        .attr('class', 'tooltip')
+        .style('position', 'absolute')
+        .style('background', 'rgba(0, 0, 0, 0.8)')
+        .style('color', 'white')
+        .style('padding', '6px 10px')
+        .style('border-radius', '4px')
+        .style('font-size', '12px')
+        .style('font-family', "'Share Tech Mono', monospace")
+        .style('pointer-events', 'none')
+        .style('z-index', '1000')
+        .style('opacity', 0)
+        .text(text);
+    
+    // Position tooltip
+    const tooltipWidth = tooltip.node().offsetWidth;
+    const tooltipHeight = tooltip.node().offsetHeight;
+    const offsetX = 10;
+    const offsetY = -tooltipHeight - 10;
+    
+    tooltip
+        .style('left', (x + offsetX) + 'px')
+        .style('top', (y + offsetY) + 'px')
+        .transition()
+        .duration(200)
+        .style('opacity', 1);
+}
+
+/**
+ * Hide tooltip
+ */
+function hideTooltip() {
+    d3.selectAll('.tooltip')
+        .transition()
+        .duration(200)
+        .style('opacity', 0)
+        .remove();
 }
