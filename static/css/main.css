@@ -153,7 +153,45 @@ svg {
     stroke-width: 0.5;
 }
 
-/* Semicircle menu styles */
+/* Right semicircle menu styles */
+.right-semicircle-menu {
+    fill: rgba(255, 255, 255, 0.05);
+    stroke: rgba(255, 255, 255, 0.1);
+    stroke-width: 1px;
+}
+
+.right-menu-item {
+    fill: #333;
+    stroke: #555;
+    stroke-width: 1px;
+    cursor: pointer;
+}
+
+.right-menu-item:hover {
+    fill: #444;
+}
+
+.right-menu-icon {
+    font-size: 14px;
+    fill: #fff;
+    text-anchor: middle;
+    dominant-baseline: central;
+}
+
+.right-menu-line {
+    stroke: rgba(255, 255, 255, 0.3);
+    stroke-width: 1px;
+}
+
+.right-menu-label {
+    font-size: 11px;
+    fill: rgba(255, 255, 255, 0.7);
+    font-family: 'Share Tech Mono', monospace;
+    text-anchor: end;
+    dominant-baseline: central;
+}
+
+/* Legacy semicircle menu styles (kept for compatibility) */
 .semicircle-menu {
     fill: rgba(255, 255, 255, 0.04);
     stroke: #aaa;
