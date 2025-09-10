@@ -5,6 +5,26 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kernel AI</title>
     
+    <!-- SEO Meta Tags -->
+    <meta name="description" content="Kernel AI - Interactive Linux architecture visualization tool for students. Learn Linux kernel architecture, system calls, and process management through real-time visualizations. Educational tool for understanding Linux internals.">
+    <meta name="keywords" content="Kernel AI, Ring0, Linux architecture, Linux kernel architecture, Linux system architecture, Linux architecture visualization, Linux kernel internals, Linux architecture learning, interactive Linux architecture, Linux kernel components, system calls visualization, Linux architecture diagram, Linux learning tool, kernel architecture study">
+    <meta name="author" content="Aleksei Fedorov">
+    <meta name="robots" content="index, follow">
+    
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://ring-0.sh/">
+    <meta property="og:title" content="Kernel AI - Linux Architecture Visualization">
+    <meta property="og:description" content="Kernel AI by Ring0 - Educational tool for learning Linux kernel architecture through interactive visualizations. Perfect for students studying Linux internals and system architecture.">
+    <meta property="og:image" content="https://ring-0.sh/static/images/009.png">
+    
+    <!-- Twitter -->
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="https://ring-0.sh/">
+    <meta property="twitter:title" content="Kernel AI - Linux Architecture Visualization">
+    <meta property="twitter:description" content="Kernel AI by Ring0 - Educational tool for learning Linux kernel architecture through interactive visualizations. Perfect for students studying Linux internals and system architecture.">
+    <meta property="twitter:image" content="https://ring-0.sh/static/images/009.png">
+    
     <!-- External libraries -->
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
@@ -26,6 +46,18 @@
     <!-- Scripts -->
     <script src="/static/js/syscalls.js"></script>
     <script src="/static/js/active-connections.js"></script>
-    <script src="/static/js/main.js?v=30"></script>
+    <script src="/static/js/right-semicircle-menu.js"></script>
+    <script>
+        // Debug: Check if class is loaded
+        console.log('🔍 RightSemicircleMenuManager class loaded:', typeof RightSemicircleMenuManager);
+        if (typeof RightSemicircleMenuManager !== 'undefined') {
+            console.log('✅ Class is available, creating instance...');
+            window.testSemicircle = new RightSemicircleMenuManager();
+            console.log('✅ Instance created:', window.testSemicircle);
+        } else {
+            console.error('❌ RightSemicircleMenuManager class NOT loaded!');
+        }
+    </script>
+    <script src="/static/js/main.js?v=53"></script>
 </body>
 </html>

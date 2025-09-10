@@ -79,24 +79,176 @@ svg {
     stroke-width: 0.7;
 }
 
-/* Animations */
-@keyframes pulse {
-    0% { opacity: 0.6; }
-    50% { opacity: 1; }
-    100% { opacity: 0.6; }
+/* Connection styles */
+.connection-box {
+    fill: rgba(255, 255, 255, 0.04);
+    stroke: #aaa;
+    stroke-width: 0.5;
+    rx: 4;
 }
 
-.pulse {
-    animation: pulse 2s infinite;
+.connection-text {
+    font-size: 12px;
+    fill: #444;
+    font-family: 'Share Tech Mono', monospace;
 }
+
+.connection-details {
+    font-size: 10px;
+    fill: #666;
+    font-family: 'Share Tech Mono', monospace;
+}
+
+/* Syscall styles */
+.syscall-box {
+    fill: rgba(255, 255, 255, 0.04);
+    stroke: #aaa;
+    stroke-width: 0.5;
+}
+
+.syscall-text {
+    font-size: 12px;
+    fill: #444;
+    font-family: 'Share Tech Mono', monospace;
+}
+
+/* File label styles */
+.file-label {
+    font-size: 11px;
+    fill: #333;
+    font-family: 'Share Tech Mono', monospace;
+    text-anchor: start;
+}
+
+.file-label-bg {
+    fill: rgba(255, 255, 255, 0.8);
+    stroke: #ccc;
+    stroke-width: 0.5;
+    rx: 2;
+}
+
+/* Tooltip styles */
+.tooltip {
+    position: absolute;
+    background: rgba(0, 0, 0, 0.9);
+    color: white;
+    padding: 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    pointer-events: none;
+    z-index: 1000;
+    max-width: 300px;
+}
+
+/* Bezier curve styles */
+.bezier-curve {
+    fill: none;
+    stroke: rgba(100, 100, 100, 0.2);
+    stroke-width: 0.7;
+}
+
+.file-endpoint {
+    fill: #555;
+    stroke: #222;
+    stroke-width: 0.5;
+}
+
+/* Right semicircle menu styles */
+.right-semicircle-menu {
+    fill: rgba(255, 255, 255, 0.05);
+    stroke: rgba(255, 255, 255, 0.1);
+    stroke-width: 1px;
+}
+
+.right-menu-item {
+    fill: #333;
+    stroke: #555;
+    stroke-width: 1px;
+    cursor: pointer;
+}
+
+.right-menu-item:hover {
+    fill: #444;
+}
+
+.right-menu-icon {
+    font-size: 14px;
+    fill: #fff;
+    text-anchor: middle;
+    dominant-baseline: central;
+}
+
+.right-menu-line {
+    stroke: rgba(255, 255, 255, 0.3);
+    stroke-width: 1px;
+}
+
+.right-menu-label {
+    font-size: 11px;
+    fill: rgba(255, 255, 255, 0.7);
+    font-family: 'Share Tech Mono', monospace;
+    text-anchor: end;
+    dominant-baseline: central;
+}
+
+/* Legacy semicircle menu styles (kept for compatibility) */
+.semicircle-menu {
+    fill: rgba(255, 255, 255, 0.04);
+    stroke: #aaa;
+    stroke-width: 0.5;
+}
+
+.menu-item {
+    fill: rgba(255, 255, 255, 0.04);
+    stroke: #aaa;
+    stroke-width: 0.5;
+    cursor: pointer;
+}
+
+.menu-item:hover {
+    fill: rgba(255, 255, 255, 0.08);
+}
+
+.menu-icon {
+    fill: #444;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 12px;
+    text-anchor: middle;
+    dominant-baseline: central;
+}
+
+.individual-menu-bar {
+    fill: rgba(255, 255, 255, 0.04);
+    stroke: #aaa;
+    stroke-width: 0.5;
+}
+
+.individual-menu-label {
+    fill: #444;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    text-anchor: start;
+    dominant-baseline: central;
+}
+
+/* Animations - removed unused pulse animation */
 
 /* Responsiveness */
 @media (max-width: 768px) {
-    .socket-text {
+    .socket-text, .connection-text, .syscall-text {
         font-size: 10px;
     }
     
-    .feature-text {
+    .feature-text, .connection-details {
+        font-size: 9px;
+    }
+    
+    .file-label, .menu-icon, .individual-menu-label {
         font-size: 10px;
+    }
+    
+    .tooltip {
+        font-size: 10px;
+        max-width: 250px;
     }
 }
