@@ -208,6 +208,28 @@ def process_kernel_map():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/processes')
+def get_processes():
+    """API for getting all Linux processes"""
+    try:
+        processes = []
+        for proc in psutil.process_iter(['pid', 'name', 'status', 'memory_info']):
+            try:
+                memory_info = proc.info['memory_info']
+                memory_mb = memory_info.rss / 1024 / 1024  # Convert to MB
+                processes.append({
+                    'pid': proc.info['pid'],
+                    'name': proc.info['name'],
+                    'status': proc.info['status'],
+                    'memory_mb': round(memory_mb, 1)
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        
+        return jsonify({'processes': processes})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/health')
 def health_check():
     """Application health check"""

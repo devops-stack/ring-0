@@ -268,6 +268,9 @@ function draw() {
     // Load processes and kernel subsystems
     loadProcessKernelMap(centerX, centerY);
     
+    // Draw additional process lines
+    drawProcessKernelMap2(centerX, centerY);
+    
     // Draw curves at bottom
     drawLowerBezierGrid();
     
@@ -426,6 +429,68 @@ function drawProcessKernelMap(data, centerX, centerY) {
                 .attr("stroke-width", 0.5);
         });
     });
+}
+
+// Draw additional process lines (without circles and names)
+function drawProcessKernelMap2(centerX, centerY) {
+    // Fetch all Linux processes
+    fetch('/api/processes')
+        .then(res => res.json())
+        .then(data => {
+            const processes = data.processes || [];
+            const numProcesses = processes.length;
+
+            // Find min and max memory usage for scaling
+            const memoryValues = processes.map(p => p.memory_mb || 0);
+            const minMemory = Math.min(...memoryValues);
+            const maxMemory = Math.max(...memoryValues);
+            const memoryRange = maxMemory - minMemory;
+
+            processes.forEach((process, i) => {
+                const angle = i * 2 * Math.PI / numProcesses;
+                
+                // Calculate line length based on memory usage
+                const memoryMb = process.memory_mb || 0;
+                const memoryRatio = memoryRange > 0 ? (memoryMb - minMemory) / memoryRange : 0;
+                
+                // Base distance: 250px (original), max additional: 100px based on memory
+                const baseDistance = 250;
+                const maxAdditionalDistance = 100;
+                const distance = baseDistance + (memoryRatio * maxAdditionalDistance);
+                
+                const px = centerX + distance * Math.cos(angle);
+                const py = centerY + distance * Math.sin(angle);
+
+                // Curve to process (same style as original)
+                const cx1 = centerX + (px - centerX) * 0.3 + (Math.random() - 0.5) * 40;
+                const cy1 = centerY + (py - centerY) * 0.3 + (Math.random() - 0.5) * 40;
+                const cx2 = centerX + (px - centerX) * 0.7 + (Math.random() - 0.5) * 40;
+                const cy2 = centerY + (py - centerY) * 0.7 + (Math.random() - 0.5) * 40;
+
+                const path = `M${centerX},${centerY} C${cx1},${cy1} ${cx2},${cy2} ${px},${py}`;
+
+                // Draw the line
+                svg.append("path")
+                    .attr("d", path)
+                    .attr("class", "process-line")
+                    .attr("stroke", "#222") // Same color as Bezier curves
+                    .attr("stroke-width", 0.4) // Same thickness as Bezier curves
+                    .attr("opacity", 0.05 + Math.random() * 0.03) // Same opacity as Bezier curves
+                    .attr("fill", "none");
+
+                // Add gray circle at the end of the line (like in drawProcessKernelMap)
+                svg.append("circle")
+                    .attr("cx", px)
+                    .attr("cy", py)
+                    .attr("r", 1)
+                    .attr("fill", "#888")
+                    .attr("stroke", "#555")
+                    .attr("stroke-width", 0.5);
+            });
+        })
+        .catch(error => {
+            console.error('Error fetching processes:', error);
+        });
 }
 
 // Draw curves at bottom
