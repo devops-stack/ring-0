@@ -251,6 +251,42 @@ function draw() {
     const centerX = width / 2;
     const centerY = height / 2;
 
+    // Define gradients for depth
+    const defs = svg.append("defs");
+    
+    // Radial gradient for central circle
+    const centralGradient = defs.append("radialGradient")
+        .attr("id", "centralGradient")
+        .attr("cx", "50%")
+        .attr("cy", "50%")
+        .attr("r", "50%");
+    
+    centralGradient.append("stop")
+        .attr("offset", "0%")
+        .attr("stop-color", "#444");
+    
+    centralGradient.append("stop")
+        .attr("offset", "100%")
+        .attr("stop-color", "#111");
+
+    // Linear gradient for process lines
+    const lineGradient = defs.append("linearGradient")
+        .attr("id", "lineGradient")
+        .attr("x1", "0%")
+        .attr("y1", "0%")
+        .attr("x2", "100%")
+        .attr("y2", "100%");
+    
+    lineGradient.append("stop")
+        .attr("offset", "0%")
+        .attr("stop-color", "#333")
+        .attr("stop-opacity", 0.8);
+    
+    lineGradient.append("stop")
+        .attr("offset", "100%")
+        .attr("stop-color", "#111")
+        .attr("stop-opacity", 0.1);
+
     // Draw central circle
     drawCentralCircle(centerX, centerY);
     
@@ -259,6 +295,9 @@ function draw() {
     
     // Draw panels
     drawPanels(width, height);
+    
+    // Draw social media icons
+    drawSocialIcons(width, height);
     
     // Restore system calls
     if (syscallsManager) {
@@ -286,7 +325,8 @@ function drawCentralCircle(centerX, centerY) {
         .attr("cx", centerX)
         .attr("cy", centerY)
         .attr("r", 55)
-        .attr("class", "central-circle");
+        .attr("class", "central-circle")
+        .attr("fill", "url(#centralGradient)");
 
     svg.append("image")
         .attr("xlink:href", "static/images/009.png")
@@ -385,26 +425,57 @@ function drawProcessKernelMap(data, centerX, centerY) {
 
         const path = `M${centerX},${centerY} C${cx1},${cy1} ${cx2},${cy2} ${px},${py}`;
 
-        svg.append("path")
+        // Draw main process line with animation
+        const mainLine = svg.append("path")
             .attr("d", path)
             .attr("class", "curve-path")
-            .attr("opacity", 1 + Math.random() * 0.07);
+            .attr("stroke", "url(#lineGradient)") // Use gradient for depth
+            .attr("opacity", 0) // Start invisible
+            .attr("stroke-dasharray", function() {
+                const length = this.getTotalLength();
+                return length + " " + length;
+            })
+            .attr("stroke-dashoffset", function() {
+                return this.getTotalLength();
+            });
 
-        // Process circle
-        svg.append("circle")
+        // Animate main line appearance
+        mainLine.transition()
+            .duration(400 + Math.random() * 200) // Random duration 400-600ms
+            .delay(i * 30) // Staggered animation
+            .attr("opacity", 1 + Math.random() * 0.07)
+            .attr("stroke-dashoffset", 0);
+
+        // Process circle with animation
+        const processCircle = svg.append("circle")
             .attr("cx", px)
             .attr("cy", py)
-            .attr("r", 4)
-            .attr("class", "node-circle");
+            .attr("r", 0) // Start with radius 0
+            .attr("class", "node-circle")
+            .attr("opacity", 0); // Start invisible
 
-        // Process name
-        svg.append("text")
+        // Animate process circle appearance
+        processCircle.transition()
+            .duration(200)
+            .delay(i * 30 + 300) // Appear after line animation
+            .attr("r", 4)
+            .attr("opacity", 1);
+
+        // Process name with animation
+        const processText = svg.append("text")
             .attr("x", px)
             .attr("y", py - 12)
             .attr("text-anchor", "middle")
             .attr("font-size", 11)
             .attr("fill", "#222")
+            .attr("opacity", 0) // Start invisible
             .text(name);
+
+        // Animate process text appearance
+        processText.transition()
+            .duration(150)
+            .delay(i * 30 + 500) // Appear after circle animation
+            .attr("opacity", 1);
 
         // Kernel subsystems
         kernel_files.forEach((subsystem, j) => {
@@ -469,23 +540,45 @@ function drawProcessKernelMap2(centerX, centerY) {
 
                 const path = `M${centerX},${centerY} C${cx1},${cy1} ${cx2},${cy2} ${px},${py}`;
 
-                // Draw the line
-                svg.append("path")
+                // Draw the line with animation
+                const line = svg.append("path")
                     .attr("d", path)
                     .attr("class", "process-line")
-                    .attr("stroke", "#222") // Same color as Bezier curves
+                    .attr("stroke", "url(#lineGradient)") // Use gradient for depth
                     .attr("stroke-width", 0.4) // Same thickness as Bezier curves
-                    .attr("opacity", 0.05 + Math.random() * 0.03) // Same opacity as Bezier curves
-                    .attr("fill", "none");
+                    .attr("opacity", 0) // Start invisible
+                    .attr("fill", "none")
+                    .attr("stroke-dasharray", function() {
+                        const length = this.getTotalLength();
+                        return length + " " + length;
+                    })
+                    .attr("stroke-dashoffset", function() {
+                        return this.getTotalLength();
+                    });
 
-                // Add gray circle at the end of the line (like in drawProcessKernelMap)
-                svg.append("circle")
+                // Animate line appearance
+                line.transition()
+                    .duration(300 + Math.random() * 200) // Random duration 300-500ms
+                    .delay(i * 20) // Staggered animation
+                    .attr("opacity", 0.05 + Math.random() * 0.03)
+                    .attr("stroke-dashoffset", 0);
+
+                // Add gray circle at the end of the line with animation
+                const circle = svg.append("circle")
                     .attr("cx", px)
                     .attr("cy", py)
-                    .attr("r", 1)
+                    .attr("r", 0) // Start with radius 0
                     .attr("fill", "#888")
                     .attr("stroke", "#555")
-                    .attr("stroke-width", 0.5);
+                    .attr("stroke-width", 0.5)
+                    .attr("opacity", 0); // Start invisible
+
+                // Animate circle appearance
+                circle.transition()
+                    .duration(150)
+                    .delay(i * 20 + 250) // Appear after line animation
+                    .attr("r", 1)
+                    .attr("opacity", 1);
             });
         })
         .catch(error => {
@@ -523,13 +616,66 @@ function drawLowerBezierGrid(num = 90) {
 
         const path = `M${startX},${yBase} C${controlX1},${controlY1} ${controlX2},${controlY2} ${endX},${endY}`;
 
-        svg.append("path")
+        // Draw Bezier curve with animation
+        const bezierCurve = svg.append("path")
             .attr("d", path)
-            .attr("stroke", "#222")
+            .attr("stroke", "url(#lineGradient)") // Use gradient for depth
             .attr("stroke-width", 0.4)
+            .attr("opacity", 0) // Start invisible
+            .attr("fill", "none")
+            .attr("stroke-dasharray", function() {
+                const length = this.getTotalLength();
+                return length + " " + length;
+            })
+            .attr("stroke-dashoffset", function() {
+                return this.getTotalLength();
+            });
+
+        // Animate Bezier curve appearance
+        bezierCurve.transition()
+            .duration(400 + Math.random() * 300) // Random duration 400-700ms
+            .delay(i * 10) // Staggered animation
             .attr("opacity", 0.05 + Math.random() * 0.03)
-            .attr("fill", "none");
+            .attr("stroke-dashoffset", 0);
     }
+}
+
+// Draw social media icons
+function drawSocialIcons(width, height) {
+    // Twitter icon in bottom left corner
+    const twitterX = 30;
+    const twitterY = height - 30;
+    const iconSize = 20;
+    
+    // Create Twitter icon group
+    const twitterGroup = svg.append("g")
+        .attr("class", "social-icon")
+        .attr("transform", `translate(${twitterX}, ${twitterY})`)
+        .style("cursor", "pointer")
+        .on("click", () => {
+            window.open("https://x.com/_telesis", "_blank");
+        })
+        .on("mouseenter", function() {
+            d3.select(this).select("path").transition().duration(200).attr("fill", "#1DA1F2");
+        })
+        .on("mouseleave", function() {
+            d3.select(this).select("path").transition().duration(200).attr("fill", "#666");
+        });
+    
+    // Twitter bird icon (simplified SVG path)
+    twitterGroup.append("path")
+        .attr("d", "M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.114zm-1.161 17.52h1.833L7.084 4.126H5.117z")
+        .attr("fill", "#666")
+        .attr("stroke", "none");
+    
+    // Add subtle background circle
+    twitterGroup.insert("circle", "path")
+        .attr("cx", 0)
+        .attr("cy", 0)
+        .attr("r", iconSize/2 + 2)
+        .attr("fill", "rgba(255, 255, 255, 0.1)")
+        .attr("stroke", "rgba(102, 102, 102, 0.3)")
+        .attr("stroke-width", "0.5");
 }
 
 // Start application after DOM load
