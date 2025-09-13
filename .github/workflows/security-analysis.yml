@@ -44,21 +44,21 @@ jobs:
         pip-audit
         
     - name: Upload Bandit results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: bandit-security-report
         path: bandit-report.json
         
     - name: Upload Safety results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: safety-report
         path: safety-report.json
         
     - name: Upload pip-audit results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: pip-audit-report
@@ -94,14 +94,14 @@ jobs:
         npx eslint . --ext .js,.jsx,.ts,.tsx --plugin security --rule "security/detect-object-injection: error" || true
         
     - name: Upload npm audit results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: npm-audit-report
         path: npm-audit-report.json
         
     - name: Upload ESLint security results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: eslint-security-report
@@ -169,7 +169,7 @@ jobs:
         npx eslint . --ext .js,.jsx,.ts,.tsx || true
         
     - name: Upload ESLint results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: eslint-report
@@ -183,7 +183,7 @@ jobs:
     
     steps:
     - name: Download all artifacts
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       
     - name: Generate Security Summary
       run: |
