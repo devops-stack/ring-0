@@ -1,6 +1,6 @@
 # Security: Block sensitive files
 .git/
-.github/
+# .github/
 .env
 .htaccess
 .htpasswd

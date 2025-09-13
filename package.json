@@ -1,0 +1,19 @@
+{
+  "name": "ring-0-kernel-ai",
+  "version": "1.0.0",
+  "description": "Real-time Linux kernel visualization",
+  "scripts": {
+    "lint": "eslint . --ext .js,.jsx,.ts,.tsx",
+    "lint:fix": "eslint . --ext .js,.jsx,.ts,.tsx --fix",
+    "audit": "npm audit --audit-level=moderate",
+    "security": "npm audit && eslint . --ext .js,.jsx,.ts,.tsx --plugin security"
+  },
+  "devDependencies": {
+    "eslint": "^8.0.0",
+    "eslint-plugin-security": "^1.7.1"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  }
+}
