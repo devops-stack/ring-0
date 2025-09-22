@@ -140,11 +140,11 @@ svg {
     max-width: 300px;
 }
 
-/* Bezier curve styles */
+/* Bezier curve styles - matching connection lines */
 .bezier-curve {
     fill: none;
-    stroke: rgba(100, 100, 100, 0.2);
-    stroke-width: 0.7;
+    stroke: rgba(60, 60, 60, 0.3);
+    stroke-width: 0.8;
 }
 
 .file-endpoint {
@@ -153,39 +153,41 @@ svg {
     stroke-width: 0.5;
 }
 
-/* Right semicircle menu styles */
+/* Right semicircle menu styles - Logo color scheme */
 .right-semicircle-menu {
-    fill: rgba(255, 255, 255, 0.05);
-    stroke: rgba(255, 255, 255, 0.1);
+    fill: rgba(60, 60, 60, 0.8); /* Dark gray background like logo */
+    stroke: #555;
     stroke-width: 1px;
 }
 
 .right-menu-item {
-    fill: #333;
+    fill: #3C3C3C; /* Dark gray like logo background */
     stroke: #555;
     stroke-width: 1px;
     cursor: pointer;
+    transition: all 0.3s ease;
 }
 
 .right-menu-item:hover {
     fill: #444;
+    stroke: #D9D9C7; /* Yellowish color on hover */
 }
 
 .right-menu-icon {
     font-size: 14px;
-    fill: #fff;
+    fill: #D9D9C7; /* Yellowish color like logo elements */
     text-anchor: middle;
     dominant-baseline: central;
 }
 
 .right-menu-line {
-    stroke: rgba(255, 255, 255, 0.3);
+    stroke: #D9D9C7; /* Yellowish color like logo elements */
     stroke-width: 1px;
 }
 
 .right-menu-label {
     font-size: 11px;
-    fill: rgba(255, 255, 255, 0.7);
+    fill: #D9D9C7; /* Yellowish color like logo elements */
     font-family: 'Share Tech Mono', monospace;
     text-anchor: end;
     dominant-baseline: central;

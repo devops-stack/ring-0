@@ -616,11 +616,12 @@ function drawLowerBezierGrid(num = 90) {
 
         const path = `M${startX},${yBase} C${controlX1},${controlY1} ${controlX2},${controlY2} ${endX},${endY}`;
 
-        // Draw Bezier curve with animation
+        // Draw Bezier curve with same parameters as connection lines
         const bezierCurve = svg.append("path")
             .attr("d", path)
-            .attr("stroke", "url(#lineGradient)") // Use gradient for depth
-            .attr("stroke-width", 0.4)
+            .attr("class", "bezier-curve")
+            .attr("stroke", "rgba(60, 60, 60, 0.3)") // Same color as connection lines
+            .attr("stroke-width", 0.8) // Same thickness as connection lines
             .attr("opacity", 0) // Start invisible
             .attr("fill", "none")
             .attr("stroke-dasharray", function() {
@@ -635,7 +636,7 @@ function drawLowerBezierGrid(num = 90) {
         bezierCurve.transition()
             .duration(400 + Math.random() * 300) // Random duration 400-700ms
             .delay(i * 10) // Staggered animation
-            .attr("opacity", 0.05 + Math.random() * 0.03)
+            .attr("opacity", 0.3) // Same opacity as connection lines
             .attr("stroke-dashoffset", 0);
     }
 }
