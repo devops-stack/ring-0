@@ -209,6 +209,10 @@ function initApp() {
     // Start updates
     syscallsManager.startAutoUpdate(3000);
     
+    // Update panel data periodically
+    updatePanelData();
+    setInterval(updatePanelData, 5000); // Update every 5 seconds
+    
     // Setup event handlers
     setupEventListeners();
 }
@@ -385,14 +389,35 @@ function drawPanels(width, height) {
         .attr("height", 100)
         .attr("class", "feature-panel");
 
-    // Text in right panel
-    ["Filter: Active", "Mode: Analysis", "Nodes: 15"].forEach((f, i) => {
-        svg.append("text")
+    // Text in right panel - will be updated with real data
+    const panelData = [
+        {label: "Protection ring", value: "Ring 0"},
+        {label: "Kernel", value: "Active"},
+        {label: "Processes", value: "Loading..."},
+        {label: "Memory", value: "Loading..."}
+    ];
+    
+    panelData.forEach((item, i) => {
+        const textGroup = svg.append("g")
+            .attr("class", `panel-item-${i}`);
+        
+        textGroup.append("text")
             .attr("x", width - 170)
             .attr("y", 45 + i * 22)
-            .text(f)
+            .text(item.label + ":")
             .attr("class", "feature-text");
+        
+        textGroup.append("text")
+            .attr("x", width - 50)
+            .attr("y", 45 + i * 22)
+            .text(item.value)
+            .attr("class", "feature-text")
+            .attr("id", `panel-value-${i}`)
+            .attr("font-weight", "bold");
     });
+    
+    // Update panel with real data
+    updatePanelData();
 }
 
 // Load processes and kernel subsystems
@@ -563,6 +588,9 @@ function drawProcessKernelMap2(centerX, centerY) {
                     .attr("opacity", 0.05 + Math.random() * 0.03)
                     .attr("stroke-dashoffset", 0);
 
+                // Keep original gray color scheme
+                const circleRadius = 1; // Original size
+                
                 // Add gray circle at the end of the line with animation
                 const circle = svg.append("circle")
                     .attr("cx", px)
@@ -571,14 +599,56 @@ function drawProcessKernelMap2(centerX, centerY) {
                     .attr("fill", "#888")
                     .attr("stroke", "#555")
                     .attr("stroke-width", 0.5)
-                    .attr("opacity", 0); // Start invisible
+                    .attr("opacity", 0)
+                    .attr("class", "process-node")
+                    .style("cursor", "pointer")
+                    .datum(process); // Store process data
 
                 // Animate circle appearance
                 circle.transition()
                     .duration(150)
                     .delay(i * 20 + 250) // Appear after line animation
-                    .attr("r", 1)
+                    .attr("r", circleRadius)
                     .attr("opacity", 1);
+                
+                // Add tooltip on hover
+                circle.on("mouseover", function(event, d) {
+                    const tooltip = d3.select("body")
+                        .append("div")
+                        .attr("class", "tooltip")
+                        .style("position", "absolute")
+                        .style("background", "rgba(0, 0, 0, 0.9)")
+                        .style("color", "white")
+                        .style("padding", "10px")
+                        .style("border-radius", "4px")
+                        .style("font-size", "12px")
+                        .style("font-family", "Share Tech Mono, monospace")
+                        .style("pointer-events", "none")
+                        .style("z-index", "1000")
+                        .style("opacity", 0);
+                    
+                    tooltip.html(`
+                        <strong>Process:</strong> ${d.name}<br>
+                        <strong>PID:</strong> ${d.pid}<br>
+                        <strong>Memory:</strong> ${d.memory_mb} MB<br>
+                        <strong>Status:</strong> ${d.status}
+                    `);
+                    
+                    tooltip.transition()
+                        .duration(200)
+                        .style("opacity", 1);
+                    
+                    // Update tooltip position on mouse move
+                    d3.select("svg").on("mousemove", function() {
+                        tooltip
+                            .style("left", (event.pageX + 10) + "px")
+                            .style("top", (event.pageY - 10) + "px");
+                    });
+                })
+                .on("mouseout", function() {
+                    d3.selectAll(".tooltip").remove();
+                    d3.select("svg").on("mousemove", null);
+                });
             });
         })
         .catch(error => {
@@ -639,6 +709,106 @@ function drawLowerBezierGrid(num = 90) {
             .attr("opacity", 0.3) // Same opacity as connection lines
             .attr("stroke-dashoffset", 0);
     }
+}
+
+// Update panel with real data from API
+function updatePanelData() {
+    fetch('/api/kernel-data')
+        .then(res => res.json())
+        .then(data => {
+            // Update processes count
+            const processesText = d3.select('#panel-value-2');
+            if (!processesText.empty() && data.processes) {
+                processesText.text(data.processes);
+            }
+            
+            // Update memory usage
+            const memoryText = d3.select('#panel-value-3');
+            if (!memoryText.empty() && data.system_stats) {
+                const memPercent = Math.round(data.system_stats.memory_total / (1024 * 1024 * 1024)); // GB
+                memoryText.text(`${memPercent} GB`);
+            }
+            
+            // Update subsystems visualization if available
+            if (data.subsystems) {
+                updateSubsystemsVisualization(data.subsystems);
+            }
+        })
+        .catch(error => {
+            console.error('Error updating panel data:', error);
+        });
+}
+
+// Update subsystems visualization with color coding
+function updateSubsystemsVisualization(subsystems) {
+    const svg = d3.select('svg');
+    const width = window.innerWidth;
+    
+    // Remove old subsystem indicators
+    svg.selectAll('.subsystem-indicator').remove();
+    
+    // Draw subsystem indicators in left panel
+    const subsystemNames = ['memory_management', 'process_scheduler', 'file_system', 'network_stack'];
+    const subsystemLabels = {
+        'memory_management': 'Memory',
+        'process_scheduler': 'Scheduler',
+        'file_system': 'File System',
+        'network_stack': 'Network'
+    };
+    
+    subsystemNames.forEach((name, i) => {
+        const subsystem = subsystems[name];
+        if (!subsystem) return;
+        
+        const usage = subsystem.usage || 0;
+        const processes = subsystem.processes || 0;
+        
+        // Keep original gray color scheme
+        const x = 30;
+        const y = 380 + i * 25;
+        const barWidth = 200;
+        const barHeight = 15;
+        
+        // Background bar
+        svg.append("rect")
+            .attr("x", x)
+            .attr("y", y)
+            .attr("width", barWidth)
+            .attr("height", barHeight)
+            .attr("fill", "rgba(200, 200, 200, 0.2)")
+            .attr("stroke", "#aaa")
+            .attr("stroke-width", 0.5)
+            .attr("class", "subsystem-indicator");
+        
+        // Usage bar - gray color scheme
+        svg.append("rect")
+            .attr("x", x)
+            .attr("y", y)
+            .attr("width", (usage / 100) * barWidth)
+            .attr("height", barHeight)
+            .attr("fill", "#888")
+            .attr("opacity", 0.7)
+            .attr("class", "subsystem-indicator");
+        
+        // Label
+        svg.append("text")
+            .attr("x", x + 5)
+            .attr("y", y + 11)
+            .text(subsystemLabels[name] || name)
+            .attr("class", "feature-text subsystem-indicator")
+            .attr("font-size", "10px")
+            .attr("fill", "#222");
+        
+        // Usage percentage
+        svg.append("text")
+            .attr("x", x + barWidth - 5)
+            .attr("y", y + 11)
+            .text(`${usage}%`)
+            .attr("class", "feature-text subsystem-indicator")
+            .attr("font-size", "10px")
+            .attr("text-anchor", "end")
+            .attr("fill", "#222");
+    });
 }
 
 // Draw social media icons
