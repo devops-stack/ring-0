@@ -1,171 +1,6 @@
 // Main JavaScript file for Linux Kernel Visualization
-// Nginx Files Manager for Bezier Curves
-class NginxFilesManager {
-    constructor() {
-        this.files = [];
-        this.updateInterval = null;
-    }
+// NginxFilesManager is now in nginx_files.js
 
-    // Initialize nginx files visualization
-    init() {
-        console.log("🔧 Initializing NginxFilesManager...");
-        this.updateFiles();
-        this.startAutoUpdate(10000);
-    }
-
-    // Update files data
-    async updateFiles() {
-        try {
-            console.log("📁 Fetching nginx files...");
-            const response = await fetch("/api/nginx-files");
-            const data = await response.json();
-            
-            console.log("📁 Received nginx files:", data);
-            
-            if (data.files && data.files.length > 0) {
-                this.files = data.files;
-                console.log("🎨 Rendering files on curves...");
-                this.renderFilesOnCurves();
-            } else {
-                console.log("⚠️ No nginx files found");
-            }
-        } catch (error) {
-            console.error("Error fetching nginx files:", error);
-        }
-    }
-
-    // Render file names at the end of Bezier curves
-    renderFilesOnCurves() {
-        console.log("🎨 Starting to render files on curves...");
-        
-        // Clear existing file labels
-        d3.selectAll(".file-label").remove();
-        d3.selectAll(".file-label-bg").remove();
-        
-        const width = window.innerWidth;
-        const height = window.innerHeight;
-        const centerX = width / 2;
-        
-        console.log("📐 Screen dimensions:", { width, height, centerX });
-        
-        // Calculate positions for file labels
-        const labelPositions = this.calculateLabelPositions(this.files.length, centerX, height);
-        
-        console.log("📍 Label positions:", labelPositions);
-        
-        this.files.forEach((file, index) => {
-            if (index < labelPositions.length) {
-                const pos = labelPositions[index];
-                const fileName = this.getShortFileName(file.path);
-                
-                console.log(`📄 Rendering file ${index}: ${fileName} at (${pos.x}, ${pos.y})`);
-                
-                // Create file label
-                const label = svg.append("text")
-                    .attr("x", pos.x)
-                    .attr("y", pos.y)
-                    .attr("class", "file-label")
-                    .attr("text-anchor", "middle")
-                    .attr("font-size", "11px")
-                    .attr("fill", "#222")
-                    .attr("opacity", 1)
-                    .attr("transform", `rotate(90 ${pos.x} ${pos.y})`)
-                    .text(fileName);
-                
-                
-                // Add tooltip
-                label.on("mouseover", () => this.showTooltip(file, pos.x, pos.y))
-                     .on("mouseout", () => this.hideTooltip());
-            }
-        });
-    }
-
-    // Calculate positions for file labels
-    calculateLabelPositions(numFiles, centerX, height) {
-        const positions = [];
-        const baseY = height - 160; // Синхронизируем с краем кривых Безье
-        const spacing = 13; // Сокращаем расстояние между файлами на одну треть
-        
-        for (let i = 0; i < numFiles; i++) {
-            const offset = (i - (numFiles - 1) / 2) * spacing;
-            positions.push({
-                x: centerX + 530 + offset, // Сдвигаем файлы вправо на 80px
-                y: baseY + 20 // Опускаем файлы на 20px ниже
-            });
-        }
-        
-        return positions;
-    }
-
-    // Get short file name for display
-    getShortFileName(fullPath) {
-        const parts = fullPath.split("/");
-        if (parts.length <= 2) {
-            return fullPath;
-        }
-        
-        const lastTwo = parts.slice(-2);
-        return lastTwo.join("/");
-    }
-
-    // Show tooltip with file information
-    showTooltip(file, x, y) {
-        const tooltip = d3.select("body")
-            .append("div")
-            .attr("class", "tooltip")
-            .style("position", "absolute")
-            .style("background", "rgba(0,0,0,0.9)")
-            .style("color", "white")
-            .style("padding", "8px")
-            .style("border-radius", "4px")
-            .style("font-size", "12px")
-            .style("pointer-events", "none")
-            .style("z-index", "1000")
-            .style("max-width", "300px");
-
-        tooltip.html(`
-            <strong>Nginx Process</strong> (PID: ${file.pid})<br>
-            <strong>File:</strong> ${file.path}<br>
-            <strong>FD:</strong> ${file.fd}
-        `);
-
-        d3.select("svg").on("mousemove", () => {
-            tooltip.style("left", (d3.event.pageX + 10) + "px")
-                   .style("top", (d3.event.pageY - 10) + "px");
-        });
-    }
-
-    // Hide tooltip
-    hideTooltip() {
-        d3.selectAll(".tooltip").remove();
-    }
-
-    // Start auto update
-    startAutoUpdate(intervalMs = 10000) {
-        if (this.updateInterval) {
-            clearInterval(this.updateInterval);
-        }
-        this.updateInterval = setInterval(() => {
-            this.updateFiles();
-        }, intervalMs);
-    }
-
-    // Stop auto update
-    stopAutoUpdate() {
-        if (this.updateInterval) {
-            clearInterval(this.updateInterval);
-            this.updateInterval = null;
-        }
-    }
-
-    // Cleanup
-    destroy() {
-        this.stopAutoUpdate();
-        d3.selectAll('.file-label').remove();
-        d3.selectAll('.file-label-bg').remove();
-        d3.selectAll('.tooltip').remove();
-    }
-}
 // Global variables
 const svg = d3.select("svg");
 let syscallsManager;
@@ -381,11 +216,14 @@ function drawPanels(width, height) {
         .attr("height", 330)
         .attr("class", "feature-panel");
 
-    // Right panel
+    // Right panel - increased width to accommodate longer values
+    // Positioned so right margin equals left margin (20px)
+    const panelWidth = 170;
+    const rightMargin = 20; // Same as left margin
     svg.append("rect")
-        .attr("x", width - 180)
+        .attr("x", width - panelWidth - rightMargin)
         .attr("y", 20)
-        .attr("width", 150)
+        .attr("width", panelWidth)
         .attr("height", 100)
         .attr("class", "feature-panel");
 
@@ -397,23 +235,29 @@ function drawPanels(width, height) {
         {label: "Memory", value: "Loading..."}
     ];
     
+    const leftPadding = 10; // Padding from left edge of panel
+    const rightPadding = 10; // Padding from right edge of panel
+    
     panelData.forEach((item, i) => {
         const textGroup = svg.append("g")
             .attr("class", `panel-item-${i}`);
         
+        // Labels aligned to left with padding
         textGroup.append("text")
-            .attr("x", width - 170)
+            .attr("x", width - panelWidth - rightMargin + leftPadding)
             .attr("y", 45 + i * 22)
             .text(item.label + ":")
             .attr("class", "feature-text");
         
+        // Values aligned to right edge of panel with padding
         textGroup.append("text")
-            .attr("x", width - 50)
+            .attr("x", width - rightMargin - rightPadding)
             .attr("y", 45 + i * 22)
             .text(item.value)
             .attr("class", "feature-text")
             .attr("id", `panel-value-${i}`)
-            .attr("font-weight", "bold");
+            .attr("font-weight", "bold")
+            .attr("text-anchor", "end"); // Right-align text to prevent overflow
     });
     
     // Update panel with real data
@@ -529,8 +373,8 @@ function drawProcessKernelMap(data, centerX, centerY) {
 
 // Draw additional process lines (without circles and names)
 function drawProcessKernelMap2(centerX, centerY) {
-    // Fetch all Linux processes
-    fetch('/api/processes')
+    // Fetch all Linux processes with detailed information
+    fetch('/api/processes-detailed')
         .then(res => res.json())
         .then(data => {
             const processes = data.processes || [];
@@ -611,8 +455,11 @@ function drawProcessKernelMap2(centerX, centerY) {
                     .attr("r", circleRadius)
                     .attr("opacity", 1);
                 
-                // Add tooltip on hover
+                // Add tooltip on hover with detailed information
                 circle.on("mouseover", function(event, d) {
+                    // Show process files at bottom of Bezier curves
+                    showProcessFilesOnCurves(d.pid, d.name);
+                    
                     const tooltip = d3.select("body")
                         .append("div")
                         .attr("class", "tooltip")
@@ -625,18 +472,73 @@ function drawProcessKernelMap2(centerX, centerY) {
                         .style("font-family", "Share Tech Mono, monospace")
                         .style("pointer-events", "none")
                         .style("z-index", "1000")
-                        .style("opacity", 0);
+                        .style("opacity", 0)
+                        .style("max-width", "300px");
                     
+                    // Basic info first
                     tooltip.html(`
                         <strong>Process:</strong> ${d.name}<br>
                         <strong>PID:</strong> ${d.pid}<br>
                         <strong>Memory:</strong> ${d.memory_mb} MB<br>
-                        <strong>Status:</strong> ${d.status}
+                        <strong>Status:</strong> ${d.status}<br>
+                        <em>Loading details...</em>
                     `);
                     
                     tooltip.transition()
                         .duration(200)
                         .style("opacity", 1);
+                    
+                    // Fetch detailed information
+                    Promise.all([
+                        fetch(`/api/process/${d.pid}/threads`).then(r => r.json()).catch(() => null),
+                        fetch(`/api/process/${d.pid}/cpu`).then(r => r.json()).catch(() => null),
+                        fetch(`/api/process/${d.pid}/fds`).then(r => r.json()).catch(() => null)
+                    ]).then(([threadsData, cpuData, fdsData]) => {
+                        let detailsHtml = `
+                            <strong>Process:</strong> ${d.name}<br>
+                            <strong>PID:</strong> ${d.pid}<br>
+                            <strong>Memory:</strong> ${d.memory_mb} MB<br>
+                            <strong>Status:</strong> ${d.status}<br>
+                            <hr style="margin: 5px 0; border-color: #555;">
+                        `;
+                        
+                        // Threads info
+                        if (threadsData && !threadsData.error) {
+                            detailsHtml += `<strong>Threads:</strong> ${threadsData.thread_count || 'N/A'}<br>`;
+                            if (threadsData.voluntary_ctxt_switches) {
+                                detailsHtml += `<strong>Voluntary switches:</strong> ${threadsData.voluntary_ctxt_switches.toLocaleString()}<br>`;
+                            }
+                            if (threadsData.nonvoluntary_ctxt_switches) {
+                                detailsHtml += `<strong>Non-voluntary switches:</strong> ${threadsData.nonvoluntary_ctxt_switches.toLocaleString()}<br>`;
+                            }
+                        }
+                        
+                        // CPU info
+                        if (cpuData && !cpuData.error) {
+                            if (cpuData.cpu_percent !== undefined) {
+                                detailsHtml += `<strong>CPU:</strong> ${cpuData.cpu_percent}%<br>`;
+                            }
+                            if (cpuData.cpu_times) {
+                                detailsHtml += `<strong>CPU Time:</strong> User: ${cpuData.cpu_times.user}s, System: ${cpuData.cpu_times.system}s<br>`;
+                            }
+                            if (cpuData.nice !== null && cpuData.nice !== undefined) {
+                                detailsHtml += `<strong>Nice:</strong> ${cpuData.nice}<br>`;
+                            }
+                        }
+                        
+                        // File descriptors info
+                        if (fdsData && !fdsData.error) {
+                            detailsHtml += `<strong>File Descriptors:</strong> ${fdsData.num_fds || 0}<br>`;
+                            if (fdsData.connections && fdsData.connections.length > 0) {
+                                detailsHtml += `<strong>Connections:</strong> ${fdsData.connections.length}<br>`;
+                            }
+                            if (fdsData.open_files && fdsData.open_files.length > 0) {
+                                detailsHtml += `<strong>Open Files:</strong> ${fdsData.open_files.length}<br>`;
+                            }
+                        }
+                        
+                        tooltip.html(detailsHtml);
+                    });
                     
                     // Update tooltip position on mouse move
                     d3.select("svg").on("mousemove", function() {
@@ -646,6 +548,8 @@ function drawProcessKernelMap2(centerX, centerY) {
                     });
                 })
                 .on("mouseout", function() {
+                    // Hide process files when mouse leaves
+                    hideProcessFilesOnCurves();
                     d3.selectAll(".tooltip").remove();
                     d3.select("svg").on("mousemove", null);
                 });
@@ -661,10 +565,14 @@ function drawLowerBezierGrid(num = 90) {
     const width = window.innerWidth;
     console.log("🔧 drawLowerBezierGrid called");
     console.log("🔧 window.nginxFilesManager:", typeof window.nginxFilesManager);
-    // Initialize nginx files manager
-    if (window.nginxFilesManager) {
-        window.nginxFilesManager.init();
-    }
+    // Initialize nginx files manager - wait for curves to be drawn first
+    // Curves need to be rendered before files can be attached to them
+    setTimeout(() => {
+        if (window.nginxFilesManager) {
+            console.log("🔧 Initializing NginxFilesManager after curves are drawn...");
+            window.nginxFilesManager.init();
+        }
+    }, 1500); // Wait 1.5 seconds for curves to finish animating
     const height = window.innerHeight;
     const yBase = height - 200;
 
@@ -690,6 +598,7 @@ function drawLowerBezierGrid(num = 90) {
         const bezierCurve = svg.append("path")
             .attr("d", path)
             .attr("class", "bezier-curve")
+            .attr("data-curve-index", i) // Add index for file association
             .attr("stroke", "rgba(60, 60, 60, 0.3)") // Same color as connection lines
             .attr("stroke-width", 0.8) // Same thickness as connection lines
             .attr("opacity", 0) // Start invisible
@@ -709,6 +618,252 @@ function drawLowerBezierGrid(num = 90) {
             .attr("opacity", 0.3) // Same opacity as connection lines
             .attr("stroke-dashoffset", 0);
     }
+}
+
+// Show process files at the bottom of Bezier curves
+function showProcessFilesOnCurves(pid, processName) {
+    console.log(`🔍 Showing files for process ${pid} (${processName})`);
+    // Clear existing process files
+    hideProcessFilesOnCurves();
+    
+    // Fetch process files
+    fetch(`/api/process/${pid}/fds`)
+        .then(res => {
+            console.log(`📡 Response status for PID ${pid}:`, res.status);
+            return res.json();
+        })
+        .then(data => {
+            console.log(`📁 Data received for PID ${pid}:`, data);
+            // API returns 'open_files' not 'files'
+            const files = data.open_files || [];
+            console.log(`📄 Files found: ${files.length}`, files);
+            if (files.length === 0) {
+                console.log(`⚠️ No files found for process ${pid} (${processName})`);
+                // Try to show connections if no files
+                const connections = data.connections || [];
+                if (connections.length > 0) {
+                    console.log(`🔌 Found ${connections.length} connections, showing them instead`);
+                    showConnectionsOnCurves(pid, connections);
+                }
+                return;
+            }
+            
+            const svg = d3.select('svg');
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+            const centerX = width / 2;
+            
+            // Get all Bezier curves
+            const bezierCurves = d3.selectAll('.bezier-curve').nodes();
+            
+            // Select curves from bottom (start points)
+            const bottomCurves = [];
+            bezierCurves.forEach((curve, index) => {
+                const path = d3.select(curve);
+                const pathData = path.attr('d');
+                if (pathData) {
+                    const startMatches = pathData.match(/M([\d.]+),([\d.]+)/);
+                    if (startMatches) {
+                        const startX = parseFloat(startMatches[1]);
+                        const startY = parseFloat(startMatches[2]);
+                        if (startY > height - 250 && startY < height - 150) {
+                            bottomCurves.push({ index, startX, startY });
+                        }
+                    }
+                }
+            });
+            
+            // Sort and select curves evenly
+            bottomCurves.sort((a, b) => a.startX - b.startX);
+            const numFiles = Math.min(files.length, bottomCurves.length, 10); // Limit to 10 files
+            const step = Math.max(1, Math.floor(bottomCurves.length / numFiles));
+            
+            // Display files
+            files.slice(0, numFiles).forEach((file, i) => {
+                if (i * step < bottomCurves.length) {
+                    const curve = bottomCurves[i * step];
+                    const fileName = file.path ? file.path.split('/').pop() : `FD ${file.fd}`;
+                    const fileType = file.path ? (file.path.includes('log') ? 'log' : file.path.includes('conf') ? 'config' : 'other') : 'other';
+                    
+                    // Create file group
+                    const fileGroup = svg.append("g")
+                        .attr("class", `process-file-${pid}`)
+                        .attr("data-pid", pid);
+                    
+                    // Add endpoint circle
+                    const endpoint = fileGroup.append("circle")
+                        .attr("cx", curve.startX)
+                        .attr("cy", curve.startY)
+                        .attr("r", 4)
+                        .attr("class", "process-file-endpoint")
+                        .attr("fill", getFileTypeColor(fileType))
+                        .attr("stroke", "#fff")
+                        .attr("stroke-width", 1.5)
+                        .attr("opacity", 0.9);
+                    
+                    // Add pulsing animation
+                    const pulse = () => {
+                        endpoint.transition()
+                            .duration(1000)
+                            .attr("r", 6)
+                            .transition()
+                            .duration(1000)
+                            .attr("r", 4)
+                            .on("end", pulse);
+                    };
+                    pulse();
+                    
+                    // Add file label
+                    const label = fileGroup.append("text")
+                        .attr("x", curve.startX)
+                        .attr("y", curve.startY + 20)
+                        .attr("class", "process-file-label")
+                        .attr("text-anchor", "middle")
+                        .attr("font-size", "9px")
+                        .attr("fill", "#333")
+                        .attr("opacity", 0.9)
+                        .text(fileName);
+                    
+                    // Add background
+                    const bbox = label.node().getBBox();
+                    fileGroup.insert("rect", "text")
+                        .attr("x", bbox.x - 3)
+                        .attr("y", bbox.y - 2)
+                        .attr("width", bbox.width + 6)
+                        .attr("height", bbox.height + 4)
+                        .attr("class", "process-file-label-bg")
+                        .attr("fill", "rgba(255,255,255,0.95)")
+                        .attr("stroke", getFileTypeColor(fileType))
+                        .attr("stroke-width", 1)
+                        .attr("rx", 2);
+                    
+                    // Highlight associated curve
+                    const curveElement = bezierCurves[curve.index];
+                    if (curveElement) {
+                        d3.select(curveElement)
+                            .transition()
+                            .duration(200)
+                            .attr("stroke", getFileTypeColor(fileType))
+                            .attr("stroke-width", 1.5)
+                            .attr("opacity", 0.6);
+                    }
+                }
+            });
+        })
+        .catch(error => {
+            console.error(`❌ Error fetching files for process ${pid}:`, error);
+        });
+}
+
+// Show connections on curves (alternative to files)
+function showConnectionsOnCurves(pid, connections) {
+    const svg = d3.select('svg');
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    const bezierCurves = d3.selectAll('.bezier-curve').nodes();
+    
+    const bottomCurves = [];
+    bezierCurves.forEach((curve, index) => {
+        const path = d3.select(curve);
+        const pathData = path.attr('d');
+        if (pathData) {
+            const startMatches = pathData.match(/M([\d.]+),([\d.]+)/);
+            if (startMatches) {
+                const startX = parseFloat(startMatches[1]);
+                const startY = parseFloat(startMatches[2]);
+                if (startY > height - 250 && startY < height - 150) {
+                    bottomCurves.push({ index, startX, startY });
+                }
+            }
+        }
+    });
+    
+    bottomCurves.sort((a, b) => a.startX - b.startX);
+    const numConnections = Math.min(connections.length, bottomCurves.length, 10);
+    const step = Math.max(1, Math.floor(bottomCurves.length / numConnections));
+    
+    connections.slice(0, numConnections).forEach((conn, i) => {
+        if (i * step < bottomCurves.length) {
+            const curve = bottomCurves[i * step];
+            const connLabel = conn.remote_address || conn.local_address || `Connection ${i+1}`;
+            
+            const connGroup = svg.append("g")
+                .attr("class", `process-file-${pid}`)
+                .attr("data-pid", pid);
+            
+            const endpoint = connGroup.append("circle")
+                .attr("cx", curve.startX)
+                .attr("cy", curve.startY)
+                .attr("r", 4)
+                .attr("fill", "#4A90E2")
+                .attr("stroke", "#fff")
+                .attr("stroke-width", 1.5)
+                .attr("opacity", 0.9);
+            
+            const pulse = () => {
+                endpoint.transition()
+                    .duration(1000)
+                    .attr("r", 6)
+                    .transition()
+                    .duration(1000)
+                    .attr("r", 4)
+                    .on("end", pulse);
+            };
+            pulse();
+            
+            const label = connGroup.append("text")
+                .attr("x", curve.startX)
+                .attr("y", curve.startY + 20)
+                .attr("text-anchor", "middle")
+                .attr("font-size", "9px")
+                .attr("fill", "#333")
+                .text(connLabel.split(':')[0]); // Show just IP or first part
+            
+            const bbox = label.node().getBBox();
+            connGroup.insert("rect", "text")
+                .attr("x", bbox.x - 3)
+                .attr("y", bbox.y - 2)
+                .attr("width", bbox.width + 6)
+                .attr("height", bbox.height + 4)
+                .attr("fill", "rgba(255,255,255,0.95)")
+                .attr("stroke", "#4A90E2")
+                .attr("stroke-width", 1)
+                .attr("rx", 2);
+            
+            const curveElement = bezierCurves[curve.index];
+            if (curveElement) {
+                d3.select(curveElement)
+                    .transition()
+                    .duration(200)
+                    .attr("stroke", "#4A90E2")
+                    .attr("stroke-width", 1.5)
+                    .attr("opacity", 0.6);
+            }
+        }
+    });
+}
+
+// Hide process files
+function hideProcessFilesOnCurves() {
+    d3.selectAll('[class^="process-file-"]').remove();
+    
+    // Reset all curves to original style
+    d3.selectAll('.bezier-curve')
+        .transition()
+        .duration(200)
+        .attr("stroke", "rgba(60, 60, 60, 0.3)")
+        .attr("stroke-width", 0.8)
+        .attr("opacity", 0.3);
+}
+
+// Helper function for file type colors
+function getFileTypeColor(type) {
+    const colors = {
+        'config': '#4A90E2',
+        'log': '#E24A4A',
+        'other': '#888'
+    };
+    return colors[type] || colors['other'];
 }
 
 // Update panel with real data from API

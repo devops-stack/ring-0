@@ -723,6 +723,194 @@ def active_connections():
         return jsonify({"connections": connections})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route("/api/process/<int:pid>/threads")
+def get_process_threads(pid):
+    """API for getting thread information for a specific process"""
+    try:
+        thread_info = get_process_threads_info(pid)
+        return jsonify(thread_info)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/process/<int:pid>/cpu")
+def get_process_cpu(pid):
+    """API for getting CPU statistics for a specific process"""
+    try:
+        cpu_info = get_process_cpu_info(pid)
+        return jsonify(cpu_info)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/process/<int:pid>/fds")
+def get_process_fds(pid):
+    """API for getting file descriptors for a specific process"""
+    try:
+        fds_info = get_process_fds_info(pid)
+        return jsonify(fds_info)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/processes-detailed")
+def get_processes_detailed():
+    """API for getting all processes with detailed information (threads, CPU, FDs)"""
+    try:
+        processes = []
+        for proc in psutil.process_iter(['pid', 'name', 'status', 'memory_info', 'cpu_percent', 'num_threads', 'num_fds']):
+            try:
+                memory_info = proc.info['memory_info']
+                memory_mb = memory_info.rss / 1024 / 1024
+                
+                processes.append({
+                    'pid': proc.info['pid'],
+                    'name': proc.info['name'],
+                    'status': proc.info['status'],
+                    'memory_mb': round(memory_mb, 1),
+                    'cpu_percent': round(proc.info.get('cpu_percent', 0), 1),
+                    'num_threads': proc.info.get('num_threads', 0),
+                    'num_fds': proc.info.get('num_fds', 0)
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        
+        return jsonify({'processes': processes})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+def get_process_threads_info(pid):
+    """Get thread information for a specific process"""
+    try:
+        proc = psutil.Process(pid)
+        threads = proc.threads()
+        
+        # Also read from /proc/[pid]/status for additional info
+        thread_count = proc.num_threads()
+        
+        try:
+            with open(f'/proc/{pid}/status', 'r') as f:
+                status_data = {}
+                for line in f:
+                    if ':' in line:
+                        key, value = line.split(':', 1)
+                        status_data[key.strip()] = value.strip()
+                
+                voluntary_switches = int(status_data.get('voluntary_ctxt_switches', 0))
+                nonvoluntary_switches = int(status_data.get('nonvoluntary_ctxt_switches', 0))
+        except:
+            voluntary_switches = 0
+            nonvoluntary_switches = 0
+        
+        return {
+            'pid': pid,
+            'thread_count': thread_count,
+            'threads': [
+                {
+                    'id': t.id,
+                    'user_time': t.user_time,
+                    'system_time': t.system_time
+                } for t in threads
+            ],
+            'voluntary_ctxt_switches': voluntary_switches,
+            'nonvoluntary_ctxt_switches': nonvoluntary_switches
+        }
+    except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+        return {'error': str(e)}
+    except Exception as e:
+        return {'error': str(e)}
+
+def get_process_cpu_info(pid):
+    """Get CPU statistics for a specific process"""
+    try:
+        proc = psutil.Process(pid)
+        
+        # Get CPU times
+        cpu_times = proc.cpu_times()
+        cpu_percent = proc.cpu_percent(interval=0.1)
+        
+        # Get CPU affinity if available
+        try:
+            cpu_affinity = proc.cpu_affinity()
+        except:
+            cpu_affinity = []
+        
+        # Get nice value
+        try:
+            nice = proc.nice()
+        except:
+            nice = None
+        
+        return {
+            'pid': pid,
+            'cpu_percent': round(cpu_percent, 1),
+            'cpu_times': {
+                'user': round(cpu_times.user, 2),
+                'system': round(cpu_times.system, 2),
+                'children_user': round(cpu_times.children_user, 2) if hasattr(cpu_times, 'children_user') else 0,
+                'children_system': round(cpu_times.children_system, 2) if hasattr(cpu_times, 'children_system') else 0
+            },
+            'cpu_affinity': cpu_affinity,
+            'nice': nice
+        }
+    except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+        return {'error': str(e)}
+    except Exception as e:
+        return {'error': str(e)}
+
+def get_process_fds_info(pid):
+    """Get file descriptors information for a specific process"""
+    try:
+        proc = psutil.Process(pid)
+        
+        # Get number of file descriptors
+        try:
+            num_fds = proc.num_fds()
+        except (psutil.AccessDenied, AttributeError):
+            # Try to count from /proc/[pid]/fd
+            try:
+                fd_dir = f'/proc/{pid}/fd'
+                if os.path.exists(fd_dir):
+                    num_fds = len([f for f in os.listdir(fd_dir) if f.isdigit()])
+                else:
+                    num_fds = 0
+            except:
+                num_fds = 0
+        
+        # Get open files
+        open_files = []
+        try:
+            for fd in proc.open_files():
+                open_files.append({
+                    'path': fd.path,
+                    'fd': fd.fd if hasattr(fd, 'fd') else None
+                })
+        except (psutil.AccessDenied, psutil.NoSuchProcess, AttributeError):
+            pass
+        
+        # Get connections (sockets)
+        connections = []
+        try:
+            for conn in proc.connections():
+                connections.append({
+                    'fd': conn.fd if hasattr(conn, 'fd') else None,
+                    'family': str(conn.family),
+                    'type': str(conn.type),
+                    'local_address': f"{conn.laddr.ip}:{conn.laddr.port}" if conn.laddr else None,
+                    'remote_address': f"{conn.raddr.ip}:{conn.raddr.port}" if conn.raddr else None,
+                    'status': conn.status
+                })
+        except (psutil.AccessDenied, psutil.NoSuchProcess, AttributeError):
+            pass
+        
+        return {
+            'pid': pid,
+            'num_fds': num_fds,
+            'open_files': open_files[:20],  # Limit to 20
+            'connections': connections[:20]  # Limit to 20
+        }
+    except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+        return {'error': f'Access denied or process not found: {str(e)}'}
+    except Exception as e:
+        return {'error': f'Error getting FDs: {str(e)}'}
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({'error': 'Not found'}), 404
