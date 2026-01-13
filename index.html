@@ -31,52 +31,55 @@
     <!-- Styles -->
     <link rel="stylesheet" href="/static/css/main.css">
 </head>
+<body>
+    <!-- ================= SEO CONTENT (INDEXED BY GOOGLE) ================= -->
 
-<!-- ================= SEO CONTENT (GOOGLE) ================= -->
+<h1 class="seo-only">
+    Linux Protection Rings – Ring 0 Kernel Architecture
+</h1>
 
-<main id="seo-content">
-    <h1>Linux Protection Rings – Ring 0 Kernel Architecture</h1>
+<section class="seo-only">
 
-    <section>
-        <h2>What is Ring 0 in Linux?</h2>
-        <p>
-            In Linux architecture, <strong>Ring 0</strong> is the most privileged CPU protection ring
-            where the Linux kernel executes. Ring 0 has unrestricted access to hardware,
-            memory management, and CPU instructions.
-        </p>
+    <h2>What is Ring 0 in Linux?</h2>
+    <p>
+        In Linux architecture, <strong>Ring 0</strong> is the most privileged CPU protection ring
+        where the Linux kernel executes. Ring 0 has unrestricted access to hardware,
+        memory management, and CPU instructions.
+    </p>
 
-        <h2>Linux Protection Rings Explained</h2>
-        <p>
-            <strong>Protection rings</strong> are CPU privilege levels used to isolate kernel space
-            from user space. Linux primarily uses Ring 0 for the kernel and Ring 3 for user applications.
-            Intermediate rings exist in hardware but are generally unused by Linux.
-        </p>
+    <h2>Linux Protection Rings Explained</h2>
+    <p>
+        <strong>Protection rings</strong> are CPU privilege levels used to isolate kernel space
+        from user space. Linux primarily uses Ring 0 for the kernel and Ring 3 for user applications.
+        Intermediate rings exist in hardware but are generally unused by Linux.
+    </p>
 
-        <h2>CPU Privilege Rings in Linux</h2>
-        <p>
-            CPU privilege rings define which code can execute sensitive instructions.
-            User programs run in Ring 3, while system calls trigger controlled transitions
-            into Ring 0, ensuring system security and stability.
-        </p>
+    <h2>CPU Privilege Rings in Linux</h2>
+    <p>
+        CPU privilege rings define which code can execute sensitive instructions.
+        User programs run in Ring 3, while system calls trigger controlled transitions
+        into Ring 0, ensuring system security and stability.
+    </p>
 
-        <h2>Linux Kernel Ring 0 Visualization</h2>
-        <p>
-            Kernel AI provides an interactive visualization of Linux kernel internals,
-            illustrating how system calls, processes, and kernel subsystems operate
-            inside Ring 0 in real time.
-        </p>
-    </section>
-</main>
+    <h2>Linux Kernel Ring 0 Visualization</h2>
+    <p>
+        Kernel AI provides an interactive visualization of Linux kernel internals,
+        illustrating how system calls, processes, and kernel subsystems operate
+        inside Ring 0 in real time.
+    </p>
 
-<!-- ================= APPLICATION UI (D3 / SVG ONLY) ================= -->
-
-<section id="app">
-    <svg></svg>
 </section>
+
+<!-- ================= APPLICATION UI ================= -->
+
+<div id="app">
+    <svg></svg>
+</div>
 
 <!-- ================= SCRIPTS ================= -->
     <script src="/static/js/syscalls.js"></script>
     <script src="/static/js/active-connections.js"></script>
+    <script src="/static/js/nginx_files.js"></script>
     <script src="/static/js/right-semicircle-menu.js"></script>
     <script>
         // Debug: Check if class is loaded
