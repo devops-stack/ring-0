@@ -1,13 +1,9 @@
 # Ring 0 - Linux Kernel AI
 
-**Real-time Linux Kernel Visualization**
-
-# Ring 0 - Linux Kernel AI
-
 <p>
   <strong>Real-time Linux Kernel Visualization</strong>
   <span style="float:right;">
-    <a href="https://ring-0.sh" target="_blank">🌐 ring-0.sh</a>
+    <a href="https://ring-0.sh" target="_blank"> ring-0.sh</a>
   </span>
 </p>
 
