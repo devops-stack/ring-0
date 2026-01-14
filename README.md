@@ -10,6 +10,6 @@
 <p align="center">
   <img src="templates/ghost-in-the-shell-anime.jpg" alt="Ring-0 Linux Kernel Visualization" width="900">
 </p>
-<p align="center">
+<p align="right" style="margin-top:0; margin-right:12px;">
   <sub>(ghost in the shell)</sub>
 </p>
