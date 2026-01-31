@@ -13,16 +13,21 @@ class SyscallsManager {
             const data = await response.json();
             
             if (data.syscalls) {
+                console.log(`📊 System calls update: ${data.syscalls.length} syscalls received`);
                 this.currentSyscalls = data.syscalls;
                 this.renderSyscallsTable();
+                console.log(`✅ System calls rendered: ${this.currentSyscalls.length} items`);
                 
                 // Call callback if set
                 if (this.updateCallback) {
                     this.updateCallback(data);
                 }
+            } else {
+                console.warn('⚠️ No syscalls in API response, using fallback');
+                this.useFallbackData();
             }
         } catch (error) {
-            console.error('Error getting active connections:', error);
+            console.error('❌ Error getting system calls:', error);
             this.useFallbackData();
         }
     }
@@ -46,10 +51,18 @@ class SyscallsManager {
 
     // Render system calls table
     renderSyscallsTable() {
+        // Don't render if Matrix View is active
+        if (window.kernelContextMenu && window.kernelContextMenu.currentView === 'matrix') {
+            console.log('⏸️ Skipping syscalls render - Matrix View is active');
+            return;
+        }
+        
         const svg = d3.select("svg");
         
         // Clear old elements
         svg.selectAll(".syscall-box, .syscall-text").remove();
+        
+        console.log(`🎨 Rendering ${this.currentSyscalls.length} system calls`);
         
         // Create new elements for system calls
         this.currentSyscalls.forEach((syscall, i) => {
@@ -68,6 +81,8 @@ class SyscallsManager {
                 .text(displayText)
                 .attr("class", "socket-text syscall-text");
         });
+        
+        console.log(`✅ Rendered ${this.currentSyscalls.length} system call elements`);
         // Display active connections below system calls
         // this.displayActiveConnections();
     }

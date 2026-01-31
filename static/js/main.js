@@ -7,6 +7,7 @@ let syscallsManager;
 let resizeTimeout;
 let nginxFilesManager;
 let rightSemicircleMenuManager;
+let connectionsManager; // make available for cleanup handlers
 
 // Application initialization
 function initApp() {
@@ -15,9 +16,11 @@ function initApp() {
     // Initialize system calls manager
     syscallsManager = new SyscallsManager();
     
-    // Initialize active connections manager
-    const connectionsManager = new ActiveConnectionsManager();
+    // Initialize active connections manager (store in global for cleanup)
+    connectionsManager = new ActiveConnectionsManager();
     connectionsManager.startAutoUpdate(3000);
+    // Expose to window so KernelContextMenu can pause/resume updates
+    window.connectionsManager = connectionsManager;
     
     window.nginxFilesManager = new NginxFilesManager();
     
@@ -28,6 +31,16 @@ function initApp() {
         console.log('🎯 RightSemicircleMenuManager initialized:', window.rightSemicircleMenuManager);
     } else {
         console.error('❌ RightSemicircleMenuManager class not found!');
+    }
+    
+    // Initialize Kernel Context Menu
+    console.log('🎯 KernelContextMenu class available:', typeof KernelContextMenu);
+    if (typeof KernelContextMenu !== 'undefined') {
+        window.kernelContextMenu = new KernelContextMenu();
+        window.kernelContextMenu.init();
+        console.log('🎯 KernelContextMenu initialized:', window.kernelContextMenu);
+    } else {
+        console.error('❌ KernelContextMenu class not found!');
     }
     
     // Draw main interface FIRST
@@ -82,8 +95,18 @@ function setupEventListeners() {
 
 // Main drawing function
 function draw() {
-    // Clear all elements to prevent duplication
-    svg.selectAll("*").remove();
+    // Skip drawing if Matrix View is active to prevent elements from appearing above it
+    if (window.kernelContextMenu && window.kernelContextMenu.currentView === 'matrix') {
+        console.log('⏸️ Skipping draw() - Matrix View is active');
+        return;
+    }
+    
+    // Clear all elements to prevent duplication, but preserve system calls
+    // and Kernel analysis overlay (Matrix / Timeline submenu & elements)
+    const preserveClasses = '.syscall-box, .syscall-text, .matrix-view-item, .matrix-header, .matrix-panel-bg, .matrix-backdrop, .kernel-exit-button, .kernel-submenu';
+    svg.selectAll(`*:not(${preserveClasses.split(', ').join('):not(')})`).remove();
+    // Also remove system calls explicitly to ensure clean state
+    svg.selectAll(".syscall-box, .syscall-text").remove();
 
     const width = window.innerWidth;
     const height = window.innerHeight;
@@ -129,6 +152,9 @@ function draw() {
     // Draw central circle
     drawCentralCircle(centerX, centerY);
     
+    // Draw Ring-1 Execution Context
+    drawRing1(centerX, centerY);
+    
     // Draw tag icons
     drawTagIcons(centerX, centerY);
     
@@ -138,10 +164,15 @@ function draw() {
     // Draw social media icons
     drawSocialIcons(width, height);
     
-    // Restore system calls
-    if (syscallsManager) {
-        syscallsManager.restoreState();
-    }
+    // Restore system calls - ensure they are re-rendered after draw() completes
+    // Use setTimeout to ensure this happens after all other rendering
+    // But skip if Matrix View is active
+    setTimeout(() => {
+        if (syscallsManager && (!window.kernelContextMenu || window.kernelContextMenu.currentView !== 'matrix')) {
+            // Force update to ensure system calls are displayed
+            syscallsManager.updateSyscallsTable();
+        }
+    }, 100);
 
     // Load processes and kernel subsystems
     loadProcessKernelMap(centerX, centerY);
@@ -175,8 +206,285 @@ function drawCentralCircle(centerX, centerY) {
         .attr("height", 60);
 }
 
+// Ring-1 update interval (global to prevent multiple intervals)
+let ring1UpdateInterval = null;
+
+// Draw Ring-1 Execution Context
+function drawRing1(centerX, centerY) {
+    const ring1Radius = 85; // Between Ring-0 (55px) and tag icons (160px)
+    const ring1StrokeWidth = 6; // Increased width for better visibility
+    
+    // Clear existing interval if any
+    if (ring1UpdateInterval) {
+        clearInterval(ring1UpdateInterval);
+        ring1UpdateInterval = null;
+    }
+    
+    // Create Ring-1 group
+    const ring1Group = svg.append("g")
+        .attr("class", "ring1-execution-context")
+        .attr("id", "ring1-group");
+    
+    // Base ring (will be updated with data) - make it wider and more visible
+    const ring1 = ring1Group.append("circle")
+        .attr("cx", centerX)
+        .attr("cy", centerY)
+        .attr("r", ring1Radius)
+        .attr("class", "ring1-circle")
+        .attr("fill", "none")
+        .attr("stroke", "#888")
+        .attr("stroke-width", ring1StrokeWidth)
+        .attr("opacity", 0.9)
+        .style("filter", "drop-shadow(0 0 3px rgba(0,0,0,0.3))");
+    
+    // Start updating Ring-1 with real data immediately
+    updateRing1(centerX, centerY, ring1Radius);
+    
+    // Update every 1000ms for debugging (was 150ms) - can be reduced later
+    if (!ring1UpdateInterval) {
+        ring1UpdateInterval = setInterval(() => {
+            updateRing1(centerX, centerY, ring1Radius);
+        }, 1000); // 1 second for debugging
+    }
+}
+
+// Update Ring-1 with execution context data
+function updateRing1(centerX, centerY, baseRadius) {
+    // Use relative path like other API calls
+    fetch('/api/execution-context')
+        .then(res => res.json())
+        .then(data => {
+            // Debug logging
+            console.log('🔄 Ring-1 Update:', {
+                mode: data.mode,
+                cpu_state: data.cpu_state,
+                syscall_active: data.syscall_active,
+                syscall_name: data.syscall_name,
+                interrupts_count: data.interrupts ? data.interrupts.length : 0,
+                preempted: data.preempted
+            });
+            
+            const ring1Group = d3.select("#ring1-group");
+            let ring1 = ring1Group.select(".ring1-circle");
+            
+            if (ring1.empty()) {
+                console.warn('⚠️ Ring-1 circle not found!');
+                return; // Ring not created yet
+            }
+            
+            // Determine color based on mode
+            // Always use gray color for the ring
+            let ringColor = "#888"; // Default gray
+            
+            // Calculate pulse amplitude and speed based on state
+            let pulseAmplitude = 3; // Default subtle pulse
+            let pulseSpeed = 300; // Default pulse speed (ms)
+            let strokeWidth = 6; // Default stroke width
+            
+            // Handle syscall active - stronger pulsing animation
+            if (data.syscall_active) {
+                console.log('✨ Syscall active:', data.syscall_name);
+                ringColor = "#888"; // Gray for syscall (changed from gold)
+                pulseAmplitude = 8; // Stronger pulse for syscall
+                pulseSpeed = 200; // Faster pulse for syscall
+                strokeWidth = 8; // Wider when pulsing
+                
+                // Add text label for syscall name
+                let syscallLabel = ring1Group.select(".syscall-label");
+                if (syscallLabel.empty()) {
+                    syscallLabel = ring1Group.append("text")
+                        .attr("class", "syscall-label")
+                        .attr("x", centerX)
+                        .attr("y", centerY - baseRadius - 20)
+                        .attr("text-anchor", "middle")
+                        .attr("font-size", "11px")
+                        .attr("fill", "#000000") // Black font
+                        .attr("font-family", "Share Tech Mono, monospace")
+                        .attr("font-weight", "bold")
+                        .style("opacity", 0);
+                }
+                syscallLabel
+                    .text(data.syscall_name || "SYSCALL")
+                    .transition()
+                    .duration(200)
+                    .style("opacity", 0.9);
+            } else {
+                // Normal state - subtle pulsing
+                console.log('📊 Normal state, color:', ringColor, 'CPU state:', data.cpu_state);
+                
+                // Adjust pulse based on CPU state
+                if (data.cpu_state === 'running') {
+                    pulseAmplitude = 4; // More visible pulse when running
+                    pulseSpeed = 400; // Moderate speed
+                } else if (data.cpu_state === 'idle') {
+                    pulseAmplitude = 2; // Subtle pulse when idle
+                    pulseSpeed = 600; // Slower pulse when idle
+                } else {
+                    pulseAmplitude = 3; // Default pulse
+                    pulseSpeed = 500; // Default speed
+                }
+                
+                // Hide syscall label
+                ring1Group.select(".syscall-label")
+                    .transition()
+                    .duration(200)
+                    .style("opacity", 0);
+            }
+            
+            // Apply pulsing animation - always animate radius
+            const currentTime = Date.now();
+            const pulseRadius = baseRadius + pulseAmplitude * Math.sin(currentTime / pulseSpeed);
+            
+            ring1.transition()
+                .duration(100) // Smooth continuous animation
+                .ease(d3.easeLinear)
+                .attr("r", pulseRadius)
+                .attr("stroke", ringColor)
+                .attr("stroke-width", strokeWidth)
+                .attr("opacity", data.cpu_state === 'idle' ? 0.5 : 0.9)
+                .style("filter", data.syscall_active 
+                    ? "drop-shadow(0 0 8px rgba(136,136,136,0.8))" 
+                    : (data.cpu_state === 'idle' ? "none" : "drop-shadow(0 0 3px rgba(0,0,0,0.3))"));
+            
+            // Handle CPU state - dotted for idle, solid for running
+            if (data.cpu_state === 'idle') {
+                ring1.attr("stroke-dasharray", "8,4"); // More visible dashes
+            } else if (data.cpu_state === 'sleeping') {
+                ring1.attr("stroke-dasharray", "4,8"); // Longer gaps
+            } else {
+                ring1.attr("stroke-dasharray", "none"); // Solid for running
+            }
+            
+            // Add mode label (User/Kernel)
+            let modeLabel = ring1Group.select(".mode-label");
+            if (modeLabel.empty()) {
+                modeLabel = ring1Group.append("text")
+                    .attr("class", "mode-label")
+                    .attr("x", centerX)
+                    .attr("y", centerY + baseRadius + 20)
+                    .attr("text-anchor", "middle")
+                    .attr("font-size", "10px")
+                    .attr("fill", ringColor)
+                    .attr("font-family", "Share Tech Mono, monospace")
+                    .style("opacity", 0);
+            }
+            // Always show "KERNEL MODE" label
+            const modeText = 'KERNEL MODE';
+            modeLabel
+                .text(modeText)
+                .attr("fill", ringColor)
+                .transition()
+                .duration(300)
+                .style("opacity", 0.7);
+            
+            // Clear old syscall labels before creating new ones
+            svg.selectAll('.syscall-label-process').remove();
+            
+            // NOTE: Syscall labels on process lines are temporarily hidden
+            // (previously showed syscall names where gold IRQ flashes were)
+            
+            // Handle preempted - show red segment
+            if (data.preempted && data.preempted_pid) {
+                // Create arc for preempted segment
+                let preemptedArc = ring1Group.select(".preempted-segment");
+                if (preemptedArc.empty()) {
+                    const arc = d3.arc()
+                        .innerRadius(baseRadius - 1)
+                        .outerRadius(baseRadius + 1)
+                        .startAngle(0)
+                        .endAngle(Math.PI / 4); // 45 degree segment
+                    
+                    preemptedArc = ring1Group.append("path")
+                        .attr("class", "preempted-segment")
+                        .attr("d", arc)
+                        .attr("transform", `translate(${centerX}, ${centerY})`)
+                        .attr("fill", "#FF6B6B")
+                        .attr("opacity", 0);
+                }
+                
+                preemptedArc.transition()
+                    .duration(200)
+                    .attr("opacity", 0.8);
+            } else {
+                // Hide preempted segment
+                ring1Group.select(".preempted-segment")
+                    .transition()
+                    .duration(200)
+                    .attr("opacity", 0);
+            }
+        })
+        .catch(error => {
+            console.error('Error fetching execution context:', error);
+        });
+}
+
+// Helper function to get point on SVG path at specific distance from start
+function getPointOnPathAtDistance(pathData, targetDistance, centerX, centerY) {
+    try {
+        // Parse path to get end point (process position)
+        // Try Bezier curve format: Mx,y Cx1,y1 x2,y2 x,y
+        const pathMatch = pathData.match(/M([\d.]+),([\d.]+)\s+C[\d.]+,[\d.]+\s+[\d.]+,[\d.]+\s+([\d.]+),([\d.]+)/);
+        if (pathMatch) {
+            const startX = parseFloat(pathMatch[1]);
+            const startY = parseFloat(pathMatch[2]);
+            const endX = parseFloat(pathMatch[3]);
+            const endY = parseFloat(pathMatch[4]);
+            
+            // Calculate direction vector from center to process
+            const dx = endX - startX;
+            const dy = endY - startY;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            
+            if (distance > 0) {
+                // Calculate point at targetDistance along the line
+                const ratio = targetDistance / distance;
+                return {
+                    x: startX + dx * ratio,
+                    y: startY + dy * ratio
+                };
+            }
+        }
+        
+        // Try straight line format: Lx,y or Mx,y Lx,y
+        const lineMatch = pathData.match(/[ML]([\d.]+),([\d.]+)/g);
+        if (lineMatch && lineMatch.length >= 2) {
+            const start = lineMatch[0].match(/[ML]([\d.]+),([\d.]+)/);
+            const end = lineMatch[lineMatch.length - 1].match(/[ML]([\d.]+),([\d.]+)/);
+            if (start && end) {
+                const startX = parseFloat(start[1]);
+                const startY = parseFloat(start[2]);
+                const endX = parseFloat(end[1]);
+                const endY = parseFloat(end[2]);
+                
+                const dx = endX - startX;
+                const dy = endY - startY;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                if (distance > 0) {
+                    const ratio = targetDistance / distance;
+                    return {
+                        x: startX + dx * ratio,
+                        y: startY + dy * ratio
+                    };
+                }
+            }
+        }
+        
+        return null;
+    } catch (error) {
+        console.error('Error calculating point on path:', error);
+        return null;
+    }
+}
+
 // Draw tag icons
 function drawTagIcons(centerX, centerY) {
+    // Skip drawing tag icons if Matrix View is active
+    if (window.kernelContextMenu && window.kernelContextMenu.currentView === 'matrix') {
+        console.log('⏸️ Skipping tag icons render - Matrix View is active');
+        return;
+    }
+    
     const tagIconUrl = 'static/images/Icon1.png';
     const numTags = 8;
     const radius = 160;
@@ -386,6 +694,70 @@ function drawProcessKernelMap2(centerX, centerY) {
             const maxMemory = Math.max(...memoryValues);
             const memoryRange = maxMemory - minMemory;
 
+            // Find a process to highlight by default
+            // Priority: 1) python/python3 with accessible files, 
+            //           2) python/python3 without file access check,
+            //           3) nginx (exact match or starts with "nginx:") with accessible files, 
+            //           4) nginx without file access check, 
+            //           5) process with most FDs (accessible),
+            //           6) process with most memory
+            let highlightedProcess = null;
+            
+            // First, try to find python/python3 with accessible files (most likely to have accessible files)
+            highlightedProcess = processes.find(p => {
+                if (!p.name) return false;
+                const name = p.name.toLowerCase();
+                const isPython = name.includes('python') || name === 'python3';
+                return isPython && p.num_fds > 0; // Prefer python with accessible files
+            });
+            
+            // If no python with accessible files, try any python process
+            if (!highlightedProcess) {
+                highlightedProcess = processes.find(p => 
+                    p.name && (p.name.toLowerCase().includes('python') || p.name.toLowerCase() === 'python3')
+                );
+            }
+            
+            // If no python, try to find nginx master or worker process with accessible files
+            // Look for exact "nginx" or processes that start with "nginx:" (like "nginx: master process" or "nginx: worker process")
+            if (!highlightedProcess) {
+                highlightedProcess = processes.find(p => {
+                    if (!p.name) return false;
+                    const name = p.name.toLowerCase();
+                    const isNginx = name === 'nginx' || name.startsWith('nginx:');
+                    return isNginx && p.num_fds > 0; // Prefer nginx with accessible files
+                });
+            }
+            
+            // If no nginx with accessible files, try any nginx process
+            if (!highlightedProcess) {
+                highlightedProcess = processes.find(p => {
+                    if (!p.name) return false;
+                    const name = p.name.toLowerCase();
+                    return name === 'nginx' || name.startsWith('nginx:');
+                });
+            }
+            
+            // If still no match, use process with most file descriptors (accessible)
+            if (!highlightedProcess) {
+                let maxFds = 0;
+                processes.forEach(p => {
+                    if (p.num_fds && p.num_fds > maxFds) {
+                        maxFds = p.num_fds;
+                        highlightedProcess = p;
+                    }
+                });
+            }
+            
+            // Last resort: use process with most memory
+            if (!highlightedProcess) {
+                processes.forEach(p => {
+                    if (p.memory_mb && p.memory_mb > (highlightedProcess?.memory_mb || 0)) {
+                        highlightedProcess = p;
+                    }
+                });
+            }
+            
             processes.forEach((process, i) => {
                 const angle = i * 2 * Math.PI / numProcesses;
                 
@@ -413,6 +785,7 @@ function drawProcessKernelMap2(centerX, centerY) {
                 const line = svg.append("path")
                     .attr("d", path)
                     .attr("class", "process-line")
+                    .attr("data-pid", process.pid) // Store PID for highlighting
                     .attr("stroke", "url(#lineGradient)") // Use gradient for depth
                     .attr("stroke-width", 0.4) // Same thickness as Bezier curves
                     .attr("opacity", 0) // Start invisible
@@ -432,35 +805,87 @@ function drawProcessKernelMap2(centerX, centerY) {
                     .attr("opacity", 0.05 + Math.random() * 0.03)
                     .attr("stroke-dashoffset", 0);
 
-                // Keep original gray color scheme
-                const circleRadius = 1; // Original size
+                // Determine if this is the highlighted process
+                const isHighlighted = highlightedProcess && process.pid === highlightedProcess.pid;
+                const baseRadius = isHighlighted ? 3 : 1; // Larger for highlighted process
+                const hoverRadius = baseRadius * 2.5; // Radius when hovering
+                const hitAreaRadius = 12; // Invisible hit area for easier clicking
                 
-                // Add gray circle at the end of the line with animation
-                const circle = svg.append("circle")
+                // Create group for process node
+                const processGroup = svg.append("g")
+                    .attr("class", "process-node-group")
+                    .attr("data-pid", process.pid)
+                    .datum(process); // Store process data in group
+                
+                // Add invisible hit area circle (larger for easier interaction)
+                const hitArea = processGroup.append("circle")
+                    .attr("cx", px)
+                    .attr("cy", py)
+                    .attr("r", hitAreaRadius)
+                    .attr("fill", "transparent")
+                    .attr("stroke", "none")
+                    .style("pointer-events", "all");
+                
+                // Add visible circle at the end of the line with animation
+                const circle = processGroup.append("circle")
                     .attr("cx", px)
                     .attr("cy", py)
                     .attr("r", 0) // Start with radius 0
                     .attr("fill", "#888")
                     .attr("stroke", "#555")
-                    .attr("stroke-width", 0.5)
+                    .attr("stroke-width", isHighlighted ? 1 : 0.5)
                     .attr("opacity", 0)
                     .attr("class", "process-node")
-                    .style("cursor", "pointer")
-                    .datum(process); // Store process data
+                    .style("pointer-events", "none"); // Don't interfere with hit area
 
                 // Animate circle appearance
                 circle.transition()
                     .duration(150)
                     .delay(i * 20 + 250) // Appear after line animation
-                    .attr("r", circleRadius)
+                    .attr("r", baseRadius)
                     .attr("opacity", 1);
                 
-                // Add tooltip on hover with detailed information
-                circle.on("mouseover", function(event, d) {
-                    // Show process files at bottom of Bezier curves
-                    showProcessFilesOnCurves(d.pid, d.name);
+                // If highlighted, show files and highlight curves immediately
+                if (isHighlighted) {
+                    setTimeout(() => {
+                        showProcessFilesOnCurves(process.pid, process.name);
+                    }, 2000); // Show after initial animation
+                }
+                
+                // Add hover effects on the entire group (both hit area and circle)
+                processGroup
+                    .style("cursor", "pointer")
+                    .on("mouseover", function(event, d) {
+                        // Get the actual process data from the datum
+                        const processData = d || process;
+                        // Enlarge visible circle on hover
+                        circle.transition()
+                            .duration(200)
+                            .attr("r", hoverRadius)
+                            .attr("stroke-width", 1.5);
+                        
+                        // Add pulsing animation on hover
+                        const pulse = () => {
+                            circle.transition()
+                                .duration(800)
+                                .attr("r", hoverRadius * 1.2)
+                                .transition()
+                                .duration(800)
+                                .attr("r", hoverRadius)
+                                .on("end", function() {
+                                    // Continue pulsing only if still hovering
+                                    if (d3.select(this.parentNode).classed("hovered")) {
+                                        pulse();
+                                    }
+                                });
+                        };
+                        processGroup.classed("hovered", true);
+                        pulse();
+                        
+                        // Show process files at bottom of Bezier curves
+                        showProcessFilesOnCurves(processData.pid, processData.name);
                     
-                    const tooltip = d3.select("body")
+                        const tooltip = d3.select("body")
                         .append("div")
                         .attr("class", "tooltip")
                         .style("position", "absolute")
@@ -475,32 +900,32 @@ function drawProcessKernelMap2(centerX, centerY) {
                         .style("opacity", 0)
                         .style("max-width", "300px");
                     
-                    // Basic info first
-                    tooltip.html(`
-                        <strong>Process:</strong> ${d.name}<br>
-                        <strong>PID:</strong> ${d.pid}<br>
-                        <strong>Memory:</strong> ${d.memory_mb} MB<br>
-                        <strong>Status:</strong> ${d.status}<br>
-                        <em>Loading details...</em>
-                    `);
-                    
-                    tooltip.transition()
-                        .duration(200)
-                        .style("opacity", 1);
-                    
-                    // Fetch detailed information
-                    Promise.all([
-                        fetch(`/api/process/${d.pid}/threads`).then(r => r.json()).catch(() => null),
-                        fetch(`/api/process/${d.pid}/cpu`).then(r => r.json()).catch(() => null),
-                        fetch(`/api/process/${d.pid}/fds`).then(r => r.json()).catch(() => null)
-                    ]).then(([threadsData, cpuData, fdsData]) => {
-                        let detailsHtml = `
-                            <strong>Process:</strong> ${d.name}<br>
-                            <strong>PID:</strong> ${d.pid}<br>
-                            <strong>Memory:</strong> ${d.memory_mb} MB<br>
-                            <strong>Status:</strong> ${d.status}<br>
-                            <hr style="margin: 5px 0; border-color: #555;">
-                        `;
+                        // Basic info first
+                        tooltip.html(`
+                            <strong>Process:</strong> ${processData.name}<br>
+                            <strong>PID:</strong> ${processData.pid}<br>
+                            <strong>Memory:</strong> ${processData.memory_mb} MB<br>
+                            <strong>Status:</strong> ${processData.status}<br>
+                            <em>Loading details...</em>
+                        `);
+                        
+                        tooltip.transition()
+                            .duration(200)
+                            .style("opacity", 1);
+                        
+                        // Fetch detailed information
+                        Promise.all([
+                            fetch(`/api/process/${processData.pid}/threads`).then(r => r.json()).catch(() => null),
+                            fetch(`/api/process/${processData.pid}/cpu`).then(r => r.json()).catch(() => null),
+                            fetch(`/api/process/${processData.pid}/fds`).then(r => r.json()).catch(() => null)
+                        ]).then(([threadsData, cpuData, fdsData]) => {
+                            let detailsHtml = `
+                                <strong>Process:</strong> ${processData.name}<br>
+                                <strong>PID:</strong> ${processData.pid}<br>
+                                <strong>Memory:</strong> ${processData.memory_mb} MB<br>
+                                <strong>Status:</strong> ${processData.status}<br>
+                                <hr style="margin: 5px 0; border-color: #555;">
+                            `;
                         
                         // Threads info
                         if (threadsData && !threadsData.error) {
@@ -547,12 +972,32 @@ function drawProcessKernelMap2(centerX, centerY) {
                             .style("top", (event.pageY - 10) + "px");
                     });
                 })
-                .on("mouseout", function() {
-                    // Hide process files when mouse leaves
-                    hideProcessFilesOnCurves();
-                    d3.selectAll(".tooltip").remove();
-                    d3.select("svg").on("mousemove", null);
-                });
+                    .on("mouseout", function(event, d) {
+                        // Get the actual process data from the datum
+                        const processData = d || process;
+                        // Stop pulsing animation
+                        processGroup.classed("hovered", false);
+                        circle.interrupt(); // Stop any ongoing transitions
+                        
+                        // Reset circle size on mouseout (unless it's the highlighted one)
+                        const isHighlighted = highlightedProcess && processData.pid === highlightedProcess.pid;
+                        if (!isHighlighted) {
+                            circle.transition()
+                                .duration(200)
+                                .attr("r", baseRadius)
+                                .attr("stroke-width", 0.5);
+                            // Hide process files when mouse leaves
+                            hideProcessFilesOnCurves();
+                        } else {
+                            // Keep highlighted process slightly larger but not as large as hover
+                            circle.transition()
+                                .duration(200)
+                                .attr("r", baseRadius)
+                                .attr("stroke-width", 1);
+                        }
+                        d3.selectAll(".tooltip").remove();
+                        d3.select("svg").on("mousemove", null);
+                    });
             });
         })
         .catch(error => {
@@ -639,12 +1084,9 @@ function showProcessFilesOnCurves(pid, processName) {
             console.log(`📄 Files found: ${files.length}`, files);
             if (files.length === 0) {
                 console.log(`⚠️ No files found for process ${pid} (${processName})`);
-                // Try to show connections if no files
-                const connections = data.connections || [];
-                if (connections.length > 0) {
-                    console.log(`🔌 Found ${connections.length} connections, showing them instead`);
-                    showConnectionsOnCurves(pid, connections);
-                }
+                // Don't show connections if no files - it's confusing
+                // Connections are network sockets, not files
+                console.log(`ℹ️ Skipping connections display - no files available for this process`);
                 return;
             }
             
@@ -675,14 +1117,61 @@ function showProcessFilesOnCurves(pid, processName) {
             
             // Sort and select curves evenly
             bottomCurves.sort((a, b) => a.startX - b.startX);
-            const numFiles = Math.min(files.length, bottomCurves.length, 10); // Limit to 10 files
-            const step = Math.max(1, Math.floor(bottomCurves.length / numFiles));
+            
+            // Display files (filter out IP addresses and invalid paths)
+            const validFiles = files.filter(file => {
+                if (!file.path) return false;
+                const path = String(file.path).trim();
+                
+                // Filter out IP addresses (e.g., "0.0.0.0", "127.0.0.1") - check if entire path is an IP
+                const ipPattern = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?$/;
+                if (ipPattern.test(path)) {
+                    console.log(`🚫 Filtered out IP address: ${path}`);
+                    return false;
+                }
+                
+                // Filter out socket-like patterns
+                if (path.includes('socket:') || path.includes('pipe:') || path.includes('anon_inode:')) {
+                    console.log(`🚫 Filtered out special file: ${path}`);
+                    return false;
+                }
+                
+                // Allow /dev files (like /dev/null, /dev/shm, etc.) - they are valid files
+                if (path.startsWith('/dev/')) {
+                    return true;
+                }
+                
+                // Filter out paths that don't look like file paths (but allow /dev)
+                if (!path.startsWith('/')) {
+                    console.log(`🚫 Filtered out non-absolute path: ${path}`);
+                    return false;
+                }
+                
+                // Additional check: if filename (last part) looks like an IP address, filter it
+                const filename = path.split('/').pop();
+                if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(filename)) {
+                    console.log(`🚫 Filtered out path with IP-like filename: ${path}`);
+                    return false;
+                }
+                
+                return true;
+            });
+            
+            const numValidFiles = Math.min(validFiles.length, bottomCurves.length, 10); // Limit to 10 files
+            const step = Math.max(1, Math.floor(bottomCurves.length / numValidFiles));
             
             // Display files
-            files.slice(0, numFiles).forEach((file, i) => {
+            console.log(`✅ Filtered ${validFiles.length} valid files from ${files.length} total`);
+            validFiles.slice(0, numValidFiles).forEach((file, i) => {
                 if (i * step < bottomCurves.length) {
                     const curve = bottomCurves[i * step];
-                    const fileName = file.path ? file.path.split('/').pop() : `FD ${file.fd}`;
+                    let fileName = file.path ? file.path.split('/').pop() : `FD ${file.fd}`;
+                    // Additional safety check: if filename looks like an IP, skip it
+                    const ipPattern = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/;
+                    if (ipPattern.test(fileName)) {
+                        console.log(`⚠️ Skipping file with IP-like name: ${fileName} (from path: ${file.path})`);
+                        return; // Skip this file
+                    }
                     const fileType = file.path ? (file.path.includes('log') ? 'log' : file.path.includes('conf') ? 'config' : 'other') : 'other';
                     
                     // Create file group
@@ -782,10 +1271,40 @@ function showConnectionsOnCurves(pid, connections) {
     const numConnections = Math.min(connections.length, bottomCurves.length, 10);
     const step = Math.max(1, Math.floor(bottomCurves.length / numConnections));
     
-    connections.slice(0, numConnections).forEach((conn, i) => {
-        if (i * step < bottomCurves.length) {
-            const curve = bottomCurves[i * step];
-            const connLabel = conn.remote_address || conn.local_address || `Connection ${i+1}`;
+    // Filter out localhost connections (0.0.0.0, 127.0.0.1) - they're not interesting
+    const interestingConnections = connections.filter(conn => {
+        const local = conn.local_address || '';
+        const remote = conn.remote_address || '';
+        // Only show connections with remote addresses (active connections)
+        if (!remote) return false;
+        // Filter out localhost connections
+        if (remote.startsWith('127.0.0.1:') || remote.startsWith('::1:')) {
+            return false;
+        }
+        return true;
+    });
+    
+    // If no interesting connections, don't show anything
+    if (interestingConnections.length === 0) {
+        console.log(`ℹ️ No interesting connections to display for process ${pid}`);
+        return;
+    }
+    
+    const numInteresting = Math.min(interestingConnections.length, bottomCurves.length, 10);
+    const stepConn = Math.max(1, Math.floor(bottomCurves.length / numInteresting));
+    
+    interestingConnections.slice(0, numInteresting).forEach((conn, i) => {
+        if (i * stepConn < bottomCurves.length) {
+            const curve = bottomCurves[i * stepConn];
+            // Show remote address (more informative)
+            let connLabel = conn.remote_address || `Connection ${i+1}`;
+            // Extract IP and port for display
+            const parts = connLabel.split(':');
+            if (parts.length === 2) {
+                const ip = parts[0];
+                const port = parts[1];
+                connLabel = `${ip}:${port}`;
+            }
             
             const connGroup = svg.append("g")
                 .attr("class", `process-file-${pid}`)
@@ -817,7 +1336,7 @@ function showConnectionsOnCurves(pid, connections) {
                 .attr("text-anchor", "middle")
                 .attr("font-size", "9px")
                 .attr("fill", "#333")
-                .text(connLabel.split(':')[0]); // Show just IP or first part
+                .text(connLabel);
             
             const bbox = label.node().getBBox();
             connGroup.insert("rect", "text")
@@ -868,6 +1387,11 @@ function getFileTypeColor(type) {
 
 // Update panel with real data from API
 function updatePanelData() {
+    // Skip updating if Matrix View is active
+    if (window.kernelContextMenu && window.kernelContextMenu.currentView === 'matrix') {
+        return;
+    }
+    
     fetch('/api/kernel-data')
         .then(res => res.json())
         .then(data => {
@@ -896,6 +1420,12 @@ function updatePanelData() {
 
 // Update subsystems visualization with color coding
 function updateSubsystemsVisualization(subsystems) {
+    // Skip rendering if Matrix View is active
+    if (window.kernelContextMenu && window.kernelContextMenu.currentView === 'matrix') {
+        console.log('⏸️ Skipping subsystems visualization - Matrix View is active');
+        return;
+    }
+    
     const svg = d3.select('svg');
     const width = window.innerWidth;
     

@@ -23,7 +23,7 @@ class RightSemicircleMenuManager {
         const width = window.innerWidth;
         const height = window.innerHeight;
 
-        // Clear existing semicircle elements
+        // Clear existing semicircle elements (but preserve kernel submenu)
         svg.selectAll('.right-semicircle-menu, .right-menu-item-group, .right-menu-item, .right-menu-icon, .right-menu-line, .right-menu-label, .right-menu-label-bg').remove();
 
         // Semicircle parameters
@@ -78,31 +78,73 @@ class RightSemicircleMenuManager {
                 .attr('class', 'right-menu-item-group')
                 .attr('data-item-id', item.id);
             
-            // Calculate bounds for hover area (circle + line)
-            const hoverAreaX = lineEndX;
-            const hoverAreaY = itemY - Math.max(itemRadius, lineHeight / 2);
-            const hoverAreaWidth = lineWidth + itemRadius * 2;
-            const hoverAreaHeight = Math.max(itemRadius * 2, lineHeight);
+            // Calculate bounds for hover area (circle + line) - расширенная область
+            const hoverAreaPadding = 10; // Дополнительный отступ для лучшей чувствительности
+            const hoverAreaX = lineEndX - hoverAreaPadding;
+            const hoverAreaY = itemY - Math.max(itemRadius, lineHeight / 2) - hoverAreaPadding;
+            const hoverAreaWidth = lineWidth + itemRadius * 2 + hoverAreaPadding * 2;
+            const hoverAreaHeight = Math.max(itemRadius * 2, lineHeight) + hoverAreaPadding * 2;
             
             // Add invisible rectangle to cover entire menu item area for proper hover detection
-            itemGroup.append('rect')
+            const hoverRect = itemGroup.append('rect')
                 .attr('x', hoverAreaX)
                 .attr('y', hoverAreaY)
                 .attr('width', hoverAreaWidth)
                 .attr('height', hoverAreaHeight)
                 .style('fill', 'transparent')
                 .style('pointer-events', 'all')
-                .style('cursor', 'pointer')
-                .on('mouseenter', () => {
-                    if (this.hoveredItemId !== item.id) {
-                        this.hoveredItemId = item.id;
+                .style('cursor', 'pointer');
+            
+            // Функция для обработки mouseenter
+            const handleMouseEnter = () => {
+                this.hoveredItemId = item.id;
+                this.renderRightSemicircleMenu();
+                
+                // Show Matrix View submenu ONLY if hovering over Processes item
+                if (item.id === 'processes' && window.kernelContextMenu) {
+                    console.log('🎯 Showing Processes submenu (Matrix View), lineEndX:', lineEndX, 'itemY:', itemY, 'angle:', angle);
+                    window.kernelContextMenu.showSubmenu(lineEndX, itemY, angle);
+                } else {
+                    // Hide submenu if hovering over any other menu item
+                    if (window.kernelContextMenu) {
+                        window.kernelContextMenu.hideSubmenu();
+                    }
+                }
+            };
+            
+            // Функция для обработки mouseleave
+            const handleMouseLeave = () => {
+                // Простая логика: как только курсор ушёл с области пункта меню,
+                // через небольшую задержку снимаем выделение, если не над подменю Processes.
+                setTimeout(() => {
+                    const isOverSubmenu = item.id === 'processes' && window.kernelContextMenu &&
+                        d3.select('.kernel-submenu').node() &&
+                        d3.select('.kernel-submenu').node().matches(':hover');
+                    
+                    // Проверяем, не над ли группой элементов
+                    const isOverItemGroup = itemGroup.node() && itemGroup.node().matches(':hover');
+                    
+                    if (!isOverSubmenu && !isOverItemGroup && this.hoveredItemId === item.id) {
+                        this.hoveredItemId = null;
                         this.renderRightSemicircleMenu();
                     }
-                })
-                .on('mouseleave', () => {
-                    this.hoveredItemId = null;
-                    this.renderRightSemicircleMenu();
-                });
+                    
+                    if (item.id === 'processes' && window.kernelContextMenu && !isOverSubmenu && !isOverItemGroup) {
+                        window.kernelContextMenu.hideSubmenu();
+                    }
+                }, 200);
+            };
+            
+            // Добавляем обработчики на hover-прямоугольник
+            hoverRect
+                .on('mouseenter', handleMouseEnter)
+                .on('mouseleave', handleMouseLeave);
+            
+            // Также добавляем обработчики на всю группу элементов для полного покрытия
+            itemGroup
+                .style('pointer-events', 'all')
+                .on('mouseenter', handleMouseEnter)
+                .on('mouseleave', handleMouseLeave);
             
             // Wide line as a rectangle with rounded left side (like in the example)
             // Since menu is on the right, we round the left side (opposite of example where menu is on left)
@@ -120,7 +162,8 @@ class RightSemicircleMenuManager {
                 .style('stroke', isHovered ? '#ffffff' : '#555') // White if hovered, same as circle stroke if not
                 .style('stroke-width', isHovered ? '2px' : '1px')
                 .style('transition', 'all 0.3s ease')
-                .style('pointer-events', 'none'); // Don't interfere with hover
+                .style('pointer-events', 'all') // Allow hover on line too
+                .style('cursor', 'pointer');
 
             // Label text inside the wide line (positioned closer to the circle, like in the example)
             // Text should be closer to the right side (circle side) of the line, not centered
@@ -154,6 +197,7 @@ class RightSemicircleMenuManager {
                 .style('stroke', isHovered ? '#ffffff' : '#555')
                 .style('stroke-width', isHovered ? '2px' : '1px')
                 .style('cursor', 'pointer')
+                .style('pointer-events', 'all') // Allow hover on circle
                 .style('transition', 'all 0.3s ease');
 
             // SVG icon inside the circle

@@ -19,10 +19,13 @@ class ActiveConnectionsManager {
             if (data.connections) {
                 console.log("Total connections:", data.connections.length);
                 
-                // Filter out local connections (127.0.0.1, 0.0.0.0, 1.0.0.127)
+                // Filter out local connections (127.0.0.1, 0.0.0.0)
                 const filteredConnections = data.connections.filter(conn => {
                     const localIP = conn.local.split(':')[0];
-                    return localIP !== "127.0.0.1" && localIP !== "0.0.0.0" && localIP !== "1.0.0.127";
+                    const remoteIP = conn.remote.split(':')[0];
+                    // Show only external connections (not localhost)
+                    return localIP !== "127.0.0.1" && localIP !== "0.0.0.0" && 
+                           remoteIP !== "127.0.0.1" && remoteIP !== "0.0.0.0";
                 });
                 
                 this.currentConnections = filteredConnections;
@@ -60,6 +63,12 @@ class ActiveConnectionsManager {
 
     // Render active connections table below system calls
     renderConnectionsTable() {
+        // Do not render connections if Kernel Matrix View is active
+        if (window.kernelContextMenu && window.kernelContextMenu.currentView === 'matrix') {
+            console.log('⏸️ Skipping active connections render - Matrix View is active');
+            return;
+        }
+
         const svg = d3.select('svg');
         
         // Clear old elements
