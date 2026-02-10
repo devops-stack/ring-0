@@ -59,27 +59,65 @@ class SyscallsManager {
         
         const svg = d3.select("svg");
         
-        // Clear old elements
-        svg.selectAll(".syscall-box, .syscall-text").remove();
+        // Clear old elements (including panel groups)
+        svg.selectAll(".syscall-box, .syscall-text, .syscall-panel-group").remove();
         
         console.log(`🎨 Rendering ${this.currentSyscalls.length} system calls`);
         
-        // Create new elements for system calls
+        // Create new elements for system calls with diegetic UI panel style
         this.currentSyscalls.forEach((syscall, i) => {
             const displayText = `${syscall.name.toUpperCase()} ${syscall.count}`;
+            const panelX = 30;
+            const panelY = 35 + i * 30;
+            const panelWidth = 230;
+            const panelHeight = 22;
             
-            svg.append("rect")
-                .attr("x", 30)
-                .attr("y", 35 + i * 30)
-                .attr("width", 230)
-                .attr("height", 22)
-                .attr("class", "item-box syscall-box");
-
-            svg.append("text")
-                .attr("x", 38)
-                .attr("y", 50 + i * 30)
+            // Create panel group for each syscall
+            const panelGroup = svg.append("g")
+                .attr("class", "syscall-panel-group")
+                .attr("data-syscall-index", i);
+            
+            // Panel background - diegetic UI style (like "SUBJECT U454.1")
+            const panel = panelGroup.append("rect")
+                .attr("x", panelX)
+                .attr("y", panelY)
+                .attr("width", panelWidth)
+                .attr("height", panelHeight)
+                .attr("rx", 1)
+                .attr("class", "syscall-box")
+                .style("fill", "rgba(10, 15, 20, 0.6)") // Dark panel background
+                .style("stroke", "rgba(180, 190, 210, 0.2)") // Subtle border
+                .style("stroke-width", "0.5px")
+                .style("opacity", 0.7)
+                .style("filter", "drop-shadow(0 0 1px rgba(200, 200, 200, 0.05))"); // Subtle glow
+            
+            // Text inside panel
+            const text = panelGroup.append("text")
+                .attr("x", panelX + 8)
+                .attr("y", panelY + 15)
                 .text(displayText)
-                .attr("class", "socket-text syscall-text");
+                .attr("class", "syscall-text")
+                .style("font-family", "Share Tech Mono, monospace")
+                .style("font-size", "11px")
+                .style("fill", "#c8ccd4") // Milk-gray text color
+                .style("letter-spacing", "0.3px"); // Slight letter spacing
+            
+            // Hover effects
+            panel
+                .on("mouseenter", function() {
+                    d3.select(this)
+                        .style("fill", "rgba(15, 22, 30, 0.8)")
+                        .style("stroke", "rgba(200, 200, 200, 0.3)")
+                        .style("opacity", 1);
+                    text.style("fill", "#dde2ea"); // Lighter on hover
+                })
+                .on("mouseleave", function() {
+                    d3.select(this)
+                        .style("fill", "rgba(10, 15, 20, 0.6)")
+                        .style("stroke", "rgba(180, 190, 210, 0.2)")
+                        .style("opacity", 0.7);
+                    text.style("fill", "#c8ccd4");
+                });
         });
         
         console.log(`✅ Rendered ${this.currentSyscalls.length} system call elements`);

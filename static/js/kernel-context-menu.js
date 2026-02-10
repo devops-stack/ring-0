@@ -1,4 +1,8 @@
 // Kernel Context Menu - Submenu and View Modes
+// Version: 12
+
+console.log('🔧 kernel-context-menu.js v12: Script loading...');
+
 class KernelContextMenu {
     constructor() {
         this.isVisible = false;
@@ -33,17 +37,18 @@ class KernelContextMenu {
         
         console.log('✅ Submenu group created');
         
-        // Background - low-contrast dark blue/gray (system / diegetic style)
+        // Background - diegetic UI style panel (like "SUBJECT U454.1" from example)
         const bg = this.submenuGroup.append('rect')
             .attr('x', submenuX - 10)
             .attr('y', submenuY - 80)
             .attr('width', 140)
             .attr('height', 110)
-            .attr('rx', 4)
-            .style('fill', 'rgba(12, 18, 28, 0.9)') // dark blue-gray, not pure black
-            .style('stroke', 'rgba(180, 190, 210, 0.25)')
-            .style('stroke-width', '0.4px')
-            .style('pointer-events', 'all');
+            .attr('rx', 2)
+            .style('fill', 'rgba(5, 8, 12, 0.85)') // Very dark background, slightly transparent
+            .style('stroke', 'rgba(200, 200, 200, 0.15)') // Subtle light gray border
+            .style('stroke-width', '0.5px')
+            .style('pointer-events', 'all')
+            .style('filter', 'drop-shadow(0 0 2px rgba(200, 200, 200, 0.1))'); // Subtle glow
         
         console.log('✅ Background rect created at:', submenuX - 10, submenuY - 60);
         
@@ -51,7 +56,6 @@ class KernelContextMenu {
         const items = [
             { id: 'matrix', label: 'Matrix View' },
             { id: 'timeline', label: 'Timeline / Flow' },
-            { id: 'dna', label: 'Kernel DNA' },
             { id: 'filters', label: 'Filters / Settings' }
         ];
         
@@ -64,73 +68,104 @@ class KernelContextMenu {
                 .attr('class', `submenu-item submenu-${item.id}`)
                 .style('cursor', 'pointer');
             
-            // Text - white text like screenshot
+            // Create individual panel for each item (like "SUBJECT U454.1" style)
+            const itemPanel = itemGroup.append('rect')
+                .attr('x', submenuX - 8)
+                .attr('y', itemY - 9)
+                .attr('width', 136)
+                .attr('height', 20)
+                .attr('rx', 1)
+                .style('fill', 'rgba(10, 15, 20, 0.6)') // Dark panel background
+                .style('stroke', 'rgba(180, 190, 210, 0.2)') // Subtle border
+                .style('stroke-width', '0.5px')
+                .style('pointer-events', 'all')
+                .style('opacity', 0.7);
+            
+            // Text - positioned inside the panel
             const text = itemGroup.append('text')
                 .attr('x', submenuX)
-                .attr('y', itemY)
+                .attr('y', itemY + 2)
                 .text(item.label.toUpperCase())
                 .style('font-family', 'Share Tech Mono, monospace')
                 .style('font-size', '10px')
                 .style('fill', isActive ? accentColor : baseColor)
-                .style('pointer-events', 'none');
+                .style('pointer-events', 'none')
+                .style('letter-spacing', '0.5px'); // Slight letter spacing for clarity
             
-            // Hover area
-            const bbox = text.node().getBBox();
-            itemGroup.insert('rect', 'text')
-                .attr('x', submenuX - 5)
-                .attr('y', bbox.y - 2)
-                .attr('width', bbox.width + 10)
-                .attr('height', bbox.height + 4)
-                .style('fill', 'transparent') // no hover background, only subtle text change
-                .style('pointer-events', 'all')
-                .on('mouseenter', function() {
-                    const t = d3.select(this.parentNode).select('text');
-                    const currentlyActive = isActive;
-                    t.style('fill', currentlyActive ? accentColor : '#dde2ea');
-                })
-                .on('mouseleave', function() {
-                    const t = d3.select(this.parentNode).select('text');
-                    t.style('fill', isActive ? accentColor : baseColor);
-                })
-                .on('click', () => {
-                    if (item.id === 'matrix') {
-                        this.activateMatrixView();
-                    } else if (item.id === 'timeline') {
+            // Hover handlers for the panel
+            const handleMouseEnter = () => {
+                itemPanel
+                    .style('fill', 'rgba(15, 22, 30, 0.8)')
+                    .style('stroke', 'rgba(200, 200, 200, 0.3)')
+                    .style('opacity', 1);
+                text.style('fill', isActive ? accentColor : '#dde2ea');
+            };
+            
+            const handleMouseLeave = () => {
+                itemPanel
+                    .style('fill', 'rgba(10, 15, 20, 0.6)')
+                    .style('stroke', 'rgba(180, 190, 200, 0.2)')
+                    .style('opacity', 0.7);
+                text.style('fill', isActive ? accentColor : baseColor);
+            };
+            
+            // Click handler function
+            const handleClick = () => {
+                if (item.id === 'matrix') {
+                    this.activateMatrixView();
+                } else if (item.id === 'timeline') {
+                    // Activate DNA Timeline mode (with or without PID)
+                    if (this.dnaVisualization) {
+                        this.dnaVisualization.activateTimelineMode(this.selectedPid || null);
+                        this.currentView = 'dna-timeline';
+                        this.hideSubmenu();
+                        
+                        // Hide other UI elements
+                        d3.selectAll('.syscall-box, .syscall-text').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+                        d3.selectAll('.tag-icon, .connection-line').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+                        d3.selectAll('.connection-box, .connection-text, .connection-details').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+                        d3.selectAll('.subsystem-indicator').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+                        
+                        // Stop auto-updates
+                        if (window.syscallsManager) {
+                            window.syscallsManager.stopAutoUpdate();
+                        }
+                        if (window.connectionsManager) {
+                            window.connectionsManager.stopAutoUpdate();
+                        }
+                        
+                        this.addExitButton();
+                    } else {
+                        // Fallback to regular timeline if DNA visualization not available
                         if (this.selectedPid) {
-                            // Activate DNA Timeline mode instead of regular timeline
-                            if (this.dnaVisualization) {
-                                this.dnaVisualization.activateTimelineMode(this.selectedPid);
-                                this.currentView = 'dna-timeline';
-                                this.hideSubmenu();
-                                
-                                // Hide other UI elements
-                                d3.selectAll('.syscall-box, .syscall-text').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
-                                d3.selectAll('.tag-icon, .connection-line').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
-                                d3.selectAll('.connection-box, .connection-text, .connection-details').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
-                                d3.selectAll('.subsystem-indicator').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
-                                
-                                // Stop auto-updates
-                                if (window.syscallsManager) {
-                                    window.syscallsManager.stopAutoUpdate();
-                                }
-                                if (window.connectionsManager) {
-                                    window.connectionsManager.stopAutoUpdate();
-                                }
-                                
-                                this.addExitButton();
-                            } else {
-                                this.activateTimelineView();
-                            }
+                            this.activateTimelineView();
                         } else {
                             alert('Please select a PID from Matrix View first');
                         }
-                    } else if (item.id === 'dna') {
-                        this.activateDNAView();
-                    } else if (item.id === 'filters') {
-                        // Placeholder for future
-                        console.log('Filters/Settings - coming soon');
                     }
-                });
+                } else if (item.id === 'filters') {
+                    // Placeholder for future
+                    console.log('Filters/Settings - coming soon');
+                }
+            };
+            
+            // Add hover and click handlers to panel
+            itemPanel
+                .on('mouseenter', handleMouseEnter)
+                .on('mouseleave', handleMouseLeave)
+                .on('click', handleClick);
+            
+            // Also add hover and click handlers to text area for better UX
+            const textHoverArea = itemGroup.append('rect')
+                .attr('x', submenuX - 8)
+                .attr('y', itemY - 9)
+                .attr('width', 136)
+                .attr('height', 20)
+                .style('fill', 'transparent')
+                .style('pointer-events', 'all')
+                .on('mouseenter', handleMouseEnter)
+                .on('mouseleave', handleMouseLeave)
+                .on('click', handleClick);
         });
         
         // Animate appearance
@@ -242,18 +277,69 @@ class KernelContextMenu {
 
     activateDNAView() {
         console.log('🧬 Activating Kernel DNA View');
+        console.log('🔍 KernelDNAVisualization available:', typeof KernelDNAVisualization);
+        console.log('🔍 window.KernelDNAVisualization available:', typeof window.KernelDNAVisualization);
+        console.log('🔍 THREE available:', typeof THREE);
+        console.log('🔍 THREE.WebGLRenderer available:', typeof THREE?.WebGLRenderer);
+        console.log('🔍 Current dnaVisualization:', this.dnaVisualization);
+        
         this.currentView = 'dna';
         this.hideSubmenu();
         
         // Initialize DNA visualization if not already done
         if (!this.dnaVisualization) {
+            console.log('🔍 Checking KernelDNAVisualization availability...');
+            console.log('🔍 typeof KernelDNAVisualization:', typeof KernelDNAVisualization);
+            console.log('🔍 window.KernelDNAVisualization:', typeof window.KernelDNAVisualization);
+            
             if (typeof KernelDNAVisualization !== 'undefined') {
-                this.dnaVisualization = new KernelDNAVisualization();
-                this.dnaVisualization.init();
+                console.log('✅ Creating new KernelDNAVisualization instance');
+                try {
+                    this.dnaVisualization = new KernelDNAVisualization();
+                    console.log('✅ Instance created, calling init()...');
+                    const initResult = this.dnaVisualization.init();
+                    if (initResult === false) {
+                        console.error('❌ init() returned false - initialization failed');
+                        this.dnaVisualization = null;
+                        return;
+                    }
+                    console.log('✅ KernelDNAVisualization initialized');
+                } catch (error) {
+                    console.error('❌ Error initializing KernelDNAVisualization:', error);
+                    console.error('❌ Error details:', {
+                        message: error.message,
+                        stack: error.stack,
+                        name: error.name
+                    });
+                    alert('Ошибка инициализации Kernel DNA: ' + error.message + '\nПроверьте консоль для деталей.');
+                    return;
+                }
+            } else if (typeof window.KernelDNAVisualization !== 'undefined') {
+                console.log('✅ Using window.KernelDNAVisualization');
+                try {
+                    this.dnaVisualization = new window.KernelDNAVisualization();
+                    const initResult = this.dnaVisualization.init();
+                    if (initResult === false) {
+                        console.error('❌ init() returned false - initialization failed');
+                        this.dnaVisualization = null;
+                        return;
+                    }
+                    console.log('✅ KernelDNAVisualization initialized from window');
+                } catch (error) {
+                    console.error('❌ Error initializing KernelDNAVisualization from window:', error);
+                    alert('Ошибка инициализации Kernel DNA: ' + error.message);
+                    return;
+                }
             } else {
                 console.error('❌ KernelDNAVisualization class not loaded');
+                console.error('❌ Available window objects:', Object.keys(window).filter(k => k.includes('DNA') || k.includes('Kernel') || k.includes('Visualization')));
+                console.error('❌ THREE available:', typeof THREE);
+                console.error('❌ THREE.WebGLRenderer available:', typeof THREE?.WebGLRenderer);
+                alert('Kernel DNA Visualization не загружен. Проверьте:\n1. Загружен ли Three.js\n2. Загружен ли kernel-dna.js\n3. Консоль браузера для ошибок');
                 return;
             }
+        } else {
+            console.log('✅ Using existing dnaVisualization instance');
         }
         
         // Hide other UI elements
@@ -271,7 +357,16 @@ class KernelContextMenu {
         }
         
         // Activate DNA visualization
-        this.dnaVisualization.activate();
+        console.log('🎯 Calling dnaVisualization.activate()');
+        try {
+            this.dnaVisualization.activate();
+            console.log('✅ DNA visualization activated');
+        } catch (error) {
+            console.error('❌ Error activating DNA visualization:', error);
+        }
+        
+        // Add exit button
+        this.addExitButton();
     }
     
     addExitButton() {
@@ -333,11 +428,39 @@ class KernelContextMenu {
     }
 
     deactivateViews() {
+        // Reset current view FIRST to prevent draw() from running during cleanup
         this.currentView = null;
         this.selectedPid = null;
         
+        // Deactivate DNA visualization FIRST (before any other cleanup)
+        if (this.dnaVisualization) {
+            this.dnaVisualization.deactivate();
+        }
+        
+        // Clear exit button immediately (both old class and new class)
+        d3.selectAll('.kernel-exit-button, .kernel-dna-exit-button').remove();
+        const exitButtons = document.querySelectorAll('.kernel-dna-exit-button');
+        exitButtons.forEach(btn => {
+            if (btn.parentNode) {
+                btn.parentNode.removeChild(btn);
+            }
+        });
+        
         // Restore radial visualization - restore original styles, don't change stroke-width
-        d3.selectAll('.process-line, .process-circle, .process-name')
+        // IMPORTANT: Don't modify stroke-width, only opacity
+        d3.selectAll('.process-line')
+            .transition()
+            .duration(300)
+            .style('opacity', function() {
+                // Restore original opacity without changing stroke-width
+                return d3.select(this).attr('data-original-opacity') || '0.05';
+            })
+            .attr('stroke-width', function() {
+                // Preserve original stroke-width (0.4)
+                return d3.select(this).attr('data-original-stroke-width') || '0.4';
+            });
+        
+        d3.selectAll('.process-circle, .process-name')
             .transition()
             .duration(300)
             .style('opacity', 1);
@@ -381,24 +504,11 @@ class KernelContextMenu {
             window.connectionsManager.startAutoUpdate(3000);
         }
         
-        // Deactivate DNA visualization (both regular and timeline modes)
-        if (this.dnaVisualization) {
-            this.dnaVisualization.deactivate();
-        }
-        
-        // Reset current view
-        if (this.currentView === 'dna-timeline') {
-            this.currentView = null;
-        }
-        
         // Clear Matrix View (including panel and backdrop)
         d3.selectAll('.matrix-view-item, .matrix-header, .matrix-panel-bg, .matrix-backdrop').remove();
         
         // Clear Timeline events
         d3.selectAll('.timeline-event').remove();
-        
-        // Clear exit button
-        d3.selectAll('.kernel-exit-button').remove();
         
         // Restore Bezier curves - ensure all curves are visible with original styles
         d3.selectAll('.bezier-curve')
@@ -510,12 +620,13 @@ class KernelContextMenu {
             return;
         }
         
+        // Diegetic UI: muted cold tones for resources
         const resources = [
-            { key: 'cpu', label: 'CPU', color: '#4a90e2' },
-            { key: 'mem', label: 'MEM', color: '#4ae24a' },
-            { key: 'io', label: 'IO', color: '#e24a4a' },
-            { key: 'net', label: 'NET', color: '#e2e24a' },
-            { key: 'fd', label: 'FD', color: '#9a4ae2' }
+            { key: 'cpu', label: 'CPU', color: '#5a7a9a' },  // Muted blue-gray
+            { key: 'mem', label: 'MEM', color: '#6a8a8a' },  // Muted teal-gray
+            { key: 'io', label: 'IO', color: '#7a6a8a' },     // Muted purple-gray
+            { key: 'net', label: 'NET', color: '#6a7a9a' },   // Muted blue-gray
+            { key: 'fd', label: 'FD', color: '#7a8a8a' }     // Muted gray
         ];
         
         // Calculate max values for normalization
@@ -533,7 +644,7 @@ class KernelContextMenu {
             .style('opacity', 0)
             .raise(); // Place on top
         
-        // Title "MATRIX VIEW" like "OVERALL ASSESSMENT" on screenshot
+        // Title "MATRIX VIEW" - Diegetic UI style
         headerGroup.append('text')
             .attr('x', startX)
             .attr('y', startY - 30)
@@ -541,10 +652,11 @@ class KernelContextMenu {
             .style('font-family', 'Share Tech Mono, monospace')
             .style('font-size', '13px')
             .style('font-weight', 'bold')
-            .style('fill', '#ffffff')
-            .style('letter-spacing', '1px');
+            .style('fill', '#c8ccd4') // Milk-gray text
+            .style('letter-spacing', '1px')
+            .style('opacity', 0.9);
         
-        // Column headers
+        // Column headers - Diegetic UI style
         headerGroup.append('text')
             .attr('x', startX)
             .attr('y', startY - 10)
@@ -552,13 +664,15 @@ class KernelContextMenu {
             .style('font-family', 'Share Tech Mono, monospace')
             .style('font-size', '11px')
             .style('font-weight', 'bold')
-            .style('fill', '#e0e0e0');
+            .style('fill', '#c8ccd4') // Milk-gray text
+            .style('opacity', 0.8);
         
         // Animate appearance after elements are added
         headerGroup.transition()
             .duration(300)
             .style('opacity', 1);
         
+        // Resource headers - Diegetic UI: muted colors
         resources.forEach((r, i) => {
             headerGroup.append('text')
                 .attr('x', resourceStartX + i * resourceSpacing)
@@ -567,7 +681,8 @@ class KernelContextMenu {
                 .style('font-family', 'Share Tech Mono, monospace')
                 .style('font-size', '11px')
                 .style('font-weight', 'bold')
-                .style('fill', r.color);
+                .style('fill', r.color) // Muted colors
+                .style('opacity', 0.8);
         });
         
         // Draw process rows
@@ -600,10 +715,19 @@ class KernelContextMenu {
                 this.activateTimelineView();
             })
             .on('mouseenter', function() {
+                // Diegetic UI: subtle highlight on hover
                 d3.select(this).style('opacity', 1);
+                // Slightly brighten text on hover
+                d3.select(this).select('text.pid-text')
+                    .style('fill', '#dde2ea') // Slightly brighter on hover
+                    .style('opacity', 1);
             })
             .on('mouseleave', function() {
-                d3.select(this).style('opacity', 0.8);
+                d3.select(this).style('opacity', 0.85);
+                // Restore original text color
+                d3.select(this).select('text.pid-text')
+                    .style('fill', '#c8ccd4') // Back to milk-gray
+                    .style('opacity', 0.9);
             });
         
         // Ensure rows stay on top after all handlers are attached
@@ -611,7 +735,7 @@ class KernelContextMenu {
         
         console.log('✅ Created', rowsUpdate.size(), 'row elements');
         
-        // PID - only add if not exists
+        // PID - Diegetic UI style
         rowsUpdate.selectAll('text.pid-text').remove();
         rowsUpdate.append('text')
             .attr('class', 'pid-text')
@@ -620,8 +744,9 @@ class KernelContextMenu {
             .text(d => d.pid)
             .style('font-family', 'Share Tech Mono, monospace')
             .style('font-size', '11px')
-            .style('fill', '#e0e0e0')
-            .style('font-weight', 'bold');
+            .style('fill', '#c8ccd4') // Milk-gray text
+            .style('font-weight', 'bold')
+            .style('opacity', 0.9);
         
         // Resource bars
         resources.forEach((r, resIndex) => {
@@ -630,18 +755,18 @@ class KernelContextMenu {
                 .attr('class', `resource-${r.key}`)
                 .attr('transform', `translate(${resourceStartX + resIndex * resourceSpacing}, 0)`);
             
-            // Background bar - dark style
+            // Background bar - Diegetic UI: darker, more subtle
             resourceGroup.append('rect')
                 .attr('x', 0)
                 .attr('y', -8)
                 .attr('width', 60)
                 .attr('height', 16)
-                .style('fill', 'rgba(40, 40, 50, 0.6)')
-                .style('stroke', 'rgba(200, 200, 200, 0.2)')
+                .style('fill', 'rgba(20, 26, 36, 0.6)') // Darker background
+                .style('stroke', 'rgba(160, 170, 190, 0.2)') // Subtle border
                 .style('stroke-width', '0.5px')
                 .style('rx', 2);
             
-            // Value bar
+            // Value bar - Diegetic UI: muted colors with subtle glow
             resourceGroup.append('rect')
                 .attr('x', 0)
                 .attr('y', -8)
@@ -651,19 +776,20 @@ class KernelContextMenu {
                     return normalized * 60;
                 })
                 .attr('height', 16)
-                .style('fill', r.color)
-                .style('opacity', 0.7)
+                .style('fill', r.color) // Muted color
+                .style('opacity', 0.6) // More transparent
                 .style('rx', 2);
             
-            // Tooltip
+            // Tooltip - Diegetic UI style
             resourceGroup.on('mouseenter', function(event, d) {
                 const value = d[r.key] || 0;
                 const tooltip = d3.select('body')
                     .append('div')
                     .attr('class', 'matrix-tooltip')
                     .style('position', 'absolute')
-                    .style('background', 'rgba(0,0,0,0.9)')
-                    .style('color', 'white')
+                    .style('background', 'rgba(12, 18, 28, 0.95)') // Diegetic UI background
+                    .style('border', '1px solid rgba(160, 170, 190, 0.35)') // Subtle border
+                    .style('color', '#c8ccd4') // Milk-gray text
                     .style('padding', '6px 10px')
                     .style('border-radius', '4px')
                     .style('font-size', '11px')
@@ -682,11 +808,11 @@ class KernelContextMenu {
             });
         });
         
-        // Animate appearance
+        // Animate appearance - Diegetic UI: subtle opacity
         rowsUpdate.transition()
             .duration(300)
             .delay((d, i) => i * 20)
-            .style('opacity', 0.8)
+            .style('opacity', 0.85) // Slightly more visible
             .on('end', function() {
                 console.log('✅ Matrix row animation completed');
             });

@@ -11,6 +11,7 @@ import time
 import random
 import platform
 import subprocess
+import re
 from datetime import datetime
 from flask import Flask, jsonify, render_template, send_from_directory
 import psutil
@@ -26,12 +27,46 @@ app = Flask(__name__)
 
 # Configuration
 class Config:
-    DEBUG = True
+    # Detect environment: production if DEBUG env var is not set or is False
+    DEBUG = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
+    ENV = os.getenv('FLASK_ENV', 'production' if not DEBUG else 'development')
     STATIC_FOLDER = 'static'
     TEMPLATES_FOLDER = 'templates'
     API_PREFIX = '/api'
+    # Cache settings
+    SEND_FILE_MAX_AGE_DEFAULT = 0 if DEBUG else 31536000  # 1 year in production
 
 app.config.from_object(Config)
+
+# CORS and cache control headers
+@app.after_request
+def add_headers(response):
+    """Add CORS headers and cache control based on environment"""
+    # Add CORS headers for all API requests
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    
+    # Only apply cache control to static files (JS, CSS, images)
+    if response.content_type and (
+        'text/javascript' in response.content_type or 
+        'application/javascript' in response.content_type or
+        'text/css' in response.content_type or
+        'image/' in response.content_type
+    ):
+        if app.config['DEBUG']:
+            # Development: no cache
+            response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+            response.headers['Pragma'] = 'no-cache'
+            response.headers['Expires'] = '0'
+        else:
+            # Production: long cache with revalidation
+            # Files with ?v= parameter will be cached, but browser will check for updates
+            response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+            # Remove Pragma header in production (not needed with Cache-Control)
+            if 'Pragma' in response.headers:
+                del response.headers['Pragma']
+    return response
 
 def get_system_info():
     """Get system information"""
@@ -514,6 +549,69 @@ def get_mock_process_kernel_map():
         "cron": ["kernel/time/timer.c", "kernel/sched/clock.c"]
     }
 
+def get_proc_matrix_data():
+    """Build Matrix view data - processes and their resource usage"""
+    matrix = []
+
+    # Collect processes with required fields
+    processes = []
+    for proc in psutil.process_iter(
+        ['pid', 'name', 'cpu_percent', 'memory_info', 'io_counters', 'num_fds']
+    ):
+        try:
+            info = proc.info
+            pid = info['pid']
+
+            # CPU usage (may be 0 on first call)
+            cpu_percent = info.get('cpu_percent') or 0.0
+
+            # Memory: resident set size in MB
+            mem_mb = 0.0
+            mem_info = info.get('memory_info')
+            if mem_info:
+                mem_mb = mem_info.rss / 1024 / 1024
+
+            # IO: sum of read/write bytes in MB
+            io_total_mb = 0.0
+            io_counters = info.get('io_counters')
+            if io_counters:
+                io_total_mb = (
+                    io_counters.read_bytes + io_counters.write_bytes
+                ) / 1024 / 1024
+
+            # NET: count TCP entries from /proc/[pid]/net/tcp
+            net_connections = 0
+            tcp_path = f'/proc/{pid}/net/tcp'
+            try:
+                if os.path.exists(tcp_path):
+                    with open(tcp_path, 'r') as f:
+                        lines = f.readlines()
+                        # subtract header
+                        net_connections = max(0, len(lines) - 1)
+            except (IOError, PermissionError):
+                pass
+
+            # FD: number of file descriptors
+            num_fds = info.get('num_fds') or 0
+
+            processes.append({
+                'pid': pid,
+                'name': info.get('name') or 'unknown',
+                'cpu': float(cpu_percent),
+                'mem': float(mem_mb),
+                'io': float(io_total_mb),
+                'net': int(net_connections),
+                'fd': int(num_fds),
+            })
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    # Sort by CPU usage and take top 20 for clarity
+    processes.sort(key=lambda p: p['cpu'], reverse=True)
+    matrix = processes[:20]
+
+    return matrix
+
 # API Endpoints
 
 @app.route('/')
@@ -761,14 +859,51 @@ def get_processes_detailed():
                 memory_info = proc.info['memory_info']
                 memory_mb = memory_info.rss / 1024 / 1024
                 
+                # Get num_fds with fallback
+                num_fds = proc.info.get('num_fds')
+                if num_fds is None or num_fds == 0:
+                    # Try to count from /proc/[pid]/fd directly
+                    try:
+                        pid = proc.info['pid']
+                        fd_dir = f'/proc/{pid}/fd'
+                        if os.path.exists(fd_dir):
+                            num_fds = len([f for f in os.listdir(fd_dir) if f.isdigit()])
+                        else:
+                            num_fds = 0
+                    except (OSError, PermissionError):
+                        num_fds = 0
+                if num_fds is None:
+                    num_fds = 0
+                
+                # Get process name - use cmdline for nginx to get full name like "nginx: master process"
+                process_name = proc.info['name']
+                try:
+                    cmdline = proc.cmdline()
+                    if cmdline and len(cmdline) > 0:
+                        # For nginx, cmdline[0] is "nginx:" and we want the full description
+                        if cmdline[0] == 'nginx:' and len(cmdline) > 1:
+                            process_name = f"nginx: {cmdline[1]}"
+                except (psutil.AccessDenied, psutil.NoSuchProcess):
+                    pass
+                
+                # Get cmdline for better process identification
+                cmdline_str = ''
+                try:
+                    cmdline = proc.cmdline()
+                    if cmdline:
+                        cmdline_str = ' '.join(cmdline)
+                except (psutil.AccessDenied, psutil.NoSuchProcess):
+                    pass
+                
                 processes.append({
                     'pid': proc.info['pid'],
-                    'name': proc.info['name'],
+                    'name': process_name,
+                    'cmdline': cmdline_str,  # Add cmdline for better identification
                     'status': proc.info['status'],
                     'memory_mb': round(memory_mb, 1),
                     'cpu_percent': round(proc.info.get('cpu_percent', 0), 1),
                     'num_threads': proc.info.get('num_threads', 0),
-                    'num_fds': proc.info.get('num_fds', 0)
+                    'num_fds': num_fds
                 })
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
@@ -884,7 +1019,31 @@ def get_process_fds_info(pid):
                     'fd': fd.fd if hasattr(fd, 'fd') else None
                 })
         except (psutil.AccessDenied, psutil.NoSuchProcess, AttributeError):
-            pass
+            # Fallback: try to read from /proc/[pid]/fd directly
+            try:
+                fd_dir = f'/proc/{pid}/fd'
+                if os.path.exists(fd_dir):
+                    for fd_num in os.listdir(fd_dir):
+                        if fd_num.isdigit():
+                            try:
+                                fd_path = os.readlink(f'{fd_dir}/{fd_num}')
+                                # Filter out special files (sockets, pipes, etc.)
+                                # Also filter out IP addresses (which might appear as socket paths)
+                                # Check if it looks like an IP address (e.g., "0.0.0.0", "127.0.0.1")
+                                ip_pattern = re.compile(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}')
+                                if (fd_path.startswith('/') and 
+                                    not fd_path.startswith('socket:') and 
+                                    not fd_path.startswith('pipe:') and 
+                                    not fd_path.startswith('anon_inode:') and
+                                    not ip_pattern.match(fd_path)):  # Filter IP addresses
+                                    open_files.append({
+                                        'path': fd_path,
+                                        'fd': int(fd_num)
+                                    })
+                            except (OSError, ValueError):
+                                pass
+            except (OSError, PermissionError):
+                pass
         
         # Get connections (sockets)
         connections = []
@@ -911,6 +1070,498 @@ def get_process_fds_info(pid):
         return {'error': f'Access denied or process not found: {str(e)}'}
     except Exception as e:
         return {'error': f'Error getting FDs: {str(e)}'}
+
+
+@app.route('/api/proc-matrix')
+def get_proc_matrix():
+    """API: Matrix view data (processes vs CPU / MEM / IO / NET / FD)"""
+    try:
+        matrix = get_proc_matrix_data()
+        return jsonify({
+            'matrix': matrix,
+            'timestamp': datetime.now().isoformat(),
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/proc-timeline')
+def get_proc_timeline():
+    """API: Timeline view data - events for a specific process"""
+    try:
+        from flask import request
+        pid = request.args.get('pid', type=int)
+        if not pid:
+            return jsonify({'error': 'PID parameter required'}), 400
+        
+        timeline = []
+        
+        # Check if process exists
+        try:
+            proc = psutil.Process(pid)
+        except psutil.NoSuchProcess:
+            return jsonify({'error': f'Process {pid} not found'}), 404
+        
+        # Get process info
+        proc_info = proc.as_dict(['pid', 'name', 'create_time', 'status'])
+        
+        # Event: exec (process creation)
+        timeline.append({
+            'type': 'exec',
+            'timestamp': datetime.fromtimestamp(proc_info['create_time']).isoformat(),
+            'pid': pid
+        })
+        
+        # Event: mmap (from /proc/[pid]/maps)
+        try:
+            maps_path = f'/proc/{pid}/maps'
+            if os.path.exists(maps_path):
+                with open(maps_path, 'r') as f:
+                    map_count = len(f.readlines())
+                    if map_count > 0:
+                        timeline.append({
+                            'type': 'mmap',
+                            'timestamp': datetime.now().isoformat(),
+                            'pid': pid,
+                            'count': map_count
+                        })
+        except (IOError, PermissionError):
+            pass
+        
+        # Event: read/write (from /proc/[pid]/io)
+        try:
+            io_path = f'/proc/{pid}/io'
+            if os.path.exists(io_path):
+                with open(io_path, 'r') as f:
+                    io_data = {}
+                    for line in f:
+                        if ':' in line:
+                            key, value = line.split(':', 1)
+                            io_data[key.strip()] = int(value.strip())
+                    
+                    if io_data.get('read_bytes', 0) > 0:
+                        timeline.append({
+                            'type': 'read',
+                            'timestamp': datetime.now().isoformat(),
+                            'pid': pid,
+                            'bytes': io_data.get('read_bytes', 0)
+                        })
+                    
+                    if io_data.get('write_bytes', 0) > 0:
+                        timeline.append({
+                            'type': 'write',
+                            'timestamp': datetime.now().isoformat(),
+                            'pid': pid,
+                            'bytes': io_data.get('write_bytes', 0)
+                        })
+        except (IOError, PermissionError):
+            pass
+        
+        # Event: connect/accept (from /proc/[pid]/net/tcp)
+        try:
+            tcp_path = f'/proc/{pid}/net/tcp'
+            if os.path.exists(tcp_path):
+                with open(tcp_path, 'r') as f:
+                    lines = f.readlines()
+                    if len(lines) > 1:  # Has connections (excluding header)
+                        # Check connection states
+                        for line in lines[1:]:  # Skip header
+                            parts = line.split()
+                            if len(parts) >= 4:
+                                state = parts[3]
+                                # State 01 = ESTABLISHED (connect), 0A = LISTEN (accept)
+                                if state == '01':
+                                    timeline.append({
+                                        'type': 'connect',
+                                        'timestamp': datetime.now().isoformat(),
+                                        'pid': pid
+                                    })
+                                elif state == '0A':
+                                    timeline.append({
+                                        'type': 'accept',
+                                        'timestamp': datetime.now().isoformat(),
+                                        'pid': pid
+                                    })
+        except (IOError, PermissionError):
+            pass
+        
+        # Sort timeline by timestamp
+        timeline.sort(key=lambda x: x['timestamp'])
+        
+        return jsonify({
+            'timeline': timeline,
+            'pid': pid,
+            'name': proc_info.get('name', 'unknown'),
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/execution-context')
+def get_execution_context():
+    """Get execution context data for Ring-1 visualization"""
+    try:
+        if platform.system() != 'Linux':
+            return jsonify({
+                'mode': 'kernel',
+                'cpu_state': 'running',
+                'syscall_active': False,
+                'syscall_name': None,
+                'interrupts': [],
+                'preempted': False,
+                'preempted_pid': None
+            })
+        
+        # Determine mode (user/kernel) by checking active processes
+        mode = 'user'  # Default
+        syscall_active = False
+        syscall_name = None
+        active_pid = None
+        active_syscalls = []  # List of processes with active syscalls: [{pid, syscall_name}]
+        
+        # Check for active syscalls
+        try:
+            proc_dirs = [d for d in os.listdir('/proc') if d.isdigit()]
+            sampled_procs = proc_dirs[:100]  # Sample more processes
+            
+            syscall_count = 0
+            for pid in sampled_procs:
+                try:
+                    syscall_path = f'/proc/{pid}/syscall'
+                    if os.path.exists(syscall_path):
+                        with open(syscall_path, 'r') as f:
+                            line = f.read().strip()
+                            if line and line != '-1':
+                                parts = line.split()
+                                if parts:
+                                    syscall_num = int(parts[0])
+                                    if syscall_num > 0:
+                                        syscall_count += 1
+                                        current_syscall_name = SYSCALL_NAMES.get(syscall_num, f'syscall_{syscall_num}')
+                                        
+                                        # Add to list of active syscalls
+                                        active_syscalls.append({
+                                            'pid': int(pid),
+                                            'syscall_name': current_syscall_name
+                                        })
+                                        
+                                        if not syscall_active:  # Get first active syscall for main display
+                                            syscall_active = True
+                                            syscall_name = current_syscall_name
+                                            active_pid = int(pid)
+                                        mode = 'kernel'  # Syscall means kernel mode
+                except (ValueError, IOError, PermissionError):
+                    continue
+            
+            # If we found syscalls, we're in kernel mode
+            if syscall_count > 0:
+                mode = 'kernel'
+        except PermissionError:
+            pass
+        
+        # Get CPU state from /proc/stat
+        cpu_state = 'running'
+        try:
+            with open('/proc/stat', 'r') as f:
+                cpu_line = f.readline()
+                if cpu_line.startswith('cpu '):
+                    parts = cpu_line.split()
+                    if len(parts) >= 5:
+                        idle_time = int(parts[4])
+                        total_time = sum(int(p) for p in parts[1:11] if p.isdigit())
+                        if total_time > 0:
+                            idle_percent = (idle_time / total_time) * 100
+                            if idle_percent > 90:
+                                cpu_state = 'idle'
+                            elif idle_percent > 50:
+                                cpu_state = 'sleeping'
+        except (IOError, ValueError, IndexError):
+            pass
+        
+        # Get recent interrupts and associate with processes
+        interrupts = []
+        # Get list of ALL processes (not just active syscalls) for better distribution
+        all_process_pids = []
+        try:
+            proc_dirs = [d for d in os.listdir('/proc') if d.isdigit()]
+            # Get all process PIDs (limit to reasonable number)
+            all_process_pids = [int(pid) for pid in proc_dirs[:200] if pid.isdigit()]
+        except PermissionError:
+            pass
+        
+        # Track previous interrupt counts to detect new interrupts
+        previous_interrupt_counts = {}
+        try:
+            # Try to read previous counts from a simple cache (in-memory)
+            # For now, we'll just report all interrupts and let frontend handle distribution
+            with open('/proc/interrupts', 'r') as f:
+                lines = f.readlines()
+                # Parse interrupt counts
+                for line in lines[1:]:  # Skip header
+                    if line.strip():
+                        parts = line.split()
+                        if len(parts) > 1:
+                            # Check if any CPU has non-zero interrupts
+                            for i in range(1, min(len(parts), 5)):  # Check first 4 CPUs
+                                try:
+                                    count = int(parts[i])
+                                    # Report interrupts more frequently (every 10 instead of 100)
+                                    if count > 0:
+                                        # Extract IRQ number
+                                        irq_num = parts[0].rstrip(':')
+                                        
+                                        # Associate with a process - use CPU and IRQ to select process
+                                        # This ensures consistent mapping: same CPU+IRQ = same process
+                                        associated_pid = None
+                                        if all_process_pids:
+                                            # Use CPU and IRQ to create a consistent hash for process selection
+                                            hash_value = (i - 1) * 100 + int(irq_num) if irq_num.isdigit() else (i - 1) * 100
+                                            process_index = hash_value % len(all_process_pids)
+                                            associated_pid = all_process_pids[process_index]
+                                        
+                                        interrupts.append({
+                                            'cpu': i - 1,
+                                            'irq': irq_num,
+                                            'count': count,
+                                            'pid': associated_pid,  # Always associate with a process
+                                            'timestamp': datetime.now().isoformat()
+                                        })
+                                        break  # Only one per IRQ line
+                                except (ValueError, IndexError):
+                                    continue
+        except (IOError, PermissionError):
+            pass
+        
+        # Check for preempted processes (simplified - check if process is in 'R' state but not on CPU)
+        preempted = False
+        preempted_pid = None
+        try:
+            # This is a simplified check - in reality, preemption detection is more complex
+            # We check if there are processes in 'R' state (runnable but not running)
+            proc_dirs = [d for d in os.listdir('/proc') if d.isdigit()]
+            for pid in proc_dirs[:20]:  # Check first 20
+                try:
+                    stat_path = f'/proc/{pid}/stat'
+                    if os.path.exists(stat_path):
+                        with open(stat_path, 'r') as f:
+                            stat_data = f.read().split()
+                            if len(stat_data) > 2:
+                                state = stat_data[2]
+                                # 'R' = running/runnable, but if it's not the active one, it might be preempted
+                                if state == 'R' and active_pid and int(pid) != active_pid:
+                                    preempted = True
+                                    preempted_pid = int(pid)
+                                    break
+                except (ValueError, IOError, PermissionError, IndexError):
+                    continue
+        except PermissionError:
+            pass
+        
+        return jsonify({
+            'mode': mode,
+            'cpu_state': cpu_state,
+            'syscall_active': syscall_active,
+            'syscall_name': syscall_name,
+            'active_pid': active_pid,
+            'active_syscalls': active_syscalls,  # List of processes with active syscalls
+            'interrupts': interrupts[:10],  # Limit to 10 most recent
+            'preempted': preempted,
+            'preempted_pid': preempted_pid,
+            'cpu_count': psutil.cpu_count(),
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+def get_kernel_dna_data():
+    """
+    Collect Kernel DNA data: syscalls, interrupts, context switches, locks
+    Returns data structured for DNA visualization
+    """
+    dna_data = {
+        'nucleotides': [],  # List of events: syscall, interrupt, context_switch, lock
+        'genes': [],  # Kernel subsystems segments
+        'mutations': [],  # Anomalies detected
+        'timestamp': datetime.now().isoformat()
+    }
+    
+    # 1. Collect syscalls (A nucleotides)
+    try:
+        syscalls = get_real_system_calls()
+        for syscall in syscalls[:20]:  # Limit to 20 most frequent
+            dna_data['nucleotides'].append({
+                'type': 'syscall',
+                'code': 'A',
+                'name': syscall['name'],
+                'count': syscall.get('count', '0'),
+                'subsystem': map_syscall_to_subsystem(syscall['name']),
+                'timestamp': datetime.now().isoformat()
+            })
+    except Exception as e:
+        print(f"Error collecting syscalls: {e}")
+    
+    # 2. Collect interrupts (T nucleotides)
+    try:
+        with open('/proc/interrupts', 'r') as f:
+            interrupt_lines = f.readlines()
+            # Skip header line
+            for line in interrupt_lines[1:11]:  # First 10 interrupt lines
+                parts = line.strip().split()
+                if len(parts) > 1:
+                    interrupt_name = parts[0].rstrip(':')
+                    total_count = sum(int(x) for x in parts[1:] if x.isdigit())
+                    if total_count > 0:
+                        dna_data['nucleotides'].append({
+                            'type': 'interrupt',
+                            'code': 'T',
+                            'name': interrupt_name,
+                            'count': total_count,
+                            'subsystem': map_interrupt_to_subsystem(interrupt_name),
+                            'timestamp': datetime.now().isoformat()
+                        })
+    except (IOError, ValueError, PermissionError) as e:
+        print(f"Error collecting interrupts: {e}")
+        # Fallback: generate some sample interrupts
+        for irq_name in ['timer', 'keyboard', 'mouse', 'network']:
+            dna_data['nucleotides'].append({
+                'type': 'interrupt',
+                'code': 'T',
+                'name': irq_name,
+                'count': random.randint(100, 1000),
+                'subsystem': map_interrupt_to_subsystem(irq_name),
+                'timestamp': datetime.now().isoformat()
+            })
+    
+    # 3. Collect context switches (C nucleotides)
+    try:
+        with open('/proc/stat', 'r') as f:
+            for line in f:
+                if line.startswith('ctxt '):
+                    ctxt_count = int(line.split()[1])
+                    # Calculate context switches per second (simplified)
+                    dna_data['nucleotides'].append({
+                        'type': 'context_switch',
+                        'code': 'C',
+                        'name': 'context_switch',
+                        'count': ctxt_count,
+                        'subsystem': 'sched',
+                        'timestamp': datetime.now().isoformat()
+                    })
+                    break
+    except (IOError, ValueError, PermissionError) as e:
+        print(f"Error collecting context switches: {e}")
+    
+    # 4. Collect locks (G nucleotides) - from /proc/locks
+    try:
+        with open('/proc/locks', 'r') as f:
+            lock_lines = f.readlines()
+            lock_count = len(lock_lines)
+            if lock_count > 0:
+                dna_data['nucleotides'].append({
+                    'type': 'lock',
+                    'code': 'G',
+                    'name': 'mutex/lock',
+                    'count': lock_count,
+                    'subsystem': 'kernel',
+                    'timestamp': datetime.now().isoformat()
+                })
+    except (IOError, PermissionError) as e:
+        # Fallback: estimate locks based on process count
+        try:
+            process_count = len(psutil.pids())
+            estimated_locks = process_count // 10
+            dna_data['nucleotides'].append({
+                'type': 'lock',
+                'code': 'G',
+                'name': 'mutex/lock',
+                'count': estimated_locks,
+                'subsystem': 'kernel',
+                'timestamp': datetime.now().isoformat()
+            })
+        except:
+            pass
+    
+    # 5. Define gene segments (kernel subsystems)
+    dna_data['genes'] = [
+        {'name': 'sched', 'start': 0, 'end': 0.2, 'color': '#58b6d8'},
+        {'name': 'net', 'start': 0.2, 'end': 0.4, 'color': '#4a9eff'},
+        {'name': 'fs', 'start': 0.4, 'end': 0.6, 'color': '#6bcf7f'},
+        {'name': 'mm', 'start': 0.6, 'end': 0.8, 'color': '#ffa94d'},
+        {'name': 'drivers', 'start': 0.8, 'end': 1.0, 'color': '#ff6b9d'}
+    ]
+    
+    # 6. Detect mutations (anomalies)
+    mutations = []
+    
+    # Check for syscall flood
+    syscall_count = sum(1 for n in dna_data['nucleotides'] if n['type'] == 'syscall')
+    if syscall_count > 15:
+        mutations.append({
+            'type': 'syscall_flood',
+            'severity': 'high',
+            'message': f'Syscall flood detected: {syscall_count} active syscalls',
+            'position': 0.3
+        })
+    
+    # Check for abnormal context switching
+    ctxt_switches = [n for n in dna_data['nucleotides'] if n['type'] == 'context_switch']
+    if ctxt_switches and ctxt_switches[0]['count'] > 1000000:
+        mutations.append({
+            'type': 'abnormal_context_switch',
+            'severity': 'medium',
+            'message': 'Abnormal context switching rate detected',
+            'position': 0.5
+        })
+    
+    # Check for lock contention
+    locks = [n for n in dna_data['nucleotides'] if n['type'] == 'lock']
+    if locks and locks[0]['count'] > 100:
+        mutations.append({
+            'type': 'lock_contention',
+            'severity': 'medium',
+            'message': f'High lock contention: {locks[0]["count"]} active locks',
+            'position': 0.7
+        })
+    
+    dna_data['mutations'] = mutations
+    
+    return dna_data
+
+def map_syscall_to_subsystem(syscall_name):
+    """Map syscall name to kernel subsystem"""
+    syscall_lower = syscall_name.lower()
+    if any(x in syscall_lower for x in ['read', 'write', 'open', 'close', 'stat', 'fsync']):
+        return 'fs'
+    elif any(x in syscall_lower for x in ['socket', 'connect', 'send', 'recv', 'bind']):
+        return 'net'
+    elif any(x in syscall_lower for x in ['mmap', 'munmap', 'brk', 'mprotect']):
+        return 'mm'
+    elif any(x in syscall_lower for x in ['clone', 'fork', 'exec', 'wait', 'exit']):
+        return 'sched'
+    else:
+        return 'kernel'
+
+def map_interrupt_to_subsystem(interrupt_name):
+    """Map interrupt name to kernel subsystem"""
+    irq_lower = interrupt_name.lower()
+    if 'timer' in irq_lower:
+        return 'sched'
+    elif any(x in irq_lower for x in ['eth', 'network', 'wifi']):
+        return 'net'
+    elif any(x in irq_lower for x in ['keyboard', 'mouse', 'usb']):
+        return 'drivers'
+    else:
+        return 'kernel'
+
+@app.route('/api/kernel-dna')
+def kernel_dna():
+    """API endpoint for Kernel DNA visualization data"""
+    try:
+        data = get_kernel_dna_data()
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({'error': 'Not found'}), 404
@@ -931,6 +1582,7 @@ if __name__ == '__main__':
     print(f"   - {Config.API_PREFIX}/kernel-data")
     print(f"   - {Config.API_PREFIX}/process-kernel-map")
     print(f"   - {Config.API_PREFIX}/nginx-files")
+    print(f"   - {Config.API_PREFIX}/execution-context")
     print(f"   - /health")
     
     app.run(

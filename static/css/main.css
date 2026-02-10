@@ -109,17 +109,16 @@ svg {
     font-family: 'Share Tech Mono', monospace;
 }
 
-/* Syscall styles */
+/* Syscall styles - Diegetic UI panel style */
 .syscall-box {
-    fill: rgba(255, 255, 255, 0.04);
-    stroke: #aaa;
-    stroke-width: 0.5;
+    /* Styles are now set inline in JavaScript for diegetic UI look */
+    transition: all 0.2s ease;
+    cursor: default;
 }
 
 .syscall-text {
-    font-size: 12px;
-    fill: #444;
-    font-family: 'Share Tech Mono', monospace;
+    /* Styles are now set inline in JavaScript for diegetic UI look */
+    pointer-events: none;
 }
 
 /* File label styles */
@@ -179,8 +178,17 @@ svg {
 }
 
 .right-menu-item:hover {
-    fill: #444;
-    stroke: #D9D9C7; /* Yellowish color on hover */
+    fill: #666;
+    stroke: #888;
+}
+
+/* Selected state - white highlight like in example */
+.right-menu-item[data-item-id].selected,
+.right-menu-item.selected {
+    fill: #ffffff !important;
+    stroke: #ffffff !important;
+    stroke-width: 2px !important;
+    filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.5));
 }
 
 .right-menu-icon {
@@ -191,16 +199,39 @@ svg {
 }
 
 .right-menu-line {
-    stroke: #D9D9C7; /* Yellowish color like logo elements */
-    stroke-width: 1px;
+    /* Now it's a wide rectangle (line) containing text */
+    transition: all 0.3s ease;
+    pointer-events: none; /* Don't interfere with hover on circle */
+}
+
+/* Selected line - white highlight */
+.right-menu-line[data-item-id].selected,
+.right-menu-line.selected {
+    fill: #ffffff !important;
+    stroke: #ffffff !important;
+    stroke-width: 2px !important;
 }
 
 .right-menu-label {
     font-size: 11px;
-    fill: #D9D9C7; /* Yellowish color like logo elements */
+    fill: #333;
     font-family: 'Share Tech Mono', monospace;
     text-anchor: end;
     dominant-baseline: central;
+    transition: all 0.3s ease;
+}
+
+/* Selected label - white highlight */
+.right-menu-label[data-item-id].selected,
+.right-menu-label.selected {
+    fill: #ffffff !important;
+    font-weight: bold !important;
+}
+
+/* Label background (плашка) styles */
+.right-menu-label-bg {
+    transition: all 0.3s ease;
+    pointer-events: none; /* Don't interfere with hover on circle */
 }
 
 /* Legacy semicircle menu styles (kept for compatibility) */
