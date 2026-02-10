@@ -4,17 +4,19 @@ class RightSemicircleMenuManager {
     constructor() {
         console.log('RightSemicircleMenuManager constructor called');
         this.menuItems = [
-            { id: 'kernel', icon: '/static/images/linux-kernel.svg', label: 'Kernel' },
+            { id: 'scheduler', icon: '/static/images/scheduler.svg', label: 'Scheduler' },
             { id: 'processes', icon: '/static/images/process-manager.svg', label: 'Processes' },
             { id: 'memory', icon: '/static/images/memory-manager.svg', label: 'Memory' },
             { id: 'files', icon: '/static/images/file-system.svg', label: 'Files' },
             { id: 'network', icon: '/static/images/network-stack.svg', label: 'Network' },
             { id: 'devices', icon: '/static/images/device-driver.svg', label: 'Devices' },
             { id: 'security', icon: '/static/images/security-module.svg', label: 'Security' },
-            { id: 'scheduler', icon: '/static/images/scheduler.svg', label: 'Scheduler' }
+            { id: 'kernel', icon: '/static/images/linux-kernel.svg', label: 'Kernel DNA' }
         ];
         this.isVisible = false;
         this.hoveredItemId = null; // Track hovered item (for hover-based selection)
+        this.clickHandlerAttached = false; // Track if click handler is already attached
+        this.isClickingKernel = false; // Track if we're in the process of clicking kernel
     }
 
     renderRightSemicircleMenu() {
@@ -97,6 +99,10 @@ class RightSemicircleMenuManager {
             
             // Функция для обработки mouseenter
             const handleMouseEnter = () => {
+                // Don't re-render if clicking on kernel (to prevent interrupting click event)
+                if (this.isClickingKernel) {
+                    return;
+                }
                 this.hoveredItemId = item.id;
                 this.renderRightSemicircleMenu();
                 
@@ -135,16 +141,80 @@ class RightSemicircleMenuManager {
                 }, 200);
             };
             
+            // Функция для обработки клика
+            const handleClick = (event) => {
+                console.log('🖱️ Click detected on item:', item.id, item.label);
+                event.stopPropagation(); // Prevent event bubbling
+                if (item.id === 'kernel' && window.kernelContextMenu) {
+                    // Activate Kernel DNA view using existing method
+                    console.log('🧬 Activating Kernel DNA view from menu');
+                    // Use setTimeout to ensure this happens after any re-rendering
+                    setTimeout(() => {
+                        window.kernelContextMenu.activateDNAView();
+                    }, 10);
+                } else {
+                    console.log('⚠️ Click on kernel item but conditions not met:', {
+                        itemId: item.id,
+                        hasContextMenu: !!window.kernelContextMenu
+                    });
+                }
+            };
+            
+            // Also handle mousedown for kernel item (since click might be interrupted)
+            const handleMouseDown = (event) => {
+                if (item.id === 'kernel') {
+                    console.log('🖱️ Mouse down on kernel item - activating DNA view');
+                    event.stopPropagation();
+                    // Prevent re-rendering during click
+                    this.isClickingKernel = true;
+                    // Use setTimeout to ensure this happens after any re-rendering
+                    setTimeout(() => {
+                        if (window.kernelContextMenu) {
+                            console.log('🧬 Activating Kernel DNA view from mousedown');
+                            window.kernelContextMenu.activateDNAView();
+                        }
+                        // Reset flag after a delay
+                        setTimeout(() => {
+                            this.isClickingKernel = false;
+                        }, 100);
+                    }, 50);
+                }
+            };
+            
             // Добавляем обработчики на hover-прямоугольник
             hoverRect
                 .on('mouseenter', handleMouseEnter)
-                .on('mouseleave', handleMouseLeave);
+                .on('mouseleave', handleMouseLeave)
+                .on('click', (e) => {
+                    console.log('🖱️ Click on hoverRect:', item.id);
+                    e.stopPropagation();
+                    handleClick(e);
+                })
+                .on('mousedown', (e) => {
+                    console.log('🖱️ Mouse down on hoverRect:', item.id);
+                    e.stopPropagation();
+                    if (item.id === 'kernel') {
+                        handleMouseDown(e);
+                    }
+                });
             
             // Также добавляем обработчики на всю группу элементов для полного покрытия
             itemGroup
                 .style('pointer-events', 'all')
                 .on('mouseenter', handleMouseEnter)
-                .on('mouseleave', handleMouseLeave);
+                .on('mouseleave', handleMouseLeave)
+                .on('click', (e) => {
+                    console.log('🖱️ Click on itemGroup:', item.id);
+                    e.stopPropagation();
+                    handleClick(e);
+                })
+                .on('mousedown', (e) => {
+                    console.log('🖱️ Mouse down on itemGroup:', item.id);
+                    e.stopPropagation();
+                    if (item.id === 'kernel') {
+                        handleMouseDown(e);
+                    }
+                });
             
             // Wide line as a rectangle with rounded left side (like in the example)
             // Since menu is on the right, we round the left side (opposite of example where menu is on left)
@@ -163,7 +233,19 @@ class RightSemicircleMenuManager {
                 .style('stroke-width', isHovered ? '2px' : '1px')
                 .style('transition', 'all 0.3s ease')
                 .style('pointer-events', 'all') // Allow hover on line too
-                .style('cursor', 'pointer');
+                .style('cursor', 'pointer')
+                .on('click', (e) => {
+                    console.log('🖱️ Click on wideLine:', item.id);
+                    e.stopPropagation();
+                    handleClick(e);
+                })
+                .on('mousedown', (e) => {
+                    console.log('🖱️ Mouse down on wideLine:', item.id);
+                    e.stopPropagation();
+                    if (item.id === 'kernel') {
+                        handleMouseDown(e);
+                    }
+                });
 
             // Label text inside the wide line (positioned closer to the circle, like in the example)
             // Text should be closer to the right side (circle side) of the line, not centered
@@ -198,7 +280,19 @@ class RightSemicircleMenuManager {
                 .style('stroke-width', isHovered ? '2px' : '1px')
                 .style('cursor', 'pointer')
                 .style('pointer-events', 'all') // Allow hover on circle
-                .style('transition', 'all 0.3s ease');
+                .style('transition', 'all 0.3s ease')
+                .on('click', (e) => {
+                    console.log('🖱️ Click on circle:', item.id);
+                    e.stopPropagation();
+                    handleClick(e);
+                })
+                .on('mousedown', (e) => {
+                    console.log('🖱️ Mouse down on circle:', item.id);
+                    e.stopPropagation();
+                    if (item.id === 'kernel') {
+                        handleMouseDown(e);
+                    }
+                });
 
             // SVG icon inside the circle
             // If hovered (white circle), add dark background for icon visibility
@@ -226,6 +320,27 @@ class RightSemicircleMenuManager {
 
         this.isVisible = true;
         console.log('Right semicircle menu rendered');
+        
+        // Attach event delegation on SVG (only once)
+        if (!this.clickHandlerAttached) {
+            const svg = d3.select('svg');
+            svg.on('click', (event) => {
+                const target = event.target;
+                const itemId = target.getAttribute('data-item-id');
+                
+                if (itemId) {
+                    console.log('🖱️ Click detected via delegation on item:', itemId);
+                    const item = this.menuItems.find(i => i.id === itemId);
+                    if (item && item.id === 'kernel' && window.kernelContextMenu) {
+                        console.log('🧬 Activating Kernel DNA view from menu');
+                        event.stopPropagation();
+                        window.kernelContextMenu.activateDNAView();
+                    }
+                }
+            });
+            this.clickHandlerAttached = true;
+            console.log('✅ Click handler attached via event delegation');
+        }
     }
 
     createSemicirclePath(centerX, centerY, radius, side) {

@@ -101,9 +101,15 @@ function draw() {
         return;
     }
     
+    // Skip drawing if Kernel DNA View is active to prevent style changes to process lines
+    if (window.kernelContextMenu && (window.kernelContextMenu.currentView === 'dna' || window.kernelContextMenu.currentView === 'dna-timeline')) {
+        console.log('⏸️ Skipping draw() - Kernel DNA View is active');
+        return;
+    }
+    
     // Clear all elements to prevent duplication, but preserve system calls
     // and Kernel analysis overlay (Matrix / Timeline submenu & elements)
-    const preserveClasses = '.syscall-box, .syscall-text, .matrix-view-item, .matrix-header, .matrix-panel-bg, .matrix-backdrop, .kernel-exit-button, .kernel-submenu';
+    const preserveClasses = '.syscall-box, .syscall-text, .matrix-view-item, .matrix-header, .matrix-panel-bg, .matrix-backdrop, .kernel-exit-button, .kernel-dna-exit-button, .kernel-submenu';
     svg.selectAll(`*:not(${preserveClasses.split(', ').join('):not(')})`).remove();
     // Also remove system calls explicitly to ensure clean state
     svg.selectAll(".syscall-box, .syscall-text").remove();
@@ -695,21 +701,101 @@ function drawProcessKernelMap2(centerX, centerY) {
             const memoryRange = maxMemory - minMemory;
 
             // Find a process to highlight by default
-            // Priority: 1) python/python3 with accessible files, 
-            //           2) python/python3 without file access check,
-            //           3) nginx (exact match or starts with "nginx:") with accessible files, 
-            //           4) nginx without file access check, 
-            //           5) process with most FDs (accessible),
-            //           6) process with most memory
+            // Priority: 1) nginx (exact match or starts with "nginx:") with accessible files, 
+            //           2) nginx without file access check,
+            //           3) python/python3 with accessible files, 
+            //           4) python/python3 without file access check,
+            //           5) process with most FDs (accessible, excluding browser processes),
+            //           6) process with most memory (excluding browser processes)
             let highlightedProcess = null;
             
-            // First, try to find python/python3 with accessible files (most likely to have accessible files)
+            // Helper function to check if process is a browser process (should be excluded from fallback)
+            const isBrowserProcess = (name) => {
+                if (!name) return false;
+                const lowerName = name.toLowerCase();
+                return lowerName.includes('firefox') || 
+                       lowerName.includes('chrome') || 
+                       lowerName.includes('chromium') ||
+                       lowerName.includes('web content') ||
+                       lowerName.includes('webcontent') ||
+                       lowerName.includes('browser');
+            };
+            
+            // First, try to find nginx master or worker process with accessible files
+            // Look for exact "nginx" or processes that start with "nginx:" (like "nginx: master process" or "nginx: worker process")
+            // Also check for variations like "nginx" in command line
             highlightedProcess = processes.find(p => {
-                if (!p.name) return false;
-                const name = p.name.toLowerCase();
-                const isPython = name.includes('python') || name === 'python3';
-                return isPython && p.num_fds > 0; // Prefer python with accessible files
+                if (!p.name && !p.cmdline) return false;
+                const name = (p.name || '').toLowerCase();
+                const cmdline = (p.cmdline || '').toLowerCase();
+                // Check if it's nginx by name or in command line
+                const isNginx = name === 'nginx' || 
+                               name.startsWith('nginx:') ||
+                               (cmdline.includes('nginx') && !cmdline.includes('nginx-files')); // Exclude nginx-files.js
+                return isNginx && p.num_fds > 0; // Prefer nginx with accessible files
             });
+            
+            if (highlightedProcess) {
+                console.log('✅ Found nginx with files:', highlightedProcess.name, highlightedProcess.pid);
+            }
+            
+            // If no nginx with accessible files, try any nginx process (including master process)
+            if (!highlightedProcess) {
+                // First try to find master process (usually has "master process" in name)
+                highlightedProcess = processes.find(p => {
+                    if (!p.name && !p.cmdline) return false;
+                    const name = (p.name || '').toLowerCase();
+                    const cmdline = (p.cmdline || '').toLowerCase();
+                    const isNginx = name === 'nginx' || 
+                                   name.startsWith('nginx:') ||
+                                   (cmdline.includes('nginx') && !cmdline.includes('nginx-files'));
+                    return isNginx && (name.includes('master') || cmdline.includes('master'));
+                });
+                
+                // If no master, try any nginx process
+                if (!highlightedProcess) {
+                    highlightedProcess = processes.find(p => {
+                        if (!p.name && !p.cmdline) return false;
+                        const name = (p.name || '').toLowerCase();
+                        const cmdline = (p.cmdline || '').toLowerCase();
+                        return name === 'nginx' || 
+                               name.startsWith('nginx:') ||
+                               (cmdline.includes('nginx') && !cmdline.includes('nginx-files'));
+                    });
+                }
+                
+                if (highlightedProcess) {
+                    console.log('✅ Found nginx (any):', highlightedProcess.name, highlightedProcess.pid);
+                }
+            }
+            
+            if (!highlightedProcess) {
+                console.log('⚠️ Nginx not found in processes list');
+                console.log('📋 Total processes:', processes.length);
+                console.log('📋 Process names (first 30):', processes.map(p => p.name || p.cmdline || 'unnamed').filter(Boolean).slice(0, 30));
+                // Check if there are any processes with "nginx" in cmdline but not in name
+                const nginxInCmdline = processes.filter(p => {
+                    const cmdline = (p.cmdline || '').toLowerCase();
+                    return cmdline.includes('nginx') && !cmdline.includes('nginx-files');
+                });
+                if (nginxInCmdline.length > 0) {
+                    console.log('🔍 Found processes with nginx in cmdline:', nginxInCmdline.map(p => ({
+                        name: p.name,
+                        pid: p.pid,
+                        cmdline: p.cmdline
+                    })));
+                }
+            }
+            
+            // If no nginx, try to find python/python3 with accessible files
+            if (!highlightedProcess) {
+                highlightedProcess = processes.find(p => {
+                    if (!p.name) return false;
+                    const name = p.name.toLowerCase();
+                    const isPython = name.includes('python') || name === 'python3';
+                    return isPython && p.num_fds > 0; // Prefer python with accessible files
+                });
+            }
             
             // If no python with accessible files, try any python process
             if (!highlightedProcess) {
@@ -718,44 +804,44 @@ function drawProcessKernelMap2(centerX, centerY) {
                 );
             }
             
-            // If no python, try to find nginx master or worker process with accessible files
-            // Look for exact "nginx" or processes that start with "nginx:" (like "nginx: master process" or "nginx: worker process")
-            if (!highlightedProcess) {
-                highlightedProcess = processes.find(p => {
-                    if (!p.name) return false;
-                    const name = p.name.toLowerCase();
-                    const isNginx = name === 'nginx' || name.startsWith('nginx:');
-                    return isNginx && p.num_fds > 0; // Prefer nginx with accessible files
-                });
-            }
-            
-            // If no nginx with accessible files, try any nginx process
-            if (!highlightedProcess) {
-                highlightedProcess = processes.find(p => {
-                    if (!p.name) return false;
-                    const name = p.name.toLowerCase();
-                    return name === 'nginx' || name.startsWith('nginx:');
-                });
-            }
-            
-            // If still no match, use process with most file descriptors (accessible)
+            // If still no match, use process with most file descriptors (accessible, excluding browser processes)
             if (!highlightedProcess) {
                 let maxFds = 0;
                 processes.forEach(p => {
-                    if (p.num_fds && p.num_fds > maxFds) {
+                    if (p.num_fds && p.num_fds > maxFds && !isBrowserProcess(p.name)) {
                         maxFds = p.num_fds;
                         highlightedProcess = p;
                     }
                 });
+                if (highlightedProcess) {
+                    console.log('✅ Selected process with most FDs (non-browser):', highlightedProcess.name, highlightedProcess.pid);
+                }
             }
             
-            // Last resort: use process with most memory
+            // Last resort: use process with most memory (excluding browser processes)
             if (!highlightedProcess) {
                 processes.forEach(p => {
-                    if (p.memory_mb && p.memory_mb > (highlightedProcess?.memory_mb || 0)) {
+                    if (p.memory_mb && p.memory_mb > (highlightedProcess?.memory_mb || 0) && !isBrowserProcess(p.name)) {
                         highlightedProcess = p;
                     }
                 });
+                if (highlightedProcess) {
+                    console.log('✅ Selected process with most memory (non-browser):', highlightedProcess.name, highlightedProcess.pid);
+                }
+            }
+            
+            // Final fallback: if still nothing, just use first non-browser process
+            if (!highlightedProcess) {
+                highlightedProcess = processes.find(p => p.name && !isBrowserProcess(p.name));
+                if (highlightedProcess) {
+                    console.log('✅ Selected first non-browser process:', highlightedProcess.name, highlightedProcess.pid);
+                }
+            }
+            
+            if (highlightedProcess) {
+                console.log('🎯 Highlighted process:', highlightedProcess.name, 'PID:', highlightedProcess.pid);
+            } else {
+                console.warn('⚠️ No process selected for highlighting');
             }
             
             processes.forEach((process, i) => {
@@ -788,6 +874,8 @@ function drawProcessKernelMap2(centerX, centerY) {
                     .attr("data-pid", process.pid) // Store PID for highlighting
                     .attr("stroke", "url(#lineGradient)") // Use gradient for depth
                     .attr("stroke-width", 0.4) // Same thickness as Bezier curves
+                    .attr("data-original-stroke-width", 0.4) // Store original stroke-width for restoration
+                    .attr("data-original-opacity", 0.05 + Math.random() * 0.03) // Store original opacity
                     .attr("opacity", 0) // Start invisible
                     .attr("fill", "none")
                     .attr("stroke-dasharray", function() {
@@ -858,20 +946,37 @@ function drawProcessKernelMap2(centerX, centerY) {
                     .on("mouseover", function(event, d) {
                         // Get the actual process data from the datum
                         const processData = d || process;
-                        // Enlarge visible circle on hover
+                        
+                        // If hovering over a non-highlighted process, shrink the highlighted one
+                        if (highlightedProcess && processData.pid !== highlightedProcess.pid) {
+                            const highlightedGroup = svg.select(`.process-node-group[data-pid="${highlightedProcess.pid}"]`);
+                            const highlightedCircle = highlightedGroup.select("circle.process-node");
+                            if (!highlightedCircle.empty()) {
+                                highlightedCircle.transition()
+                                    .duration(200)
+                                    .attr("r", 1) // Shrink to normal size
+                                    .attr("stroke-width", 0.5);
+                                // Hide files of highlighted process
+                                hideProcessFilesOnCurves();
+                            }
+                        }
+                        
+                        // Enlarge visible circle on hover (make it same size as highlighted process)
+                        const targetRadius = isHighlighted ? hoverRadius : 7.5; // Same size as highlighted (3 * 2.5)
                         circle.transition()
                             .duration(200)
-                            .attr("r", hoverRadius)
+                            .attr("r", targetRadius)
                             .attr("stroke-width", 1.5);
                         
                         // Add pulsing animation on hover
+                        const targetRadius = isHighlighted ? hoverRadius : 7.5; // Same size as highlighted (3 * 2.5)
                         const pulse = () => {
                             circle.transition()
                                 .duration(800)
-                                .attr("r", hoverRadius * 1.2)
+                                .attr("r", targetRadius * 1.2)
                                 .transition()
                                 .duration(800)
-                                .attr("r", hoverRadius)
+                                .attr("r", targetRadius)
                                 .on("end", function() {
                                     // Continue pulsing only if still hovering
                                     if (d3.select(this.parentNode).classed("hovered")) {
@@ -979,9 +1084,10 @@ function drawProcessKernelMap2(centerX, centerY) {
                         processGroup.classed("hovered", false);
                         circle.interrupt(); // Stop any ongoing transitions
                         
-                        // Reset circle size on mouseout (unless it's the highlighted one)
+                        // Reset circle size on mouseout
                         const isHighlighted = highlightedProcess && processData.pid === highlightedProcess.pid;
                         if (!isHighlighted) {
+                            // Return to normal size
                             circle.transition()
                                 .duration(200)
                                 .attr("r", baseRadius)
@@ -989,12 +1095,29 @@ function drawProcessKernelMap2(centerX, centerY) {
                             // Hide process files when mouse leaves
                             hideProcessFilesOnCurves();
                         } else {
-                            // Keep highlighted process slightly larger but not as large as hover
+                            // Return highlighted process to its default size
                             circle.transition()
                                 .duration(200)
                                 .attr("r", baseRadius)
                                 .attr("stroke-width", 1);
                         }
+                        
+                        // Restore highlighted process to its default size if it was shrunk
+                        if (highlightedProcess && processData.pid !== highlightedProcess.pid) {
+                            const highlightedGroup = svg.select(`.process-node-group[data-pid="${highlightedProcess.pid}"]`);
+                            const highlightedCircle = highlightedGroup.select("circle.process-node");
+                            if (!highlightedCircle.empty()) {
+                                highlightedCircle.transition()
+                                    .duration(200)
+                                    .attr("r", 3) // Restore to highlighted size
+                                    .attr("stroke-width", 1);
+                                // Show files of highlighted process again
+                                setTimeout(() => {
+                                    showProcessFilesOnCurves(highlightedProcess.pid, highlightedProcess.name);
+                                }, 200);
+                            }
+                        }
+                        
                         d3.selectAll(".tooltip").remove();
                         d3.select("svg").on("mousemove", null);
                     });

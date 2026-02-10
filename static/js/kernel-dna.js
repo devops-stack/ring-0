@@ -1,5 +1,10 @@
 // Kernel DNA Visualization - Double Helix Structure
 // Represents Linux kernel execution paths as DNA strands
+// Version: 19
+
+console.log('🧬 kernel-dna.js v19: Script loading...');
+console.log('🧬 kernel-dna.js v19: THREE available:', typeof THREE);
+console.log('🧬 kernel-dna.js v19: Browser:', navigator.userAgent);
 
 class KernelDNAVisualization {
     constructor() {
@@ -26,53 +31,80 @@ class KernelDNAVisualization {
         this.raycaster = null;
         this.mouse = new THREE.Vector2();
         this.tooltip = null;
+        this.lastFrameTime = null; // For smooth animation
+        this.cameraAngle = 0; // For smooth camera rotation
+        this.isUpdating = false; // Prevent concurrent updates
+        this.mouseMoveHandler = null; // Store mouse move handler reference
+        this.hoveredNucleotide = null; // Track hovered nucleotide for yellow highlight
+        this.exitButton = null; // Store exit button reference
         
-        // Nucleotide colors and shapes
-        this.nucleotideConfig = {
-            'A': { color: 0x58b6d8, type: 'syscall', shape: 'sphere' },      // Cyan - syscall
-            'T': { color: 0xff6b9d, type: 'interrupt', shape: 'box' },        // Pink - interrupt
-            'C': { color: 0x6bcf7f, type: 'context_switch', shape: 'cone' },  // Green - context switch
-            'G': { color: 0xffa94d, type: 'lock', shape: 'octahedron' }       // Orange - lock
+        // Color palette - New design system
+        this.colors = {
+            // Background
+            bgPrimary: 0x0E1114,
+            bgSecondary: 0x13171B,
+            bgDeep: 0x0A0C0F,
+            // Structure / lines / neutral
+            linePrimary: 0xD0D3D6,
+            lineSecondary: 0x8A8F95,
+            mutedText: 0x6B7076,
+            // Yellow accent (signal)
+            signalYellow: 0xE6C15A,
+            signalDim: 0xB89E4A,
+            signalGlow: [230, 193, 90, 0.15] // rgba
         };
         
-        // Gene colors
+        // Nucleotide config - all neutral gray, yellow only on hover/active
+        this.nucleotideConfig = {
+            'A': { type: 'syscall', shape: 'sphere' },
+            'T': { type: 'interrupt', shape: 'sphere' },
+            'C': { type: 'context_switch', shape: 'sphere' },
+            'G': { type: 'lock', shape: 'sphere' }
+        };
+        
+        // Gene colors - neutral gray, yellow only when active/focused
         this.geneColors = {
-            'sched': 0x58b6d8,
-            'net': 0x4a9eff,
-            'fs': 0x6bcf7f,
-            'mm': 0xffa94d,
-            'drivers': 0xff6b9d,
-            'kernel': 0xc8ccd4
+            'sched': this.colors.lineSecondary,
+            'net': this.colors.lineSecondary,
+            'fs': this.colors.lineSecondary,
+            'mm': this.colors.lineSecondary,
+            'drivers': this.colors.lineSecondary,
+            'kernel': this.colors.lineSecondary
         };
     }
 
     init(containerId = 'kernel-dna-container') {
         console.log('🧬 Initializing Kernel DNA Visualization');
+        console.log('🔍 Container ID:', containerId);
         
         // Create container
         const container = document.getElementById(containerId);
         if (!container) {
             // Create container if it doesn't exist
+            console.log('📦 Creating new container element');
             this.container = document.createElement('div');
             this.container.id = containerId;
             this.container.style.cssText = `
-                position: fixed;
-                top: 0;
-                left: 0;
-                width: 100%;
-                height: 100%;
-                background: rgba(5, 8, 12, 0.95);
-                z-index: 1000;
+                position: fixed !important;
+                top: 0 !important;
+                left: 0 !important;
+                width: 100% !important;
+                height: 100% !important;
+                background: #0E1114 !important;
+                z-index: 9999 !important;
                 display: none;
             `;
             document.body.appendChild(this.container);
+            console.log('✅ Container created and appended to body');
+            console.log('✅ Container element:', this.container);
         } else {
+            console.log('✅ Using existing container');
             this.container = container;
         }
         
-        // Scene setup
+        // Scene setup - New palette background
         this.scene = new THREE.Scene();
-        this.scene.background = new THREE.Color(0x05080c);
+        this.scene.background = new THREE.Color(this.colors.bgPrimary);
         
         // Camera
         const width = window.innerWidth;
@@ -81,22 +113,83 @@ class KernelDNAVisualization {
         this.camera.position.set(0, 5, 15);
         this.camera.lookAt(0, 0, 0);
         
-        // Renderer
-        this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-        this.renderer.setSize(width, height);
-        this.renderer.setPixelRatio(window.devicePixelRatio);
-        this.container.appendChild(this.renderer.domElement);
+        // Renderer - High quality settings for smooth graphics
+        // Check WebGL support first
+        let webglSupported = false;
+        try {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+            webglSupported = !!gl;
+            console.log('🔍 WebGL support check:', webglSupported ? '✅ Supported' : '❌ Not supported');
+        } catch (e) {
+            console.error('❌ WebGL check error:', e);
+            webglSupported = false;
+        }
+        
+        if (!webglSupported) {
+            console.error('❌ WebGL is not supported in this browser');
+            console.error('❌ Browser:', navigator.userAgent);
+            console.error('❌ Canvas context test failed');
+            alert('WebGL не поддерживается в этом браузере. Kernel DNA view требует WebGL для работы.\n\nПроверьте:\n1. Включено ли аппаратное ускорение в настройках браузера\n2. Обновлены ли драйверы видеокарты\n3. Поддерживает ли ваша видеокарта WebGL');
+            this.container.style.display = 'none';
+            return false; // Return false to indicate failure
+        }
+        
+        try {
+            this.renderer = new THREE.WebGLRenderer({ 
+                antialias: true, 
+                alpha: true,
+                powerPreference: "high-performance",
+                stencil: false,
+                depth: true,
+                failIfMajorPerformanceCaveat: false // Allow fallback for slower devices
+            });
+            
+            if (!this.renderer) {
+                throw new Error('Failed to create WebGLRenderer');
+            }
+            
+            this.renderer.setSize(width, height);
+            // Use higher pixel ratio for smoother graphics (max 2 for performance)
+            const pixelRatio = Math.min(window.devicePixelRatio, 2);
+            this.renderer.setPixelRatio(pixelRatio);
+            // Enable shadow maps and other quality features
+            this.renderer.shadowMap.enabled = false; // Disabled for performance, but can enable if needed
+            if (this.renderer.outputEncoding !== undefined) {
+                this.renderer.outputEncoding = THREE.sRGBEncoding;
+            }
+            
+            const canvas = this.renderer.domElement;
+            if (!canvas) {
+                throw new Error('Renderer canvas is null');
+            }
+            
+            this.container.appendChild(canvas);
+            console.log('✅ WebGL Renderer created and appended');
+        } catch (error) {
+            console.error('❌ Error creating WebGL renderer:', error);
+            console.error('❌ Error details:', {
+                message: error.message,
+                stack: error.stack,
+                THREE: typeof THREE,
+                WebGLRenderer: typeof THREE?.WebGLRenderer,
+                browser: navigator.userAgent
+            });
+            alert('Ошибка создания WebGL рендерера: ' + error.message + '\nПроверьте консоль для деталей.');
+            this.container.style.display = 'none';
+            return false; // Return false to indicate failure
+        }
         
         // Raycaster for mouse interaction
         this.raycaster = new THREE.Raycaster();
         
-        // Create tooltip element
+        // Create tooltip element - New palette styling
         this.tooltip = document.createElement('div');
         this.tooltip.style.cssText = `
             position: absolute;
-            background: rgba(12, 18, 28, 0.95);
-            border: 1px solid rgba(160, 170, 190, 0.35);
-            color: #c8ccd4;
+            background: #13171B;
+            border: 1px solid #8A8F95;
+            color: #D0D3D6;
             font-family: 'Share Tech Mono', monospace;
             font-size: 11px;
             padding: 8px 12px;
@@ -107,20 +200,16 @@ class KernelDNAVisualization {
         `;
         this.container.appendChild(this.tooltip);
         
-        // Mouse move handler for tooltips
-        this.renderer.domElement.addEventListener('mousemove', (event) => this.onMouseMove(event));
+        // Mouse move handler for tooltips - remove old handler if exists
+        if (this.mouseMoveHandler && this.renderer && this.renderer.domElement) {
+            this.renderer.domElement.removeEventListener('mousemove', this.mouseMoveHandler);
+        }
+        this.mouseMoveHandler = (event) => this.onMouseMove(event);
+        this.renderer.domElement.addEventListener('mousemove', this.mouseMoveHandler);
         
-        // Lighting
-        const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+        // Minimal lighting (not needed for MeshBasicMaterial, but kept for compatibility)
+        const ambientLight = new THREE.AmbientLight(0xffffff, 1.0);
         this.scene.add(ambientLight);
-        
-        const directionalLight1 = new THREE.DirectionalLight(0x58b6d8, 0.8);
-        directionalLight1.position.set(5, 10, 5);
-        this.scene.add(directionalLight1);
-        
-        const directionalLight2 = new THREE.DirectionalLight(0x4a9eff, 0.6);
-        directionalLight2.position.set(-5, -10, -5);
-        this.scene.add(directionalLight2);
         
         // Add exit button
         this.addExitButton();
@@ -128,12 +217,19 @@ class KernelDNAVisualization {
         // Handle window resize
         window.addEventListener('resize', () => this.onWindowResize());
         
-        console.log('✅ Kernel DNA Visualization initialized');
+        console.log('✅ Kernel DNA Visualization initialized successfully');
+        return true; // Return true to indicate successful initialization
     }
 
     addExitButton() {
+        // Remove existing exit button if it exists
+        if (this.exitButton && this.exitButton.parentNode) {
+            this.exitButton.parentNode.removeChild(this.exitButton);
+        }
+        
         const exitBtn = document.createElement('button');
         exitBtn.textContent = 'EXIT VIEW';
+        exitBtn.className = 'kernel-dna-exit-button'; // Add class for easier removal
         exitBtn.style.cssText = `
             position: absolute;
             top: 20px;
@@ -156,15 +252,22 @@ class KernelDNAVisualization {
             exitBtn.style.background = 'rgba(12, 18, 28, 0.9)';
             exitBtn.style.color = '#c8ccd4';
         };
-        exitBtn.onclick = () => this.deactivate();
+        exitBtn.onclick = () => {
+            // Reset currentView in kernelContextMenu before deactivating
+            if (window.kernelContextMenu) {
+                window.kernelContextMenu.currentView = null;
+            }
+            this.deactivate();
+        };
         this.container.appendChild(exitBtn);
+        this.exitButton = exitBtn; // Store reference
     }
 
     createHelixStrand(isLeft = true, height = null, startY = null) {
         const group = new THREE.Group();
         const helixRadius = 2;
         const helixHeight = height !== null ? height : 20;
-        const segments = 200;
+        const segments = 600; // Increased from 400 for even smoother lines
         const turns = 3;
         const baseY = startY !== null ? startY : -helixHeight / 2;
         
@@ -182,18 +285,18 @@ class KernelDNAVisualization {
         // Create curve from points
         const curve = new THREE.CatmullRomCurve3(points, false, 'centripetal');
         
-        // Create tube geometry for the strand
-        const tubeGeometry = new THREE.TubeGeometry(curve, segments, 0.05, 8, false);
-        const material = new THREE.MeshPhongMaterial({
-            color: isLeft ? 0x4a9eff : 0x58b6d8,
-            emissive: isLeft ? 0x1a3a5a : 0x1a4a6a,
-            emissiveIntensity: 0.2,
-            transparent: true,
-            opacity: 0.7
+        // Simple line geometry - just a smooth curve
+        const linePoints = curve.getPoints(segments);
+        const geometry = new THREE.BufferGeometry().setFromPoints(linePoints);
+        
+        // Simple line material - Line secondary for DNA skeleton
+        const material = new THREE.LineBasicMaterial({
+            color: this.colors.lineSecondary, // Line secondary: #8A8F95
+            linewidth: 1
         });
         
-        const tube = new THREE.Mesh(tubeGeometry, material);
-        group.add(tube);
+        const line = new THREE.Line(geometry, material);
+        group.add(line);
         
         return { group, curve };
     }
@@ -202,72 +305,55 @@ class KernelDNAVisualization {
         const config = this.nucleotideConfig[nucleotideData.code];
         if (!config) return null;
         
-        let geometry;
-        switch (config.shape) {
-            case 'box':
-                geometry = new THREE.BoxGeometry(0.3, 0.3, 0.3);
-                break;
-            case 'cone':
-                geometry = new THREE.ConeGeometry(0.15, 0.4, 8);
-                break;
-            case 'octahedron':
-                geometry = new THREE.OctahedronGeometry(0.2);
-                break;
-            default: // sphere
-                geometry = new THREE.SphereGeometry(0.2, 16, 16);
-        }
+        // Simple sphere (bead) for all nucleotides - neutral gray, yellow only on hover
+        const geometry = new THREE.SphereGeometry(0.1, 12, 12); // Smaller bead, less visible pixels
         
-        const material = new THREE.MeshPhongMaterial({
-            color: config.color,
-            emissive: config.color,
-            emissiveIntensity: 0.3,
-            transparent: true,
-            opacity: 0.9
+        // Neutral gray material - all nucleotides same color
+        const material = new THREE.MeshBasicMaterial({
+            color: this.colors.lineSecondary, // Line secondary: #8A8F95 - neutral gray
+            side: THREE.DoubleSide
         });
         
         const mesh = new THREE.Mesh(geometry, material);
         mesh.position.copy(position);
+        
+        // Add yellow ring for hover (will be shown/hidden on hover)
+        const ringGeometry = new THREE.RingGeometry(0.12, 0.15, 16);
+        const ringMaterial = new THREE.MeshBasicMaterial({
+            color: this.colors.signalYellow, // Signal yellow: #E6C15A
+            side: THREE.DoubleSide,
+            transparent: true,
+            opacity: 0.8
+        });
+        const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+        ring.rotation.x = Math.PI / 2;
+        ring.visible = false; // Hidden by default, shown on hover
+        mesh.add(ring);
+        
         mesh.userData = {
             type: nucleotideData.type,
             code: nucleotideData.code,
             name: nucleotideData.name,
             count: nucleotideData.count,
-            subsystem: nucleotideData.subsystem
-        };
-        
-        // Add hover effect
-        mesh.onBeforeRender = () => {
-            const time = Date.now() * 0.001;
-            mesh.rotation.y = time * 0.5;
+            subsystem: nucleotideData.subsystem,
+            isNucleotide: true,
+            ring: ring // Store ring reference for hover
         };
         
         return mesh;
     }
 
-    createRung(position1, position2, color = 0x58b6d8) {
-        const direction = new THREE.Vector3().subVectors(position2, position1);
-        const length = direction.length();
-        if (length < 0.01) return null; // Skip if too short
-        
-        const geometry = new THREE.CylinderGeometry(0.02, 0.02, length, 8);
-        const material = new THREE.MeshPhongMaterial({
-            color: color,
-            emissive: color,
-            emissiveIntensity: 0.2,
-            transparent: true,
-            opacity: 0.6
+    createRung(position1, position2, isActive = false) {
+        // Simple line between two positions - Line secondary by default, Signal dim when active
+        const geometry = new THREE.BufferGeometry().setFromPoints([position1, position2]);
+        const material = new THREE.LineBasicMaterial({
+            color: isActive ? this.colors.signalDim : this.colors.lineSecondary, // Signal dim when active, Line secondary otherwise
+            linewidth: 1
         });
         
-        const rung = new THREE.Mesh(geometry, material);
-        const midPoint = position1.clone().add(position2).multiplyScalar(0.5);
-        rung.position.copy(midPoint);
-        
-        // Orient cylinder along the direction
-        const up = new THREE.Vector3(0, 1, 0);
-        rung.lookAt(position2);
-        rung.rotateX(Math.PI / 2);
-        
-        return rung;
+        const line = new THREE.Line(geometry, material);
+        line.userData.isActive = isActive;
+        return line;
     }
 
     createGeneSegment(geneData, helixCurve) {
@@ -280,21 +366,37 @@ class KernelDNAVisualization {
             const t = startT + (endT - startT) * (i / segments);
             const point = helixCurve.getPoint(t);
             
-            // Create small marker for gene segment
-            const geometry = new THREE.SphereGeometry(0.1, 8, 8);
-            const material = new THREE.MeshPhongMaterial({
-                color: this.geneColors[geneData.name] || 0xc8ccd4,
-                emissive: this.geneColors[geneData.name] || 0xc8ccd4,
-                emissiveIntensity: 0.5,
-                transparent: true,
-                opacity: 0.8
+            // Simple bead (sphere) for gene segment - neutral gray
+            const geometry = new THREE.SphereGeometry(0.08, 10, 10); // Smaller bead
+            const material = new THREE.MeshBasicMaterial({
+                color: this.colors.lineSecondary, // Line secondary - neutral gray
+                side: THREE.DoubleSide
             });
             
             const marker = new THREE.Mesh(geometry, material);
             marker.position.copy(point);
+            marker.userData.geneName = geneData.name;
+            marker.userData.subsystem = geneData.subsystem || 'kernel';
+            
             group.add(marker);
         }
         
+        // Add yellow line indicator for active gene (will be shown when gene is focused)
+        const startPoint = helixCurve.getPoint(startT);
+        const endPoint = helixCurve.getPoint(endT);
+        const yellowLineGeometry = new THREE.BufferGeometry().setFromPoints([startPoint, endPoint]);
+        const yellowLineMaterial = new THREE.LineBasicMaterial({
+            color: this.colors.signalYellow, // Signal yellow for active gene
+            linewidth: 2,
+            transparent: true,
+            opacity: 0.6
+        });
+        const yellowLine = new THREE.Line(yellowLineGeometry, yellowLineMaterial);
+        yellowLine.visible = false; // Hidden by default, shown when gene is active
+        group.add(yellowLine);
+        
+        group.userData.geneName = geneData.name;
+        group.userData.yellowLine = yellowLine; // Store reference for activation
         return group;
     }
 
@@ -303,27 +405,40 @@ class KernelDNAVisualization {
         const t = mutationData.position;
         const point = helixCurve.getPoint(t);
         
-        // Create visual distortion
-        const geometry = new THREE.SphereGeometry(0.5, 16, 16);
-        const material = new THREE.MeshPhongMaterial({
-            color: 0xff0000,
-            emissive: 0xff0000,
-            emissiveIntensity: 0.8,
-            transparent: true,
-            opacity: 0.6
+        // Mutation: "broken" appearance - distorted/irregular shape with yellow assessment marker
+        // Use octahedron for "broken" geometric look instead of perfect sphere
+        const geometry = new THREE.OctahedronGeometry(0.25, 0); // Irregular shape
+        const material = new THREE.MeshBasicMaterial({
+            color: this.colors.mutedText, // Muted text: #6B7076 - "broken" gray
+            side: THREE.DoubleSide,
+            wireframe: true // Wireframe for "broken" appearance
         });
         
         const mutation = new THREE.Mesh(geometry, material);
         mutation.position.copy(point);
+        mutation.rotation.set(
+            Math.random() * Math.PI,
+            Math.random() * Math.PI,
+            Math.random() * Math.PI
+        ); // Random rotation for "broken" look
         
-        // Store reference for cleanup
+        // Yellow assessment marker - small sphere
+        const markerGeometry = new THREE.SphereGeometry(0.08, 8, 8);
+        const markerMaterial = new THREE.MeshBasicMaterial({
+            color: this.colors.signalYellow, // Signal yellow: #E6C15A
+            side: THREE.DoubleSide
+        });
+        const yellowMarker = new THREE.Mesh(markerGeometry, markerMaterial);
+        yellowMarker.position.copy(point);
+        yellowMarker.position.y += 0.3; // Position above mutation
+        
+        // Store reference for cleanup and animation
         mutation.userData.isMutation = true;
-        mutation.userData.geometry = geometry;
-        mutation.userData.material = material;
+        mutation.userData.mutationType = mutationData.type || 'anomaly';
+        mutation.userData.description = mutationData.description || 'Anomaly detected';
         
-        // Pulsing animation - controlled by main animate loop, not separate
-        // Animation will be handled in main animate() method
         group.add(mutation);
+        group.add(yellowMarker);
         return group;
     }
 
@@ -348,6 +463,16 @@ class KernelDNAVisualization {
             return;
         }
         
+        // Save current rotation state to prevent jitter during update
+        let savedLeftRotation = 0;
+        let savedRightRotation = 0;
+        if (this.helixLeft) {
+            savedLeftRotation = this.helixLeft.rotation.y;
+        }
+        if (this.helixRight) {
+            savedRightRotation = this.helixRight.rotation.y;
+        }
+        
         // Clear previous visualization
         this.clear();
         
@@ -360,6 +485,11 @@ class KernelDNAVisualization {
         const rightHelix = this.createHelixStrand(false);
         this.helixLeft = leftHelix.group;
         this.helixRight = rightHelix.group;
+        
+        // Restore rotation state to prevent jitter
+        this.helixLeft.rotation.y = savedLeftRotation;
+        this.helixRight.rotation.y = savedRightRotation;
+        
         this.scene.add(this.helixLeft);
         this.scene.add(this.helixRight);
         
@@ -388,8 +518,8 @@ class KernelDNAVisualization {
                 this.nucleotides.push(rightNuc);
             }
             
-            // Create rung (connection between strands)
-            const rung = this.createRung(leftPos, rightPos, this.nucleotideConfig[nucleotide.code]?.color || 0x58b6d8);
+            // Create rung (connection between strands) - simple line
+            const rung = this.createRung(leftPos, rightPos, false);
             if (rung) {
                 this.helixLeft.add(rung);
             }
@@ -425,8 +555,20 @@ class KernelDNAVisualization {
 
     async renderTimeline() {
         if (!this.selectedPid) {
-            console.warn('🧬 Timeline mode requires selected PID');
+            // Show process selector if no PID selected
+            this.clear();
+            this.addTimelineLabels(null);
             return;
+        }
+
+        // Save current rotation state to prevent jitter during update
+        let savedLeftRotation = 0;
+        let savedRightRotation = 0;
+        if (this.helixLeft) {
+            savedLeftRotation = this.helixLeft.rotation.y;
+        }
+        if (this.helixRight) {
+            savedRightRotation = this.helixRight.rotation.y;
         }
 
         // Load timeline data
@@ -459,6 +601,11 @@ class KernelDNAVisualization {
             const rightHelix = this.createHelixStrand(false, this.currentTimelineHeight, -this.maxTimelineHeight / 2);
             this.helixLeft = leftHelix.group;
             this.helixRight = rightHelix.group;
+            
+            // Restore rotation state to prevent jitter
+            this.helixLeft.rotation.y = savedLeftRotation;
+            this.helixRight.rotation.y = savedRightRotation;
+            
             this.scene.add(this.helixLeft);
             this.scene.add(this.helixRight);
 
@@ -519,8 +666,8 @@ class KernelDNAVisualization {
                         this.timelineEvents.push(rightNuc);
                     }
 
-                    // Create rung
-                    const rung = this.createRung(leftPos, rightPos, this.nucleotideConfig[nucleotideData.code]?.color || 0x58b6d8);
+                    // Create rung - simple line
+                    const rung = this.createRung(leftPos, rightPos, false);
                     if (rung) {
                         this.helixLeft.add(rung);
                     }
@@ -558,7 +705,7 @@ class KernelDNAVisualization {
     }
 
     addTimelineMarkers(curve) {
-        // Add time markers along the helix
+        // Add simple time markers (beads) along the helix - neutral gray
         const markerGroup = new THREE.Group();
         const numMarkers = 10;
         
@@ -566,19 +713,17 @@ class KernelDNAVisualization {
             const t = i / numMarkers;
             const point = curve.getPoint(t);
             
-            // Create time marker
-            const geometry = new THREE.RingGeometry(0.15, 0.2, 8);
-            const material = new THREE.MeshPhongMaterial({
-                color: 0xc8ccd4,
-                emissive: 0xc8ccd4,
-                emissiveIntensity: 0.3,
-                transparent: true,
-                opacity: 0.6
+            // Simple bead (sphere) for time marker - Line secondary
+            const geometry = new THREE.SphereGeometry(0.07, 10, 10); // Smaller timeline marker
+            const material = new THREE.MeshBasicMaterial({
+                color: this.colors.lineSecondary, // Line secondary: #8A8F95
+                side: THREE.DoubleSide
             });
             
             const marker = new THREE.Mesh(geometry, material);
             marker.position.copy(point);
-            marker.rotation.x = Math.PI / 2;
+            marker.userData.isTimelineMarker = true;
+            
             markerGroup.add(marker);
         }
         
@@ -587,7 +732,7 @@ class KernelDNAVisualization {
 
     addTimelineLabels(data) {
         // Remove old labels
-        const oldLabels = this.container.querySelectorAll('.dna-title, .dna-legend, .dna-timeline-info');
+        const oldLabels = this.container.querySelectorAll('.dna-title, .dna-legend, .dna-timeline-info, .dna-process-selector');
         oldLabels.forEach(label => label.remove());
 
         // Add title
@@ -606,15 +751,18 @@ class KernelDNAVisualization {
         `;
         this.container.appendChild(titleDiv);
 
+        // Add process selector
+        this.addProcessSelector();
+
         // Add timeline info
         const infoDiv = document.createElement('div');
         infoDiv.className = 'dna-timeline-info';
-        const processName = data.name || 'unknown';
+        const processName = data ? (data.name || 'unknown') : 'No process selected';
         const eventCount = this.timelineData.length;
         const heightPercent = Math.round((this.currentTimelineHeight / this.maxTimelineHeight) * 100);
         infoDiv.innerHTML = `
             <div style="color: #c8ccd4; font-family: 'Share Tech Mono', monospace; font-size: 11px;">
-                <div style="margin-bottom: 5px; color: #58b6d8;">Process: ${processName} (PID: ${this.selectedPid})</div>
+                <div style="margin-bottom: 5px; color: #58b6d8;">Process: ${processName} ${this.selectedPid ? `(PID: ${this.selectedPid})` : ''}</div>
                 <div style="margin-bottom: 5px;">Events: ${eventCount}</div>
                 <div style="margin-bottom: 5px;">Timeline: ${heightPercent}%</div>
                 <div style="margin-top: 10px; font-size: 10px; color: #888;">
@@ -631,8 +779,146 @@ class KernelDNAVisualization {
         this.container.appendChild(infoDiv);
     }
 
-    activateTimelineMode(pid) {
-        console.log('🧬 Activating Kernel DNA Timeline Mode for PID:', pid);
+    async addProcessSelector() {
+        // Create process selector panel
+        const selectorDiv = document.createElement('div');
+        selectorDiv.className = 'dna-process-selector';
+        selectorDiv.style.cssText = `
+            position: absolute;
+            top: 80px;
+            right: 20px;
+            width: 300px;
+            max-height: 500px;
+            background: rgba(12, 18, 28, 0.95);
+            border: 1px solid rgba(160, 170, 190, 0.35);
+            border-radius: 4px;
+            padding: 15px;
+            z-index: 1001;
+            overflow-y: auto;
+            font-family: 'Share Tech Mono', monospace;
+        `;
+
+        // Add header
+        const header = document.createElement('div');
+        header.textContent = 'SELECT PROCESS';
+        header.style.cssText = `
+            color: #c8ccd4;
+            font-size: 12px;
+            font-weight: bold;
+            margin-bottom: 10px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid rgba(160, 170, 190, 0.2);
+        `;
+        selectorDiv.appendChild(header);
+
+        // Add search input
+        const searchInput = document.createElement('input');
+        searchInput.type = 'text';
+        searchInput.placeholder = 'Search process...';
+        searchInput.style.cssText = `
+            width: 100%;
+            padding: 6px 8px;
+            margin-bottom: 10px;
+            background: rgba(5, 8, 12, 0.8);
+            border: 1px solid rgba(160, 170, 190, 0.25);
+            border-radius: 3px;
+            color: #c8ccd4;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 11px;
+        `;
+        selectorDiv.appendChild(searchInput);
+
+        // Add process list container
+        const processList = document.createElement('div');
+        processList.className = 'dna-process-list';
+        processList.style.cssText = `
+            max-height: 400px;
+            overflow-y: auto;
+        `;
+        selectorDiv.appendChild(processList);
+
+        // Load and display processes
+        try {
+            const response = await fetch('/api/processes-detailed');
+            const data = await response.json();
+            const processes = data.processes || [];
+
+            // Sort by PID
+            processes.sort((a, b) => a.pid - b.pid);
+
+            // Filter function
+            const filterProcesses = (searchTerm) => {
+                processList.innerHTML = '';
+                const filtered = processes.filter(p => 
+                    p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                    p.pid.toString().includes(searchTerm)
+                );
+
+                filtered.slice(0, 100).forEach(proc => { // Limit to 100 for performance
+                    const procItem = document.createElement('div');
+                    procItem.style.cssText = `
+                        padding: 8px;
+                        margin-bottom: 4px;
+                        background: ${this.selectedPid === proc.pid ? 'rgba(88, 182, 216, 0.2)' : 'rgba(5, 8, 12, 0.6)'};
+                        border: 1px solid ${this.selectedPid === proc.pid ? 'rgba(88, 182, 216, 0.5)' : 'rgba(160, 170, 190, 0.15)'};
+                        border-radius: 3px;
+                        cursor: pointer;
+                        transition: all 0.2s ease;
+                    `;
+                    procItem.innerHTML = `
+                        <div style="color: #c8ccd4; font-size: 11px; font-weight: ${this.selectedPid === proc.pid ? 'bold' : 'normal'};">
+                            <div style="color: #58b6d8;">${proc.name}</div>
+                            <div style="color: #888; font-size: 10px; margin-top: 2px;">
+                                PID: ${proc.pid} | CPU: ${proc.cpu_percent}% | MEM: ${proc.memory_mb}MB
+                            </div>
+                        </div>
+                    `;
+
+                    procItem.onmouseenter = () => {
+                        if (this.selectedPid !== proc.pid) {
+                            procItem.style.background = 'rgba(20, 26, 36, 0.8)';
+                            procItem.style.borderColor = 'rgba(160, 170, 190, 0.3)';
+                        }
+                    };
+                    procItem.onmouseleave = () => {
+                        if (this.selectedPid !== proc.pid) {
+                            procItem.style.background = 'rgba(5, 8, 12, 0.6)';
+                            procItem.style.borderColor = 'rgba(160, 170, 190, 0.15)';
+                        }
+                    };
+                    procItem.onclick = () => {
+                        this.selectedPid = proc.pid;
+                        this.timeStart = null; // Reset timeline
+                        this.currentTimelineHeight = 0;
+                        this.renderTimeline();
+                    };
+
+                    processList.appendChild(procItem);
+                });
+            };
+
+            // Initial render
+            filterProcesses('');
+
+            // Search functionality
+            searchInput.addEventListener('input', (e) => {
+                filterProcesses(e.target.value);
+            });
+
+        } catch (error) {
+            console.error('❌ Error loading processes:', error);
+            processList.innerHTML = `
+                <div style="color: #888; font-size: 11px; padding: 10px; text-align: center;">
+                    Error loading processes
+                </div>
+            `;
+        }
+
+        this.container.appendChild(selectorDiv);
+    }
+
+    activateTimelineMode(pid = null) {
+        console.log('🧬 Activating Kernel DNA Timeline Mode', pid ? `for PID: ${pid}` : '(no PID)');
         this.timelineMode = true;
         this.selectedPid = pid;
         this.timeStart = null; // Reset start time
@@ -666,15 +952,16 @@ class KernelDNAVisualization {
         `;
         this.container.appendChild(titleDiv);
         
-        // Add legend
+        // Add legend - Diegetic UI style
         const legendDiv = document.createElement('div');
         legendDiv.className = 'dna-legend';
         legendDiv.innerHTML = `
-            <div style="color: #c8ccd4; font-family: 'Share Tech Mono', monospace; font-size: 12px; margin-top: 60px;">
-                <div style="margin-bottom: 5px;">A (Cyan) = Syscall</div>
-                <div style="margin-bottom: 5px;">T (Pink) = Interrupt</div>
-                <div style="margin-bottom: 5px;">C (Green) = Context Switch</div>
-                <div style="margin-bottom: 5px;">G (Orange) = Lock/Mutex</div>
+            <div style="color: #c8ccd4; font-family: 'Share Tech Mono', monospace; font-size: 11px; margin-top: 60px; opacity: 0.8;">
+                <div style="margin-bottom: 5px;">A (●) = Syscall</div>
+                <div style="margin-bottom: 5px;">T (■) = Interrupt</div>
+                <div style="margin-bottom: 5px;">C (▲) = Context Switch</div>
+                <div style="margin-bottom: 5px;">G (◆) = Lock/Mutex</div>
+                <div style="margin-top: 10px; color: #cc4444;">⚠ Mutations = Anomalies</div>
             </div>
         `;
         legendDiv.style.cssText = `
@@ -689,40 +976,53 @@ class KernelDNAVisualization {
     animate() {
         if (!this.isActive || !this.isAnimating) {
             this.isAnimating = false;
+            this.lastFrameTime = null; // Reset when stopping
             return;
         }
         
         this.animationId = requestAnimationFrame(() => this.animate());
         
-        // Rotate helix - use fixed rotation speed, not accumulating
+        // Use delta time for smooth rotation (frame-rate independent)
+        if (!this.lastFrameTime) {
+            this.lastFrameTime = performance.now();
+        }
+        const currentTime = performance.now();
+        const deltaTime = (currentTime - this.lastFrameTime) / 1000; // Convert to seconds
+        this.lastFrameTime = currentTime;
+        
+        // Rotate helix - smooth, frame-rate independent rotation
+        const rotationSpeed = 0.5; // radians per second
         if (this.helixLeft) {
-            this.helixLeft.rotation.y += 0.005;
+            this.helixLeft.rotation.y += rotationSpeed * deltaTime;
         }
         if (this.helixRight) {
-            this.helixRight.rotation.y -= 0.005;
+            this.helixRight.rotation.y -= rotationSpeed * deltaTime;
         }
         
-        // Animate mutations (pulsing effect)
+        // Animate mutations (pulsing effect) - smooth animation
         this.mutations.forEach(mutationGroup => {
             mutationGroup.children.forEach(child => {
                 if (child.userData && child.userData.isMutation) {
-                    const time = Date.now() * 0.003;
-                    const scale = 1 + Math.sin(time) * 0.3;
+                    const time = currentTime * 0.001; // Use currentTime for consistency
+                    const scale = 1 + Math.sin(time * 2) * 0.2; // Slower, smoother pulse
                     child.scale.set(scale, scale, scale);
                 }
             });
         });
         
-        // Rotate camera around helix - use fixed time, not accumulating
+        // Rotate camera around helix - smooth camera movement
         // In timeline mode, camera looks from side to see growth
         if (this.timelineMode) {
             // Side view for timeline (better to see growth along Y axis)
-            this.camera.position.set(10, 0, 0);
+            this.camera.position.set(10, 5, 0);
             this.camera.lookAt(0, 0, 0);
         } else {
-            const time = Date.now() * 0.0005;
-            this.camera.position.x = Math.cos(time) * 15;
-            this.camera.position.z = Math.sin(time) * 15;
+            // Smooth camera rotation
+            const cameraSpeed = 0.2; // radians per second
+            this.cameraAngle += cameraSpeed * deltaTime;
+            this.camera.position.x = Math.cos(this.cameraAngle) * 15;
+            this.camera.position.z = Math.sin(this.cameraAngle) * 15;
+            this.camera.position.y = 5;
             this.camera.lookAt(0, 0, 0);
         }
         
@@ -765,32 +1065,73 @@ class KernelDNAVisualization {
         this.helixLeft = null;
         this.helixRight = null;
         
+        // Hide tooltip when clearing
+        if (this.tooltip) {
+            this.tooltip.style.display = 'none';
+        }
+        
         // Remove labels (but keep exit button)
-        const labels = this.container.querySelectorAll('.dna-title, .dna-legend');
+        const labels = this.container.querySelectorAll('.dna-title, .dna-legend, .dna-timeline-info, .dna-process-selector');
         labels.forEach(label => label.remove());
     }
 
     async activate() {
         console.log('🧬 Activating Kernel DNA Visualization');
+        console.log('🔍 Container exists:', !!this.container);
+        console.log('🔍 Container element:', this.container);
+        
         this.isActive = true;
         
+        // Ensure container exists and is visible
+        if (!this.container) {
+            console.error('❌ Container not found, reinitializing...');
+            this.init();
+        }
+        
         if (this.container) {
+            console.log('✅ Setting container display to block');
             this.container.style.display = 'block';
+            this.container.style.zIndex = '9999';
+            console.log('✅ Container display:', this.container.style.display);
+            console.log('✅ Container z-index:', this.container.style.zIndex);
+            const computed = window.getComputedStyle(this.container);
+            console.log('✅ Container computed display:', computed.display);
+            console.log('✅ Container computed z-index:', computed.zIndex);
+            console.log('✅ Container in DOM:', document.body.contains(this.container));
+        } else {
+            console.error('❌ Container still not found after init!');
+            return;
         }
         
         // Initial render
-        await this.render();
+        console.log('🎯 Starting initial render...');
+        try {
+            await this.render();
+            console.log('✅ Initial render completed');
+        } catch (error) {
+            console.error('❌ Error during initial render:', error);
+        }
         
-        // Auto-update every 2 seconds
+        // Auto-update every 5 seconds (less frequent to reduce jitter)
         this.updateInterval = setInterval(() => {
-            if (this.isActive) {
-                if (this.timelineMode) {
-                    this.renderTimeline();
-                } else {
-                    this.render();
-                }
+            if (this.isActive && !this.isUpdating) {
+                this.isUpdating = true;
+                // Use requestAnimationFrame to sync update with rendering
+                requestAnimationFrame(async () => {
+                    try {
+                        if (this.timelineMode) {
+                            await this.renderTimeline();
+                        } else {
+                            await this.render();
+                        }
+                    } catch (error) {
+                        console.error('❌ Error during update:', error);
+                    } finally {
+                        this.isUpdating = false;
+                    }
+                });
             }
-        }, 2000);
+        }, 5000); // Increased from 2 to 5 seconds
     }
 
     deactivate() {
@@ -818,6 +1159,20 @@ class KernelDNAVisualization {
             this.updateInterval = null;
         }
         
+        // Explicitly remove exit button before hiding container
+        if (this.exitButton && this.exitButton.parentNode) {
+            this.exitButton.parentNode.removeChild(this.exitButton);
+            this.exitButton = null;
+        }
+        
+        // Also remove by class name (in case reference is lost)
+        const exitButtons = document.querySelectorAll('.kernel-dna-exit-button');
+        exitButtons.forEach(btn => {
+            if (btn.parentNode) {
+                btn.parentNode.removeChild(btn);
+            }
+        });
+        
         if (this.container) {
             this.container.style.display = 'none';
         }
@@ -837,7 +1192,7 @@ class KernelDNAVisualization {
     }
 
     onMouseMove(event) {
-        if (!this.isActive || !this.raycaster) return;
+        if (!this.isActive || !this.raycaster || !this.tooltip) return;
         
         const rect = this.renderer.domElement.getBoundingClientRect();
         this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
@@ -845,45 +1200,158 @@ class KernelDNAVisualization {
         
         this.raycaster.setFromCamera(this.mouse, this.camera);
         
-        // Check intersections with nucleotides
-        const intersects = this.raycaster.intersectObjects(this.nucleotides, true);
+        // Collect all interactive objects (nucleotides, genes, mutations, rungs, helix strands)
+        const allInteractiveObjects = [];
+        
+        // Add nucleotides
+        if (this.nucleotides && this.nucleotides.length > 0) {
+            allInteractiveObjects.push(...this.nucleotides);
+        }
+        
+        // Add genes
+        if (this.genes && this.genes.length > 0) {
+            this.genes.forEach(gene => {
+                if (gene.children) {
+                    allInteractiveObjects.push(...gene.children);
+                }
+                allInteractiveObjects.push(gene);
+            });
+        }
+        
+        // Add mutations
+        if (this.mutations && this.mutations.length > 0) {
+            this.mutations.forEach(mutation => {
+                if (mutation.children) {
+                    allInteractiveObjects.push(...mutation.children);
+                }
+                allInteractiveObjects.push(mutation);
+            });
+        }
+        
+        // Add helix strands (for timeline markers, etc.)
+        if (this.helixLeft && this.helixLeft.children) {
+            this.helixLeft.children.forEach(child => {
+                if (child.userData && (child.userData.isTimelineMarker || child.userData.isNucleotide)) {
+                    allInteractiveObjects.push(child);
+                }
+            });
+        }
+        if (this.helixRight && this.helixRight.children) {
+            this.helixRight.children.forEach(child => {
+                if (child.userData && (child.userData.isTimelineMarker || child.userData.isNucleotide)) {
+                    allInteractiveObjects.push(child);
+                }
+            });
+        }
+        
+        // Hide previous hover effects
+        if (this.hoveredNucleotide && this.hoveredNucleotide.userData && this.hoveredNucleotide.userData.ring) {
+            this.hoveredNucleotide.userData.ring.visible = false;
+        }
+        this.hoveredNucleotide = null;
+        
+        // Check intersections with all objects
+        const intersects = this.raycaster.intersectObjects(allInteractiveObjects, true);
         
         if (intersects.length > 0) {
-            const nucleotide = intersects[0].object;
-            const userData = nucleotide.userData;
+            // Find the first object with userData
+            let targetObject = null;
+            for (let i = 0; i < intersects.length; i++) {
+                const obj = intersects[i].object;
+                // Traverse up the parent chain to find object with userData
+                let current = obj;
+                while (current) {
+                    if (current.userData && (current.userData.name || current.userData.code || current.userData.event || current.userData.isNucleotide)) {
+                        targetObject = current;
+                        break;
+                    }
+                    current = current.parent;
+                }
+                if (targetObject) break;
+            }
             
-            if (userData && userData.name) {
+            if (targetObject && targetObject.userData) {
+                const userData = targetObject.userData;
+                
+                // Show yellow ring on hover for nucleotides
+                if (userData.isNucleotide && targetObject.userData.ring) {
+                    targetObject.userData.ring.visible = true;
+                    this.hoveredNucleotide = targetObject;
+                }
+                
                 // Show tooltip
                 this.tooltip.style.display = 'block';
                 this.tooltip.style.left = (event.clientX + 10) + 'px';
                 this.tooltip.style.top = (event.clientY - 10) + 'px';
                 
-                // Format tooltip content
-                const subsystem = userData.subsystem || 'kernel';
-                const filePath = this.getFilePathForNucleotide(userData.type, userData.name);
+                // Format tooltip content based on object type
+                let tooltipContent = '';
                 
                 // Check if this is a timeline event
-                const isTimelineEvent = userData.event && userData.timestamp;
-                const eventInfo = isTimelineEvent ? `
-                    <div style="color: #58b6d8; font-size: 10px; margin-top: 4px;">
-                        Time: ${new Date(userData.timestamp).toLocaleTimeString()}
-                    </div>
-                ` : '';
+                if (userData.event && userData.timestamp) {
+                    const subsystem = userData.subsystem || 'kernel';
+                    const eventType = userData.event.type || 'event';
+                    tooltipContent = `
+                        <div style="font-weight: bold; color: #E6C15A; margin-bottom: 4px;">
+                            ${eventType.toUpperCase()}
+                        </div>
+                        <div style="margin-bottom: 2px; color: #D0D3D6;">${userData.event.name || 'Event'}</div>
+                        <div style="color: #6B7076; font-size: 10px;">Subsystem: ${subsystem}</div>
+                        <div style="color: #8A8F95; font-size: 10px; margin-top: 4px;">
+                            Time: ${new Date(userData.timestamp).toLocaleTimeString()}
+                        </div>
+                    `;
+                } else if (userData.code && userData.type) {
+                    // Regular nucleotide - yellow accent on hover
+                    const subsystem = userData.subsystem || 'kernel';
+                    const filePath = this.getFilePathForNucleotide(userData.type, userData.name);
+                    tooltipContent = `
+                        <div style="font-weight: bold; color: #E6C15A; margin-bottom: 4px;">
+                            ${userData.code} - ${userData.type.toUpperCase()}
+                        </div>
+                        <div style="margin-bottom: 2px; color: #D0D3D6;">${userData.name || 'Nucleotide'}</div>
+                        <div style="color: #6B7076; font-size: 10px;">Subsystem: ${subsystem}/</div>
+                        ${filePath ? `<div style="color: #6B7076; font-size: 10px;">${filePath}</div>` : ''}
+                        ${userData.count ? `<div style="color: #8A8F95; font-size: 10px;">Count: ${userData.count}</div>` : ''}
+                    `;
+                } else if (userData.geneName) {
+                    // Gene segment - yellow accent when active
+                    tooltipContent = `
+                        <div style="font-weight: bold; color: #E6C15A; margin-bottom: 4px;">
+                            GENE: ${userData.geneName}
+                        </div>
+                        <div style="color: #6B7076; font-size: 10px;">Subsystem: ${userData.subsystem || 'kernel'}</div>
+                    `;
+                } else if (userData.mutationType) {
+                    // Mutation - yellow assessment, not red
+                    tooltipContent = `
+                        <div style="font-weight: bold; color: #E6C15A; margin-bottom: 4px;">
+                            MUTATION: ${userData.mutationType}
+                        </div>
+                        <div style="margin-bottom: 2px; color: #D0D3D6;">${userData.description || 'Anomaly detected'}</div>
+                        <div style="color: #6B7076; font-size: 10px; margin-top: 4px;">Assessment: Anomaly</div>
+                    `;
+                } else {
+                    // Generic tooltip
+                    tooltipContent = `
+                        <div style="font-weight: bold; color: #E6C15A; margin-bottom: 4px;">
+                            ${userData.name || 'Object'}
+                        </div>
+                    `;
+                }
                 
-                this.tooltip.innerHTML = `
-                    <div style="font-weight: bold; color: #58b6d8; margin-bottom: 4px;">
-                        ${userData.code} - ${userData.type.toUpperCase()}
-                    </div>
-                    <div style="margin-bottom: 2px;">${userData.name}</div>
-                    <div style="color: #888; font-size: 10px;">Subsystem: ${subsystem}/</div>
-                    ${filePath ? `<div style="color: #888; font-size: 10px;">${filePath}</div>` : ''}
-                    ${userData.count ? `<div style="color: #888; font-size: 10px;">Count: ${userData.count}</div>` : ''}
-                    ${eventInfo}
-                `;
+                this.tooltip.innerHTML = tooltipContent;
+            } else {
+                // Hide tooltip if no valid userData found
+                this.tooltip.style.display = 'none';
             }
         } else {
-            // Hide tooltip
+            // Hide tooltip and hover effects
             this.tooltip.style.display = 'none';
+            if (this.hoveredNucleotide && this.hoveredNucleotide.userData && this.hoveredNucleotide.userData.ring) {
+                this.hoveredNucleotide.userData.ring.visible = false;
+            }
+            this.hoveredNucleotide = null;
         }
     }
 
@@ -930,4 +1398,7 @@ class KernelDNAVisualization {
 }
 
 // Make it globally available
+// Export to window for global access
 window.KernelDNAVisualization = KernelDNAVisualization;
+console.log('🧬 kernel-dna.js: KernelDNAVisualization class exported to window');
+console.log('🧬 kernel-dna.js: window.KernelDNAVisualization:', typeof window.KernelDNAVisualization);
