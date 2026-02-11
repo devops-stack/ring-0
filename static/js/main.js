@@ -493,7 +493,7 @@ function drawTagIcons(centerX, centerY) {
     
     const tagIconUrl = 'static/images/Icon1.png';
     const numTags = 8;
-    const radius = 160;
+    const radius = 150; // Slightly closer to center (was 160)
     const angleStep = (2 * Math.PI) / numTags;
 
     for (let i = 0; i < numTags; i++) {
@@ -504,10 +504,10 @@ function drawTagIcons(centerX, centerY) {
 
         svg.append("image")
             .attr("xlink:href", tagIconUrl)
-            .attr("x", x - 20)
-            .attr("y", y - 20)
-            .attr("width", 40)
-            .attr("height", 40)
+            .attr("x", x - 22)
+            .attr("y", y - 22)
+            .attr("width", 44) // ~10% larger (was 40)
+            .attr("height", 44) // ~10% larger (was 40)
             .attr("class", "tag-icon")
             .attr("transform", `rotate(${rotationAngle}, ${x}, ${y})`);
 
@@ -969,7 +969,6 @@ function drawProcessKernelMap2(centerX, centerY) {
                             .attr("stroke-width", 1.5);
                         
                         // Add pulsing animation on hover
-                        const targetRadius = isHighlighted ? hoverRadius : 7.5; // Same size as highlighted (3 * 2.5)
                         const pulse = () => {
                             circle.transition()
                                 .duration(800)

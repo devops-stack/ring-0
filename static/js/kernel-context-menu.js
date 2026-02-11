@@ -74,12 +74,12 @@ class KernelContextMenu {
                 .attr('y', itemY - 9)
                 .attr('width', 136)
                 .attr('height', 20)
-                .attr('rx', 1)
-                .style('fill', 'rgba(10, 15, 20, 0.6)') // Dark panel background
-                .style('stroke', 'rgba(180, 190, 210, 0.2)') // Subtle border
-                .style('stroke-width', '0.5px')
+                .attr('rx', 8) // More rounded corners like in example
+                .style('fill', '#333') // Same base color as right menu panels
+                .style('stroke', '#555') // Same border color as right menu panels
+                .style('stroke-width', '1px')
                 .style('pointer-events', 'all')
-                .style('opacity', 0.7);
+                .style('opacity', 0.9);
             
             // Text - positioned inside the panel
             const text = itemGroup.append('text')
@@ -95,17 +95,18 @@ class KernelContextMenu {
             // Hover handlers for the panel
             const handleMouseEnter = () => {
                 itemPanel
-                    .style('fill', 'rgba(15, 22, 30, 0.8)')
-                    .style('stroke', 'rgba(200, 200, 200, 0.3)')
+                    .style('fill', '#ffffff')
+                    .style('stroke', '#ffffff')
                     .style('opacity', 1);
-                text.style('fill', isActive ? accentColor : '#dde2ea');
+                // On hover, use dark text (like right menu)
+                text.style('fill', isActive ? accentColor : '#000000');
             };
             
             const handleMouseLeave = () => {
                 itemPanel
-                    .style('fill', 'rgba(10, 15, 20, 0.6)')
-                    .style('stroke', 'rgba(180, 190, 200, 0.2)')
-                    .style('opacity', 0.7);
+                    .style('fill', '#333')
+                    .style('stroke', '#555')
+                    .style('opacity', 0.9);
                 text.style('fill', isActive ? accentColor : baseColor);
             };
             

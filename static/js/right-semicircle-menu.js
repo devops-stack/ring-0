@@ -119,26 +119,52 @@ class RightSemicircleMenuManager {
             };
             
             // Функция для обработки mouseleave
-            const handleMouseLeave = () => {
-                // Простая логика: как только курсор ушёл с области пункта меню,
-                // через небольшую задержку снимаем выделение, если не над подменю Processes.
+            const handleMouseLeave = (event) => {
+                // Проверяем, не перешли ли мы на другой элемент меню или подменю
+                const relatedTarget = event.relatedTarget;
+                
+                // Если ушли на подменю Processes, не сбрасываем hover
+                if (item.id === 'processes' && window.kernelContextMenu) {
+                    const submenu = d3.select('.kernel-submenu').node();
+                    if (submenu && (submenu.contains(relatedTarget) || submenu === relatedTarget)) {
+                        return; // Не сбрасываем, если перешли на подменю
+                    }
+                }
+                
+                // Проверяем, не перешли ли на другой элемент этого же меню
+                if (relatedTarget) {
+                    const parentGroup = relatedTarget.closest ? relatedTarget.closest('.right-menu-item-group') : null;
+                    if (parentGroup && parentGroup === itemGroup.node()) {
+                        return; // Не сбрасываем, если все еще в пределах этого элемента меню
+                    }
+                }
+                
+                // Сбрасываем hover с небольшой задержкой для плавности
                 setTimeout(() => {
-                    const isOverSubmenu = item.id === 'processes' && window.kernelContextMenu &&
-                        d3.select('.kernel-submenu').node() &&
-                        d3.select('.kernel-submenu').node().matches(':hover');
-                    
-                    // Проверяем, не над ли группой элементов
-                    const isOverItemGroup = itemGroup.node() && itemGroup.node().matches(':hover');
-                    
-                    if (!isOverSubmenu && !isOverItemGroup && this.hoveredItemId === item.id) {
+                    // Дополнительная проверка: убеждаемся, что курсор действительно ушел
+                    if (this.hoveredItemId === item.id) {
+                        // Проверяем, не над ли подменю Processes
+                        if (item.id === 'processes' && window.kernelContextMenu) {
+                            const submenu = d3.select('.kernel-submenu').node();
+                            if (submenu) {
+                                const submenuRect = submenu.getBoundingClientRect();
+                                const mouseX = event.clientX || 0;
+                                const mouseY = event.clientY || 0;
+                                if (mouseX >= submenuRect.left && mouseX <= submenuRect.right &&
+                                    mouseY >= submenuRect.top && mouseY <= submenuRect.bottom) {
+                                    return; // Курсор над подменю, не сбрасываем
+                                }
+                            }
+                        }
+                        
                         this.hoveredItemId = null;
                         this.renderRightSemicircleMenu();
+                        
+                        if (item.id === 'processes' && window.kernelContextMenu) {
+                            window.kernelContextMenu.hideSubmenu();
+                        }
                     }
-                    
-                    if (item.id === 'processes' && window.kernelContextMenu && !isOverSubmenu && !isOverItemGroup) {
-                        window.kernelContextMenu.hideSubmenu();
-                    }
-                }, 200);
+                }, 100);
             };
             
             // Функция для обработки клика
@@ -234,6 +260,8 @@ class RightSemicircleMenuManager {
                 .style('transition', 'all 0.3s ease')
                 .style('pointer-events', 'all') // Allow hover on line too
                 .style('cursor', 'pointer')
+                .on('mouseenter', handleMouseEnter)
+                .on('mouseleave', handleMouseLeave)
                 .on('click', (e) => {
                     console.log('🖱️ Click on wideLine:', item.id);
                     e.stopPropagation();
@@ -281,6 +309,8 @@ class RightSemicircleMenuManager {
                 .style('cursor', 'pointer')
                 .style('pointer-events', 'all') // Allow hover on circle
                 .style('transition', 'all 0.3s ease')
+                .on('mouseenter', handleMouseEnter)
+                .on('mouseleave', handleMouseLeave)
                 .on('click', (e) => {
                     console.log('🖱️ Click on circle:', item.id);
                     e.stopPropagation();
