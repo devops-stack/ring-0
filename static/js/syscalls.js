@@ -83,13 +83,13 @@ class SyscallsManager {
                 .attr("y", panelY)
                 .attr("width", panelWidth)
                 .attr("height", panelHeight)
-                .attr("rx", 1)
+                .attr("rx", 8) // More rounded corners like in example
                 .attr("class", "syscall-box")
-                .style("fill", "rgba(10, 15, 20, 0.6)") // Dark panel background
-                .style("stroke", "rgba(180, 190, 210, 0.2)") // Subtle border
-                .style("stroke-width", "0.5px")
-                .style("opacity", 0.7)
-                .style("filter", "drop-shadow(0 0 1px rgba(200, 200, 200, 0.05))"); // Subtle glow
+                .style("fill", "#333") // Same base color as right menu panels
+                .style("stroke", "#555") // Same border color as right menu panels
+                .style("stroke-width", "1px")
+                .style("opacity", 0.9)
+                .style("filter", "drop-shadow(0 0 1px rgba(0, 0, 0, 0.4))"); // Subtle shadow like diegetic UI
             
             // Text inside panel
             const text = panelGroup.append("text")
@@ -106,16 +106,16 @@ class SyscallsManager {
             panel
                 .on("mouseenter", function() {
                     d3.select(this)
-                        .style("fill", "rgba(15, 22, 30, 0.8)")
-                        .style("stroke", "rgba(200, 200, 200, 0.3)")
+                        .style("fill", "#ffffff")
+                        .style("stroke", "#ffffff")
                         .style("opacity", 1);
-                    text.style("fill", "#dde2ea"); // Lighter on hover
+                    text.style("fill", "#000000"); // Dark text on white panel
                 })
                 .on("mouseleave", function() {
                     d3.select(this)
-                        .style("fill", "rgba(10, 15, 20, 0.6)")
-                        .style("stroke", "rgba(180, 190, 210, 0.2)")
-                        .style("opacity", 0.7);
+                        .style("fill", "#333")
+                        .style("stroke", "#555")
+                        .style("opacity", 0.9);
                     text.style("fill", "#c8ccd4");
                 });
         });
