@@ -78,8 +78,8 @@ class KernelContextMenu {
                 .style('fill', '#333') // Same base color as right menu panels
                 .style('stroke', '#555') // Same border color as right menu panels
                 .style('stroke-width', '1px')
-                .style('pointer-events', 'all')
-                .style('opacity', 0.9);
+                .style('pointer-events', 'all');
+                // No opacity - same as right menu panels (fully opaque)
             
             // Text - positioned inside the panel
             const text = itemGroup.append('text')
@@ -105,8 +105,8 @@ class KernelContextMenu {
             const handleMouseLeave = () => {
                 itemPanel
                     .style('fill', '#333')
-                    .style('stroke', '#555')
-                    .style('opacity', 0.9);
+                    .style('stroke', '#555');
+                    // No opacity - same as right menu panels (fully opaque)
                 text.style('fill', isActive ? accentColor : baseColor);
             };
             
@@ -515,9 +515,15 @@ class KernelContextMenu {
         d3.selectAll('.bezier-curve')
             .transition()
             .duration(300)
-            .attr('stroke', 'rgba(60, 60, 60, 0.3)')
-            .attr('stroke-width', 0.8)
-            .attr('opacity', 0.3)
+            .attr('stroke', function() {
+                return d3.select(this).attr('data-original-stroke') || 'rgba(60, 60, 60, 0.3)';
+            })
+            .attr('stroke-width', function() {
+                return d3.select(this).attr('data-original-stroke-width') || 0.8;
+            })
+            .attr('opacity', function() {
+                return d3.select(this).attr('data-original-opacity') || 0.3;
+            })
             .style('visibility', 'visible'); // Ensure visibility is restored
         
         // Stop auto-update

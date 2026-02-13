@@ -34,8 +34,8 @@ svg {
 
 /* Connection lines */
 .connection-line {
-    stroke: rgba(60, 60, 60, 0.45); /* slightly stronger lines */
-    stroke-width: 1.1; /* a bit thicker (was 0.8) */
+    stroke: rgba(60, 60, 60, 0.3);
+    stroke-width: 0.8;
 }
 
 /* Item blocks */

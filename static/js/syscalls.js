@@ -87,9 +87,7 @@ class SyscallsManager {
                 .attr("class", "syscall-box")
                 .style("fill", "#333") // Same base color as right menu panels
                 .style("stroke", "#555") // Same border color as right menu panels
-                .style("stroke-width", "1px")
-                .style("opacity", 0.9)
-                .style("filter", "drop-shadow(0 0 1px rgba(0, 0, 0, 0.4))"); // Subtle shadow like diegetic UI
+                .style("stroke-width", "1px");
             
             // Text inside panel
             const text = panelGroup.append("text")
@@ -108,14 +106,14 @@ class SyscallsManager {
                     d3.select(this)
                         .style("fill", "#ffffff")
                         .style("stroke", "#ffffff")
-                        .style("opacity", 1);
+                        .style("stroke-width", "2px");
                     text.style("fill", "#000000"); // Dark text on white panel
                 })
                 .on("mouseleave", function() {
                     d3.select(this)
                         .style("fill", "#333")
                         .style("stroke", "#555")
-                        .style("opacity", 0.9);
+                        .style("stroke-width", "1px");
                     text.style("fill", "#c8ccd4");
                 });
         });
