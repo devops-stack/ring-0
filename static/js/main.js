@@ -1304,7 +1304,9 @@ function drawLowerBezierGrid(num = 90) {
         }
     }, 1500); // Wait 1.5 seconds for curves to finish animating
     const height = window.innerHeight;
-    const yBase = height - 200;
+    // Lift the whole lower flow construction without changing its geometry.
+    const lowerFlowYOffset = -45;
+    const yBase = height - 200 + lowerFlowYOffset;
     drawBezierDecor(width, height, yBase);
 
     for (let i = 0; i < num; i++) {
@@ -1315,7 +1317,7 @@ function drawLowerBezierGrid(num = 90) {
             : width - 300 - Math.random() * 100;
 
         const endX = width / 2 + (Math.random() - 0.5) * 200;
-        const endY = height - 160 - Math.random() * 40;
+        const endY = height - 160 - Math.random() * 40 + lowerFlowYOffset;
 
         const controlX1 = startX + (fromLeft ? 150 : -150) + (Math.random() - 0.5) * 80;
         const controlY1 = yBase - 60 - Math.random() * 40;
