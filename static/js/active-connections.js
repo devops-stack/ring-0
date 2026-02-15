@@ -5,6 +5,8 @@ class ActiveConnectionsManager {
         this.currentConnections = [];
         this.updateInterval = null;
         this.updateCallback = null;
+        this.tracerouteCache = new Map();
+        this.pendingTraceroutes = new Map();
     }
 
     // Update active connections data
@@ -72,7 +74,7 @@ class ActiveConnectionsManager {
         const svg = d3.select('svg');
         
         // Clear old elements
-        svg.selectAll('.connection-box, .connection-text, .connection-details, .connection-header').remove();
+        svg.selectAll('.connection-row, .connection-box, .connection-text, .connection-details, .connection-header').remove();
         
         // Calculate starting Y position (same as system calls, but to the right)
         const startY = 35; // Same as system calls
@@ -80,10 +82,15 @@ class ActiveConnectionsManager {
         // Create new elements for active connections
         this.currentConnections.forEach((connection, i) => {
             const displayText = `${connection.local} → ${connection.remote}`;
-            const detailsText = `${connection.type} (${connection.state})`;
-            
+            const protocol = String(connection.type || 'N/A').toUpperCase();
+            const stateName = this.getSocketStateName(connection.state, protocol);
+            const detailsText = `${protocol} (${stateName})`;
+            const row = svg.append('g')
+                .attr('class', 'connection-row')
+                .style('cursor', 'pointer');
+
             // Connection box (positioned to the right of system calls)
-            svg.append('rect')
+            row.append('rect')
                 .attr('x', 300) // To the right of system calls (30 + 230 + 40 gap)
                 .attr('y', startY + i * 30) // Same spacing as system calls
                 .attr('width', 280) // Wider box for more info
@@ -92,7 +99,7 @@ class ActiveConnectionsManager {
                 .attr('rx', 4); // Rounded corners
 
             // Main connection text
-            svg.append('text')
+            row.append('text')
                 .attr('x', 308) // Adjusted for new position
                 .attr('y', startY + 15 + i * 30)
                 .text(displayText)
@@ -100,7 +107,7 @@ class ActiveConnectionsManager {
                 .attr('font-size', '11px');
 
             // Connection details (type and state)
-            svg.append('text')
+            row.append('text')
                 .attr('x', 308) // Adjusted for new position
                 .attr('y', startY + 23 + i * 30)
                 .text(detailsText)
@@ -108,7 +115,152 @@ class ActiveConnectionsManager {
                 .attr('font-size', '9px')
                 .attr('fill', '#666')
                 .attr('font-family', 'monospace');
+
+            this.attachSocketTooltipHandlers(row, connection);
         });
+    }
+
+    parseEndpoint(endpoint) {
+        if (!endpoint) return { host: "N/A", port: "N/A" };
+        const value = String(endpoint);
+        const separator = value.lastIndexOf(':');
+        if (separator === -1) return { host: value, port: "N/A" };
+        return {
+            host: value.substring(0, separator),
+            port: value.substring(separator + 1) || "N/A"
+        };
+    }
+
+    getSocketStateName(stateCode, protocol) {
+        if (!stateCode) return "UNKNOWN";
+        const tcpStates = {
+            "01": "ESTABLISHED",
+            "02": "SYN_SENT",
+            "03": "SYN_RECV",
+            "04": "FIN_WAIT1",
+            "05": "FIN_WAIT2",
+            "06": "TIME_WAIT",
+            "07": "CLOSE",
+            "08": "CLOSE_WAIT",
+            "09": "LAST_ACK",
+            "0A": "LISTEN",
+            "0B": "CLOSING"
+        };
+        const normalizedProtocol = String(protocol || "").toUpperCase();
+        const normalizedState = String(stateCode).toUpperCase();
+        if (normalizedProtocol.includes("UDP")) return "DATAGRAM";
+        return tcpStates[normalizedState] || normalizedState;
+    }
+
+    buildSocketTooltipHtml(connection) {
+        const local = this.parseEndpoint(connection.local);
+        const remote = this.parseEndpoint(connection.remote);
+        const protocol = String(connection.type || "N/A").toUpperCase();
+        const stateCode = String(connection.state || "N/A").toUpperCase();
+        const stateName = this.getSocketStateName(stateCode, protocol);
+        return `
+            <strong>Socket Flow</strong><br>
+            <strong>Protocol:</strong> ${protocol}<br>
+            <strong>State:</strong> ${stateName} (${stateCode})<br>
+            <strong>Local:</strong> ${local.host}:${local.port}<br>
+            <strong>Remote:</strong> ${remote.host}:${remote.port}<br>
+            <strong>Traceroute:</strong> loading...
+        `;
+    }
+
+    buildTracerouteHtml(traceData) {
+        if (!traceData) return "<strong>Traceroute:</strong> no data";
+        if (traceData.note) return `<strong>Traceroute:</strong> ${traceData.note}`;
+        const hops = Array.isArray(traceData.hops) ? traceData.hops.slice(0, 6) : [];
+        if (hops.length === 0) return "<strong>Traceroute:</strong> no hops";
+        const hopsText = hops.map(h => {
+            const rtt = h.rtt_ms === null || h.rtt_ms === undefined ? "*" : `${h.rtt_ms.toFixed(1)}ms`;
+            return `${h.hop}. ${h.target} (${rtt})`;
+        }).join("<br>");
+        const reachMark = traceData.reached ? "reached" : "partial";
+        return `<strong>Traceroute:</strong> ${traceData.tool || "n/a"} (${reachMark})<br>${hopsText}`;
+    }
+
+    async fetchTraceroute(remoteIp) {
+        if (!remoteIp || remoteIp === "N/A") {
+            return { note: "remote IP unavailable", hops: [] };
+        }
+        if (this.tracerouteCache.has(remoteIp)) {
+            return this.tracerouteCache.get(remoteIp);
+        }
+        if (this.pendingTraceroutes.has(remoteIp)) {
+            return this.pendingTraceroutes.get(remoteIp);
+        }
+
+        const requestPromise = fetch(`/api/traceroute?ip=${encodeURIComponent(remoteIp)}`)
+            .then(async (res) => {
+                if (!res.ok) {
+                    const errorPayload = await res.json().catch(() => ({}));
+                    throw new Error(errorPayload.error || `HTTP ${res.status}`);
+                }
+                return res.json();
+            })
+            .then((payload) => {
+                this.tracerouteCache.set(remoteIp, payload);
+                return payload;
+            })
+            .catch((err) => ({ note: `traceroute unavailable: ${err.message}`, hops: [] }))
+            .finally(() => {
+                this.pendingTraceroutes.delete(remoteIp);
+            });
+
+        this.pendingTraceroutes.set(remoteIp, requestPromise);
+        return requestPromise;
+    }
+
+    attachSocketTooltipHandlers(selection, connection) {
+        selection
+            .on("mouseover", (event) => {
+                d3.selectAll(".socket-tooltip").remove();
+                const tooltip = d3.select("body")
+                    .append("div")
+                    .attr("class", "tooltip socket-tooltip")
+                    .attr("data-remote-ip", this.parseEndpoint(connection.remote).host)
+                    .style("opacity", 0);
+
+                tooltip.html(this.buildSocketTooltipHtml(connection))
+                    .style("left", `${event.pageX + 10}px`)
+                    .style("top", `${event.pageY - 10}px`)
+                    .transition()
+                    .duration(120)
+                    .style("opacity", 1);
+
+                const remoteIp = this.parseEndpoint(connection.remote).host;
+                this.fetchTraceroute(remoteIp).then((traceData) => {
+                    const activeTooltip = d3.select(`.socket-tooltip[data-remote-ip="${remoteIp}"]`);
+                    if (activeTooltip.empty()) return;
+                    const local = this.parseEndpoint(connection.local);
+                    const remote = this.parseEndpoint(connection.remote);
+                    const protocol = String(connection.type || "N/A").toUpperCase();
+                    const stateCode = String(connection.state || "N/A").toUpperCase();
+                    const stateName = this.getSocketStateName(stateCode, protocol);
+                    activeTooltip.html(`
+                        <strong>Socket Flow</strong><br>
+                        <strong>Protocol:</strong> ${protocol}<br>
+                        <strong>State:</strong> ${stateName} (${stateCode})<br>
+                        <strong>Local:</strong> ${local.host}:${local.port}<br>
+                        <strong>Remote:</strong> ${remote.host}:${remote.port}<br>
+                        ${this.buildTracerouteHtml(traceData)}
+                    `);
+                });
+            })
+            .on("mousemove", (event) => {
+                d3.select(".socket-tooltip")
+                    .style("left", `${event.pageX + 10}px`)
+                    .style("top", `${event.pageY - 10}px`);
+            })
+            .on("mouseout", () => {
+                d3.selectAll(".socket-tooltip")
+                    .transition()
+                    .duration(100)
+                    .style("opacity", 0)
+                    .remove();
+            });
     }
 
     // Start auto update

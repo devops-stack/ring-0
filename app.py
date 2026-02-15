@@ -12,8 +12,10 @@ import random
 import platform
 import subprocess
 import re
+import ipaddress
+import shutil
 from datetime import datetime
-from flask import Flask, jsonify, render_template, send_from_directory
+from flask import Flask, jsonify, render_template, send_from_directory, request
 import psutil
 
 # Try to import OpenAI (optional)
@@ -24,6 +26,19 @@ except ImportError:
     OPENAI_AVAILABLE = False
 
 app = Flask(__name__)
+TRACEROUTE_CACHE = {}
+TRACEROUTE_CACHE_TTL_SECONDS = 60
+
+def resolve_binary(cmd_name):
+    """Resolve executable path even when service PATH misses sbin directories."""
+    found = shutil.which(cmd_name)
+    if found:
+        return found
+    for base in ("/usr/sbin", "/usr/bin", "/sbin", "/bin"):
+        candidate = os.path.join(base, cmd_name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
 
 # Configuration
 class Config:
@@ -813,12 +828,386 @@ def get_mock_active_connections():
         {"local": "127.0.0.1:5001", "remote": "192.168.1.101:12345", "state": "01", "type": "TCP"}
     ]
 
+def _safe_read_text(path):
+    try:
+        with open(path, "r") as f:
+            return f.read().strip()
+    except (OSError, PermissionError):
+        return None
+
+def _parse_cgroup_path(pid):
+    cgroup_text = _safe_read_text(f"/proc/{pid}/cgroup")
+    if not cgroup_text:
+        return "/"
+    chosen = "/"
+    for line in cgroup_text.splitlines():
+        parts = line.split(":")
+        if len(parts) != 3:
+            continue
+        _, controllers, path = parts
+        path = path.strip() or "/"
+        # Prefer cgroup v2 unified hierarchy entry "0::/path"
+        if controllers == "":
+            return path
+        if path and path != "/":
+            chosen = path
+    return chosen
+
+def _read_namespace_inode(pid, ns_name):
+    ns_link = f"/proc/{pid}/ns/{ns_name}"
+    try:
+        target = os.readlink(ns_link)
+    except (OSError, PermissionError):
+        return None
+    match = re.search(r'\[(\d+)\]', target)
+    return match.group(1) if match else target
+
+def _read_cgroup_v2_stats(cgroup_path):
+    root = "/sys/fs/cgroup"
+    rel = cgroup_path.lstrip("/")
+    base = os.path.join(root, rel) if rel else root
+
+    cpu_max_text = _safe_read_text(os.path.join(base, "cpu.max"))
+    cpu_quota_cores = None
+    if cpu_max_text:
+        parts = cpu_max_text.split()
+        if len(parts) >= 2 and parts[0] != "max":
+            try:
+                quota = float(parts[0])
+                period = float(parts[1])
+                if period > 0:
+                    cpu_quota_cores = round(quota / period, 2)
+            except ValueError:
+                cpu_quota_cores = None
+
+    mem_current = _safe_read_text(os.path.join(base, "memory.current"))
+    mem_max = _safe_read_text(os.path.join(base, "memory.max"))
+    pids_current = _safe_read_text(os.path.join(base, "pids.current"))
+    pids_max = _safe_read_text(os.path.join(base, "pids.max"))
+    io_stat_text = _safe_read_text(os.path.join(base, "io.stat"))
+
+    memory_current_mb = None
+    memory_max_mb = None
+    try:
+        if mem_current is not None:
+            memory_current_mb = round(int(mem_current) / (1024 * 1024), 1)
+    except ValueError:
+        memory_current_mb = None
+
+    try:
+        if mem_max and mem_max != "max":
+            memory_max_mb = round(int(mem_max) / (1024 * 1024), 1)
+    except ValueError:
+        memory_max_mb = None
+
+    io_bytes = None
+    if io_stat_text:
+        total = 0
+        for line in io_stat_text.splitlines():
+            rbytes_match = re.search(r'rbytes=(\d+)', line)
+            wbytes_match = re.search(r'wbytes=(\d+)', line)
+            if rbytes_match:
+                total += int(rbytes_match.group(1))
+            if wbytes_match:
+                total += int(wbytes_match.group(1))
+        io_bytes = total
+
+    return {
+        "cpu_quota_cores": cpu_quota_cores,
+        "memory_current_mb": memory_current_mb,
+        "memory_max_mb": memory_max_mb,
+        "pids_current": int(pids_current) if pids_current and pids_current.isdigit() else None,
+        "pids_max": None if pids_max in (None, "max") else (int(pids_max) if pids_max.isdigit() else None),
+        "io_total_mb": round(io_bytes / (1024 * 1024), 1) if io_bytes is not None else None
+    }
+
+def get_isolation_context():
+    """Aggregate namespace and cgroup context for UI layer."""
+    namespace_keys = ["mnt", "pid", "net", "ipc", "uts", "user"]
+    namespace_labels = {
+        "mnt": "MNT",
+        "pid": "PID",
+        "net": "NET",
+        "ipc": "IPC",
+        "uts": "UTS",
+        "user": "USER"
+    }
+    namespace_counts = {k: {} for k in namespace_keys}
+    cgroup_aggregates = {}
+    total_scanned = 0
+
+    for proc in psutil.process_iter(["pid", "name", "memory_info"]):
+        try:
+            pid = proc.info["pid"]
+            total_scanned += 1
+
+            cgroup_path = _parse_cgroup_path(pid)
+            agg = cgroup_aggregates.setdefault(cgroup_path, {
+                "path": cgroup_path,
+                "process_count": 0,
+                "memory_mb_sum": 0.0,
+                "sample_processes": []
+            })
+            agg["process_count"] += 1
+
+            mem_info = proc.info.get("memory_info")
+            if mem_info:
+                agg["memory_mb_sum"] += (mem_info.rss / (1024 * 1024))
+
+            if len(agg["sample_processes"]) < 4:
+                process_name = proc.info.get("name") or "unknown"
+                agg["sample_processes"].append(process_name)
+
+            for ns_name in namespace_keys:
+                inode = _read_namespace_inode(pid, ns_name)
+                if inode:
+                    ns_map = namespace_counts[ns_name]
+                    ns_map[inode] = ns_map.get(inode, 0) + 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied, KeyError):
+            continue
+
+    namespaces = []
+    for ns_name in namespace_keys:
+        entries = namespace_counts[ns_name]
+        unique_count = len(entries)
+        dominant_inode = None
+        dominant_count = 0
+        if entries:
+            dominant_inode, dominant_count = max(entries.items(), key=lambda kv: kv[1])
+        activity = round((dominant_count / total_scanned), 3) if total_scanned > 0 else 0
+        namespaces.append({
+            "id": ns_name,
+            "label": namespace_labels[ns_name],
+            "unique_count": unique_count,
+            "dominant_inode": dominant_inode,
+            "dominant_count": dominant_count,
+            "activity": activity
+        })
+
+    top_cgroups = sorted(
+        cgroup_aggregates.values(),
+        key=lambda x: (x["process_count"], x["memory_mb_sum"]),
+        reverse=True
+    )[:4]
+
+    for item in top_cgroups:
+        stats = _read_cgroup_v2_stats(item["path"])
+        item["memory_mb_sum"] = round(item["memory_mb_sum"], 1)
+        item.update(stats)
+
+    return {
+        "timestamp": datetime.now().isoformat(),
+        "processes_scanned": total_scanned,
+        "namespaces": namespaces,
+        "top_cgroups": top_cgroups
+    }
+
+def get_route_hint(remote_ip):
+    """Fallback path hint using Linux routing table when traceroute tools are absent."""
+    ip_cmd = resolve_binary("ip")
+    if not ip_cmd:
+        return {
+            "remote_ip": remote_ip,
+            "tool": None,
+            "reached": False,
+            "hop_count": 0,
+            "hops": [],
+            "note": "Path tools unavailable on host"
+        }
+
+    try:
+        result = subprocess.run(
+            [ip_cmd, "-o", "route", "get", remote_ip],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False
+        )
+        line = (result.stdout or "").strip()
+        if not line:
+            return {
+                "remote_ip": remote_ip,
+                "tool": "ip-route",
+                "reached": False,
+                "hop_count": 0,
+                "hops": [],
+                "note": "No route information available"
+            }
+
+        via_match = re.search(r'\svia\s(\d{1,3}(?:\.\d{1,3}){3})', line)
+        dev_match = re.search(r'\sdev\s([A-Za-z0-9_.:-]+)', line)
+        src_match = re.search(r'\ssrc\s(\d{1,3}(?:\.\d{1,3}){3})', line)
+
+        hops = []
+        if via_match:
+            hops.append({
+                "hop": 1,
+                "target": via_match.group(1),
+                "rtt_ms": None
+            })
+            hops.append({
+                "hop": 2,
+                "target": remote_ip,
+                "rtt_ms": None
+            })
+        else:
+            hops.append({
+                "hop": 1,
+                "target": remote_ip,
+                "rtt_ms": None
+            })
+
+        note_parts = ["Traceroute not installed, showing kernel route hint"]
+        if dev_match:
+            note_parts.append(f"dev={dev_match.group(1)}")
+        if src_match:
+            note_parts.append(f"src={src_match.group(1)}")
+
+        return {
+            "remote_ip": remote_ip,
+            "tool": "ip-route",
+            "reached": False,
+            "hop_count": len(hops),
+            "hops": hops,
+            "note": ", ".join(note_parts)
+        }
+    except (subprocess.TimeoutExpired, OSError):
+        return {
+            "remote_ip": remote_ip,
+            "tool": "ip-route",
+            "reached": False,
+            "hop_count": 0,
+            "hops": [],
+            "note": "Route hint lookup timed out"
+        }
+
+def get_traceroute_info(remote_ip, max_hops=8):
+    """Get traceroute/tracepath information for a remote IP with short timeout."""
+    try:
+        target_ip = ipaddress.ip_address(remote_ip)
+        # Skip loopback/local addresses - traceroute is not meaningful here.
+        if target_ip.is_loopback or target_ip.is_unspecified:
+            return {
+                "remote_ip": remote_ip,
+                "tool": None,
+                "reached": False,
+                "hop_count": 0,
+                "hops": [],
+                "note": "Local address, traceroute skipped"
+            }
+    except ValueError:
+        raise ValueError("Invalid IP address")
+
+    now = time.time()
+    cached = TRACEROUTE_CACHE.get(remote_ip)
+    if cached and (now - cached["timestamp"]) < TRACEROUTE_CACHE_TTL_SECONDS:
+        return cached["data"]
+
+    traceroute_cmd = resolve_binary("traceroute")
+    tracepath_cmd = resolve_binary("tracepath")
+    cmd = None
+    tool = None
+    if traceroute_cmd:
+        cmd = [traceroute_cmd, "-n", "-m", str(max_hops), "-q", "1", "-w", "1", remote_ip]
+        tool = "traceroute"
+    elif tracepath_cmd:
+        cmd = [tracepath_cmd, "-n", "-m", str(max_hops), remote_ip]
+        tool = "tracepath"
+    else:
+        data = get_route_hint(remote_ip)
+        TRACEROUTE_CACHE[remote_ip] = {"timestamp": now, "data": data}
+        return data
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=7,
+            check=False
+        )
+        output = (result.stdout or "").strip()
+        if not output and result.stderr:
+            output = result.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return {
+            "remote_ip": remote_ip,
+            "tool": tool,
+            "reached": False,
+            "hop_count": 0,
+            "hops": [],
+            "note": "Traceroute timed out"
+        }
+
+    hops = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        hop_match = re.match(r'^(\d+)\s+', line)
+        if not hop_match:
+            tracepath_match = re.match(r'^(\d+):\s+', line)
+            if not tracepath_match:
+                continue
+            hop_idx = int(tracepath_match.group(1))
+        else:
+            hop_idx = int(hop_match.group(1))
+
+        if "*" in line and re.search(r'\*\s*\*\s*\*', line):
+            hops.append({
+                "hop": hop_idx,
+                "target": "*",
+                "rtt_ms": None
+            })
+            continue
+
+        ip_match = re.search(r'(\d{1,3}(?:\.\d{1,3}){3})', line)
+        rtt_match = re.search(r'(\d+(?:\.\d+)?)\s*ms', line)
+        hops.append({
+            "hop": hop_idx,
+            "target": ip_match.group(1) if ip_match else "?",
+            "rtt_ms": float(rtt_match.group(1)) if rtt_match else None
+        })
+
+    reached = any(h.get("target") == remote_ip for h in hops)
+    data = {
+        "remote_ip": remote_ip,
+        "tool": tool,
+        "reached": reached,
+        "hop_count": len(hops),
+        "hops": hops[:max_hops],
+        "note": None
+    }
+    TRACEROUTE_CACHE[remote_ip] = {"timestamp": now, "data": data}
+    return data
+
 @app.route("/api/active-connections")
 def active_connections():
     """API for active network connections"""
     try:
         connections = get_active_connections()
         return jsonify({"connections": connections})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/traceroute")
+def traceroute_info():
+    """API endpoint for traceroute path to remote IP."""
+    try:
+        remote_ip = request.args.get("ip", "").strip()
+        if not remote_ip:
+            return jsonify({"error": "Missing 'ip' query parameter"}), 400
+
+        data = get_traceroute_info(remote_ip)
+        return jsonify(data)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/isolation-context")
+def isolation_context():
+    """API endpoint for cgroups + namespaces design layer."""
+    try:
+        return jsonify(get_isolation_context())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
