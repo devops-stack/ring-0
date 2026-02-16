@@ -35,7 +35,8 @@ NETWORK_STACK_PREV = {
     "ip_out": None,
     "ip_discards": None,
     "iface_rx": None,
-    "iface_tx": None
+    "iface_tx": None,
+    "iface_drops": None
 }
 DEVICES_PREV = {
     "timestamp": None,
@@ -937,6 +938,50 @@ def _parse_snmp_section(section_name):
         return {}
     return {}
 
+def _get_ss_tcp_metrics():
+    """Extract cwnd/rtt/retrans and tx queue from ss -tin (best effort)."""
+    ss_cmd = resolve_binary("ss")
+    if not ss_cmd:
+        return {}
+    try:
+        result = subprocess.run(
+            [ss_cmd, "-tin"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False
+        )
+        lines = (result.stdout or "").splitlines()
+    except (subprocess.TimeoutExpired, OSError):
+        return {}
+
+    for idx, line in enumerate(lines):
+        if not line.strip().startswith("ESTAB"):
+            continue
+        metrics = {}
+        parts = line.split()
+        # ESTAB Recv-Q Send-Q Local:Port Peer:Port
+        if len(parts) >= 4:
+            try:
+                metrics["tx_queue"] = int(parts[2])
+                metrics["rx_queue"] = int(parts[1])
+            except ValueError:
+                pass
+
+        details = lines[idx + 1] if (idx + 1) < len(lines) else ""
+        rtt_match = re.search(r'rtt:(\d+(?:\.\d+)?)/', details)
+        cwnd_match = re.search(r'cwnd:(\d+)', details)
+        retrans_match = re.search(r'retrans:(\d+)(?:/\d+)?', details)
+        if rtt_match:
+            metrics["rtt_ms"] = float(rtt_match.group(1))
+        if cwnd_match:
+            metrics["cwnd"] = int(cwnd_match.group(1))
+        if retrans_match:
+            metrics["retrans_now"] = int(retrans_match.group(1))
+        if metrics:
+            return metrics
+    return {}
+
 def _read_diskstats():
     stats = {}
     try:
@@ -1091,6 +1136,7 @@ def get_network_stack_realtime():
     tcpext = _parse_netstat_tcpext()
     ip_stats = _parse_snmp_section("Ip")
     tcp_stats = _parse_snmp_section("Tcp")
+    ss_metrics = _get_ss_tcp_metrics()
 
     retrans_total = tcpext.get("RetransSegs", 0)
     ip_in_total = ip_stats.get("InReceives", 0)
@@ -1122,12 +1168,16 @@ def get_network_stack_realtime():
 
     rx_per_sec = 0.0
     tx_per_sec = 0.0
+    iface_drop_per_sec = 0.0
     rx_bytes = iface_stats.bytes_recv if iface_stats else 0
     tx_bytes = iface_stats.bytes_sent if iface_stats else 0
+    iface_drops = (iface_stats.dropin + iface_stats.dropout) if iface_stats else 0
     if NETWORK_STACK_PREV["iface_rx"] is not None:
         rx_per_sec = max(0.0, (rx_bytes - NETWORK_STACK_PREV["iface_rx"]) / dt)
     if NETWORK_STACK_PREV["iface_tx"] is not None:
         tx_per_sec = max(0.0, (tx_bytes - NETWORK_STACK_PREV["iface_tx"]) / dt)
+    if NETWORK_STACK_PREV["iface_drops"] is not None:
+        iface_drop_per_sec = max(0.0, (iface_drops - NETWORK_STACK_PREV["iface_drops"]) / dt)
 
     NETWORK_STACK_PREV["timestamp"] = now
     NETWORK_STACK_PREV["tcpext_retrans"] = retrans_total
@@ -1136,6 +1186,7 @@ def get_network_stack_realtime():
     NETWORK_STACK_PREV["ip_discards"] = ip_discards_total
     NETWORK_STACK_PREV["iface_rx"] = rx_bytes
     NETWORK_STACK_PREV["iface_tx"] = tx_bytes
+    NETWORK_STACK_PREV["iface_drops"] = iface_drops
 
     packets_per_sec = ip_in_per_sec + ip_out_per_sec
     drop_ratio = (ip_drop_per_sec / packets_per_sec) if packets_per_sec > 0 else 0.0
@@ -1145,6 +1196,13 @@ def get_network_stack_realtime():
     drop_prob = min(0.75, (ip_drop_per_sec / 500.0) + (drop_ratio * 8.0))
     packet_speed = max(1.4, min(4.8, 1.8 + throughput_mb_s / 8.0))
 
+    socket_activity = min(1.0, (len(all_connections) / 80.0) + (retrans_per_sec / 250.0))
+    tcp_activity = min(1.0, (ss_metrics.get("cwnd", 0) / 80.0) + (retrans_per_sec / 300.0))
+    ip_activity = min(1.0, packets_per_sec / 15000.0)
+    netfilter_activity = min(1.0, (ip_drop_per_sec / 120.0) + (drop_ratio * 6.0))
+    driver_activity = min(1.0, ((rx_per_sec + tx_per_sec) / (60 * 1024 * 1024)) + (iface_drop_per_sec / 40.0))
+    nic_activity = min(1.0, ((rx_per_sec + tx_per_sec) / (80 * 1024 * 1024)))
+
     return {
         "timestamp": datetime.now().isoformat(),
         "flow": flow,
@@ -1153,11 +1211,16 @@ def get_network_stack_realtime():
                 "active_processes": len(psutil.pids())
             },
             "socket_api": {
-                "active_sockets": len(all_connections)
+                "active_sockets": len(all_connections),
+                "established": established,
+                "retransmits_per_sec": round(retrans_per_sec, 2)
             },
             "tcp_udp": {
                 "established": established,
-                "retrans_per_sec": round(retrans_per_sec, 2)
+                "retrans_per_sec": round(retrans_per_sec, 2),
+                "cwnd": int(ss_metrics.get("cwnd", 0)),
+                "rtt_ms": round(float(ss_metrics.get("rtt_ms", 0.0)), 2),
+                "tx_queue": int(ss_metrics.get("tx_queue", 0))
             },
             "ip": {
                 "in_packets_per_sec": round(ip_in_per_sec, 2),
@@ -1172,13 +1235,25 @@ def get_network_stack_realtime():
             "driver": {
                 "iface": iface,
                 "rx_mb_s": round(rx_per_sec / (1024 * 1024), 3),
-                "tx_mb_s": round(tx_per_sec / (1024 * 1024), 3)
+                "tx_mb_s": round(tx_per_sec / (1024 * 1024), 3),
+                "tx_queue": int(ss_metrics.get("tx_queue", 0)),
+                "drops_per_sec": round(iface_drop_per_sec, 3)
             },
             "nic": {
                 "iface": iface,
                 "rx_errors": int(getattr(iface_stats, "errin", 0)) if iface_stats else 0,
-                "tx_errors": int(getattr(iface_stats, "errout", 0)) if iface_stats else 0
+                "tx_errors": int(getattr(iface_stats, "errout", 0)) if iface_stats else 0,
+                "drops_total": int(iface_drops)
             }
+        },
+        "layer_activity": {
+            "userspace": min(1.0, len(psutil.pids()) / 400.0),
+            "socket": round(socket_activity, 4),
+            "tcp": round(tcp_activity, 4),
+            "ip": round(ip_activity, 4),
+            "netfilter": round(netfilter_activity, 4),
+            "driver": round(driver_activity, 4),
+            "nic": round(nic_activity, 4)
         },
         "signals": {
             "drop_probability": round(drop_prob, 4),
