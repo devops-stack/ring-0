@@ -28,6 +28,21 @@ except ImportError:
 app = Flask(__name__)
 TRACEROUTE_CACHE = {}
 TRACEROUTE_CACHE_TTL_SECONDS = 60
+NETWORK_STACK_PREV = {
+    "timestamp": None,
+    "tcpext_retrans": None,
+    "ip_in": None,
+    "ip_out": None,
+    "ip_discards": None,
+    "iface_rx": None,
+    "iface_tx": None
+}
+DEVICES_PREV = {
+    "timestamp": None,
+    "disk_sectors": {},
+    "net_bytes": {},
+    "tty_irq_total": None
+}
 
 def resolve_binary(cmd_name):
     """Resolve executable path even when service PATH misses sbin directories."""
@@ -828,6 +843,356 @@ def get_mock_active_connections():
         {"local": "127.0.0.1:5001", "remote": "192.168.1.101:12345", "state": "01", "type": "TCP"}
     ]
 
+def _tcp_state_name(code):
+    states = {
+        "01": "ESTABLISHED",
+        "02": "SYN_SENT",
+        "03": "SYN_RECV",
+        "04": "FIN_WAIT1",
+        "05": "FIN_WAIT2",
+        "06": "TIME_WAIT",
+        "07": "CLOSE",
+        "08": "CLOSE_WAIT",
+        "09": "LAST_ACK",
+        "0A": "LISTEN",
+        "0B": "CLOSING"
+    }
+    return states.get(str(code).upper(), str(code).upper())
+
+def _get_default_iface():
+    try:
+        with open("/proc/net/route", "r") as f:
+            lines = f.readlines()[1:]
+        for line in lines:
+            parts = line.strip().split()
+            if len(parts) < 11:
+                continue
+            iface = parts[0]
+            destination = parts[1]
+            flags = int(parts[3], 16)
+            if destination == "00000000" and (flags & 0x2):
+                return iface
+    except (OSError, ValueError):
+        pass
+    # Fallback: first non-loopback interface.
+    try:
+        pernic = psutil.net_io_counters(pernic=True)
+        for iface in pernic.keys():
+            if iface != "lo":
+                return iface
+    except Exception:
+        pass
+    return "lo"
+
+def _parse_netstat_tcpext():
+    try:
+        with open("/proc/net/netstat", "r") as f:
+            lines = [line.strip() for line in f if line.strip()]
+        for i in range(0, len(lines) - 1, 2):
+            header = lines[i].split()
+            values = lines[i + 1].split()
+            if not header or header[0] != "TcpExt:":
+                continue
+            if not values or values[0] != "TcpExt:":
+                continue
+            fields = header[1:]
+            nums = values[1:]
+            if len(fields) != len(nums):
+                continue
+            mapping = {}
+            for name, val in zip(fields, nums):
+                try:
+                    mapping[name] = int(val)
+                except ValueError:
+                    mapping[name] = 0
+            return mapping
+    except OSError:
+        return {}
+    return {}
+
+def _parse_snmp_section(section_name):
+    try:
+        with open("/proc/net/snmp", "r") as f:
+            lines = [line.strip() for line in f if line.strip()]
+        for i in range(0, len(lines) - 1, 2):
+            header = lines[i].split()
+            values = lines[i + 1].split()
+            expected_prefix = f"{section_name}:"
+            if not header or header[0] != expected_prefix:
+                continue
+            if not values or values[0] != expected_prefix:
+                continue
+            fields = header[1:]
+            nums = values[1:]
+            if len(fields) != len(nums):
+                continue
+            out = {}
+            for name, val in zip(fields, nums):
+                try:
+                    out[name] = int(val)
+                except ValueError:
+                    out[name] = 0
+            return out
+    except OSError:
+        return {}
+    return {}
+
+def _read_diskstats():
+    stats = {}
+    try:
+        with open("/proc/diskstats", "r") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 14:
+                    continue
+                name = parts[2]
+                # Skip loop/ram for cleaner belt.
+                if name.startswith("loop") or name.startswith("ram"):
+                    continue
+                try:
+                    sectors_read = int(parts[5])
+                    sectors_written = int(parts[9])
+                    stats[name] = sectors_read + sectors_written
+                except ValueError:
+                    continue
+    except OSError:
+        pass
+    return stats
+
+def _read_tty_irq_total():
+    total = 0
+    try:
+        with open("/proc/interrupts", "r") as f:
+            for line in f:
+                lower = line.lower()
+                if "tty" not in lower and "serial" not in lower:
+                    continue
+                parts = line.split()
+                # Sum first CPU counters columns.
+                for token in parts[1:9]:
+                    if token.isdigit():
+                        total += int(token)
+    except OSError:
+        pass
+    return total
+
+def get_devices_realtime():
+    now = time.time()
+    prev_ts = DEVICES_PREV["timestamp"]
+    dt = max(0.001, now - prev_ts) if prev_ts else 1.0
+
+    # 1) Block devices throughput from /proc/diskstats sectors delta.
+    disk_now = _read_diskstats()
+    block_devices = []
+    for name, sectors_total in disk_now.items():
+        prev = DEVICES_PREV["disk_sectors"].get(name)
+        delta_sectors = max(0, sectors_total - prev) if prev is not None else 0
+        bps = (delta_sectors * 512) / dt  # 512 bytes/sector
+        block_devices.append({
+            "name": name,
+            "type": "block",
+            "throughput_bps": bps,
+            "targets": ["vfs"],
+            "label": f"{name} (block)"
+        })
+
+    # 2) Network device throughput from psutil counters.
+    net_now = {}
+    net_devices = []
+    try:
+        pernic = psutil.net_io_counters(pernic=True)
+        for iface, counters in pernic.items():
+            if iface == "lo":
+                continue
+            total_bytes = counters.bytes_recv + counters.bytes_sent
+            net_now[iface] = total_bytes
+            prev = DEVICES_PREV["net_bytes"].get(iface)
+            delta = max(0, total_bytes - prev) if prev is not None else 0
+            bps = delta / dt
+            net_devices.append({
+                "name": iface,
+                "type": "network",
+                "throughput_bps": bps,
+                "targets": ["net"],
+                "label": f"{iface} (net)",
+                "errors": int(counters.errin + counters.errout),
+                "drops": int(counters.dropin + counters.dropout)
+            })
+    except Exception:
+        net_devices = []
+
+    # 3) TTY pseudo-device load via IRQ delta.
+    tty_irq_total = _read_tty_irq_total()
+    prev_tty_irq = DEVICES_PREV["tty_irq_total"]
+    tty_irq_delta = max(0, tty_irq_total - prev_tty_irq) if prev_tty_irq is not None else 0
+    tty_load_per_sec = tty_irq_delta / dt
+    tty_devices = [{
+        "name": "tty0",
+        "type": "tty",
+        "throughput_bps": tty_load_per_sec * 1024,  # normalize into "bytes-like" lane speed
+        "targets": ["sched", "signals"],
+        "label": "tty0 (tty)",
+        "irq_per_sec": round(tty_load_per_sec, 2)
+    }]
+
+    # 4) Null as baseline low-load misc port.
+    null_device = [{
+        "name": "null",
+        "type": "misc",
+        "throughput_bps": 0.0,
+        "targets": ["kernel"],
+        "label": "null (misc)"
+    }]
+
+    devices = block_devices + net_devices + tty_devices + null_device
+    devices.sort(key=lambda d: d.get("throughput_bps", 0), reverse=True)
+    top_devices = devices[:12]
+
+    max_bps = max([d.get("throughput_bps", 0) for d in top_devices] + [1.0])
+    for d in top_devices:
+        d["throughput_bps"] = round(float(d.get("throughput_bps", 0)), 2)
+        d["throughput_mb_s"] = round(d["throughput_bps"] / (1024 * 1024), 4)
+        d["load_norm"] = round(min(1.0, d["throughput_bps"] / max_bps), 4)
+
+    DEVICES_PREV["timestamp"] = now
+    DEVICES_PREV["disk_sectors"] = disk_now
+    DEVICES_PREV["net_bytes"] = net_now
+    DEVICES_PREV["tty_irq_total"] = tty_irq_total
+
+    return {
+        "timestamp": datetime.now().isoformat(),
+        "devices": top_devices,
+        "meta": {
+            "count": len(top_devices),
+            "max_throughput_bps": round(max_bps, 2)
+        }
+    }
+
+def get_network_stack_realtime():
+    now = time.time()
+    iface = _get_default_iface()
+    pernic = psutil.net_io_counters(pernic=True)
+    iface_stats = pernic.get(iface)
+    all_connections = get_active_connections()
+    interesting = [
+        c for c in all_connections
+        if not c["remote"].startswith("127.0.0.1") and not c["remote"].startswith("0.0.0.0")
+    ]
+    flow = interesting[0] if interesting else (all_connections[0] if all_connections else None)
+    if flow:
+        flow = {
+            "local": flow.get("local"),
+            "remote": flow.get("remote"),
+            "type": str(flow.get("type", "TCP")).upper(),
+            "state_code": flow.get("state", "00"),
+            "state_name": _tcp_state_name(flow.get("state", "00"))
+        }
+
+    tcpext = _parse_netstat_tcpext()
+    ip_stats = _parse_snmp_section("Ip")
+    tcp_stats = _parse_snmp_section("Tcp")
+
+    retrans_total = tcpext.get("RetransSegs", 0)
+    ip_in_total = ip_stats.get("InReceives", 0)
+    ip_out_total = ip_stats.get("OutRequests", 0)
+    ip_discards_total = ip_stats.get("InDiscards", 0) + ip_stats.get("OutDiscards", 0)
+
+    established = 0
+    try:
+        with open("/proc/net/tcp", "r") as f:
+            for line in f.readlines()[1:]:
+                parts = line.strip().split()
+                if len(parts) >= 4 and parts[3] == "01":
+                    established += 1
+    except OSError:
+        established = 0
+
+    prev_ts = NETWORK_STACK_PREV["timestamp"]
+    dt = max(0.001, now - prev_ts) if prev_ts else 1.0
+
+    def rate(curr, prev):
+        if prev is None:
+            return 0.0
+        return max(0.0, (curr - prev) / dt)
+
+    retrans_per_sec = rate(retrans_total, NETWORK_STACK_PREV["tcpext_retrans"])
+    ip_in_per_sec = rate(ip_in_total, NETWORK_STACK_PREV["ip_in"])
+    ip_out_per_sec = rate(ip_out_total, NETWORK_STACK_PREV["ip_out"])
+    ip_drop_per_sec = rate(ip_discards_total, NETWORK_STACK_PREV["ip_discards"])
+
+    rx_per_sec = 0.0
+    tx_per_sec = 0.0
+    rx_bytes = iface_stats.bytes_recv if iface_stats else 0
+    tx_bytes = iface_stats.bytes_sent if iface_stats else 0
+    if NETWORK_STACK_PREV["iface_rx"] is not None:
+        rx_per_sec = max(0.0, (rx_bytes - NETWORK_STACK_PREV["iface_rx"]) / dt)
+    if NETWORK_STACK_PREV["iface_tx"] is not None:
+        tx_per_sec = max(0.0, (tx_bytes - NETWORK_STACK_PREV["iface_tx"]) / dt)
+
+    NETWORK_STACK_PREV["timestamp"] = now
+    NETWORK_STACK_PREV["tcpext_retrans"] = retrans_total
+    NETWORK_STACK_PREV["ip_in"] = ip_in_total
+    NETWORK_STACK_PREV["ip_out"] = ip_out_total
+    NETWORK_STACK_PREV["ip_discards"] = ip_discards_total
+    NETWORK_STACK_PREV["iface_rx"] = rx_bytes
+    NETWORK_STACK_PREV["iface_tx"] = tx_bytes
+
+    packets_per_sec = ip_in_per_sec + ip_out_per_sec
+    drop_ratio = (ip_drop_per_sec / packets_per_sec) if packets_per_sec > 0 else 0.0
+    throughput_mb_s = (rx_per_sec + tx_per_sec) / (1024 * 1024)
+
+    retrans_prob = min(0.75, retrans_per_sec / 600.0)
+    drop_prob = min(0.75, (ip_drop_per_sec / 500.0) + (drop_ratio * 8.0))
+    packet_speed = max(1.4, min(4.8, 1.8 + throughput_mb_s / 8.0))
+
+    return {
+        "timestamp": datetime.now().isoformat(),
+        "flow": flow,
+        "layer_metrics": {
+            "userspace": {
+                "active_processes": len(psutil.pids())
+            },
+            "socket_api": {
+                "active_sockets": len(all_connections)
+            },
+            "tcp_udp": {
+                "established": established,
+                "retrans_per_sec": round(retrans_per_sec, 2)
+            },
+            "ip": {
+                "in_packets_per_sec": round(ip_in_per_sec, 2),
+                "out_packets_per_sec": round(ip_out_per_sec, 2),
+                "drop_per_sec": round(ip_drop_per_sec, 3),
+                "drop_ratio": round(drop_ratio, 5)
+            },
+            "netfilter": {
+                "drop_per_sec": round(ip_drop_per_sec, 3),
+                "drop_ratio": round(drop_ratio, 5)
+            },
+            "driver": {
+                "iface": iface,
+                "rx_mb_s": round(rx_per_sec / (1024 * 1024), 3),
+                "tx_mb_s": round(tx_per_sec / (1024 * 1024), 3)
+            },
+            "nic": {
+                "iface": iface,
+                "rx_errors": int(getattr(iface_stats, "errin", 0)) if iface_stats else 0,
+                "tx_errors": int(getattr(iface_stats, "errout", 0)) if iface_stats else 0
+            }
+        },
+        "signals": {
+            "drop_probability": round(drop_prob, 4),
+            "retransmit_probability": round(retrans_prob, 4),
+            "packet_speed": round(packet_speed, 3)
+        },
+        "throughput_mb_s": round(throughput_mb_s, 3),
+        "tcp_counters": {
+            "in_segs": int(tcp_stats.get("InSegs", 0)),
+            "out_segs": int(tcp_stats.get("OutSegs", 0)),
+            "retrans_segs_total": int(retrans_total)
+        }
+    }
+
 def _safe_read_text(path):
     try:
         with open(path, "r") as f:
@@ -1200,6 +1565,22 @@ def traceroute_info():
         return jsonify(data)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/network-stack-realtime")
+def network_stack_realtime():
+    """Live telemetry for Network Stack visualization."""
+    try:
+        return jsonify(get_network_stack_realtime())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/devices-realtime")
+def devices_realtime():
+    """Live telemetry for Devices belt visualization."""
+    try:
+        return jsonify(get_devices_realtime())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

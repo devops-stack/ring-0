@@ -13,6 +13,8 @@ class KernelContextMenu {
         this.updateInterval = null;
         this.submenuGroup = null;
         this.dnaVisualization = null;
+        this.networkVisualization = null;
+        this.devicesVisualization = null;
     }
 
     init() {
@@ -369,6 +371,127 @@ class KernelContextMenu {
         // Add exit button
         this.addExitButton();
     }
+
+    activateNetworkView() {
+        console.log('🌐 Activating Network Stack View');
+        this.currentView = 'network';
+        this.hideSubmenu();
+
+        if (!this.networkVisualization) {
+            if (typeof NetworkStackVisualization !== 'undefined') {
+                try {
+                    this.networkVisualization = new NetworkStackVisualization();
+                    const initResult = this.networkVisualization.init();
+                    if (initResult === false) {
+                        this.networkVisualization = null;
+                        return;
+                    }
+                } catch (error) {
+                    console.error('❌ Error initializing NetworkStackVisualization:', error);
+                    alert('Network Stack initialization error: ' + error.message);
+                    return;
+                }
+            } else if (typeof window.NetworkStackVisualization !== 'undefined') {
+                try {
+                    this.networkVisualization = new window.NetworkStackVisualization();
+                    const initResult = this.networkVisualization.init();
+                    if (initResult === false) {
+                        this.networkVisualization = null;
+                        return;
+                    }
+                } catch (error) {
+                    console.error('❌ Error initializing window.NetworkStackVisualization:', error);
+                    alert('Network Stack initialization error: ' + error.message);
+                    return;
+                }
+            } else {
+                console.error('❌ NetworkStackVisualization class not loaded');
+                alert('Network Stack visualization is not loaded. Check console for details.');
+                return;
+            }
+        }
+
+        // Hide base UI while network view is active.
+        d3.selectAll('.syscall-box, .syscall-text').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+        d3.selectAll('.tag-icon, .connection-line').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+        d3.selectAll('.connection-box, .connection-text, .connection-details').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+        d3.selectAll('.subsystem-indicator').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+        d3.selectAll('.namespace-shell-layer, .cgroup-card-layer').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+
+        if (window.syscallsManager) {
+            window.syscallsManager.stopAutoUpdate();
+        }
+        if (window.connectionsManager) {
+            window.connectionsManager.stopAutoUpdate();
+        }
+
+        try {
+            this.networkVisualization.activate();
+            console.log('✅ Network Stack visualization activated');
+        } catch (error) {
+            console.error('❌ Error activating Network Stack visualization:', error);
+        }
+    }
+
+    activateDevicesView() {
+        console.log('🧲 Activating Devices Belt View');
+        this.currentView = 'devices';
+        this.hideSubmenu();
+
+        if (!this.devicesVisualization) {
+            if (typeof DevicesBeltVisualization !== 'undefined') {
+                try {
+                    this.devicesVisualization = new DevicesBeltVisualization();
+                    const initResult = this.devicesVisualization.init();
+                    if (initResult === false) {
+                        this.devicesVisualization = null;
+                        return;
+                    }
+                } catch (error) {
+                    console.error('❌ Error initializing DevicesBeltVisualization:', error);
+                    alert('Devices view initialization error: ' + error.message);
+                    return;
+                }
+            } else if (typeof window.DevicesBeltVisualization !== 'undefined') {
+                try {
+                    this.devicesVisualization = new window.DevicesBeltVisualization();
+                    const initResult = this.devicesVisualization.init();
+                    if (initResult === false) {
+                        this.devicesVisualization = null;
+                        return;
+                    }
+                } catch (error) {
+                    console.error('❌ Error initializing window.DevicesBeltVisualization:', error);
+                    alert('Devices view initialization error: ' + error.message);
+                    return;
+                }
+            } else {
+                console.error('❌ DevicesBeltVisualization class not loaded');
+                alert('Devices visualization is not loaded. Check console for details.');
+                return;
+            }
+        }
+
+        d3.selectAll('.syscall-box, .syscall-text').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+        d3.selectAll('.tag-icon, .connection-line').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+        d3.selectAll('.connection-box, .connection-text, .connection-details').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+        d3.selectAll('.subsystem-indicator').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+        d3.selectAll('.namespace-shell-layer, .cgroup-card-layer').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+
+        if (window.syscallsManager) {
+            window.syscallsManager.stopAutoUpdate();
+        }
+        if (window.connectionsManager) {
+            window.connectionsManager.stopAutoUpdate();
+        }
+
+        try {
+            this.devicesVisualization.activate();
+            console.log('✅ Devices Belt visualization activated');
+        } catch (error) {
+            console.error('❌ Error activating Devices Belt visualization:', error);
+        }
+    }
     
     addExitButton() {
         // Remove existing exit button
@@ -437,6 +560,12 @@ class KernelContextMenu {
         if (this.dnaVisualization) {
             this.dnaVisualization.deactivate();
         }
+        if (this.networkVisualization) {
+            this.networkVisualization.deactivate();
+        }
+        if (this.devicesVisualization) {
+            this.devicesVisualization.deactivate();
+        }
         
         // Clear exit button immediately (both old class and new class)
         d3.selectAll('.kernel-exit-button, .kernel-dna-exit-button').remove();
@@ -489,6 +618,13 @@ class KernelContextMenu {
         
         // Restore subsystem indicators (Memory, Scheduler, File System, Network bars)
         d3.selectAll('.subsystem-indicator')
+            .transition()
+            .duration(300)
+            .style('opacity', 1)
+            .style('pointer-events', 'all')
+            .style('visibility', 'visible');
+
+        d3.selectAll('.namespace-shell-layer, .cgroup-card-layer')
             .transition()
             .duration(300)
             .style('opacity', 1)
