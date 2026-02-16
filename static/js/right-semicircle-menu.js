@@ -16,7 +16,7 @@ class RightSemicircleMenuManager {
         this.isVisible = false;
         this.hoveredItemId = null; // Track hovered item (for hover-based selection)
         this.clickHandlerAttached = false; // Track if click handler is already attached
-        this.isClickingKernel = false; // Track if we're in the process of clicking kernel
+        this.isClickingOverlay = false; // Track if we're in the process of clicking overlay views
     }
 
     renderRightSemicircleMenu() {
@@ -100,7 +100,7 @@ class RightSemicircleMenuManager {
             // Функция для обработки mouseenter
             const handleMouseEnter = () => {
                 // Don't re-render if clicking on kernel (to prevent interrupting click event)
-                if (this.isClickingKernel) {
+                if (this.isClickingOverlay) {
                     return;
                 }
                 this.hoveredItemId = item.id;
@@ -178,6 +178,16 @@ class RightSemicircleMenuManager {
                     setTimeout(() => {
                         window.kernelContextMenu.activateDNAView();
                     }, 10);
+                } else if (item.id === 'network' && window.kernelContextMenu) {
+                    console.log('🌐 Activating Network Stack view from menu');
+                    setTimeout(() => {
+                        window.kernelContextMenu.activateNetworkView();
+                    }, 10);
+                } else if (item.id === 'devices' && window.kernelContextMenu) {
+                    console.log('🧲 Activating Devices Belt view from menu');
+                    setTimeout(() => {
+                        window.kernelContextMenu.activateDevicesView();
+                    }, 10);
                 } else {
                     console.log('⚠️ Click on kernel item but conditions not met:', {
                         itemId: item.id,
@@ -186,22 +196,30 @@ class RightSemicircleMenuManager {
                 }
             };
             
-            // Also handle mousedown for kernel item (since click might be interrupted)
+            // Also handle mousedown for overlay items (since click might be interrupted)
             const handleMouseDown = (event) => {
-                if (item.id === 'kernel') {
-                    console.log('🖱️ Mouse down on kernel item - activating DNA view');
+                if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices') {
+                    console.log('🖱️ Mouse down on overlay item:', item.id);
                     event.stopPropagation();
                     // Prevent re-rendering during click
-                    this.isClickingKernel = true;
+                    this.isClickingOverlay = true;
                     // Use setTimeout to ensure this happens after any re-rendering
                     setTimeout(() => {
                         if (window.kernelContextMenu) {
-                            console.log('🧬 Activating Kernel DNA view from mousedown');
-                            window.kernelContextMenu.activateDNAView();
+                            if (item.id === 'kernel') {
+                                console.log('🧬 Activating Kernel DNA view from mousedown');
+                                window.kernelContextMenu.activateDNAView();
+                            } else if (item.id === 'network') {
+                                console.log('🌐 Activating Network Stack view from mousedown');
+                                window.kernelContextMenu.activateNetworkView();
+                            } else if (item.id === 'devices') {
+                                console.log('🧲 Activating Devices Belt view from mousedown');
+                                window.kernelContextMenu.activateDevicesView();
+                            }
                         }
                         // Reset flag after a delay
                         setTimeout(() => {
-                            this.isClickingKernel = false;
+                            this.isClickingOverlay = false;
                         }, 100);
                     }, 50);
                 }
@@ -219,7 +237,7 @@ class RightSemicircleMenuManager {
                 .on('mousedown', (e) => {
                     console.log('🖱️ Mouse down on hoverRect:', item.id);
                     e.stopPropagation();
-                    if (item.id === 'kernel') {
+                    if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices') {
                         handleMouseDown(e);
                     }
                 });
@@ -237,7 +255,7 @@ class RightSemicircleMenuManager {
                 .on('mousedown', (e) => {
                     console.log('🖱️ Mouse down on itemGroup:', item.id);
                     e.stopPropagation();
-                    if (item.id === 'kernel') {
+                    if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices') {
                         handleMouseDown(e);
                     }
                 });
@@ -270,7 +288,7 @@ class RightSemicircleMenuManager {
                 .on('mousedown', (e) => {
                     console.log('🖱️ Mouse down on wideLine:', item.id);
                     e.stopPropagation();
-                    if (item.id === 'kernel') {
+                    if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices') {
                         handleMouseDown(e);
                     }
                 });
@@ -319,7 +337,7 @@ class RightSemicircleMenuManager {
                 .on('mousedown', (e) => {
                     console.log('🖱️ Mouse down on circle:', item.id);
                     e.stopPropagation();
-                    if (item.id === 'kernel') {
+                    if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices') {
                         handleMouseDown(e);
                     }
                 });
@@ -365,6 +383,14 @@ class RightSemicircleMenuManager {
                         console.log('🧬 Activating Kernel DNA view from menu');
                         event.stopPropagation();
                         window.kernelContextMenu.activateDNAView();
+                    } else if (item && item.id === 'network' && window.kernelContextMenu) {
+                        console.log('🌐 Activating Network Stack view from menu');
+                        event.stopPropagation();
+                        window.kernelContextMenu.activateNetworkView();
+                    } else if (item && item.id === 'devices' && window.kernelContextMenu) {
+                        console.log('🧲 Activating Devices Belt view from menu');
+                        event.stopPropagation();
+                        window.kernelContextMenu.activateDevicesView();
                     }
                 }
             });

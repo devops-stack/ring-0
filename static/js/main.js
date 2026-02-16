@@ -111,8 +111,13 @@ function draw() {
     }
     
     // Skip drawing if Kernel DNA View is active to prevent style changes to process lines
-    if (window.kernelContextMenu && (window.kernelContextMenu.currentView === 'dna' || window.kernelContextMenu.currentView === 'dna-timeline')) {
-        console.log('⏸️ Skipping draw() - Kernel DNA View is active');
+    if (window.kernelContextMenu && (
+        window.kernelContextMenu.currentView === 'dna' ||
+        window.kernelContextMenu.currentView === 'dna-timeline' ||
+        window.kernelContextMenu.currentView === 'network' ||
+        window.kernelContextMenu.currentView === 'devices'
+    )) {
+        console.log('⏸️ Skipping draw() - overlay view is active');
         return;
     }
     
