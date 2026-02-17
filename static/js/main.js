@@ -120,6 +120,16 @@ function draw() {
         console.log('⏸️ Skipping draw() - overlay view is active');
         return;
     }
+
+    // Safety: ensure overlay containers never leak into the main view.
+    ['kernel-dna-container', 'network-stack-container', 'devices-belt-container'].forEach((id) => {
+        const node = document.getElementById(id);
+        if (node) {
+            node.style.display = 'none';
+            node.style.visibility = 'hidden';
+            node.style.pointerEvents = 'none';
+        }
+    });
     
     // Clear all elements to prevent duplication, but preserve system calls
     // and Kernel analysis overlay (Matrix / Timeline submenu & elements)
