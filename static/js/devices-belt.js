@@ -39,6 +39,8 @@ class DevicesBeltVisualization {
                 background: #0E1114;
                 z-index: 9999;
                 display: none;
+                visibility: hidden;
+                pointer-events: none;
                 overflow: hidden;
             `;
             document.body.appendChild(this.container);
@@ -410,6 +412,8 @@ class DevicesBeltVisualization {
         }
         this.isActive = true;
         this.container.style.display = 'block';
+        this.container.style.visibility = 'visible';
+        this.container.style.pointerEvents = 'auto';
         this.fetchTelemetry();
         if (this.telemetryInterval) clearInterval(this.telemetryInterval);
         this.telemetryInterval = setInterval(() => {
@@ -431,6 +435,8 @@ class DevicesBeltVisualization {
         }
         if (this.container) {
             this.container.style.display = 'none';
+            this.container.style.visibility = 'hidden';
+            this.container.style.pointerEvents = 'none';
         }
     }
 

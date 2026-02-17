@@ -67,6 +67,8 @@ class NetworkStackVisualization {
                 background: #0E1114;
                 z-index: 9999;
                 display: none;
+                visibility: hidden;
+                pointer-events: none;
                 overflow: hidden;
             `;
             document.body.appendChild(this.container);
@@ -724,6 +726,8 @@ class NetworkStackVisualization {
         }
         this.isActive = true;
         this.container.style.display = 'block';
+        this.container.style.visibility = 'visible';
+        this.container.style.pointerEvents = 'auto';
         if (this.renderer?.domElement && !this.mouseMoveHandler) {
             this.mouseMoveHandler = (event) => this.onMouseMove(event);
             this.renderer.domElement.addEventListener('mousemove', this.mouseMoveHandler);
@@ -760,6 +764,8 @@ class NetworkStackVisualization {
         }
         if (this.container) {
             this.container.style.display = 'none';
+            this.container.style.visibility = 'hidden';
+            this.container.style.pointerEvents = 'none';
         }
     }
 
