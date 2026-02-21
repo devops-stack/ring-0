@@ -188,6 +188,11 @@ class RightSemicircleMenuManager {
                     setTimeout(() => {
                         window.kernelContextMenu.activateDevicesView();
                     }, 10);
+                } else if (item.id === 'files' && window.kernelContextMenu) {
+                    console.log('🗂️ Activating Filesystem Map view from menu');
+                    setTimeout(() => {
+                        window.kernelContextMenu.activateFilesView();
+                    }, 10);
                 } else {
                     console.log('⚠️ Click on kernel item but conditions not met:', {
                         itemId: item.id,
@@ -198,7 +203,7 @@ class RightSemicircleMenuManager {
             
             // Also handle mousedown for overlay items (since click might be interrupted)
             const handleMouseDown = (event) => {
-                if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices') {
+                if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices' || item.id === 'files') {
                     console.log('🖱️ Mouse down on overlay item:', item.id);
                     event.stopPropagation();
                     // Prevent re-rendering during click
@@ -215,6 +220,9 @@ class RightSemicircleMenuManager {
                             } else if (item.id === 'devices') {
                                 console.log('🧲 Activating Devices Belt view from mousedown');
                                 window.kernelContextMenu.activateDevicesView();
+                            } else if (item.id === 'files') {
+                                console.log('🗂️ Activating Filesystem Map view from mousedown');
+                                window.kernelContextMenu.activateFilesView();
                             }
                         }
                         // Reset flag after a delay
@@ -237,7 +245,7 @@ class RightSemicircleMenuManager {
                 .on('mousedown', (e) => {
                     console.log('🖱️ Mouse down on hoverRect:', item.id);
                     e.stopPropagation();
-                    if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices') {
+                    if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices' || item.id === 'files') {
                         handleMouseDown(e);
                     }
                 });
@@ -255,7 +263,7 @@ class RightSemicircleMenuManager {
                 .on('mousedown', (e) => {
                     console.log('🖱️ Mouse down on itemGroup:', item.id);
                     e.stopPropagation();
-                    if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices') {
+                    if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices' || item.id === 'files') {
                         handleMouseDown(e);
                     }
                 });
@@ -288,7 +296,7 @@ class RightSemicircleMenuManager {
                 .on('mousedown', (e) => {
                     console.log('🖱️ Mouse down on wideLine:', item.id);
                     e.stopPropagation();
-                    if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices') {
+                    if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices' || item.id === 'files') {
                         handleMouseDown(e);
                     }
                 });
@@ -337,7 +345,7 @@ class RightSemicircleMenuManager {
                 .on('mousedown', (e) => {
                     console.log('🖱️ Mouse down on circle:', item.id);
                     e.stopPropagation();
-                    if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices') {
+                    if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices' || item.id === 'files') {
                         handleMouseDown(e);
                     }
                 });
@@ -391,6 +399,10 @@ class RightSemicircleMenuManager {
                         console.log('🧲 Activating Devices Belt view from menu');
                         event.stopPropagation();
                         window.kernelContextMenu.activateDevicesView();
+                    } else if (item && item.id === 'files' && window.kernelContextMenu) {
+                        console.log('🗂️ Activating Filesystem Map view from menu');
+                        event.stopPropagation();
+                        window.kernelContextMenu.activateFilesView();
                     }
                 }
             });
