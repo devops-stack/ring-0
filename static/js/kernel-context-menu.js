@@ -15,6 +15,7 @@ class KernelContextMenu {
         this.dnaVisualization = null;
         this.networkVisualization = null;
         this.devicesVisualization = null;
+        this.filesVisualization = null;
     }
 
     init() {
@@ -492,6 +493,66 @@ class KernelContextMenu {
             console.error('❌ Error activating Devices Belt visualization:', error);
         }
     }
+
+    activateFilesView() {
+        console.log('🗂️ Activating Filesystem Map View');
+        this.currentView = 'files';
+        this.hideSubmenu();
+
+        if (!this.filesVisualization) {
+            if (typeof FilesystemMapVisualization !== 'undefined') {
+                try {
+                    this.filesVisualization = new FilesystemMapVisualization();
+                    const initResult = this.filesVisualization.init();
+                    if (initResult === false) {
+                        this.filesVisualization = null;
+                        return;
+                    }
+                } catch (error) {
+                    console.error('❌ Error initializing FilesystemMapVisualization:', error);
+                    alert('Files view initialization error: ' + error.message);
+                    return;
+                }
+            } else if (typeof window.FilesystemMapVisualization !== 'undefined') {
+                try {
+                    this.filesVisualization = new window.FilesystemMapVisualization();
+                    const initResult = this.filesVisualization.init();
+                    if (initResult === false) {
+                        this.filesVisualization = null;
+                        return;
+                    }
+                } catch (error) {
+                    console.error('❌ Error initializing window.FilesystemMapVisualization:', error);
+                    alert('Files view initialization error: ' + error.message);
+                    return;
+                }
+            } else {
+                console.error('❌ FilesystemMapVisualization class not loaded');
+                alert('Files visualization is not loaded. Check console for details.');
+                return;
+            }
+        }
+
+        d3.selectAll('.syscall-box, .syscall-text').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+        d3.selectAll('.tag-icon, .connection-line').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+        d3.selectAll('.connection-box, .connection-text, .connection-details').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+        d3.selectAll('.subsystem-indicator').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+        d3.selectAll('.namespace-shell-layer, .cgroup-card-layer').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+
+        if (window.syscallsManager) {
+            window.syscallsManager.stopAutoUpdate();
+        }
+        if (window.connectionsManager) {
+            window.connectionsManager.stopAutoUpdate();
+        }
+
+        try {
+            this.filesVisualization.activate();
+            console.log('✅ Filesystem Map visualization activated');
+        } catch (error) {
+            console.error('❌ Error activating Filesystem Map visualization:', error);
+        }
+    }
     
     addExitButton() {
         // Remove existing exit button
@@ -565,6 +626,9 @@ class KernelContextMenu {
         }
         if (this.devicesVisualization) {
             this.devicesVisualization.deactivate();
+        }
+        if (this.filesVisualization) {
+            this.filesVisualization.deactivate();
         }
         
         // Clear exit button immediately (both old class and new class)

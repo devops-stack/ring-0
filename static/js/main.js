@@ -115,14 +115,15 @@ function draw() {
         window.kernelContextMenu.currentView === 'dna' ||
         window.kernelContextMenu.currentView === 'dna-timeline' ||
         window.kernelContextMenu.currentView === 'network' ||
-        window.kernelContextMenu.currentView === 'devices'
+        window.kernelContextMenu.currentView === 'devices' ||
+        window.kernelContextMenu.currentView === 'files'
     )) {
         console.log('⏸️ Skipping draw() - overlay view is active');
         return;
     }
 
     // Safety: ensure overlay containers never leak into the main view.
-    ['kernel-dna-container', 'network-stack-container', 'devices-belt-container'].forEach((id) => {
+    ['kernel-dna-container', 'network-stack-container', 'devices-belt-container', 'filesystem-map-container'].forEach((id) => {
         const node = document.getElementById(id);
         if (node) {
             node.style.display = 'none';
