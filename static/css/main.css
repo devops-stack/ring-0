@@ -2,7 +2,7 @@
 
 body {
     margin: 0;
-    background-color: #f2f2f2;
+    background-color: #e6e6e6;
     color: #222;
     font-family: 'Share Tech Mono', monospace;
     overflow: hidden;
@@ -15,9 +15,10 @@ svg {
 
 /* Central circle */
 .central-circle {
-    fill: rgba(0, 0, 0, 0.05);
-    stroke: #333;
-    stroke-width: 1.5;
+    fill: rgba(0, 0, 0, 0.09);
+    stroke: #262626;
+    stroke-width: 1.9;
+    filter: drop-shadow(0 0 5px rgba(40, 48, 58, 0.22));
 }
 
 /* Tag icons */

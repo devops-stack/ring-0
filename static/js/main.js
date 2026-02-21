@@ -901,8 +901,8 @@ function drawProcessKernelMap2(centerX, centerY) {
                     .attr("class", "process-line")
                     .attr("data-pid", process.pid) // Store PID for highlighting
                     .attr("stroke", "url(#lineGradient)") // Use gradient for depth
-                    .attr("stroke-width", 0.4) // Same thickness as Bezier curves
-                    .attr("data-original-stroke-width", 0.4) // Store original stroke-width for restoration
+                    .attr("stroke-width", 0.9) // Thicker core/process links for stronger center hierarchy
+                    .attr("data-original-stroke-width", 0.9) // Store original stroke-width for restoration
                     .attr("data-original-opacity", 0.05 + Math.random() * 0.03) // Store original opacity
                     .attr("opacity", 0) // Start invisible
                     .attr("fill", "none")
