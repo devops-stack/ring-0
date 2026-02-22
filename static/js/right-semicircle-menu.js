@@ -19,6 +19,19 @@ class RightSemicircleMenuManager {
         this.isClickingOverlay = false; // Track if we're in the process of clicking overlay views
     }
 
+    activateOverlayView(itemId) {
+        if (!window.kernelContextMenu) return;
+        if (itemId === 'kernel') {
+            window.kernelContextMenu.activateDNAView();
+        } else if (itemId === 'network') {
+            window.kernelContextMenu.activateNetworkView();
+        } else if (itemId === 'devices') {
+            window.kernelContextMenu.activateDevicesView();
+        } else if (itemId === 'files') {
+            window.kernelContextMenu.activateFilesView();
+        }
+    }
+
     renderRightSemicircleMenu() {
         console.log('renderRightSemicircleMenu called');
         const svg = d3.select('svg');
@@ -26,7 +39,7 @@ class RightSemicircleMenuManager {
         const height = window.innerHeight;
 
         // Clear existing semicircle elements (but preserve kernel submenu)
-        svg.selectAll('.right-semicircle-menu, .right-menu-item-group, .right-menu-item, .right-menu-icon, .right-menu-line, .right-menu-label, .right-menu-label-bg').remove();
+        svg.selectAll('.right-semicircle-menu, .right-menu-edge-shell, .right-menu-edge-shell-stroke, .right-menu-fg-ring, .right-menu-item-group, .right-menu-item, .right-menu-icon, .right-menu-line, .right-menu-label, .right-menu-label-bg').remove();
 
         // Semicircle parameters
         const menuRadius = height * 0.4;
@@ -35,13 +48,54 @@ class RightSemicircleMenuManager {
 
         // Create the large semicircle path
         const semicirclePath = this.createSemicirclePath(menuX, menuY, menuRadius, 'right');
-        
+
         svg.append('path')
             .attr('class', 'right-semicircle-menu')
             .attr('d', semicirclePath)
-            .style('fill', '#ffffff')
-            .style('stroke', '#d0d0d0')
-            .style('stroke-width', '1px');
+            .style('fill', 'rgba(230, 230, 230, 0.14)')
+            .style('stroke', 'rgba(165, 165, 165, 0.42)')
+            .style('stroke-width', '1px')
+            .style('pointer-events', 'none');
+
+        // Edge shell like in the reference: a straight edge line with two slanted sides.
+        const shellEdgeX = width - 1;
+        const shellTopY = menuY - menuRadius * 0.78;
+        const shellBottomY = menuY + menuRadius * 0.78;
+        const shellInnerTopX = menuX - menuRadius * 0.92;
+        const shellInnerTopY = menuY - menuRadius * 0.32;
+        const shellInnerBottomX = menuX - menuRadius * 0.92;
+        const shellInnerBottomY = menuY + menuRadius * 0.32;
+        const shellPath = `M ${shellEdgeX} ${shellTopY}
+                           L ${shellEdgeX} ${shellBottomY}
+                           L ${shellInnerBottomX} ${shellInnerBottomY}
+                           L ${shellInnerTopX} ${shellInnerTopY}
+                           Z`;
+
+        svg.append('path')
+            .attr('class', 'right-menu-edge-shell')
+            .attr('d', shellPath)
+            .style('fill', 'rgba(188, 188, 188, 0.16)')
+            .style('pointer-events', 'none');
+
+        svg.append('path')
+            .attr('class', 'right-menu-edge-shell-stroke')
+            .attr('d', shellPath)
+            .style('fill', 'none')
+            .style('stroke', 'rgba(138, 138, 138, 0.28)')
+            .style('stroke-width', '0.9px')
+            .style('pointer-events', 'none');
+
+        // Keep only the smallest-radius overlay ring.
+        // Draw it before menu items so items stay visually above the circle layer.
+        svg.append('circle')
+            .attr('class', 'right-menu-fg-ring')
+            .attr('cx', menuX)
+            .attr('cy', menuY)
+            .attr('r', menuRadius * 0.72)
+            .style('fill', 'rgba(178, 178, 178, 0.2)')
+            .style('stroke', 'rgba(128, 128, 128, 0.36)')
+            .style('stroke-width', '0.9px')
+            .style('pointer-events', 'none');
 
         // Create menu items
         this.menuItems.forEach((item, index) => {
@@ -61,7 +115,6 @@ class RightSemicircleMenuManager {
             // Draw the line FIRST so it appears behind the circle
             // Text will be inside this wide line, like in the example
             const labelText = item.label;
-            const estimatedTextWidth = labelText.length * 7;
             const linePadding = 12; // Padding inside the line for text
             const lineHeight = 26; // Height of the wide line (should be visible and prominent)
             // Make the line longer than the text (extend it further left)
@@ -69,9 +122,14 @@ class RightSemicircleMenuManager {
             // Line starts directly from the circle edge (no gap) - shift right to attach tightly
             // Add small overlap to ensure no visual gap
             const overlap = 2; // Small overlap to ensure tight connection
-            const lineWidth = estimatedTextWidth + linePadding * 2 + lineExtension;
+            const filesLabel = this.menuItems.find(menuItem => menuItem.id === 'files')?.label || 'Files';
+            const filesEstimatedTextWidth = filesLabel.length * 7;
+            const lineWidth = filesEstimatedTextWidth + linePadding * 2 + lineExtension;
+            const leftSideTrimPx = 10; // Shorten menu bars from the left edge only
+            const barLengthBoostPx = 10; // Extend bars by 10px
+            const adjustedLineWidth = Math.max(0, lineWidth - leftSideTrimPx + barLengthBoostPx);
             const lineStartX = itemX - itemRadius + overlap; // Start slightly inside circle edge for tight fit
-            const lineEndX = lineStartX - lineWidth;
+            const lineEndX = lineStartX - adjustedLineWidth;
             const lineY = itemY - lineHeight / 2;
             const borderRadius = 15; // Radius for rounded left corners (increased for more rounded appearance like in example)
             
@@ -84,7 +142,7 @@ class RightSemicircleMenuManager {
             const hoverAreaPadding = 10; // Дополнительный отступ для лучшей чувствительности
             const hoverAreaX = lineEndX - hoverAreaPadding;
             const hoverAreaY = itemY - Math.max(itemRadius, lineHeight / 2) - hoverAreaPadding;
-            const hoverAreaWidth = lineWidth + itemRadius * 2 + hoverAreaPadding * 2;
+            const hoverAreaWidth = adjustedLineWidth + itemRadius * 2 + hoverAreaPadding * 2;
             const hoverAreaHeight = Math.max(itemRadius * 2, lineHeight) + hoverAreaPadding * 2;
             
             // Add invisible rectangle to cover entire menu item area for proper hover detection
@@ -139,60 +197,37 @@ class RightSemicircleMenuManager {
                     }
                 }
                 
-                // Сбрасываем hover с небольшой задержкой для плавности
-                setTimeout(() => {
-                    // Дополнительная проверка: убеждаемся, что курсор действительно ушел
-                    if (this.hoveredItemId === item.id) {
-                        // Проверяем, не над ли подменю Processes
-                        if (item.id === 'processes' && window.kernelContextMenu) {
-                            const submenu = d3.select('.kernel-submenu').node();
-                            if (submenu) {
-                                const submenuRect = submenu.getBoundingClientRect();
-                                const mouseX = event.clientX || 0;
-                                const mouseY = event.clientY || 0;
-                                if (mouseX >= submenuRect.left && mouseX <= submenuRect.right &&
-                                    mouseY >= submenuRect.top && mouseY <= submenuRect.bottom) {
-                                    return; // Курсор над подменю, не сбрасываем
-                                }
+                // Reset hover immediately to avoid perceived "stuck active" delay.
+                if (this.hoveredItemId === item.id) {
+                    // Keep hover only while pointer is over Processes submenu.
+                    if (item.id === 'processes' && window.kernelContextMenu) {
+                        const submenu = d3.select('.kernel-submenu').node();
+                        if (submenu) {
+                            const submenuRect = submenu.getBoundingClientRect();
+                            const mouseX = event.clientX || 0;
+                            const mouseY = event.clientY || 0;
+                            if (mouseX >= submenuRect.left && mouseX <= submenuRect.right &&
+                                mouseY >= submenuRect.top && mouseY <= submenuRect.bottom) {
+                                return;
                             }
                         }
-                        
-                        this.hoveredItemId = null;
-                        this.renderRightSemicircleMenu();
-                        
-                        if (item.id === 'processes' && window.kernelContextMenu) {
-                            window.kernelContextMenu.hideSubmenu();
-                        }
                     }
-                }, 100);
+
+                    this.hoveredItemId = null;
+                    this.renderRightSemicircleMenu();
+
+                    if (item.id === 'processes' && window.kernelContextMenu) {
+                        window.kernelContextMenu.hideSubmenu();
+                    }
+                }
             };
             
             // Функция для обработки клика
             const handleClick = (event) => {
                 console.log('🖱️ Click detected on item:', item.id, item.label);
                 event.stopPropagation(); // Prevent event bubbling
-                if (item.id === 'kernel' && window.kernelContextMenu) {
-                    // Activate Kernel DNA view using existing method
-                    console.log('🧬 Activating Kernel DNA view from menu');
-                    // Use setTimeout to ensure this happens after any re-rendering
-                    setTimeout(() => {
-                        window.kernelContextMenu.activateDNAView();
-                    }, 10);
-                } else if (item.id === 'network' && window.kernelContextMenu) {
-                    console.log('🌐 Activating Network Stack view from menu');
-                    setTimeout(() => {
-                        window.kernelContextMenu.activateNetworkView();
-                    }, 10);
-                } else if (item.id === 'devices' && window.kernelContextMenu) {
-                    console.log('🧲 Activating Devices Belt view from menu');
-                    setTimeout(() => {
-                        window.kernelContextMenu.activateDevicesView();
-                    }, 10);
-                } else if (item.id === 'files' && window.kernelContextMenu) {
-                    console.log('🗂️ Activating Filesystem Map view from menu');
-                    setTimeout(() => {
-                        window.kernelContextMenu.activateFilesView();
-                    }, 10);
+                if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices' || item.id === 'files') {
+                    this.activateOverlayView(item.id);
                 } else {
                     console.log('⚠️ Click on kernel item but conditions not met:', {
                         itemId: item.id,
@@ -205,31 +240,22 @@ class RightSemicircleMenuManager {
             const handleMouseDown = (event) => {
                 if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices' || item.id === 'files') {
                     console.log('🖱️ Mouse down on overlay item:', item.id);
+                    event.preventDefault();
                     event.stopPropagation();
                     // Prevent re-rendering during click
                     this.isClickingOverlay = true;
-                    // Use setTimeout to ensure this happens after any re-rendering
+                    this.activateOverlayView(item.id);
+                    // Reset click lock quickly to avoid delayed hover cleanup.
                     setTimeout(() => {
-                        if (window.kernelContextMenu) {
-                            if (item.id === 'kernel') {
-                                console.log('🧬 Activating Kernel DNA view from mousedown');
-                                window.kernelContextMenu.activateDNAView();
-                            } else if (item.id === 'network') {
-                                console.log('🌐 Activating Network Stack view from mousedown');
-                                window.kernelContextMenu.activateNetworkView();
-                            } else if (item.id === 'devices') {
-                                console.log('🧲 Activating Devices Belt view from mousedown');
-                                window.kernelContextMenu.activateDevicesView();
-                            } else if (item.id === 'files') {
-                                console.log('🗂️ Activating Filesystem Map view from mousedown');
-                                window.kernelContextMenu.activateFilesView();
+                        this.isClickingOverlay = false;
+                        if (this.hoveredItemId !== null) {
+                            this.hoveredItemId = null;
+                            this.renderRightSemicircleMenu();
+                            if (window.kernelContextMenu) {
+                                window.kernelContextMenu.hideSubmenu();
                             }
                         }
-                        // Reset flag after a delay
-                        setTimeout(() => {
-                            this.isClickingOverlay = false;
-                        }, 100);
-                    }, 50);
+                    }, 16);
                 }
             };
             
@@ -281,7 +307,7 @@ class RightSemicircleMenuManager {
                            L ${lineStartX} ${lineY + lineHeight}
                            Z`)
                 .style('fill', isHovered ? '#ffffff' : '#333') // White if hovered, same color as circle if not
-                .style('stroke', isHovered ? '#ffffff' : '#555') // White if hovered, same as circle stroke if not
+                .style('stroke', isHovered ? '#000000' : '#555') // Keep black outline when bar becomes white
                 .style('stroke-width', isHovered ? '2px' : '1px')
                 .style('transition', 'all 0.3s ease')
                 .style('pointer-events', 'all') // Allow hover on line too
@@ -301,17 +327,15 @@ class RightSemicircleMenuManager {
                     }
                 });
 
-            // Label text inside the wide line (positioned closer to the circle, like in the example)
-            // Text should be closer to the right side (circle side) of the line, not centered
-            const textOffsetFromRight = 15; // Distance from the right edge of the line
-            const textX = lineStartX - textOffsetFromRight;
+            // Label text centered in the visual body of the bar (excluding left rounded cap)
+            const textX = (lineStartX + (lineEndX + borderRadius)) / 2;
             
             itemGroup.append('text')
                 .attr('class', 'right-menu-label')
                 .attr('data-item-id', item.id)
-                .attr('x', textX) // Positioned closer to the circle (right side)
+                .attr('x', textX)
                 .attr('y', itemY)
-                .attr('text-anchor', 'end') // Right-aligned text
+                .attr('text-anchor', 'middle')
                 .attr('dominant-baseline', 'central')
                 .style('font-size', '12px')
                 .style('fill', isHovered ? '#000000' : '#ffffff') // Black text on white bg if hovered, white if not
@@ -330,7 +354,7 @@ class RightSemicircleMenuManager {
                 .attr('cy', itemY)
                 .attr('r', itemRadius)
                 .style('fill', isHovered ? '#ffffff' : '#333') // White if hovered
-                .style('stroke', isHovered ? '#ffffff' : '#555')
+                .style('stroke', isHovered ? '#000000' : '#555')
                 .style('stroke-width', isHovered ? '2px' : '1px')
                 .style('cursor', 'pointer')
                 .style('pointer-events', 'all') // Allow hover on circle
@@ -380,6 +404,24 @@ class RightSemicircleMenuManager {
         // Attach event delegation on SVG (only once)
         if (!this.clickHandlerAttached) {
             const svg = d3.select('svg');
+            svg.on('pointerdown.rightMenuOverlay', (event) => {
+                const target = event.target;
+                const itemId = target && target.getAttribute ? target.getAttribute('data-item-id') : null;
+                if (!itemId) return;
+                if (itemId === 'kernel' || itemId === 'network' || itemId === 'devices' || itemId === 'files') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    this.isClickingOverlay = true;
+                    this.activateOverlayView(itemId);
+                    setTimeout(() => {
+                        this.isClickingOverlay = false;
+                        if (this.hoveredItemId !== null) {
+                            this.hoveredItemId = null;
+                            this.renderRightSemicircleMenu();
+                        }
+                    }, 16);
+                }
+            });
             svg.on('click', (event) => {
                 const target = event.target;
                 const itemId = target.getAttribute('data-item-id');
@@ -390,19 +432,29 @@ class RightSemicircleMenuManager {
                     if (item && item.id === 'kernel' && window.kernelContextMenu) {
                         console.log('🧬 Activating Kernel DNA view from menu');
                         event.stopPropagation();
-                        window.kernelContextMenu.activateDNAView();
+                        this.activateOverlayView(item.id);
                     } else if (item && item.id === 'network' && window.kernelContextMenu) {
                         console.log('🌐 Activating Network Stack view from menu');
                         event.stopPropagation();
-                        window.kernelContextMenu.activateNetworkView();
+                        this.activateOverlayView(item.id);
                     } else if (item && item.id === 'devices' && window.kernelContextMenu) {
                         console.log('🧲 Activating Devices Belt view from menu');
                         event.stopPropagation();
-                        window.kernelContextMenu.activateDevicesView();
+                        this.activateOverlayView(item.id);
                     } else if (item && item.id === 'files' && window.kernelContextMenu) {
                         console.log('🗂️ Activating Filesystem Map view from menu');
                         event.stopPropagation();
-                        window.kernelContextMenu.activateFilesView();
+                        this.activateOverlayView(item.id);
+                    }
+                }
+            });
+            // Ensure hovered menu item always resets when pointer leaves the SVG area.
+            svg.on('mouseleave.rightMenuReset', () => {
+                if (this.hoveredItemId !== null) {
+                    this.hoveredItemId = null;
+                    this.renderRightSemicircleMenu();
+                    if (window.kernelContextMenu) {
+                        window.kernelContextMenu.hideSubmenu();
                     }
                 }
             });
@@ -444,7 +496,7 @@ class RightSemicircleMenuManager {
 
     hide() {
         const svg = d3.select('svg');
-        svg.selectAll('.right-semicircle-menu, .right-menu-item-group, .right-menu-item, .right-menu-icon, .right-menu-line, .right-menu-label, .right-menu-label-bg').remove();
+        svg.selectAll('.right-semicircle-menu, .right-menu-edge-shell, .right-menu-edge-shell-stroke, .right-menu-fg-ring, .right-menu-item-group, .right-menu-item, .right-menu-icon, .right-menu-line, .right-menu-label, .right-menu-label-bg').remove();
         this.isVisible = false;
     }
 }

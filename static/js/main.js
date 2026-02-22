@@ -1157,8 +1157,15 @@ function drawProcessKernelMap2(centerX, centerY) {
 
 function drawBezierDecor(width, height, yBase) {
     const centerX = width / 2;
-    const railHalfWidth = Math.min(360, Math.max(240, width * 0.24));
-    const railY = Math.min(height - 78, yBase + 96);
+    const railHalfWidth = Math.min(540, Math.max(320, width * 0.32));
+    const originalRailHalfWidth = Math.min(360, Math.max(240, width * 0.24));
+    // Lift the whole I/O layer block so Bezier endpoints visually touch the rails.
+    const railY = Math.min(height - 78, yBase + 8);
+    // Keep lower rail/labels at their original vertical position.
+    const lowerStructureDrop = 12;
+    const lowerRailY = Math.min(height - 58, yBase + 104 + lowerStructureDrop);
+    const labelY = Math.min(height - 36, yBase + 121 + lowerStructureDrop);
+    const legendY = Math.min(height - 22, yBase + 134 + lowerStructureDrop);
     const decorGroup = svg.append("g")
         .attr("class", "bezier-decor-layer")
         .attr("pointer-events", "none");
@@ -1183,10 +1190,10 @@ function drawBezierDecor(width, height, yBase) {
         .attr("opacity", 0.8);
 
     decorGroup.append("line")
-        .attr("x1", centerX - railHalfWidth + 12)
-        .attr("y1", railY + 8)
-        .attr("x2", centerX + railHalfWidth - 12)
-        .attr("y2", railY + 8)
+        .attr("x1", centerX - originalRailHalfWidth + 12)
+        .attr("y1", lowerRailY)
+        .attr("x2", centerX + originalRailHalfWidth - 12)
+        .attr("y2", lowerRailY)
         .attr("stroke", "rgba(45, 45, 45, 0.26)")
         .attr("stroke-width", 0.85)
         .attr("stroke-linecap", "round")
@@ -1195,9 +1202,9 @@ function drawBezierDecor(width, height, yBase) {
     // Short cyan accent in the center, similar to reference UI treatment.
     decorGroup.append("line")
         .attr("x1", centerX - 52)
-        .attr("y1", railY + 8)
+        .attr("y1", lowerRailY)
         .attr("x2", centerX + 52)
-        .attr("y2", railY + 8)
+        .attr("y2", lowerRailY)
         .attr("stroke", "rgba(88, 182, 216, 0.5)")
         .attr("stroke-width", 0.9)
         .attr("stroke-linecap", "round");
@@ -1228,7 +1235,7 @@ function drawBezierDecor(width, height, yBase) {
     // Semantic label and compact legend for the lower flow layer.
     decorGroup.append("text")
         .attr("x", centerX)
-        .attr("y", railY + 25)
+        .attr("y", labelY)
         .attr("text-anchor", "middle")
         .style("font-family", "Share Tech Mono, monospace")
         .style("font-size", "9px")
@@ -1236,7 +1243,6 @@ function drawBezierDecor(width, height, yBase) {
         .style("fill", "rgba(55, 55, 55, 0.55)")
         .text("KERNEL I/O LAYER");
 
-    const legendY = railY + 38;
     const legendSpacing = 120;
     const legendStartX = centerX - ((lowerFlowTypes.length - 1) * legendSpacing) / 2;
     lowerFlowTypes.forEach((flowType, idx) => {
