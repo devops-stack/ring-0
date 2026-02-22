@@ -218,7 +218,7 @@ svg {
     font-size: 11px;
     fill: #333;
     font-family: 'Share Tech Mono', monospace;
-    text-anchor: end;
+    text-anchor: middle;
     dominant-baseline: central;
     transition: all 0.3s ease;
 }
