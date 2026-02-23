@@ -83,6 +83,13 @@ def add_headers(response):
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
     
+    # Always disable HTML caching so browsers pick up fresh script version URLs.
+    if response.content_type and 'text/html' in response.content_type:
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        return response
+
     # Only apply cache control to static files (JS, CSS, images)
     if response.content_type and (
         'text/javascript' in response.content_type or 
@@ -2128,8 +2135,11 @@ def get_processes_detailed():
         processes = []
         for proc in psutil.process_iter(['pid', 'name', 'status', 'memory_info', 'cpu_percent', 'num_threads', 'num_fds']):
             try:
-                memory_info = proc.info['memory_info']
-                memory_mb = memory_info.rss / 1024 / 1024
+                memory_info = proc.info.get('memory_info')
+                if memory_info is None:
+                    # Some transient/zombie processes may have incomplete info.
+                    continue
+                memory_mb = float(memory_info.rss) / 1024 / 1024
                 
                 # Get num_fds with fallback
                 num_fds = proc.info.get('num_fds')
@@ -2148,7 +2158,7 @@ def get_processes_detailed():
                     num_fds = 0
                 
                 # Get process name - use cmdline for nginx to get full name like "nginx: master process"
-                process_name = proc.info['name']
+                process_name = proc.info.get('name') or f'pid-{proc.info.get("pid", "unknown")}'
                 try:
                     cmdline = proc.cmdline()
                     if cmdline and len(cmdline) > 0:
@@ -2171,18 +2181,147 @@ def get_processes_detailed():
                     'pid': proc.info['pid'],
                     'name': process_name,
                     'cmdline': cmdline_str,  # Add cmdline for better identification
-                    'status': proc.info['status'],
+                    'status': proc.info.get('status', 'unknown'),
                     'memory_mb': round(memory_mb, 1),
-                    'cpu_percent': round(proc.info.get('cpu_percent', 0), 1),
-                    'num_threads': proc.info.get('num_threads', 0),
-                    'num_fds': num_fds
+                    'cpu_percent': round(float(proc.info.get('cpu_percent', 0) or 0), 1),
+                    'num_threads': int(proc.info.get('num_threads', 0) or 0),
+                    'num_fds': int(num_fds or 0)
                 })
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+            except Exception:
+                # Never fail the whole endpoint because of one malformed/transient process.
                 continue
         
         return jsonify({'processes': processes})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+def get_ipc_links_summary(max_pairs=120, max_nodes=24):
+    """Collect IPC/socket pair relationships by shared /proc fd inodes."""
+    socket_inode_re = re.compile(r"^socket:\[(\d+)\]$")
+    pipe_inode_re = re.compile(r"^pipe:\[(\d+)\]$")
+    socket_owners = {}
+    pipe_owners = {}
+
+    for proc_dir in os.listdir("/proc"):
+        if not proc_dir.isdigit():
+            continue
+        pid = int(proc_dir)
+        try:
+            with open(f"/proc/{pid}/comm", "r", encoding="utf-8", errors="replace") as f:
+                proc_name = f.read().strip()
+        except (OSError, PermissionError):
+            continue
+        if not proc_name:
+            continue
+
+        fd_dir = f"/proc/{pid}/fd"
+        try:
+            fd_entries = os.listdir(fd_dir)
+        except (OSError, PermissionError):
+            continue
+
+        for fd_entry in fd_entries:
+            fd_path = f"{fd_dir}/{fd_entry}"
+            try:
+                target = os.readlink(fd_path)
+            except (OSError, PermissionError):
+                continue
+
+            sm = socket_inode_re.match(target)
+            if sm:
+                inode = int(sm.group(1))
+                socket_owners.setdefault(inode, set()).add((pid, proc_name))
+                continue
+
+            pm = pipe_inode_re.match(target)
+            if pm:
+                inode = int(pm.group(1))
+                pipe_owners.setdefault(inode, set()).add((pid, proc_name))
+
+    pair_totals = {}
+    pair_socket = {}
+    pair_pipe = {}
+    degree_total = {}
+    degree_socket = {}
+    degree_pipe = {}
+
+    def add_pair_counts(name_a, name_b, is_socket):
+        if name_a == name_b:
+            key = (name_a, name_b)
+        else:
+            key = tuple(sorted((name_a, name_b)))
+        pair_totals[key] = pair_totals.get(key, 0) + 1
+        if is_socket:
+            pair_socket[key] = pair_socket.get(key, 0) + 1
+        else:
+            pair_pipe[key] = pair_pipe.get(key, 0) + 1
+
+        for nm in (name_a, name_b):
+            degree_total[nm] = degree_total.get(nm, 0) + 1
+            if is_socket:
+                degree_socket[nm] = degree_socket.get(nm, 0) + 1
+            else:
+                degree_pipe[nm] = degree_pipe.get(nm, 0) + 1
+
+    def consume_inode_owners(owner_map, is_socket):
+        for _inode, owners in owner_map.items():
+            unique = sorted({(pid, name) for pid, name in owners})
+            if len(unique) < 2:
+                continue
+            for i in range(len(unique)):
+                for j in range(i + 1, len(unique)):
+                    add_pair_counts(unique[i][1], unique[j][1], is_socket)
+
+    consume_inode_owners(socket_owners, True)
+    consume_inode_owners(pipe_owners, False)
+
+    sorted_pairs = sorted(pair_totals.items(), key=lambda kv: kv[1], reverse=True)[:max_pairs]
+    pair_links = []
+    for (left, right), weight in sorted_pairs:
+        pair_links.append({
+            "left": left,
+            "right": right,
+            "weight": int(weight),
+            "socket_weight": int(pair_socket.get((left, right), pair_socket.get((right, left), 0))),
+            "pipe_weight": int(pair_pipe.get((left, right), pair_pipe.get((right, left), 0))),
+        })
+
+    sorted_nodes = sorted(degree_total.items(), key=lambda kv: kv[1], reverse=True)[:max_nodes]
+    process_nodes = []
+    for name, degree in sorted_nodes:
+        process_nodes.append({
+            "name": name,
+            "degree": int(degree),
+            "socket_degree": int(degree_socket.get(name, 0)),
+            "pipe_degree": int(degree_pipe.get(name, 0)),
+        })
+
+    return {
+        "process_nodes": process_nodes,
+        "pair_links": pair_links,
+        "stats": {
+            "shared_socket_inodes": int(sum(1 for owners in socket_owners.values() if len({pid for pid, _ in owners}) > 1)),
+            "shared_pipe_inodes": int(sum(1 for owners in pipe_owners.values() if len({pid for pid, _ in owners}) > 1)),
+            "pair_count": len(pair_links),
+            "node_count": len(process_nodes),
+        }
+    }
+
+
+@app.route("/api/ipc-links")
+def get_ipc_links():
+    """API: shared IPC/socket links across processes."""
+    try:
+        max_pairs = request.args.get("max_pairs", default=120, type=int)
+        max_nodes = request.args.get("max_nodes", default=24, type=int)
+        max_pairs = max(20, min(300, max_pairs))
+        max_nodes = max(8, min(64, max_nodes))
+        return jsonify(get_ipc_links_summary(max_pairs=max_pairs, max_nodes=max_nodes))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 def get_process_threads_info(pid):
     """Get thread information for a specific process"""
