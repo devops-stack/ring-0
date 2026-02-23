@@ -11,12 +11,40 @@ let connectionsManager; // make available for cleanup handlers
 let isolationContextCache = null;
 let isolationContextCacheTs = 0;
 let isolationRenderToken = 0;
+const MOBILE_LAYOUT_BREAKPOINT = 900;
 const lowerFlowTypes = [
     { id: "disk-io", label: "DISK I/O", stroke: "rgba(58, 58, 58, 0.33)", widthMin: 0.8, widthMax: 1.15, opacityMin: 0.6, opacityMax: 0.85, weight: 0.34 },
     { id: "network-packets", label: "NETWORK PACKETS", stroke: "rgba(88, 182, 216, 0.28)", widthMin: 0.75, widthMax: 1.05, opacityMin: 0.58, opacityMax: 0.8, weight: 0.28 },
     { id: "page-faults", label: "PAGE FAULTS", stroke: "rgba(95, 95, 95, 0.28)", widthMin: 0.75, widthMax: 1.0, opacityMin: 0.55, opacityMax: 0.78, weight: 0.24 },
     { id: "memory-swaps", label: "MEMORY SWAPS", stroke: "rgba(126, 110, 170, 0.25)", widthMin: 0.7, widthMax: 0.95, opacityMin: 0.5, opacityMax: 0.72, weight: 0.14 }
 ];
+
+function isMobileLayout() {
+    return window.innerWidth <= MOBILE_LAYOUT_BREAKPOINT;
+}
+
+function syncRealtimeFeedsForViewport() {
+    const mobile = isMobileLayout();
+    if (connectionsManager) {
+        if (mobile) {
+            connectionsManager.stopAutoUpdate();
+            d3.selectAll('.connection-row, .connection-box, .connection-text, .connection-details, .connection-header').remove();
+        } else {
+            // Prevent duplicate timers on repeated resize transitions.
+            connectionsManager.stopAutoUpdate();
+            connectionsManager.startAutoUpdate(3000);
+        }
+    }
+    if (syscallsManager) {
+        if (mobile) {
+            syscallsManager.stopAutoUpdate();
+            d3.selectAll('.syscall-box, .syscall-text, .syscall-panel-group').remove();
+        } else {
+            syscallsManager.stopAutoUpdate();
+            syscallsManager.startAutoUpdate(3000);
+        }
+    }
+}
 
 // Application initialization
 function initApp() {
@@ -27,7 +55,6 @@ function initApp() {
     
     // Initialize active connections manager (store in global for cleanup)
     connectionsManager = new ActiveConnectionsManager();
-    connectionsManager.startAutoUpdate(3000);
     // Expose to window so KernelContextMenu can pause/resume updates
     window.connectionsManager = connectionsManager;
     
@@ -57,14 +84,16 @@ function initApp() {
     
     // Then render semicircle AFTER draw() completes
     setTimeout(() => {
-        if (window.rightSemicircleMenuManager) {
+        if (window.rightSemicircleMenuManager && !isMobileLayout()) {
             console.log('🎯 Force rendering semicircle after draw()...');
             window.rightSemicircleMenuManager.renderRightSemicircleMenu();
+        } else if (window.rightSemicircleMenuManager && isMobileLayout()) {
+            window.rightSemicircleMenuManager.hide();
         }
     }, 100);
-    
-    // Start updates
-    syscallsManager.startAutoUpdate(3000);
+
+    // Start/stop realtime side feeds according to viewport.
+    syncRealtimeFeedsForViewport();
     
     // Update panel data periodically
     updatePanelData();
@@ -80,12 +109,15 @@ function setupEventListeners() {
     window.addEventListener('resize', () => {
         clearTimeout(resizeTimeout);
         resizeTimeout = setTimeout(() => {
+            syncRealtimeFeedsForViewport();
             draw();
             // Render semicircle after draw() completes
             setTimeout(() => {
-                if (window.rightSemicircleMenuManager) {
+                if (window.rightSemicircleMenuManager && !isMobileLayout()) {
                     console.log('🎯 Force rendering semicircle after resize...');
                     window.rightSemicircleMenuManager.renderRightSemicircleMenu();
+                } else if (window.rightSemicircleMenuManager && isMobileLayout()) {
+                    window.rightSemicircleMenuManager.hide();
                 }
             }, 50);
         }, 100);
@@ -104,14 +136,20 @@ function setupEventListeners() {
 
 // Main drawing function
 function draw() {
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const mobileLayout = isMobileLayout();
+
     // Skip drawing if Matrix View is active to prevent elements from appearing above it
-    if (window.kernelContextMenu && window.kernelContextMenu.currentView === 'matrix') {
+    if (!mobileLayout && window.kernelContextMenu && window.kernelContextMenu.currentView === 'matrix') {
         console.log('⏸️ Skipping draw() - Matrix View is active');
         return;
     }
     
     // Skip drawing if Kernel DNA View is active to prevent style changes to process lines
-    if (window.kernelContextMenu && (
+    if (!mobileLayout && window.kernelContextMenu && (
         window.kernelContextMenu.currentView === 'dna' ||
         window.kernelContextMenu.currentView === 'dna-timeline' ||
         window.kernelContextMenu.currentView === 'network' ||
@@ -131,18 +169,26 @@ function draw() {
             node.style.pointerEvents = 'none';
         }
     });
-    
-    // Clear all elements to prevent duplication, but preserve system calls
-    // and Kernel analysis overlay (Matrix / Timeline submenu & elements)
-    const preserveClasses = '.syscall-box, .syscall-text, .matrix-view-item, .matrix-header, .matrix-panel-bg, .matrix-backdrop, .kernel-exit-button, .kernel-dna-exit-button, .kernel-submenu';
-    svg.selectAll(`*:not(${preserveClasses.split(', ').join('):not(')})`).remove();
-    // Also remove system calls explicitly to ensure clean state
-    svg.selectAll(".syscall-box, .syscall-text").remove();
 
-    const width = window.innerWidth;
-    const height = window.innerHeight;
-    const centerX = width / 2;
-    const centerY = height / 2;
+    if (mobileLayout) {
+        // Hard reset for mobile to avoid residual desktop layers.
+        svg.selectAll('*').remove();
+        d3.selectAll('.connection-row, .connection-box, .connection-text, .connection-details, .connection-header').remove();
+        d3.selectAll('.syscall-box, .syscall-text, .syscall-panel-group').remove();
+        d3.selectAll('.bezier-curve, .bezier-decor-layer, .bezier-core-bridge').remove();
+        d3.selectAll('.namespace-shell-layer, .cgroup-card-layer, .subsystem-indicator').remove();
+        d3.selectAll('.tooltip, .ipc-link-tooltip').remove();
+        if (window.rightSemicircleMenuManager) {
+            window.rightSemicircleMenuManager.hide();
+        }
+    } else {
+        // Clear all elements to prevent duplication, but preserve system calls
+        // and Kernel analysis overlay (Matrix / Timeline submenu & elements)
+        const preserveClasses = '.syscall-box, .syscall-text, .matrix-view-item, .matrix-header, .matrix-panel-bg, .matrix-backdrop, .kernel-exit-button, .kernel-dna-exit-button, .kernel-submenu';
+        svg.selectAll(`*:not(${preserveClasses.split(', ').join('):not(')})`).remove();
+        // Also remove system calls explicitly to ensure clean state
+        svg.selectAll(".syscall-box, .syscall-text").remove();
+    }
 
     // Define gradients for depth
     const defs = svg.append("defs");
@@ -185,10 +231,23 @@ function draw() {
     
     // Draw Ring-1 Execution Context
     drawRing1(centerX, centerY);
-    
+
+    // Mobile mode: keep only the central process composition.
+    if (mobileLayout) {
+        // Keep Icon1 content in mobile center composition as requested.
+        drawTagIcons(centerX, centerY);
+        drawMobileFormulaAndCaption(centerX, centerY, width, height);
+        // Draw process ring only (no side/bottom UI layers, no tag/menu shells).
+        drawProcessKernelMap2(centerX, centerY);
+        drawMobileDefaultProcessLabels(centerX, centerY);
+        // Restore namespace shell segments in mobile mode.
+        drawIsolationConceptLayer(centerX, centerY, width, height);
+        return;
+    }
+
     // Draw tag icons
     drawTagIcons(centerX, centerY);
-    
+
     // Draw panels
     drawPanels(width, height);
     
@@ -221,6 +280,63 @@ function draw() {
     if (window.rightSemicircleMenuManager) {
         window.rightSemicircleMenuManager.renderRightSemicircleMenu();
     }
+}
+
+function drawMobileFormulaAndCaption(centerX, centerY, width, height) {
+    const group = svg.append('g')
+        .attr('class', 'mobile-formula-layer')
+        .attr('pointer-events', 'none');
+
+    const formulaY = Math.max(34, centerY - 245);
+    const captionY = Math.min(height - 22, centerY + 235);
+
+    // Subtle text-only treatment to keep the mobile center clean.
+    group.append('text')
+        .attr('x', centerX)
+        .attr('y', formulaY)
+        .attr('text-anchor', 'middle')
+        .style('font-family', 'JetBrains Mono, Share Tech Mono, monospace')
+        .style('font-size', '13px')
+        .style('letter-spacing', '-0.1px')
+        .style('fill', 'rgba(52, 52, 52, 0.76)')
+        .text('L_new=L_old*e^(-dt/tau)+N*(1-e^(-dt/tau))');
+
+    group.append('text')
+        .attr('x', centerX)
+        .attr('y', captionY)
+        .attr('text-anchor', 'middle')
+        .style('font-family', 'Share Tech Mono, monospace')
+        .style('font-size', '11px')
+        .style('letter-spacing', '0.4px')
+        .style('fill', 'rgba(62, 62, 62, 0.58)')
+        .text('For the best experience, use a desktop device');
+}
+
+function drawMobileDefaultProcessLabels(centerX, centerY) {
+    if (!isMobileLayout()) return;
+    const names = ['sshd', 'python3', 'nginx', 'cron', 'bash', 'systemd'];
+    const radius = 95;
+    const startAngle = -Math.PI / 2;
+    const step = (2 * Math.PI) / names.length;
+
+    const group = svg.append('g')
+        .attr('class', 'mobile-default-process-labels')
+        .attr('pointer-events', 'none');
+
+    names.forEach((name, i) => {
+        const angle = startAngle + i * step;
+        const x = centerX + Math.cos(angle) * radius;
+        const y = centerY + Math.sin(angle) * radius;
+        group.append('text')
+            .attr('x', x)
+            .attr('y', y)
+            .attr('text-anchor', 'middle')
+            .style('font-family', 'JetBrains Mono, Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('letter-spacing', '0.15px')
+            .style('fill', 'rgba(96, 96, 96, 0.52)')
+            .text(name);
+    });
 }
 
 // Draw central circle
@@ -721,6 +837,7 @@ function drawProcessKernelMap2(centerX, centerY) {
         .then(data => {
             const processes = data.processes || [];
             const numProcesses = processes.length;
+            const mobileLayout = isMobileLayout();
             const processAnchorsByName = new Map();
 
             // Find min and max memory usage for scaling
@@ -880,9 +997,9 @@ function drawProcessKernelMap2(centerX, centerY) {
                 const memoryMb = process.memory_mb || 0;
                 const memoryRatio = memoryRange > 0 ? (memoryMb - minMemory) / memoryRange : 0;
                 
-                // Base distance: 250px (original), max additional: 100px based on memory
-                const baseDistance = 250;
-                const maxAdditionalDistance = 100;
+                // Keep mobile process circle compact so the full ring fits the viewport.
+                const baseDistance = mobileLayout ? 150 : 250;
+                const maxAdditionalDistance = mobileLayout ? 45 : 100;
                 const distance = baseDistance + (memoryRatio * maxAdditionalDistance);
                 
                 const px = centerX + distance * Math.cos(angle);
@@ -1158,8 +1275,12 @@ function drawProcessKernelMap2(centerX, centerY) {
                     });
             });
 
-            // Draw IPC ring above process circle and link IPC nodes to process nodes.
-            drawIpcRelationshipRing(centerX, centerY, processAnchorsByName);
+            // IPC outer ring is desktop-only; mobile mode keeps only central process composition.
+            if (!mobileLayout) {
+                drawIpcRelationshipRing(centerX, centerY, processAnchorsByName);
+            } else {
+                d3.selectAll('.ipc-ring-layer').remove();
+            }
         })
         .catch(error => {
             console.error('Error fetching processes:', error);
@@ -1690,6 +1811,7 @@ function fetchIsolationContext(forceRefresh = false) {
 }
 
 function drawIsolationConceptLayer(centerX, centerY, width, height) {
+    const mobileLayout = isMobileLayout();
     // Skip overlay in Matrix/DNA modes to keep views clean.
     if (window.kernelContextMenu && ['matrix', 'dna', 'dna-timeline'].includes(window.kernelContextMenu.currentView)) {
         return;
@@ -1704,7 +1826,10 @@ function drawIsolationConceptLayer(centerX, centerY, width, height) {
             return;
         }
         drawNamespaceShell(centerX, centerY, data.namespaces || []);
-        drawCgroupConceptCard(width, height, data.top_cgroups || []);
+        // Mobile view should keep only namespace shell segments.
+        if (!mobileLayout) {
+            drawCgroupConceptCard(width, height, data.top_cgroups || []);
+        }
     });
 }
 
@@ -2211,6 +2336,11 @@ function getFileTypeColor(type) {
 
 // Update panel with real data from API
 function updatePanelData() {
+    // Mobile mode keeps only central process composition.
+    if (isMobileLayout()) {
+        d3.selectAll('.subsystem-indicator').remove();
+        return;
+    }
     // Skip updating if Matrix View is active
     if (window.kernelContextMenu && window.kernelContextMenu.currentView === 'matrix') {
         return;
@@ -2244,6 +2374,11 @@ function updatePanelData() {
 
 // Update subsystems visualization with color coding
 function updateSubsystemsVisualization(subsystems) {
+    // Never render left metric menu in mobile layout.
+    if (isMobileLayout()) {
+        d3.selectAll('.subsystem-indicator').remove();
+        return;
+    }
     // Skip rendering if Matrix View is active
     if (window.kernelContextMenu && window.kernelContextMenu.currentView === 'matrix') {
         console.log('⏸️ Skipping subsystems visualization - Matrix View is active');
