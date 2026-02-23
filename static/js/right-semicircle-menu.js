@@ -39,7 +39,7 @@ class RightSemicircleMenuManager {
         const height = window.innerHeight;
 
         // Clear existing semicircle elements (but preserve kernel submenu)
-        svg.selectAll('.right-semicircle-menu, .right-menu-edge-shell, .right-menu-edge-shell-stroke, .right-menu-fg-ring, .right-menu-item-group, .right-menu-item, .right-menu-icon, .right-menu-line, .right-menu-label, .right-menu-label-bg').remove();
+        svg.selectAll('.right-semicircle-menu, .right-menu-edge-shell, .right-menu-edge-shell-cutout, .right-menu-edge-shell-stroke, .right-menu-fg-ring, .right-menu-item-group, .right-menu-item, .right-menu-icon, .right-menu-line, .right-menu-label, .right-menu-label-bg').remove();
 
         // Semicircle parameters
         const menuRadius = height * 0.4;
@@ -57,34 +57,6 @@ class RightSemicircleMenuManager {
             .style('stroke-width', '1px')
             .style('pointer-events', 'none');
 
-        // Edge shell like in the reference: a straight edge line with two slanted sides.
-        const shellEdgeX = width - 1;
-        const shellTopY = menuY - menuRadius * 0.78;
-        const shellBottomY = menuY + menuRadius * 0.78;
-        const shellInnerTopX = menuX - menuRadius * 0.92;
-        const shellInnerTopY = menuY - menuRadius * 0.32;
-        const shellInnerBottomX = menuX - menuRadius * 0.92;
-        const shellInnerBottomY = menuY + menuRadius * 0.32;
-        const shellPath = `M ${shellEdgeX} ${shellTopY}
-                           L ${shellEdgeX} ${shellBottomY}
-                           L ${shellInnerBottomX} ${shellInnerBottomY}
-                           L ${shellInnerTopX} ${shellInnerTopY}
-                           Z`;
-
-        svg.append('path')
-            .attr('class', 'right-menu-edge-shell')
-            .attr('d', shellPath)
-            .style('fill', 'rgba(188, 188, 188, 0.16)')
-            .style('pointer-events', 'none');
-
-        svg.append('path')
-            .attr('class', 'right-menu-edge-shell-stroke')
-            .attr('d', shellPath)
-            .style('fill', 'none')
-            .style('stroke', 'rgba(138, 138, 138, 0.28)')
-            .style('stroke-width', '0.9px')
-            .style('pointer-events', 'none');
-
         // Keep only the smallest-radius overlay ring.
         // Draw it before menu items so items stay visually above the circle layer.
         svg.append('circle')
@@ -95,6 +67,48 @@ class RightSemicircleMenuManager {
             .style('fill', 'rgba(178, 178, 178, 0.2)')
             .style('stroke', 'rgba(128, 128, 128, 0.36)')
             .style('stroke-width', '0.9px')
+            .style('pointer-events', 'none');
+
+        // Compact edge shell inside the menu circle (reference-like notch geometry).
+        const ringRadius = menuRadius * 0.72;
+        // Push to/over viewport edge so diagonal lines visually touch screen border.
+        const shellEdgeX = width + 2;
+        const shellHalfHeight = ringRadius * 0.34;
+        const shellWidth = ringRadius * 0.095; // 2x narrower than current shell body
+        const shellTopY = menuY - shellHalfHeight - 7.5; // right side +15px total
+        const shellBottomY = menuY + shellHalfHeight + 7.5; // right side +15px total
+        const shellInnerTopX = shellEdgeX - shellWidth;
+        const shellInnerTopY = menuY - shellHalfHeight * 0.45 - 32.5; // left side +65px total
+        const shellInnerBottomX = shellEdgeX - shellWidth;
+        const shellInnerBottomY = menuY + shellHalfHeight * 0.45 + 32.5; // left side +65px total
+        const shellCutoutPath = `M ${shellEdgeX} ${shellTopY}
+                                 L ${shellEdgeX} ${shellBottomY}
+                                 L ${shellInnerBottomX} ${shellInnerBottomY}
+                                 L ${shellInnerTopX} ${shellInnerTopY}
+                                 Z`;
+        // No right vertical side: left side + two slanted edges touching screen edge.
+        const shellPath = `M ${shellInnerTopX} ${shellInnerTopY}
+                           L ${shellEdgeX} ${shellTopY}
+                           M ${shellInnerBottomX} ${shellInnerBottomY}
+                           L ${shellEdgeX} ${shellBottomY}
+                           M ${shellInnerTopX} ${shellInnerTopY}
+                           L ${shellInnerBottomX} ${shellInnerBottomY}`;
+
+        // Neutralize ring background under the shell so the figure has no inner fill tint.
+        svg.append('path')
+            .attr('class', 'right-menu-edge-shell-cutout')
+            .attr('d', shellCutoutPath)
+            .style('fill', '#e6e6e6')
+            .style('stroke', 'none')
+            .style('pointer-events', 'none');
+
+        svg.append('path')
+            .attr('class', 'right-menu-edge-shell-stroke')
+            .attr('d', shellPath)
+            .style('fill', 'none')
+            .style('stroke', 'rgba(138, 138, 138, 0.28)')
+            .style('stroke-width', '0.9px')
+            .style('stroke-linecap', 'round')
             .style('pointer-events', 'none');
 
         // Create menu items
@@ -496,7 +510,7 @@ class RightSemicircleMenuManager {
 
     hide() {
         const svg = d3.select('svg');
-        svg.selectAll('.right-semicircle-menu, .right-menu-edge-shell, .right-menu-edge-shell-stroke, .right-menu-fg-ring, .right-menu-item-group, .right-menu-item, .right-menu-icon, .right-menu-line, .right-menu-label, .right-menu-label-bg').remove();
+        svg.selectAll('.right-semicircle-menu, .right-menu-edge-shell, .right-menu-edge-shell-cutout, .right-menu-edge-shell-stroke, .right-menu-fg-ring, .right-menu-item-group, .right-menu-item, .right-menu-icon, .right-menu-line, .right-menu-label, .right-menu-label-bg').remove();
         this.isVisible = false;
     }
 }
