@@ -15,6 +15,7 @@ import re
 import ipaddress
 import shutil
 from datetime import datetime
+from threading import Lock
 from flask import Flask, jsonify, render_template, send_from_directory, request
 import psutil
 
@@ -49,6 +50,46 @@ FILESYSTEM_PREV = {
     "timestamp": None,
     "write_bytes": None
 }
+EXEC_CONTEXT_PREV = {
+    "timestamp": None,
+    "irq_totals": {},
+    "softirq_totals": {}
+}
+FRONTEND_LOG_WRITE_LOCK = Lock()
+FRONTEND_LOG_FILE = os.getenv("FRONTEND_LOG_FILE", "/opt/ring0/kernel-ai/logs/frontend-events.jsonl")
+
+def safe_trim(value, limit=2048):
+    """Trim large strings to keep log payload size bounded."""
+    if value is None:
+        return ""
+    text = str(value)
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "...[truncated]"
+
+def write_frontend_event(event_payload):
+    """Write one frontend event as JSON line for Elastic Agent tail input."""
+    event = {
+        "@timestamp": datetime.utcnow().isoformat() + "Z",
+        "service.name": "kernel-ai-frontend",
+        "event.dataset": "kernel_ai.frontend",
+        "event.kind": "event",
+        "log.level": safe_trim(event_payload.get("level", "info"), 16).lower(),
+        "message": safe_trim(event_payload.get("message", "")),
+        "url.path": safe_trim(event_payload.get("path", ""), 512),
+        "url.full": safe_trim(event_payload.get("url", ""), 2048),
+        "user_agent.original": safe_trim(event_payload.get("userAgent", ""), 1024),
+        "session.id": safe_trim(event_payload.get("sessionId", ""), 128),
+        "error.stack_trace": safe_trim(event_payload.get("stack", ""), 12000),
+        "event.module": safe_trim(event_payload.get("module", "frontend"), 128),
+        "tags": event_payload.get("tags", []),
+        "meta": event_payload.get("meta", {})
+    }
+    os.makedirs(os.path.dirname(FRONTEND_LOG_FILE), exist_ok=True)
+    line = json.dumps(event, ensure_ascii=False)
+    with FRONTEND_LOG_WRITE_LOCK:
+        with open(FRONTEND_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
 
 def resolve_binary(cmd_name):
     """Resolve executable path even when service PATH misses sbin directories."""
@@ -2199,11 +2240,17 @@ def get_processes_detailed():
 
 
 def get_ipc_links_summary(max_pairs=120, max_nodes=24):
-    """Collect IPC/socket pair relationships by shared /proc fd inodes."""
+    """Collect IPC relationships by shared sockets, pipes and shared memory mappings."""
     socket_inode_re = re.compile(r"^socket:\[(\d+)\]$")
     pipe_inode_re = re.compile(r"^pipe:\[(\d+)\]$")
+    # /proc/<pid>/maps sample:
+    # address perms offset dev inode pathname
+    # We use mappings with shared perms (e.g. rw-s) and real inode/path.
     socket_owners = {}
     pipe_owners = {}
+    shm_owners = {}
+    namespace_keys = ["mnt", "pid", "net", "ipc", "uts", "user"]
+    namespace_owners = {}
 
     for proc_dir in os.listdir("/proc"):
         if not proc_dir.isdigit():
@@ -2241,42 +2288,93 @@ def get_ipc_links_summary(max_pairs=120, max_nodes=24):
                 inode = int(pm.group(1))
                 pipe_owners.setdefault(inode, set()).add((pid, proc_name))
 
+        maps_path = f"/proc/{pid}/maps"
+        try:
+            with open(maps_path, "r", encoding="utf-8", errors="replace") as maps_file:
+                for map_line in maps_file:
+                    parts = map_line.strip().split(None, 5)
+                    if len(parts) < 5:
+                        continue
+                    perms = parts[1]
+                    dev = parts[3]
+                    inode_text = parts[4]
+                    map_path = parts[5] if len(parts) > 5 else ""
+
+                    if len(perms) < 4 or perms[3] != "s":
+                        continue
+                    if not inode_text.isdigit():
+                        continue
+                    inode = int(inode_text)
+                    if inode <= 0:
+                        continue
+                    if not map_path:
+                        continue
+                    # Skip anonymous pseudo-regions like [heap], [stack], [anon]
+                    if map_path.startswith("["):
+                        continue
+
+                    shm_key = f"{dev}:{inode}:{map_path}"
+                    shm_owners.setdefault(shm_key, set()).add((pid, proc_name))
+        except (OSError, PermissionError):
+            continue
+
+        for ns_name in namespace_keys:
+            ns_inode = _read_namespace_inode(pid, ns_name)
+            if not ns_inode:
+                continue
+            ns_key = f"{ns_name}:{ns_inode}"
+            namespace_owners.setdefault(ns_key, set()).add((pid, proc_name))
+
     pair_totals = {}
     pair_socket = {}
     pair_pipe = {}
+    pair_shm = {}
+    pair_namespace = {}
     degree_total = {}
     degree_socket = {}
     degree_pipe = {}
+    degree_shm = {}
+    degree_namespace = {}
 
-    def add_pair_counts(name_a, name_b, is_socket):
+    def add_pair_counts(name_a, name_b, kind):
         if name_a == name_b:
             key = (name_a, name_b)
         else:
             key = tuple(sorted((name_a, name_b)))
         pair_totals[key] = pair_totals.get(key, 0) + 1
-        if is_socket:
+        if kind == "socket":
             pair_socket[key] = pair_socket.get(key, 0) + 1
-        else:
+        elif kind == "pipe":
             pair_pipe[key] = pair_pipe.get(key, 0) + 1
+        elif kind == "shm":
+            pair_shm[key] = pair_shm.get(key, 0) + 1
+        elif kind == "namespace":
+            pair_namespace[key] = pair_namespace.get(key, 0) + 1
 
         for nm in (name_a, name_b):
             degree_total[nm] = degree_total.get(nm, 0) + 1
-            if is_socket:
+            if kind == "socket":
                 degree_socket[nm] = degree_socket.get(nm, 0) + 1
-            else:
+            elif kind == "pipe":
                 degree_pipe[nm] = degree_pipe.get(nm, 0) + 1
+            elif kind == "shm":
+                degree_shm[nm] = degree_shm.get(nm, 0) + 1
+            elif kind == "namespace":
+                degree_namespace[nm] = degree_namespace.get(nm, 0) + 1
 
-    def consume_inode_owners(owner_map, is_socket):
+    def consume_inode_owners(owner_map, kind):
         for _inode, owners in owner_map.items():
             unique = sorted({(pid, name) for pid, name in owners})
             if len(unique) < 2:
                 continue
             for i in range(len(unique)):
                 for j in range(i + 1, len(unique)):
-                    add_pair_counts(unique[i][1], unique[j][1], is_socket)
+                    add_pair_counts(unique[i][1], unique[j][1], kind)
 
-    consume_inode_owners(socket_owners, True)
-    consume_inode_owners(pipe_owners, False)
+    consume_inode_owners(socket_owners, "socket")
+    consume_inode_owners(pipe_owners, "pipe")
+    consume_inode_owners(shm_owners, "shm")
+    consume_inode_owners(namespace_owners, "namespace")
 
     sorted_pairs = sorted(pair_totals.items(), key=lambda kv: kv[1], reverse=True)[:max_pairs]
     pair_links = []
@@ -2287,6 +2385,8 @@ def get_ipc_links_summary(max_pairs=120, max_nodes=24):
             "weight": int(weight),
             "socket_weight": int(pair_socket.get((left, right), pair_socket.get((right, left), 0))),
             "pipe_weight": int(pair_pipe.get((left, right), pair_pipe.get((right, left), 0))),
+            "shm_weight": int(pair_shm.get((left, right), pair_shm.get((right, left), 0))),
+            "ns_weight": int(pair_namespace.get((left, right), pair_namespace.get((right, left), 0))),
         })
 
     sorted_nodes = sorted(degree_total.items(), key=lambda kv: kv[1], reverse=True)[:max_nodes]
@@ -2297,6 +2397,8 @@ def get_ipc_links_summary(max_pairs=120, max_nodes=24):
             "degree": int(degree),
             "socket_degree": int(degree_socket.get(name, 0)),
             "pipe_degree": int(degree_pipe.get(name, 0)),
+            "shm_degree": int(degree_shm.get(name, 0)),
+            "ns_degree": int(degree_namespace.get(name, 0)),
         })
 
     return {
@@ -2305,6 +2407,8 @@ def get_ipc_links_summary(max_pairs=120, max_nodes=24):
         "stats": {
             "shared_socket_inodes": int(sum(1 for owners in socket_owners.values() if len({pid for pid, _ in owners}) > 1)),
             "shared_pipe_inodes": int(sum(1 for owners in pipe_owners.values() if len({pid for pid, _ in owners}) > 1)),
+            "shared_memory_regions": int(sum(1 for owners in shm_owners.values() if len({pid for pid, _ in owners}) > 1)),
+            "shared_namespace_groups": int(sum(1 for owners in namespace_owners.values() if len({pid for pid, _ in owners}) > 1)),
             "pair_count": len(pair_links),
             "node_count": len(process_nodes),
         }
@@ -2742,6 +2846,112 @@ def get_execution_context():
                                     continue
         except (IOError, PermissionError):
             pass
+
+        # Build IRQ/SoftIRQ stack data with rates for a compact "IRQ stack" UI panel.
+        now_ts = time.time()
+        prev_ts = EXEC_CONTEXT_PREV.get("timestamp")
+        dt = (now_ts - prev_ts) if prev_ts else None
+        if dt is not None and dt <= 0:
+            dt = None
+
+        irq_totals_now = {}
+        irq_rows = []
+        try:
+            with open('/proc/interrupts', 'r') as f:
+                lines = f.readlines()
+            for raw in lines[1:]:
+                if ":" not in raw:
+                    continue
+                left, right = raw.split(":", 1)
+                irq_name = left.strip()
+                tokens = right.split()
+                if not tokens:
+                    continue
+
+                counts = []
+                idx = 0
+                while idx < len(tokens) and tokens[idx].isdigit():
+                    counts.append(int(tokens[idx]))
+                    idx += 1
+                if not counts:
+                    continue
+                total = sum(counts)
+                desc = " ".join(tokens[idx:]).strip() or irq_name
+                key = f"{irq_name}:{desc}"
+                irq_totals_now[key] = total
+
+                prev_total = EXEC_CONTEXT_PREV["irq_totals"].get(key)
+                per_sec = 0.0
+                if dt and prev_total is not None:
+                    per_sec = max(0.0, (total - prev_total) / dt)
+
+                top_cpu = None
+                if counts:
+                    top_cpu = int(max(range(len(counts)), key=lambda i: counts[i]))
+
+                irq_rows.append({
+                    "irq": irq_name,
+                    "label": desc,
+                    "total": int(total),
+                    "per_sec": round(per_sec, 2),
+                    "top_cpu": top_cpu,
+                    "subsystem": map_interrupt_to_subsystem(desc)
+                })
+        except (IOError, PermissionError):
+            pass
+
+        softirq_totals_now = {}
+        softirq_rows = []
+        try:
+            with open('/proc/softirqs', 'r') as f:
+                lines = f.readlines()
+            for raw in lines[1:]:
+                if ":" not in raw:
+                    continue
+                left, right = raw.split(":", 1)
+                name = left.strip()
+                counts = []
+                for tok in right.split():
+                    if tok.isdigit():
+                        counts.append(int(tok))
+                if not counts:
+                    continue
+                total = sum(counts)
+                softirq_totals_now[name] = total
+                prev_total = EXEC_CONTEXT_PREV["softirq_totals"].get(name)
+                per_sec = 0.0
+                if dt and prev_total is not None:
+                    per_sec = max(0.0, (total - prev_total) / dt)
+                softirq_rows.append({
+                    "name": name,
+                    "total": int(total),
+                    "per_sec": round(per_sec, 2)
+                })
+        except (IOError, PermissionError):
+            pass
+
+        irq_rows.sort(key=lambda row: (row["per_sec"], row["total"]), reverse=True)
+        softirq_rows.sort(key=lambda row: (row["per_sec"], row["total"]), reverse=True)
+        hard_top = irq_rows[:5]
+        soft_top = softirq_rows[:4]
+
+        hard_total_rate = sum(row["per_sec"] for row in irq_rows)
+        soft_total_rate = sum(row["per_sec"] for row in softirq_rows)
+        net_softirq_rate = 0.0
+        block_softirq_rate = 0.0
+        timer_softirq_rate = 0.0
+        for row in softirq_rows:
+            nm = row["name"].upper()
+            if nm in ("NET_RX", "NET_TX"):
+                net_softirq_rate += row["per_sec"]
+            elif nm == "BLOCK":
+                block_softirq_rate += row["per_sec"]
+            elif nm == "TIMER":
+                timer_softirq_rate += row["per_sec"]
+
+        EXEC_CONTEXT_PREV["timestamp"] = now_ts
+        EXEC_CONTEXT_PREV["irq_totals"] = irq_totals_now
+        EXEC_CONTEXT_PREV["softirq_totals"] = softirq_totals_now
         
         # Check for preempted processes (simplified - check if process is in 'R' state but not on CPU)
         preempted = False
@@ -2776,6 +2986,17 @@ def get_execution_context():
             'active_pid': active_pid,
             'active_syscalls': active_syscalls,  # List of processes with active syscalls
             'interrupts': interrupts[:10],  # Limit to 10 most recent
+            'irq_stack': {
+                'hard': hard_top,
+                'soft': soft_top,
+                'summary': {
+                    'hard_total_per_sec': round(hard_total_rate, 2),
+                    'soft_total_per_sec': round(soft_total_rate, 2),
+                    'net_softirq_per_sec': round(net_softirq_rate, 2),
+                    'block_softirq_per_sec': round(block_softirq_rate, 2),
+                    'timer_softirq_per_sec': round(timer_softirq_rate, 2)
+                }
+            },
             'preempted': preempted,
             'preempted_pid': preempted_pid,
             'cpu_count': psutil.cpu_count(),
@@ -2972,6 +3193,31 @@ def kernel_dna():
         return jsonify(data)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/frontend-logs', methods=['POST', 'OPTIONS'])
+def ingest_frontend_logs():
+    """Receive frontend logs in ECS-like JSON and append to local JSONL file."""
+    if request.method == 'OPTIONS':
+        return ('', 204)
+
+    payload = request.get_json(silent=True)
+    if payload is None:
+        return jsonify({"error": "Invalid JSON payload"}), 400
+
+    events = payload.get("events", payload if isinstance(payload, list) else [payload])
+    if not isinstance(events, list):
+        return jsonify({"error": "Expected event object or list of events"}), 400
+    if len(events) > 100:
+        return jsonify({"error": "Batch too large"}), 413
+
+    accepted = 0
+    for raw in events:
+        if not isinstance(raw, dict):
+            continue
+        write_frontend_event(raw)
+        accepted += 1
+
+    return jsonify({"status": "ok", "accepted": accepted})
 
 @app.errorhandler(404)
 def not_found(error):

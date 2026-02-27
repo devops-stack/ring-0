@@ -562,10 +562,222 @@ function updateRing1(centerX, centerY, baseRadius) {
                     .duration(200)
                     .attr("opacity", 0);
             }
+
+            // Render compact IRQ/SoftIRQ stack near active connections.
+            renderIrqStackPanel(data);
         })
         .catch(error => {
             console.error('Error fetching execution context:', error);
         });
+}
+
+function renderIrqStackPanel(executionData) {
+    d3.selectAll('.irq-stack-group').remove();
+    d3.selectAll('.irq-route-overlay').remove();
+    if (isMobileLayout()) return;
+
+    const irqStack = executionData && executionData.irq_stack ? executionData.irq_stack : {};
+    const hardRows = Array.isArray(irqStack.hard) ? irqStack.hard : [];
+    const softRows = Array.isArray(irqStack.soft) ? irqStack.soft : [];
+    const summary = irqStack.summary || {};
+
+    const svg = d3.select('svg');
+    // Reuse former "CGROUP PROFILE" slot (left-bottom corner).
+    const panelX = 30;
+    const panelY = Math.max(20, window.innerHeight - 230);
+    const panelW = 230;
+    const rowH = 18;
+    const maxHard = 4;
+    const maxSoft = 2;
+    const shownHard = hardRows.slice(0, maxHard);
+    const shownSoft = softRows.slice(0, maxSoft);
+    const panelH = 24 + (shownHard.length + shownSoft.length + 2) * rowH + 16;
+
+    const group = svg.append('g')
+        .attr('class', 'irq-stack-group');
+
+    group.append('rect')
+        .attr('x', panelX)
+        .attr('y', panelY - 6)
+        .attr('width', panelW)
+        .attr('height', panelH)
+        .attr('rx', 8)
+        .style('fill', '#333')
+        .style('stroke', '#555')
+        .style('stroke-width', '1px')
+        .style('opacity', 0.95);
+
+    group.append('text')
+        .attr('x', panelX + 10)
+        .attr('y', panelY + 8)
+        .style('font-family', 'Share Tech Mono, monospace')
+        .style('font-size', '10px')
+        .style('letter-spacing', '0.5px')
+        .style('fill', '#c8ccd4')
+        .text('IRQ STACK (HARD + SOFT)');
+
+    let y = panelY + 24;
+    shownHard.forEach((row) => {
+        const irqName = String(row.irq || '?');
+        const labelRaw = String(row.label || irqName);
+        const label = labelRaw.length > 14 ? `${labelRaw.slice(0, 13)}~` : labelRaw;
+        const perSec = Number(row.per_sec || 0).toFixed(1);
+        const cpu = row.top_cpu === null || row.top_cpu === undefined ? '-' : row.top_cpu;
+        const rowGroup = group.append('g')
+            .style('cursor', 'pointer')
+            .on('mouseenter', () => {
+                drawIrqRouteOverlay(row, panelX + 10, y - 4);
+            })
+            .on('mouseleave', () => {
+                d3.selectAll('.irq-route-overlay').remove();
+            });
+
+        rowGroup.append('rect')
+            .attr('x', panelX + 6)
+            .attr('y', y - 11)
+            .attr('width', panelW - 14)
+            .attr('height', 13)
+            .attr('rx', 3)
+            .attr('fill', 'rgba(70,70,70,0.22)');
+
+        rowGroup.append('text')
+            .attr('x', panelX + 10)
+            .attr('y', y)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', '#c8ccd4')
+            .text(`IRQ${irqName} ${label} C${cpu} ${perSec}/s`);
+        y += rowH;
+    });
+
+    group.append('line')
+        .attr('x1', panelX + 8)
+        .attr('x2', panelX + panelW - 8)
+        .attr('y1', y - 8)
+        .attr('y2', y - 8)
+        .attr('stroke', 'rgba(120,120,120,0.45)')
+        .attr('stroke-width', 0.8);
+
+    shownSoft.forEach((row) => {
+        const name = String(row.name || 'SOFT').toUpperCase();
+        const perSec = Number(row.per_sec || 0).toFixed(1);
+        group.append('text')
+            .attr('x', panelX + 10)
+            .attr('y', y)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', '#b6c7d8')
+            .text(`S:${name} ${perSec}/s`);
+        y += rowH;
+    });
+
+    const hardRate = Number(summary.hard_total_per_sec || 0).toFixed(1);
+    const softRate = Number(summary.soft_total_per_sec || 0).toFixed(1);
+    const netRate = Number(summary.net_softirq_per_sec || 0).toFixed(1);
+    group.append('text')
+        .attr('x', panelX + 10)
+        .attr('y', panelY + panelH - 10)
+        .style('font-family', 'Share Tech Mono, monospace')
+        .style('font-size', '9px')
+        .style('fill', '#9ea9b6')
+        .text(`H:${hardRate}/s  S:${softRate}/s  NET:${netRate}/s`);
+}
+
+function getIrqRouteHint(row) {
+    const label = String(row && row.label ? row.label : '').toLowerCase();
+    const subsystem = String(row && row.subsystem ? row.subsystem : '').toLowerCase();
+    if (label.includes('eth') || label.includes('net') || label.includes('wifi') || subsystem.includes('net')) {
+        return {
+            soft: 'NET_RX',
+            kernel: 'network stack',
+            process: 'socket activity'
+        };
+    }
+    if (label.includes('nvme') || label.includes('ahci') || label.includes('scsi') || label.includes('blk')) {
+        return {
+            soft: 'BLOCK',
+            kernel: 'block layer',
+            process: 'read/write wakeup'
+        };
+    }
+    if (label.includes('timer') || subsystem.includes('timer')) {
+        return {
+            soft: 'TIMER',
+            kernel: 'scheduler/timer',
+            process: 'task wakeup'
+        };
+    }
+    return {
+        soft: 'IRQ_THREAD',
+        kernel: 'driver/core',
+        process: 'syscall/io path'
+    };
+}
+
+function drawIrqRouteOverlay(row, startX, startY) {
+    d3.selectAll('.irq-route-overlay').remove();
+    const svg = d3.select('svg');
+    const overlay = svg.append('g').attr('class', 'irq-route-overlay');
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    const centerX = width / 2;
+    const centerY = height / 2;
+
+    const hint = getIrqRouteHint(row);
+    const irqLabel = String(row && row.irq ? row.irq : '?');
+
+    const p1x = Math.min(centerX - 120, startX + 170);
+    const p1y = startY + 6;
+    const p2x = centerX - 12;
+    const p2y = centerY - 16;
+    const p3x = 318;
+    const p3y = 148;
+
+    overlay.append('path')
+        .attr('d', `M ${startX} ${startY} Q ${p1x} ${p1y} ${p2x} ${p2y}`)
+        .attr('fill', 'none')
+        .attr('stroke', 'rgba(108, 108, 108, 0.45)')
+        .attr('stroke-width', 0.9)
+        .attr('stroke-linecap', 'round')
+        .attr('stroke-dasharray', '3 3');
+
+    overlay.append('path')
+        .attr('d', `M ${p2x} ${p2y} Q ${centerX + 90} ${centerY + 70} ${p3x} ${p3y}`)
+        .attr('fill', 'none')
+        .attr('stroke', 'rgba(88, 182, 216, 0.36)')
+        .attr('stroke-width', 0.85)
+        .attr('stroke-linecap', 'round')
+        .attr('stroke-dasharray', '2 4');
+
+    overlay.append('circle')
+        .attr('cx', p2x)
+        .attr('cy', p2y)
+        .attr('r', 2.2)
+        .attr('fill', 'rgba(130,130,130,0.55)');
+
+    overlay.append('text')
+        .attr('x', p1x - 50)
+        .attr('y', p1y - 6)
+        .style('font-family', 'Share Tech Mono, monospace')
+        .style('font-size', '8px')
+        .style('fill', 'rgba(176,176,176,0.68)')
+        .text(`IRQ${irqLabel} -> ${hint.soft}`);
+
+    overlay.append('text')
+        .attr('x', p2x - 66)
+        .attr('y', p2y - 8)
+        .style('font-family', 'Share Tech Mono, monospace')
+        .style('font-size', '8px')
+        .style('fill', 'rgba(160,160,160,0.64)')
+        .text(hint.kernel);
+
+    overlay.append('text')
+        .attr('x', p3x + 6)
+        .attr('y', p3y - 4)
+        .style('font-family', 'Share Tech Mono, monospace')
+        .style('font-size', '8px')
+        .style('fill', 'rgba(150,180,200,0.62)')
+        .text(hint.process);
 }
 
 // Helper function to get point on SVG path at specific distance from start
@@ -1296,6 +1508,17 @@ function normalizeProcName(name) {
     return lower;
 }
 
+function getSharedChannelType(socketWeight, pipeWeight, shmWeight, nsWeight) {
+    const channels = [];
+    if (Number(socketWeight || 0) > 0) channels.push('SOCKET');
+    if (Number(pipeWeight || 0) > 0) channels.push('PIPE');
+    if (Number(shmWeight || 0) > 0) channels.push('SHM');
+    if (Number(nsWeight || 0) > 0) channels.push('NS');
+    if (!channels.length) return 'UNKNOWN';
+    if (channels.length === 1) return channels[0];
+    return `MIXED (${channels.join('+')})`;
+}
+
 function drawIpcRelationshipRing(centerX, centerY, processAnchorsByName) {
     d3.selectAll('.ipc-ring-layer').remove();
     fetch('/api/ipc-links?max_nodes=18&max_pairs=120')
@@ -1342,7 +1565,9 @@ function drawIpcRelationshipRing(centerX, centerY, processAnchorsByName) {
                     name: nm,
                     degree: 1,
                     socket_degree: 0,
-                    pipe_degree: 0
+                    pipe_degree: 0,
+                    shm_degree: 0,
+                    ns_degree: 0
                 }));
             }
             if (!nodes.length) {
@@ -1358,7 +1583,7 @@ function drawIpcRelationshipRing(centerX, centerY, processAnchorsByName) {
                 .style('font-size', '8px')
                 .style('letter-spacing', '0.7px')
                 .style('fill', 'rgba(58, 58, 58, 0.58)')
-                .text(`IPC LINKS  SOCKET:${stats.shared_socket_inodes || 0}  PIPE:${stats.shared_pipe_inodes || 0}  PAIRS:${stats.pair_count || 0}`);
+                .text(`IPC LINKS  SOCKET:${stats.shared_socket_inodes || 0}  PIPE:${stats.shared_pipe_inodes || 0}  SHM:${stats.shared_memory_regions || 0}  NS:${stats.shared_namespace_groups || 0}  PAIRS:${stats.pair_count || 0}`);
 
             const peerMap = new Map();
             (((data && data.pair_links) || [])).forEach((link) => {
@@ -1371,13 +1596,17 @@ function drawIpcRelationshipRing(centerX, centerY, processAnchorsByName) {
                     peer: link.right || right,
                     weight: Number(link.weight || 0),
                     socketWeight: Number(link.socket_weight || 0),
-                    pipeWeight: Number(link.pipe_weight || 0)
+                    pipeWeight: Number(link.pipe_weight || 0),
+                    shmWeight: Number(link.shm_weight || 0),
+                    nsWeight: Number(link.ns_weight || 0)
                 });
                 peerMap.get(right).push({
                     peer: link.left || left,
                     weight: Number(link.weight || 0),
                     socketWeight: Number(link.socket_weight || 0),
-                    pipeWeight: Number(link.pipe_weight || 0)
+                    pipeWeight: Number(link.pipe_weight || 0),
+                    shmWeight: Number(link.shm_weight || 0),
+                    nsWeight: Number(link.ns_weight || 0)
                 });
             });
             peerMap.forEach((arr, key) => {
@@ -1403,7 +1632,9 @@ function drawIpcRelationshipRing(centerX, centerY, processAnchorsByName) {
                     radius,
                     degree,
                     socketDegree: Number(node.socket_degree || 0),
-                    pipeDegree: Number(node.pipe_degree || 0)
+                    pipeDegree: Number(node.pipe_degree || 0),
+                    shmDegree: Number(node.shm_degree || 0),
+                    nsDegree: Number(node.ns_degree || 0)
                 });
 
                 ringGroup.append('circle')
@@ -1419,7 +1650,10 @@ function drawIpcRelationshipRing(centerX, centerY, processAnchorsByName) {
                         d3.selectAll('.ipc-link-tooltip').remove();
                         const peers = peerMap.get(normalizedName) || [];
                         const peerText = peers.length
-                            ? peers.map((p) => `${p.peer}: ${p.weight} (s:${p.socketWeight} p:${p.pipeWeight})`).join('<br>')
+                            ? peers.map((p) => {
+                                const channelType = getSharedChannelType(p.socketWeight, p.pipeWeight, p.shmWeight, p.nsWeight);
+                                return `${p.peer}: ${p.weight} [${channelType}] (s:${p.socketWeight} p:${p.pipeWeight} shm:${p.shmWeight} ns:${p.nsWeight})`;
+                            }).join('<br>')
                             : 'No peer details';
                         d3.select('body')
                             .append('div')
@@ -1435,7 +1669,7 @@ function drawIpcRelationshipRing(centerX, centerY, processAnchorsByName) {
                             .style('z-index', '1200')
                             .style('left', `${nx + 10}px`)
                             .style('top', `${ny - 14}px`)
-                            .html(`<strong>${node.name || normalizedName}</strong><br>Links: ${degree}<br>Socket: ${Number(node.socket_degree || 0)} | Pipe: ${Number(node.pipe_degree || 0)}<br><hr style="border-color:#555;margin:4px 0;">${peerText}`);
+                            .html(`<strong>${node.name || normalizedName}</strong><br>Links: ${degree}<br>Socket: ${Number(node.socket_degree || 0)} | Pipe: ${Number(node.pipe_degree || 0)} | SHM: ${Number(node.shm_degree || 0)} | NS: ${Number(node.ns_degree || 0)}<br><hr style="border-color:#555;margin:4px 0;">${peerText}`);
                     })
                     .on('mouseleave', () => {
                         d3.selectAll('.ipc-link-tooltip').remove();
@@ -1826,10 +2060,9 @@ function drawIsolationConceptLayer(centerX, centerY, width, height) {
             return;
         }
         drawNamespaceShell(centerX, centerY, data.namespaces || []);
-        // Mobile view should keep only namespace shell segments.
-        if (!mobileLayout) {
-            drawCgroupConceptCard(width, height, data.top_cgroups || []);
-        }
+        // Left-bottom slot is now reserved for IRQ stack panel.
+        // Keep cgroup card disabled to avoid visual overlap/noise.
+        d3.selectAll('.cgroup-card-layer').remove();
     });
 }
 
