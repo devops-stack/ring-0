@@ -688,6 +688,7 @@ function getIrqRouteHint(row) {
     const subsystem = String(row && row.subsystem ? row.subsystem : '').toLowerCase();
     if (label.includes('eth') || label.includes('net') || label.includes('wifi') || subsystem.includes('net')) {
         return {
+            profile: 'NET',
             soft: 'NET_RX',
             kernel: 'network stack',
             process: 'socket activity'
@@ -695,19 +696,22 @@ function getIrqRouteHint(row) {
     }
     if (label.includes('nvme') || label.includes('ahci') || label.includes('scsi') || label.includes('blk')) {
         return {
+            profile: 'BLOCK',
             soft: 'BLOCK',
             kernel: 'block layer',
             process: 'read/write wakeup'
         };
     }
-    if (label.includes('timer') || subsystem.includes('timer')) {
+    if (label.includes('timer') || label.includes('sched') || subsystem.includes('timer') || subsystem.includes('sched')) {
         return {
+            profile: 'TIMER',
             soft: 'TIMER',
             kernel: 'scheduler/timer',
             process: 'task wakeup'
         };
     }
     return {
+        profile: 'GENERIC',
         soft: 'IRQ_THREAD',
         kernel: 'driver/core',
         process: 'syscall/io path'
@@ -720,64 +724,172 @@ function drawIrqRouteOverlay(row, startX, startY) {
     const overlay = svg.append('g').attr('class', 'irq-route-overlay');
     const width = window.innerWidth;
     const height = window.innerHeight;
-    const centerX = width / 2;
-    const centerY = height / 2;
-
     const hint = getIrqRouteHint(row);
     const irqLabel = String(row && row.irq ? row.irq : '?');
+    const routeLabel = String(row && row.label ? row.label : '').trim();
+    const rate = Number(row && row.per_sec ? row.per_sec : 0);
+    const intensity = Math.max(0.35, Math.min(1, rate / 220));
 
-    const p1x = Math.min(centerX - 120, startX + 170);
-    const p1y = startY + 6;
-    const p2x = centerX - 12;
-    const p2y = centerY - 16;
-    const p3x = 318;
-    const p3y = 148;
+    const profileColors = {
+        NET: 'rgba(103, 190, 224, 0.95)',
+        BLOCK: 'rgba(224, 175, 98, 0.95)',
+        TIMER: 'rgba(167, 200, 120, 0.95)',
+        GENERIC: 'rgba(186, 194, 204, 0.92)'
+    };
+    const profileColor = profileColors[hint.profile] || profileColors.GENERIC;
+
+    const mapX = Math.max(22, Math.min(width * 0.16, startX + 36));
+    const mapY = Math.max(12, height - 150);
+    const mapW = Math.min(760, width - mapX - 20);
+    const mapH = 104;
+
+    overlay.append('rect')
+        .attr('x', mapX)
+        .attr('y', mapY)
+        .attr('width', mapW)
+        .attr('height', mapH)
+        .attr('rx', 8)
+        .attr('fill', 'rgba(11, 14, 18, 0.9)')
+        .attr('stroke', 'rgba(82, 92, 108, 0.42)')
+        .attr('stroke-width', 0.9);
+
+    const p0 = { x: mapX + 26, y: mapY + 38 };
+    const p1 = { x: mapX + Math.min(130, mapW * 0.22), y: mapY + 38 };
+    const p2 = { x: p1.x, y: mapY + 74 };
+    const p3 = { x: mapX + Math.min(300, mapW * 0.5), y: mapY + 74 };
+    const p4 = { x: p3.x, y: mapY + 48 };
+    const p5 = { x: mapX + Math.min(500, mapW * 0.78), y: mapY + 48 };
+    const p6 = { x: p5.x, y: mapY + 74 };
+    const p7 = { x: mapX + mapW - 28, y: mapY + 74 };
 
     overlay.append('path')
-        .attr('d', `M ${startX} ${startY} Q ${p1x} ${p1y} ${p2x} ${p2y}`)
+        .attr('d', `M ${startX} ${startY} Q ${mapX - 24} ${mapY - 8} ${p0.x} ${p0.y}`)
         .attr('fill', 'none')
-        .attr('stroke', 'rgba(108, 108, 108, 0.45)')
+        .attr('stroke', 'rgba(118, 136, 155, 0.5)')
         .attr('stroke-width', 0.9)
-        .attr('stroke-linecap', 'round')
-        .attr('stroke-dasharray', '3 3');
+        .attr('stroke-dasharray', '2 3');
+
+    // Compact route line (always visible) + detailed metro line below.
+    overlay.append('rect')
+        .attr('x', mapX + 10)
+        .attr('y', mapY + 6)
+        .attr('width', mapW - 20)
+        .attr('height', 16)
+        .attr('rx', 4)
+        .attr('fill', 'rgba(16, 20, 25, 0.9)')
+        .attr('stroke', 'rgba(74, 88, 106, 0.45)')
+        .attr('stroke-width', 0.6);
+
+    overlay.append('text')
+        .attr('x', mapX + 14)
+        .attr('y', mapY + 17)
+        .style('font-family', 'Share Tech Mono, monospace')
+        .style('font-size', '8px')
+        .style('letter-spacing', '0.35px')
+        .style('fill', 'rgba(198, 215, 228, 0.92)')
+        .text(`IRQ ${irqLabel} -> ${hint.soft} -> ${hint.kernel} -> ${hint.process}`);
+
+    const metroPath = `M ${p0.x} ${p0.y}
+        L ${p1.x} ${p1.y}
+        L ${p2.x} ${p2.y}
+        L ${p3.x} ${p3.y}
+        L ${p4.x} ${p4.y}
+        L ${p5.x} ${p5.y}
+        L ${p6.x} ${p6.y}
+        L ${p7.x} ${p7.y}`;
 
     overlay.append('path')
-        .attr('d', `M ${p2x} ${p2y} Q ${centerX + 90} ${centerY + 70} ${p3x} ${p3y}`)
+        .attr('d', metroPath)
         .attr('fill', 'none')
-        .attr('stroke', 'rgba(88, 182, 216, 0.36)')
-        .attr('stroke-width', 0.85)
+        .attr('stroke', 'rgba(35, 40, 48, 0.95)')
+        .attr('stroke-width', 4.2 + intensity * 0.7)
         .attr('stroke-linecap', 'round')
-        .attr('stroke-dasharray', '2 4');
+        .attr('stroke-linejoin', 'round');
 
-    overlay.append('circle')
-        .attr('cx', p2x)
-        .attr('cy', p2y)
-        .attr('r', 2.2)
-        .attr('fill', 'rgba(130,130,130,0.55)');
+    overlay.append('path')
+        .attr('d', metroPath)
+        .attr('fill', 'none')
+        .attr('stroke', profileColor)
+        .attr('stroke-width', 1.9 + intensity * 1.1)
+        .attr('stroke-linecap', 'round')
+        .attr('stroke-linejoin', 'round');
+
+    const drawBranch = (path, color, label, lx, ly) => {
+        overlay.append('path')
+            .attr('d', path)
+            .attr('fill', 'none')
+            .attr('stroke', 'rgba(35, 40, 48, 0.94)')
+            .attr('stroke-width', 3.2)
+            .attr('stroke-linecap', 'round')
+            .attr('stroke-linejoin', 'round');
+
+        overlay.append('path')
+            .attr('d', path)
+            .attr('fill', 'none')
+            .attr('stroke', color)
+            .attr('stroke-width', 1.5 + intensity * 0.9)
+            .attr('stroke-linecap', 'round')
+            .attr('stroke-linejoin', 'round');
+
+        overlay.append('text')
+            .attr('x', lx)
+            .attr('y', ly)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '7px')
+            .style('fill', 'rgba(182, 198, 212, 0.85)')
+            .text(label);
+    };
+
+    if (hint.profile === 'BLOCK') {
+        const b1 = `M ${p3.x} ${p3.y} L ${p3.x + 50} ${p3.y + 16} L ${p3.x + 110} ${p3.y + 16}`;
+        const b2 = `M ${p6.x} ${p6.y} L ${p6.x + 44} ${p6.y - 18} L ${p6.x + 102} ${p6.y - 18}`;
+        drawBranch(b1, 'rgba(224, 175, 98, 0.9)', 'disk completion', p3.x + 56, p3.y + 28);
+        drawBranch(b2, 'rgba(224, 175, 98, 0.9)', 'page cache wakeup', p6.x + 50, p6.y - 24);
+    } else if (hint.profile === 'TIMER') {
+        const t1 = `M ${p2.x} ${p2.y} L ${p2.x + 54} ${p2.y - 20} L ${p2.x + 116} ${p2.y - 20}`;
+        const t2 = `M ${p5.x} ${p5.y} L ${p5.x + 36} ${p5.y + 20} L ${p5.x + 98} ${p5.y + 20}`;
+        drawBranch(t1, 'rgba(167, 200, 120, 0.9)', 'scheduler tick', p2.x + 60, p2.y - 26);
+        drawBranch(t2, 'rgba(167, 200, 120, 0.9)', 'runqueue wakeup', p5.x + 42, p5.y + 30);
+    } else if (hint.profile === 'NET') {
+        const n1 = `M ${p4.x} ${p4.y} L ${p4.x + 52} ${p4.y - 16} L ${p4.x + 120} ${p4.y - 16}`;
+        drawBranch(n1, 'rgba(103, 190, 224, 0.9)', 'socket/epoll wake', p4.x + 58, p4.y - 22);
+    }
+
+    const stations = [
+        { x: p0.x, y: p0.y, title: `IRQ ${irqLabel}`, detail: routeLabel || 'interrupt line', up: true },
+        { x: p2.x, y: p2.y, title: hint.soft, detail: 'softirq', up: false },
+        { x: p4.x, y: p4.y, title: hint.kernel, detail: 'kernel path', up: true },
+        { x: p7.x, y: p7.y, title: hint.process, detail: 'userspace effect', up: false }
+    ];
+
+    stations.forEach((station) => {
+        overlay.append('circle')
+            .attr('cx', station.x)
+            .attr('cy', station.y)
+            .attr('r', 4.3)
+            .attr('fill', 'rgba(10, 13, 17, 0.95)')
+            .attr('stroke', 'rgba(148, 214, 238, 0.96)')
+            .attr('stroke-width', 1.3);
+
+        const textY = station.up ? station.y - 9 : station.y + 14;
+        overlay.append('text')
+            .attr('x', station.x)
+            .attr('y', textY)
+            .attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '8px')
+            .style('fill', 'rgba(196, 215, 228, 0.95)')
+            .text(String(station.title).toUpperCase());
+    });
 
     overlay.append('text')
-        .attr('x', p1x - 50)
-        .attr('y', p1y - 6)
+        .attr('x', mapX + mapW - 186)
+        .attr('y', mapY + 17)
         .style('font-family', 'Share Tech Mono, monospace')
-        .style('font-size', '8px')
-        .style('fill', 'rgba(176,176,176,0.68)')
-        .text(`IRQ${irqLabel} -> ${hint.soft}`);
-
-    overlay.append('text')
-        .attr('x', p2x - 66)
-        .attr('y', p2y - 8)
-        .style('font-family', 'Share Tech Mono, monospace')
-        .style('font-size', '8px')
-        .style('fill', 'rgba(160,160,160,0.64)')
-        .text(hint.kernel);
-
-    overlay.append('text')
-        .attr('x', p3x + 6)
-        .attr('y', p3y - 4)
-        .style('font-family', 'Share Tech Mono, monospace')
-        .style('font-size', '8px')
-        .style('fill', 'rgba(150,180,200,0.62)')
-        .text(hint.process);
+        .style('font-size', '7px')
+        .style('letter-spacing', '0.5px')
+        .style('fill', 'rgba(140, 155, 171, 0.85)')
+        .text(`IRQ ROUTE MAP  [${hint.profile}]  ${rate.toFixed(1)}/s`);
 }
 
 // Helper function to get point on SVG path at specific distance from start
@@ -1968,7 +2080,7 @@ function drawLowerBezierGrid(num = 90) {
     }, 1500); // Wait 1.5 seconds for curves to finish animating
     const height = window.innerHeight;
     // Lift the whole lower flow construction without changing its geometry.
-    const lowerFlowYOffset = -45;
+    const lowerFlowYOffset = -25;
     const yBase = height - 200 + lowerFlowYOffset;
     drawBezierDecor(width, height, yBase);
 
