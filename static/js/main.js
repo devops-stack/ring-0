@@ -604,8 +604,7 @@ function renderIrqStackPanel(executionData) {
         .attr('rx', 8)
         .style('fill', '#333')
         .style('stroke', '#555')
-        .style('stroke-width', '1px')
-        .style('opacity', 0.95);
+        .style('stroke-width', '1px');
 
     group.append('text')
         .attr('x', panelX + 10)
@@ -626,10 +625,15 @@ function renderIrqStackPanel(executionData) {
         const rowGroup = group.append('g')
             .style('cursor', 'pointer')
             .on('mouseenter', () => {
+                window.__irqRouteMapHover = false;
                 drawIrqRouteOverlay(row, panelX + 10, y - 4);
             })
             .on('mouseleave', () => {
-                d3.selectAll('.irq-route-overlay').remove();
+                setTimeout(() => {
+                    if (!window.__irqRouteMapHover) {
+                        d3.selectAll('.irq-route-overlay').remove();
+                    }
+                }, 260);
             });
 
         rowGroup.append('rect')
@@ -753,6 +757,28 @@ function drawIrqRouteOverlay(row, startX, startY) {
         .attr('stroke', 'rgba(82, 92, 108, 0.42)')
         .attr('stroke-width', 0.9);
 
+    const detailLayer = overlay.append('g')
+        .attr('class', 'irq-route-detail')
+        .style('opacity', 0.72);
+
+    // Hover target for fading detailed layer to full opacity.
+    overlay.append('rect')
+        .attr('x', mapX)
+        .attr('y', mapY)
+        .attr('width', mapW)
+        .attr('height', mapH)
+        .attr('rx', 8)
+        .attr('fill', 'transparent')
+        .style('pointer-events', 'all')
+        .on('mouseenter', () => {
+            window.__irqRouteMapHover = true;
+            detailLayer.transition().duration(120).style('opacity', 1);
+        })
+        .on('mouseleave', () => {
+            window.__irqRouteMapHover = false;
+            d3.selectAll('.irq-route-overlay').remove();
+        });
+
     const p0 = { x: mapX + 26, y: mapY + 38 };
     const p1 = { x: mapX + Math.min(130, mapW * 0.22), y: mapY + 38 };
     const p2 = { x: p1.x, y: mapY + 74 };
@@ -798,7 +824,7 @@ function drawIrqRouteOverlay(row, startX, startY) {
         L ${p6.x} ${p6.y}
         L ${p7.x} ${p7.y}`;
 
-    overlay.append('path')
+    detailLayer.append('path')
         .attr('d', metroPath)
         .attr('fill', 'none')
         .attr('stroke', 'rgba(35, 40, 48, 0.95)')
@@ -806,7 +832,7 @@ function drawIrqRouteOverlay(row, startX, startY) {
         .attr('stroke-linecap', 'round')
         .attr('stroke-linejoin', 'round');
 
-    overlay.append('path')
+    detailLayer.append('path')
         .attr('d', metroPath)
         .attr('fill', 'none')
         .attr('stroke', profileColor)
@@ -815,7 +841,7 @@ function drawIrqRouteOverlay(row, startX, startY) {
         .attr('stroke-linejoin', 'round');
 
     const drawBranch = (path, color, label, lx, ly) => {
-        overlay.append('path')
+        detailLayer.append('path')
             .attr('d', path)
             .attr('fill', 'none')
             .attr('stroke', 'rgba(35, 40, 48, 0.94)')
@@ -823,7 +849,7 @@ function drawIrqRouteOverlay(row, startX, startY) {
             .attr('stroke-linecap', 'round')
             .attr('stroke-linejoin', 'round');
 
-        overlay.append('path')
+        detailLayer.append('path')
             .attr('d', path)
             .attr('fill', 'none')
             .attr('stroke', color)
@@ -831,7 +857,7 @@ function drawIrqRouteOverlay(row, startX, startY) {
             .attr('stroke-linecap', 'round')
             .attr('stroke-linejoin', 'round');
 
-        overlay.append('text')
+        detailLayer.append('text')
             .attr('x', lx)
             .attr('y', ly)
             .style('font-family', 'Share Tech Mono, monospace')
@@ -863,7 +889,7 @@ function drawIrqRouteOverlay(row, startX, startY) {
     ];
 
     stations.forEach((station) => {
-        overlay.append('circle')
+        detailLayer.append('circle')
             .attr('cx', station.x)
             .attr('cy', station.y)
             .attr('r', 4.3)
@@ -872,7 +898,7 @@ function drawIrqRouteOverlay(row, startX, startY) {
             .attr('stroke-width', 1.3);
 
         const textY = station.up ? station.y - 9 : station.y + 14;
-        overlay.append('text')
+        detailLayer.append('text')
             .attr('x', station.x)
             .attr('y', textY)
             .attr('text-anchor', 'middle')
