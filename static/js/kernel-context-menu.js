@@ -1034,7 +1034,7 @@ class KernelContextMenu {
         d3.selectAll('.timeline-event').remove();
         
         // Fetch timeline data
-        fetch(`http://localhost:5001/api/proc-timeline?pid=${this.selectedPid}`)
+        fetch(`/api/proc-timeline?pid=${this.selectedPid}`)
             .then(res => res.json())
             .then(data => {
                 if (data.error) {
