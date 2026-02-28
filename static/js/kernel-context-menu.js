@@ -1,7 +1,7 @@
 // Kernel Context Menu - Submenu and View Modes
 // Version: 12
 
-console.log('🔧 kernel-context-menu.js v12: Script loading...');
+debugLog('🔧 kernel-context-menu.js v12: Script loading...');
 
 class KernelContextMenu {
     constructor() {
@@ -38,7 +38,7 @@ class KernelContextMenu {
             .style('opacity', 0)
             .style('pointer-events', 'all');
         
-        console.log('✅ Submenu group created');
+        debugLog('✅ Submenu group created');
         
         // Background - diegetic UI style panel (like "SUBJECT U454.1" from example)
         const bg = this.submenuGroup.append('rect')
@@ -53,7 +53,7 @@ class KernelContextMenu {
             .style('pointer-events', 'all')
             .style('filter', 'drop-shadow(0 0 2px rgba(200, 200, 200, 0.1))'); // Subtle glow
         
-        console.log('✅ Background rect created at:', submenuX - 10, submenuY - 60);
+        debugLog('✅ Background rect created at:', submenuX - 10, submenuY - 60);
         
         // Menu items
         const items = [
@@ -149,7 +149,7 @@ class KernelContextMenu {
                     }
                 } else if (item.id === 'filters') {
                     // Placeholder for future
-                    console.log('Filters/Settings - coming soon');
+                    debugLog('Filters/Settings - coming soon');
                 }
             };
             
@@ -177,14 +177,14 @@ class KernelContextMenu {
             .duration(200)
             .style('opacity', 1)
             .on('end', () => {
-                console.log('✅ Submenu animation completed');
+                debugLog('✅ Submenu animation completed');
             });
         
-        console.log('✅ Submenu created and animated');
+        debugLog('✅ Submenu created and animated');
     }
 
     hideSubmenu() {
-        console.log('🔒 hideSubmenu called');
+        debugLog('🔒 hideSubmenu called');
         if (this.submenuGroup) {
             this.submenuGroup.remove();
             this.submenuGroup = null;
@@ -194,7 +194,7 @@ class KernelContextMenu {
     }
 
     activateMatrixView() {
-        console.log('🎯 activateMatrixView called');
+        debugLog('🎯 activateMatrixView called');
         this.currentView = 'matrix';
         this.hideSubmenu();
         
@@ -280,34 +280,34 @@ class KernelContextMenu {
     }
 
     activateDNAView() {
-        console.log('🧬 Activating Kernel DNA View');
-        console.log('🔍 KernelDNAVisualization available:', typeof KernelDNAVisualization);
-        console.log('🔍 window.KernelDNAVisualization available:', typeof window.KernelDNAVisualization);
-        console.log('🔍 THREE available:', typeof THREE);
-        console.log('🔍 THREE.WebGLRenderer available:', typeof THREE?.WebGLRenderer);
-        console.log('🔍 Current dnaVisualization:', this.dnaVisualization);
+        debugLog('🧬 Activating Kernel DNA View');
+        debugLog('🔍 KernelDNAVisualization available:', typeof KernelDNAVisualization);
+        debugLog('🔍 window.KernelDNAVisualization available:', typeof window.KernelDNAVisualization);
+        debugLog('🔍 THREE available:', typeof THREE);
+        debugLog('🔍 THREE.WebGLRenderer available:', typeof THREE?.WebGLRenderer);
+        debugLog('🔍 Current dnaVisualization:', this.dnaVisualization);
         
         this.currentView = 'dna';
         this.hideSubmenu();
         
         // Initialize DNA visualization if not already done
         if (!this.dnaVisualization) {
-            console.log('🔍 Checking KernelDNAVisualization availability...');
-            console.log('🔍 typeof KernelDNAVisualization:', typeof KernelDNAVisualization);
-            console.log('🔍 window.KernelDNAVisualization:', typeof window.KernelDNAVisualization);
+            debugLog('🔍 Checking KernelDNAVisualization availability...');
+            debugLog('🔍 typeof KernelDNAVisualization:', typeof KernelDNAVisualization);
+            debugLog('🔍 window.KernelDNAVisualization:', typeof window.KernelDNAVisualization);
             
             if (typeof KernelDNAVisualization !== 'undefined') {
-                console.log('✅ Creating new KernelDNAVisualization instance');
+                debugLog('✅ Creating new KernelDNAVisualization instance');
                 try {
                     this.dnaVisualization = new KernelDNAVisualization();
-                    console.log('✅ Instance created, calling init()...');
+                    debugLog('✅ Instance created, calling init()...');
                     const initResult = this.dnaVisualization.init();
                     if (initResult === false) {
                         console.error('❌ init() returned false - initialization failed');
                         this.dnaVisualization = null;
                         return;
                     }
-                    console.log('✅ KernelDNAVisualization initialized');
+                    debugLog('✅ KernelDNAVisualization initialized');
                 } catch (error) {
                     console.error('❌ Error initializing KernelDNAVisualization:', error);
                     console.error('❌ Error details:', {
@@ -319,7 +319,7 @@ class KernelContextMenu {
                     return;
                 }
             } else if (typeof window.KernelDNAVisualization !== 'undefined') {
-                console.log('✅ Using window.KernelDNAVisualization');
+                debugLog('✅ Using window.KernelDNAVisualization');
                 try {
                     this.dnaVisualization = new window.KernelDNAVisualization();
                     const initResult = this.dnaVisualization.init();
@@ -328,7 +328,7 @@ class KernelContextMenu {
                         this.dnaVisualization = null;
                         return;
                     }
-                    console.log('✅ KernelDNAVisualization initialized from window');
+                    debugLog('✅ KernelDNAVisualization initialized from window');
                 } catch (error) {
                     console.error('❌ Error initializing KernelDNAVisualization from window:', error);
                     alert('Ошибка инициализации Kernel DNA: ' + error.message);
@@ -343,7 +343,7 @@ class KernelContextMenu {
                 return;
             }
         } else {
-            console.log('✅ Using existing dnaVisualization instance');
+            debugLog('✅ Using existing dnaVisualization instance');
         }
         
         // Hide other UI elements
@@ -361,10 +361,10 @@ class KernelContextMenu {
         }
         
         // Activate DNA visualization
-        console.log('🎯 Calling dnaVisualization.activate()');
+        debugLog('🎯 Calling dnaVisualization.activate()');
         try {
             this.dnaVisualization.activate();
-            console.log('✅ DNA visualization activated');
+            debugLog('✅ DNA visualization activated');
         } catch (error) {
             console.error('❌ Error activating DNA visualization:', error);
         }
@@ -374,7 +374,7 @@ class KernelContextMenu {
     }
 
     activateNetworkView() {
-        console.log('🌐 Activating Network Stack View');
+        debugLog('🌐 Activating Network Stack View');
         this.currentView = 'network';
         this.hideSubmenu();
 
@@ -428,14 +428,14 @@ class KernelContextMenu {
 
         try {
             this.networkVisualization.activate();
-            console.log('✅ Network Stack visualization activated');
+            debugLog('✅ Network Stack visualization activated');
         } catch (error) {
             console.error('❌ Error activating Network Stack visualization:', error);
         }
     }
 
     activateDevicesView() {
-        console.log('🧲 Activating Devices Belt View');
+        debugLog('🧲 Activating Devices Belt View');
         this.currentView = 'devices';
         this.hideSubmenu();
 
@@ -488,14 +488,14 @@ class KernelContextMenu {
 
         try {
             this.devicesVisualization.activate();
-            console.log('✅ Devices Belt visualization activated');
+            debugLog('✅ Devices Belt visualization activated');
         } catch (error) {
             console.error('❌ Error activating Devices Belt visualization:', error);
         }
     }
 
     activateFilesView() {
-        console.log('🗂️ Activating Filesystem Map View');
+        debugLog('🗂️ Activating Filesystem Map View');
         this.currentView = 'files';
         this.hideSubmenu();
 
@@ -548,7 +548,7 @@ class KernelContextMenu {
 
         try {
             this.filesVisualization.activate();
-            console.log('✅ Filesystem Map visualization activated');
+            debugLog('✅ Filesystem Map visualization activated');
         } catch (error) {
             console.error('❌ Error activating Filesystem Map visualization:', error);
         }
@@ -736,25 +736,25 @@ class KernelContextMenu {
     }
 
     renderMatrixView() {
-        console.log('🎯 renderMatrixView called');
+        debugLog('🎯 renderMatrixView called');
         // Clear only matrix rows; keep panel, backdrop and header to avoid full-screen flicker
         d3.selectAll('.matrix-view-item').remove();
         
         // Fetch matrix data
         fetch('/api/proc-matrix')
             .then(res => {
-                console.log('📡 Matrix API response status:', res.status);
+                debugLog('📡 Matrix API response status:', res.status);
                 return res.json();
             })
             .then(data => {
-                console.log('📊 Matrix data received:', data);
+                debugLog('📊 Matrix data received:', data);
                 if (data.error) {
                     console.error('Matrix error:', data.error);
                     return;
                 }
                 
                 this.matrixData = data.matrix || [];
-                console.log('📋 Matrix data array length:', this.matrixData.length);
+                debugLog('📋 Matrix data array length:', this.matrixData.length);
                 this.drawMatrixList();
             })
             .catch(error => {
@@ -763,7 +763,7 @@ class KernelContextMenu {
     }
 
     drawMatrixList() {
-        console.log('🎯 drawMatrixList called, data length:', this.matrixData.length);
+        debugLog('🎯 drawMatrixList called, data length:', this.matrixData.length);
         const svg = d3.select('svg');
         const width = window.innerWidth;
         const height = window.innerHeight;
@@ -894,7 +894,7 @@ class KernelContextMenu {
         
         // Draw process rows
         const rowsData = this.matrixData.slice(0, 15); // Limit to 15 processes
-        console.log('📝 Drawing', rowsData.length, 'process rows');
+        debugLog('📝 Drawing', rowsData.length, 'process rows');
         
         const rows = svg.selectAll('.matrix-view-item')
             .data(rowsData, d => d.pid) // Use pid as key
@@ -917,7 +917,7 @@ class KernelContextMenu {
             .attr('transform', (d, i) => `translate(0, ${startY + i * rowHeight})`)
             .style('opacity', 0)
             .on('click', (event, d) => {
-                console.log('🖱️ Clicked on PID:', d.pid);
+                debugLog('🖱️ Clicked on PID:', d.pid);
                 this.selectedPid = d.pid;
                 this.activateTimelineView();
             })
@@ -940,7 +940,7 @@ class KernelContextMenu {
         // Ensure rows stay on top after all handlers are attached
         rowsUpdate.raise();
         
-        console.log('✅ Created', rowsUpdate.size(), 'row elements');
+        debugLog('✅ Created', rowsUpdate.size(), 'row elements');
         
         // PID - Diegetic UI style
         rowsUpdate.selectAll('text.pid-text').remove();
@@ -1021,10 +1021,10 @@ class KernelContextMenu {
             .delay((d, i) => i * 20)
             .style('opacity', 0.85) // Slightly more visible
             .on('end', function() {
-                console.log('✅ Matrix row animation completed');
+                debugLog('✅ Matrix row animation completed');
             });
         
-        console.log('✅ Matrix View rendering completed, rows:', rowsUpdate.size());
+        debugLog('✅ Matrix View rendering completed, rows:', rowsUpdate.size());
     }
 
     renderTimelineFlow() {

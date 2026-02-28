@@ -1,7 +1,7 @@
 // Filesystem Block Map Visualization
 // Version: 2
 
-console.log('🗂️ filesystem-map.js v2: Script loading...');
+debugLog('🗂️ filesystem-map.js v2: Script loading...');
 
 class FilesystemMapVisualization {
     constructor() {
@@ -289,4 +289,4 @@ class FilesystemMapVisualization {
 }
 
 window.FilesystemMapVisualization = FilesystemMapVisualization;
-console.log('🗂️ filesystem-map.js: FilesystemMapVisualization exported to window');
+debugLog('🗂️ filesystem-map.js: FilesystemMapVisualization exported to window');

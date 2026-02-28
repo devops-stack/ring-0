@@ -1,8 +1,8 @@
-console.log('RightSemicircleMenuManager script loaded');
+debugLog('RightSemicircleMenuManager script loaded');
 
 class RightSemicircleMenuManager {
     constructor() {
-        console.log('RightSemicircleMenuManager constructor called');
+        debugLog('RightSemicircleMenuManager constructor called');
         this.menuItems = [
             { id: 'scheduler', icon: '/static/images/scheduler.svg', label: 'Scheduler' },
             { id: 'processes', icon: '/static/images/process-manager.svg', label: 'Processes' },
@@ -15,8 +15,19 @@ class RightSemicircleMenuManager {
         ];
         this.isVisible = false;
         this.hoveredItemId = null; // Track hovered item (for hover-based selection)
-        this.clickHandlerAttached = false; // Track if click handler is already attached
         this.isClickingOverlay = false; // Track if we're in the process of clicking overlay views
+    }
+
+    getRenderedSelectors() {
+        return '.right-semicircle-menu, .right-menu-night-sector, .right-menu-edge-shell, .right-menu-edge-shell-cutout, .right-menu-edge-shell-stroke, .right-menu-fg-ring, .right-menu-fg-top-half, .right-menu-fg-midline, .right-menu-clip-def, .right-menu-item-group, .right-menu-item, .right-menu-icon, .right-menu-line, .right-menu-label, .right-menu-label-bg';
+    }
+
+    clearRendered(svg) {
+        svg.selectAll(this.getRenderedSelectors()).remove();
+    }
+
+    isOverlayItem(itemId) {
+        return itemId === 'kernel' || itemId === 'network' || itemId === 'devices' || itemId === 'files';
     }
 
     activateOverlayView(itemId) {
@@ -33,28 +44,39 @@ class RightSemicircleMenuManager {
     }
 
     renderRightSemicircleMenu() {
-        console.log('renderRightSemicircleMenu called');
+        debugLog('renderRightSemicircleMenu called');
         const svg = d3.select('svg');
         const width = window.innerWidth;
         const height = window.innerHeight;
 
         // Clear existing semicircle elements (but preserve kernel submenu)
-        svg.selectAll('.right-semicircle-menu, .right-menu-edge-shell, .right-menu-edge-shell-cutout, .right-menu-edge-shell-stroke, .right-menu-fg-ring, .right-menu-item-group, .right-menu-item, .right-menu-icon, .right-menu-line, .right-menu-label, .right-menu-label-bg').remove();
+        this.clearRendered(svg);
 
         // Semicircle parameters
         const menuRadius = height * 0.4;
         const menuX = width + 40;
         const menuY = height / 2;
+        const hudStrokeHair = 0.6;
+        const hudStrokeNormal = 0.95;
+        const hudStrokeAccent = 1.6;
 
         // Create the large semicircle path
         const semicirclePath = this.createSemicirclePath(menuX, menuY, menuRadius, 'right');
 
+        // Night-contrast sector backdrop.
+        svg.append('path')
+            .attr('class', 'right-menu-night-sector')
+            .attr('d', semicirclePath)
+            .style('fill', 'rgba(16, 20, 26, 0.22)')
+            .style('stroke', 'none')
+            .style('pointer-events', 'none');
+
         svg.append('path')
             .attr('class', 'right-semicircle-menu')
             .attr('d', semicirclePath)
-            .style('fill', 'rgba(230, 230, 230, 0.14)')
-            .style('stroke', 'rgba(165, 165, 165, 0.42)')
-            .style('stroke-width', '1px')
+            .style('fill', 'rgba(222, 222, 222, 0.11)')
+            .style('stroke', 'rgba(150, 150, 150, 0.36)')
+            .style('stroke-width', `${hudStrokeNormal}px`)
             .style('pointer-events', 'none');
 
         // Keep only the smallest-radius overlay ring.
@@ -64,13 +86,46 @@ class RightSemicircleMenuManager {
             .attr('cx', menuX)
             .attr('cy', menuY)
             .attr('r', menuRadius * 0.72)
-            .style('fill', 'rgba(178, 178, 178, 0.2)')
-            .style('stroke', 'rgba(128, 128, 128, 0.36)')
-            .style('stroke-width', '0.9px')
+            .style('fill', 'rgba(172, 172, 172, 0.18)')
+            .style('stroke', 'rgba(122, 122, 122, 0.32)')
+            .style('stroke-width', `${hudStrokeNormal}px`)
+            .style('pointer-events', 'none');
+
+        // Reference-like split: top half is darker + central horizontal line.
+        const ringRadius = menuRadius * 0.72;
+        const clipId = 'right-menu-top-half-clip';
+        const defs = svg.append('defs')
+            .attr('class', 'right-menu-clip-def');
+        defs.append('clipPath')
+            .attr('id', clipId)
+            .append('rect')
+            .attr('x', menuX - ringRadius)
+            .attr('y', menuY - ringRadius)
+            .attr('width', ringRadius * 2)
+            .attr('height', ringRadius);
+
+        svg.append('circle')
+            .attr('class', 'right-menu-fg-top-half')
+            .attr('cx', menuX)
+            .attr('cy', menuY)
+            .attr('r', ringRadius)
+            .attr('clip-path', `url(#${clipId})`)
+            .style('fill', 'rgba(138, 138, 138, 0.26)')
+            .style('stroke', 'none')
+            .style('pointer-events', 'none');
+
+        svg.append('line')
+            .attr('class', 'right-menu-fg-midline')
+            .attr('x1', menuX - ringRadius)
+            .attr('y1', menuY)
+            .attr('x2', menuX + ringRadius)
+            .attr('y2', menuY)
+            .style('stroke', 'rgba(120, 120, 120, 0.42)')
+            .style('stroke-width', `${hudStrokeHair}px`)
             .style('pointer-events', 'none');
 
         // Compact edge shell inside the menu circle (reference-like notch geometry).
-        const ringRadius = menuRadius * 0.72;
+        // Reuse ring radius below.
         // Push to/over viewport edge so diagonal lines visually touch screen border.
         const shellEdgeX = width + 2;
         const shellHalfHeight = ringRadius * 0.34;
@@ -107,7 +162,7 @@ class RightSemicircleMenuManager {
             .attr('d', shellPath)
             .style('fill', 'none')
             .style('stroke', 'rgba(138, 138, 138, 0.28)')
-            .style('stroke-width', '0.9px')
+            .style('stroke-width', `${hudStrokeNormal}px`)
             .style('stroke-linecap', 'round')
             .style('pointer-events', 'none');
 
@@ -124,6 +179,7 @@ class RightSemicircleMenuManager {
             const itemY = menuY + Math.sin(angle) * itemDistance;
 
             const isHovered = this.hoveredItemId === item.id;
+            const isOverlay = this.isOverlayItem(item.id);
             
             // Wide horizontal line (rectangle) extending left from the circle
             // Draw the line FIRST so it appears behind the circle
@@ -180,7 +236,7 @@ class RightSemicircleMenuManager {
                 
                 // Show Matrix View submenu ONLY if hovering over Processes item
                 if (item.id === 'processes' && window.kernelContextMenu) {
-                    console.log('🎯 Showing Processes submenu (Matrix View), lineEndX:', lineEndX, 'itemY:', itemY, 'angle:', angle);
+                    debugLog('🎯 Showing Processes submenu (Matrix View), lineEndX:', lineEndX, 'itemY:', itemY, 'angle:', angle);
                     window.kernelContextMenu.showSubmenu(lineEndX, itemY, angle);
                 } else {
                     // Hide submenu if hovering over any other menu item
@@ -238,12 +294,12 @@ class RightSemicircleMenuManager {
             
             // Функция для обработки клика
             const handleClick = (event) => {
-                console.log('🖱️ Click detected on item:', item.id, item.label);
+                debugLog('🖱️ Click detected on item:', item.id, item.label);
                 event.stopPropagation(); // Prevent event bubbling
-                if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices' || item.id === 'files') {
+                if (isOverlay) {
                     this.activateOverlayView(item.id);
                 } else {
-                    console.log('⚠️ Click on kernel item but conditions not met:', {
+                    debugLog('⚠️ Click on kernel item but conditions not met:', {
                         itemId: item.id,
                         hasContextMenu: !!window.kernelContextMenu
                     });
@@ -252,8 +308,8 @@ class RightSemicircleMenuManager {
             
             // Also handle mousedown for overlay items (since click might be interrupted)
             const handleMouseDown = (event) => {
-                if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices' || item.id === 'files') {
-                    console.log('🖱️ Mouse down on overlay item:', item.id);
+                if (isOverlay) {
+                    debugLog('🖱️ Mouse down on overlay item:', item.id);
                     event.preventDefault();
                     event.stopPropagation();
                     // Prevent re-rendering during click
@@ -278,32 +334,14 @@ class RightSemicircleMenuManager {
                 .on('mouseenter', handleMouseEnter)
                 .on('mouseleave', handleMouseLeave)
                 .on('click', (e) => {
-                    console.log('🖱️ Click on hoverRect:', item.id);
+                    debugLog('🖱️ Click on hoverRect:', item.id);
                     e.stopPropagation();
                     handleClick(e);
                 })
                 .on('mousedown', (e) => {
-                    console.log('🖱️ Mouse down on hoverRect:', item.id);
+                    debugLog('🖱️ Mouse down on hoverRect:', item.id);
                     e.stopPropagation();
-                    if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices' || item.id === 'files') {
-                        handleMouseDown(e);
-                    }
-                });
-            
-            // Также добавляем обработчики на всю группу элементов для полного покрытия
-            itemGroup
-                .style('pointer-events', 'all')
-                .on('mouseenter', handleMouseEnter)
-                .on('mouseleave', handleMouseLeave)
-                .on('click', (e) => {
-                    console.log('🖱️ Click on itemGroup:', item.id);
-                    e.stopPropagation();
-                    handleClick(e);
-                })
-                .on('mousedown', (e) => {
-                    console.log('🖱️ Mouse down on itemGroup:', item.id);
-                    e.stopPropagation();
-                    if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices' || item.id === 'files') {
+                    if (isOverlay) {
                         handleMouseDown(e);
                     }
                 });
@@ -320,26 +358,34 @@ class RightSemicircleMenuManager {
                            Q ${lineEndX} ${lineY + lineHeight} ${lineEndX + borderRadius} ${lineY + lineHeight}
                            L ${lineStartX} ${lineY + lineHeight}
                            Z`)
-                .style('fill', isHovered ? '#ffffff' : '#333') // White if hovered, same color as circle if not
-                .style('stroke', isHovered ? '#000000' : '#555') // Keep black outline when bar becomes white
-                .style('stroke-width', isHovered ? '2px' : '1px')
+                .style('fill', isHovered ? '#ffffff' : '#2f3238') // White if hovered, darker HUD fill when idle
+                .style('stroke', isHovered ? '#000000' : '#5f646d') // Keep black outline when bar becomes white
+                .style('stroke-width', isHovered ? `${hudStrokeAccent}px` : `${hudStrokeNormal}px`)
+                .style('filter', isHovered ? 'drop-shadow(0 0 5px rgba(200,210,225,0.4))' : 'none')
                 .style('transition', 'all 0.3s ease')
-                .style('pointer-events', 'all') // Allow hover on line too
+                .style('pointer-events', 'none')
                 .style('cursor', 'pointer')
-                .on('mouseenter', handleMouseEnter)
-                .on('mouseleave', handleMouseLeave)
-                .on('click', (e) => {
-                    console.log('🖱️ Click on wideLine:', item.id);
-                    e.stopPropagation();
-                    handleClick(e);
-                })
-                .on('mousedown', (e) => {
-                    console.log('🖱️ Mouse down on wideLine:', item.id);
-                    e.stopPropagation();
-                    if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices' || item.id === 'files') {
-                        handleMouseDown(e);
-                    }
-                });
+                .on('mouseenter', null)
+                .on('mouseleave', null);
+
+            // Subtle HUD separators (hairline top highlight + bottom shade).
+            itemGroup.append('line')
+                .attr('x1', lineEndX + borderRadius + 2)
+                .attr('y1', lineY + 1.3)
+                .attr('x2', lineStartX - 2)
+                .attr('y2', lineY + 1.3)
+                .style('stroke', isHovered ? 'rgba(0,0,0,0.36)' : 'rgba(206, 212, 220, 0.22)')
+                .style('stroke-width', `${hudStrokeHair}px`)
+                .style('pointer-events', 'none');
+
+            itemGroup.append('line')
+                .attr('x1', lineEndX + borderRadius + 2)
+                .attr('y1', lineY + lineHeight - 1.2)
+                .attr('x2', lineStartX - 2)
+                .attr('y2', lineY + lineHeight - 1.2)
+                .style('stroke', isHovered ? 'rgba(0,0,0,0.32)' : 'rgba(12, 14, 18, 0.35)')
+                .style('stroke-width', `${hudStrokeHair}px`)
+                .style('pointer-events', 'none');
 
             // Label text centered in the visual body of the bar (excluding left rounded cap)
             const textX = (lineStartX + (lineEndX + borderRadius)) / 2;
@@ -352,9 +398,10 @@ class RightSemicircleMenuManager {
                 .attr('text-anchor', 'middle')
                 .attr('dominant-baseline', 'central')
                 .style('font-size', '12px')
-                .style('fill', isHovered ? '#000000' : '#ffffff') // Black text on white bg if hovered, white if not
+                .style('fill', isHovered ? '#000000' : '#d6dce5') // Black text on white bg if hovered, muted white if not
                 .style('font-family', 'Share Tech Mono', 'monospace')
                 .style('font-weight', isHovered ? 'bold' : 'normal')
+                .style('letter-spacing', isHovered ? '0.35px' : '0.2px')
                 .style('transition', 'all 0.3s ease')
                 .style('pointer-events', 'none')
                 .text(item.label);
@@ -368,25 +415,12 @@ class RightSemicircleMenuManager {
                 .attr('cy', itemY)
                 .attr('r', itemRadius)
                 .style('fill', isHovered ? '#ffffff' : '#333') // White if hovered
-                .style('stroke', isHovered ? '#000000' : '#555')
-                .style('stroke-width', isHovered ? '2px' : '1px')
+                .style('stroke', isHovered ? '#000000' : '#5f646d')
+                .style('stroke-width', isHovered ? `${hudStrokeAccent}px` : `${hudStrokeNormal}px`)
+                .style('filter', isHovered ? 'drop-shadow(0 0 6px rgba(205, 214, 228, 0.45))' : 'none')
                 .style('cursor', 'pointer')
-                .style('pointer-events', 'all') // Allow hover on circle
-                .style('transition', 'all 0.3s ease')
-                .on('mouseenter', handleMouseEnter)
-                .on('mouseleave', handleMouseLeave)
-                .on('click', (e) => {
-                    console.log('🖱️ Click on circle:', item.id);
-                    e.stopPropagation();
-                    handleClick(e);
-                })
-                .on('mousedown', (e) => {
-                    console.log('🖱️ Mouse down on circle:', item.id);
-                    e.stopPropagation();
-                    if (item.id === 'kernel' || item.id === 'network' || item.id === 'devices' || item.id === 'files') {
-                        handleMouseDown(e);
-                    }
-                });
+                .style('pointer-events', 'none')
+                .style('transition', 'all 0.3s ease');
 
             // SVG icon inside the circle
             // If hovered (white circle), add dark background for icon visibility
@@ -413,68 +447,7 @@ class RightSemicircleMenuManager {
         });
 
         this.isVisible = true;
-        console.log('Right semicircle menu rendered');
-        
-        // Attach event delegation on SVG (only once)
-        if (!this.clickHandlerAttached) {
-            const svg = d3.select('svg');
-            svg.on('pointerdown.rightMenuOverlay', (event) => {
-                const target = event.target;
-                const itemId = target && target.getAttribute ? target.getAttribute('data-item-id') : null;
-                if (!itemId) return;
-                if (itemId === 'kernel' || itemId === 'network' || itemId === 'devices' || itemId === 'files') {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    this.isClickingOverlay = true;
-                    this.activateOverlayView(itemId);
-                    setTimeout(() => {
-                        this.isClickingOverlay = false;
-                        if (this.hoveredItemId !== null) {
-                            this.hoveredItemId = null;
-                            this.renderRightSemicircleMenu();
-                        }
-                    }, 16);
-                }
-            });
-            svg.on('click', (event) => {
-                const target = event.target;
-                const itemId = target.getAttribute('data-item-id');
-                
-                if (itemId) {
-                    console.log('🖱️ Click detected via delegation on item:', itemId);
-                    const item = this.menuItems.find(i => i.id === itemId);
-                    if (item && item.id === 'kernel' && window.kernelContextMenu) {
-                        console.log('🧬 Activating Kernel DNA view from menu');
-                        event.stopPropagation();
-                        this.activateOverlayView(item.id);
-                    } else if (item && item.id === 'network' && window.kernelContextMenu) {
-                        console.log('🌐 Activating Network Stack view from menu');
-                        event.stopPropagation();
-                        this.activateOverlayView(item.id);
-                    } else if (item && item.id === 'devices' && window.kernelContextMenu) {
-                        console.log('🧲 Activating Devices Belt view from menu');
-                        event.stopPropagation();
-                        this.activateOverlayView(item.id);
-                    } else if (item && item.id === 'files' && window.kernelContextMenu) {
-                        console.log('🗂️ Activating Filesystem Map view from menu');
-                        event.stopPropagation();
-                        this.activateOverlayView(item.id);
-                    }
-                }
-            });
-            // Ensure hovered menu item always resets when pointer leaves the SVG area.
-            svg.on('mouseleave.rightMenuReset', () => {
-                if (this.hoveredItemId !== null) {
-                    this.hoveredItemId = null;
-                    this.renderRightSemicircleMenu();
-                    if (window.kernelContextMenu) {
-                        window.kernelContextMenu.hideSubmenu();
-                    }
-                }
-            });
-            this.clickHandlerAttached = true;
-            console.log('✅ Click handler attached via event delegation');
-        }
+        debugLog('Right semicircle menu rendered');
     }
 
     createSemicirclePath(centerX, centerY, radius, side) {
@@ -496,7 +469,7 @@ class RightSemicircleMenuManager {
     }
 
     handleMenuClick(itemId) {
-        console.log(`Right menu clicked: ${itemId}`);
+        debugLog(`Right menu clicked: ${itemId}`);
         // Click functionality can be added here if needed
     }
 
@@ -510,7 +483,7 @@ class RightSemicircleMenuManager {
 
     hide() {
         const svg = d3.select('svg');
-        svg.selectAll('.right-semicircle-menu, .right-menu-edge-shell, .right-menu-edge-shell-cutout, .right-menu-edge-shell-stroke, .right-menu-fg-ring, .right-menu-item-group, .right-menu-item, .right-menu-icon, .right-menu-line, .right-menu-label, .right-menu-label-bg').remove();
+        this.clearRendered(svg);
         this.isVisible = false;
     }
 }
@@ -554,4 +527,4 @@ function hideTooltip() {
         .remove();
 }
 
-console.log('RightSemicircleMenuManager class defined:', typeof RightSemicircleMenuManager);
+debugLog('RightSemicircleMenuManager class defined:', typeof RightSemicircleMenuManager);

@@ -1,7 +1,7 @@
 // Orbital Device Ring Visualization
 // Version: 3
 
-console.log('🧲 devices-belt.js v3: Script loading...');
+debugLog('🧲 devices-belt.js v3: Script loading...');
 
 class DevicesBeltVisualization {
     constructor() {
@@ -189,11 +189,11 @@ class DevicesBeltVisualization {
             min-width: 290px;
             line-height: 1.45;
         `;
-        layerHint.innerHTML = `
+        window.setSafeHtml(layerHint, `
             <div style="color:#9aa2aa; margin-bottom:6px;">KERNEL DEVICE MODEL</div>
             Physical layer -> Driver layer -> Kernel subsystem -> User interaction<br>
             /sys registration, major/minor, IRQ and throughput drive node activity
-        `;
+        `);
         this.container.appendChild(layerHint);
         this.overlayNodes.push(layerHint);
 
@@ -565,4 +565,4 @@ class DevicesBeltVisualization {
 }
 
 window.DevicesBeltVisualization = DevicesBeltVisualization;
-console.log('🧲 devices-belt.js: DevicesBeltVisualization exported to window');
+debugLog('🧲 devices-belt.js: DevicesBeltVisualization exported to window');
