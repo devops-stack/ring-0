@@ -1,7 +1,7 @@
 // Module for working with active network connections
 class ActiveConnectionsManager {
     constructor() {
-        console.log("ActiveConnectionsManager: constructor called");
+        debugLog("ActiveConnectionsManager: constructor called");
         this.currentConnections = [];
         this.updateInterval = null;
         this.updateCallback = null;
@@ -12,14 +12,14 @@ class ActiveConnectionsManager {
     // Update active connections data
     async updateConnectionsTable() {
         try {
-            console.log("ActiveConnectionsManager: updateConnectionsTable called");
+            debugLog("ActiveConnectionsManager: updateConnectionsTable called");
             const response = await fetch('/api/active-connections');
             const data = await response.json();
             
-            console.log("API response:", data);
+            debugLog("API response:", data);
             
             if (data.connections) {
-                console.log("Total connections:", data.connections.length);
+                debugLog("Total connections:", data.connections.length);
                 
                 // Filter out local connections (127.0.0.1, 0.0.0.0)
                 const filteredConnections = data.connections.filter(conn => {
@@ -32,8 +32,8 @@ class ActiveConnectionsManager {
                 
                 this.currentConnections = filteredConnections;
                 
-                console.log("Filtered connections:", this.currentConnections.length);
-                console.log("Filtered out:", data.connections.length - this.currentConnections.length, "local connections");
+                debugLog("Filtered connections:", this.currentConnections.length);
+                debugLog("Filtered out:", data.connections.length - this.currentConnections.length, "local connections");
                 
                 this.renderConnectionsTable();
                 
@@ -44,7 +44,7 @@ class ActiveConnectionsManager {
             }
         } catch (error) {
             console.error('Error getting active connections:', error);
-            console.log('Using fallback data...');
+            debugLog('Using fallback data...');
             this.useFallbackData();
         }
     }
@@ -67,7 +67,7 @@ class ActiveConnectionsManager {
     renderConnectionsTable() {
         // Do not render connections if Kernel Matrix View is active
         if (window.kernelContextMenu && window.kernelContextMenu.currentView === 'matrix') {
-            console.log('⏸️ Skipping active connections render - Matrix View is active');
+            debugLog('⏸️ Skipping active connections render - Matrix View is active');
             return;
         }
 
@@ -265,7 +265,7 @@ class ActiveConnectionsManager {
 
     // Start auto update
     startAutoUpdate(intervalMs = 3000) {
-        console.log("ActiveConnectionsManager: startAutoUpdate called");
+        debugLog("ActiveConnectionsManager: startAutoUpdate called");
         this.updateConnectionsTable();
         this.updateInterval = setInterval(() => {
             this.updateConnectionsTable();

@@ -84,25 +84,33 @@
 </div>
 
 <!-- ================= SCRIPTS ================= -->
+    <script src="/static/js/safe-utils.js?v=2"></script>
     <script src="/static/js/frontend-logger.js?v=2"></script>
-    <script src="/static/js/syscalls.js?v=6"></script>
-    <script src="/static/js/active-connections.js?v=3"></script>
-    <script src="/static/js/nginx_files.js?v=1"></script>
-    <script src="/static/js/right-semicircle-menu.js?v=33"></script>
-    <script src="/static/js/kernel-dna.js?v=20"></script>
-    <script src="/static/js/network-stack.js?v=5"></script>
-    <script src="/static/js/devices-belt.js?v=3"></script>
-    <script src="/static/js/filesystem-map.js?v=2"></script>
-    <script src="/static/js/kernel-context-menu.js?v=22"></script>
+    <script src="/static/js/syscalls.js?v=12"></script>
+    <script src="/static/js/subsystem-focus.js?v=1"></script>
+    <script src="/static/js/irq-ui.js?v=1"></script>
+    <script src="/static/js/ipc-ui.js?v=1"></script>
+    <script src="/static/js/flow-ui.js?v=1"></script>
+    <script src="/static/js/isolation-ui.js?v=1"></script>
+    <script src="/static/js/process-files-ui.js?v=1"></script>
+    <script src="/static/js/ui-chrome.js?v=1"></script>
+    <script src="/static/js/active-connections.js?v=4"></script>
+    <script src="/static/js/nginx_files.js?v=2"></script>
+    <script src="/static/js/right-semicircle-menu.js?v=37"></script>
+    <script src="/static/js/kernel-dna.js?v=21"></script>
+    <script src="/static/js/network-stack.js?v=6"></script>
+    <script src="/static/js/devices-belt.js?v=4"></script>
+    <script src="/static/js/filesystem-map.js?v=3"></script>
+    <script src="/static/js/kernel-context-menu.js?v=23"></script>
     <!-- 3D visualization script - DISABLED -->
     <!-- <script src="/static/js/proc-3d-visualization.js"></script> -->
     <script>
         // Debug: Check if classes are loaded
-        console.log('🔍 RightSemicircleMenuManager class loaded:', typeof RightSemicircleMenuManager);
+        debugLog('🔍 RightSemicircleMenuManager class loaded:', typeof RightSemicircleMenuManager);
         // 3D visualization check - DISABLED
         // console.log('🔍 Proc3DVisualization class loaded:', typeof Proc3DVisualization);
         if (typeof RightSemicircleMenuManager !== 'undefined') {
-            console.log('✅ RightSemicircleMenuManager class is available');
+            debugLog('✅ RightSemicircleMenuManager class is available');
         } else {
             console.error('❌ RightSemicircleMenuManager class NOT loaded!');
         }
@@ -112,6 +120,6 @@
         //     console.error('❌ Proc3DVisualization class NOT loaded!');
         // }
     </script>
-    <script src="/static/js/main.js?v=138"></script>
+    <script src="/static/js/main.js?v=164"></script>
 </body>
 </html>

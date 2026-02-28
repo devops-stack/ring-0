@@ -7,7 +7,7 @@ class NginxFilesManager {
 
     // Initialize nginx files visualization
     init() {
-        console.log('🔧 Initializing NginxFilesManager...');
+        debugLog('🔧 Initializing NginxFilesManager...');
         this.updateFiles();
         this.startAutoUpdate(10000); // Update every 10 seconds
     }
@@ -15,18 +15,18 @@ class NginxFilesManager {
     // Update files data
     async updateFiles() {
         try {
-            console.log('📁 Fetching nginx files...');
+            debugLog('📁 Fetching nginx files...');
             const response = await fetch('/api/nginx-files');
             const data = await response.json();
             
-            console.log('📁 Received nginx files:', data);
+            debugLog('📁 Received nginx files:', data);
             
             if (data.files && data.files.length > 0) {
                 this.files = data.files;
-                console.log('🎨 Rendering files on curves...');
+                debugLog('🎨 Rendering files on curves...');
                 this.renderFilesOnCurves();
             } else {
-                console.log('⚠️ No nginx files found');
+                debugLog('⚠️ No nginx files found');
             }
         } catch (error) {
             console.error('Error fetching nginx files:', error);
@@ -35,7 +35,7 @@ class NginxFilesManager {
 
     // Render file names at the end of Bezier curves
     renderFilesOnCurves() {
-        console.log('🎨 Starting to render files on curves...');
+        debugLog('🎨 Starting to render files on curves...');
         
         // Get SVG element
         const svg = d3.select('svg');
@@ -59,13 +59,13 @@ class NginxFilesManager {
         const bezierCurves = d3.selectAll('.bezier-curve').nodes();
         const numCurves = bezierCurves.length;
         
-        console.log('📐 Screen dimensions:', { width, height, centerX });
-        console.log('📊 Available Bezier curves:', numCurves);
+        debugLog('📐 Screen dimensions:', { width, height, centerX });
+        debugLog('📊 Available Bezier curves:', numCurves);
         
         // Calculate positions for file labels - attach to end points of curves
         const labelPositions = this.calculateLabelPositionsOnCurves(this.files.length, bezierCurves, height);
         
-        console.log('📍 Label positions:', labelPositions);
+        debugLog('📍 Label positions:', labelPositions);
         
         this.files.forEach((file, index) => {
             if (index < labelPositions.length) {
@@ -73,7 +73,7 @@ class NginxFilesManager {
                 const fileName = this.getShortFileName(file.path);
                 const fileType = file.type || 'other';
                 
-                console.log(`📄 Rendering file ${index}: ${fileName} at (${pos.x}, ${pos.y}), type: ${fileType}`);
+                debugLog(`📄 Rendering file ${index}: ${fileName} at (${pos.x}, ${pos.y}), type: ${fileType}`);
                 
                 // Create file group for better organization
                 const fileGroup = svg.append("g")

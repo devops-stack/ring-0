@@ -113,7 +113,7 @@ class Proc3DVisualization {
                     return;
                 }
 
-                console.log('📊 Proc graph data:', data.nodes.length, 'nodes', data.edges.length, 'edges');
+                debugLog('📊 Proc graph data:', data.nodes.length, 'nodes', data.edges.length, 'edges');
                 
                 this.renderGraph(data.nodes, data.edges);
             })

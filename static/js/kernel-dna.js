@@ -2,9 +2,9 @@
 // Represents Linux kernel execution paths as DNA strands
 // Version: 19
 
-console.log('🧬 kernel-dna.js v19: Script loading...');
-console.log('🧬 kernel-dna.js v19: THREE available:', typeof THREE);
-console.log('🧬 kernel-dna.js v19: Browser:', navigator.userAgent);
+debugLog('🧬 kernel-dna.js v19: Script loading...');
+debugLog('🧬 kernel-dna.js v19: THREE available:', typeof THREE);
+debugLog('🧬 kernel-dna.js v19: Browser:', navigator.userAgent);
 
 class KernelDNAVisualization {
     constructor() {
@@ -74,14 +74,14 @@ class KernelDNAVisualization {
     }
 
     init(containerId = 'kernel-dna-container') {
-        console.log('🧬 Initializing Kernel DNA Visualization');
-        console.log('🔍 Container ID:', containerId);
+        debugLog('🧬 Initializing Kernel DNA Visualization');
+        debugLog('🔍 Container ID:', containerId);
         
         // Create container
         const container = document.getElementById(containerId);
         if (!container) {
             // Create container if it doesn't exist
-            console.log('📦 Creating new container element');
+            debugLog('📦 Creating new container element');
             this.container = document.createElement('div');
             this.container.id = containerId;
             this.container.style.cssText = `
@@ -95,10 +95,10 @@ class KernelDNAVisualization {
                 display: none;
             `;
             document.body.appendChild(this.container);
-            console.log('✅ Container created and appended to body');
-            console.log('✅ Container element:', this.container);
+            debugLog('✅ Container created and appended to body');
+            debugLog('✅ Container element:', this.container);
         } else {
-            console.log('✅ Using existing container');
+            debugLog('✅ Using existing container');
             this.container = container;
         }
         
@@ -120,7 +120,7 @@ class KernelDNAVisualization {
             const canvas = document.createElement('canvas');
             const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
             webglSupported = !!gl;
-            console.log('🔍 WebGL support check:', webglSupported ? '✅ Supported' : '❌ Not supported');
+            debugLog('🔍 WebGL support check:', webglSupported ? '✅ Supported' : '❌ Not supported');
         } catch (e) {
             console.error('❌ WebGL check error:', e);
             webglSupported = false;
@@ -165,7 +165,7 @@ class KernelDNAVisualization {
             }
             
             this.container.appendChild(canvas);
-            console.log('✅ WebGL Renderer created and appended');
+            debugLog('✅ WebGL Renderer created and appended');
         } catch (error) {
             console.error('❌ Error creating WebGL renderer:', error);
             console.error('❌ Error details:', {
@@ -217,7 +217,7 @@ class KernelDNAVisualization {
         // Handle window resize
         window.addEventListener('resize', () => this.onWindowResize());
         
-        console.log('✅ Kernel DNA Visualization initialized successfully');
+        debugLog('✅ Kernel DNA Visualization initialized successfully');
         return true; // Return true to indicate successful initialization
     }
 
@@ -446,7 +446,7 @@ class KernelDNAVisualization {
         try {
             const response = await fetch('/api/kernel-dna');
             this.data = await response.json();
-            console.log('🧬 Kernel DNA data loaded:', this.data);
+            debugLog('🧬 Kernel DNA data loaded:', this.data);
             return this.data;
         } catch (error) {
             console.error('❌ Error loading Kernel DNA data:', error);
@@ -760,7 +760,7 @@ class KernelDNAVisualization {
         const processName = data ? (data.name || 'unknown') : 'No process selected';
         const eventCount = this.timelineData.length;
         const heightPercent = Math.round((this.currentTimelineHeight / this.maxTimelineHeight) * 100);
-        infoDiv.innerHTML = `
+        window.setSafeHtml(infoDiv, `
             <div style="color: #c8ccd4; font-family: 'Share Tech Mono', monospace; font-size: 11px;">
                 <div style="margin-bottom: 5px; color: #58b6d8;">Process: ${processName} ${this.selectedPid ? `(PID: ${this.selectedPid})` : ''}</div>
                 <div style="margin-bottom: 5px;">Events: ${eventCount}</div>
@@ -769,7 +769,7 @@ class KernelDNAVisualization {
                     <div>Time → Y axis (growing upward)</div>
                 </div>
             </div>
-        `;
+        `);
         infoDiv.style.cssText = `
             position: absolute;
             top: 20px;
@@ -865,14 +865,14 @@ class KernelDNAVisualization {
                         cursor: pointer;
                         transition: all 0.2s ease;
                     `;
-                    procItem.innerHTML = `
+                    window.setSafeHtml(procItem, `
                         <div style="color: #c8ccd4; font-size: 11px; font-weight: ${this.selectedPid === proc.pid ? 'bold' : 'normal'};">
                             <div style="color: #58b6d8;">${proc.name}</div>
                             <div style="color: #888; font-size: 10px; margin-top: 2px;">
                                 PID: ${proc.pid} | CPU: ${proc.cpu_percent}% | MEM: ${proc.memory_mb}MB
                             </div>
                         </div>
-                    `;
+                    `);
 
                     procItem.onmouseenter = () => {
                         if (this.selectedPid !== proc.pid) {
@@ -907,18 +907,18 @@ class KernelDNAVisualization {
 
         } catch (error) {
             console.error('❌ Error loading processes:', error);
-            processList.innerHTML = `
+            window.setSafeHtml(processList, `
                 <div style="color: #888; font-size: 11px; padding: 10px; text-align: center;">
                     Error loading processes
                 </div>
-            `;
+            `);
         }
 
         this.container.appendChild(selectorDiv);
     }
 
     activateTimelineMode(pid = null) {
-        console.log('🧬 Activating Kernel DNA Timeline Mode', pid ? `for PID: ${pid}` : '(no PID)');
+        debugLog('🧬 Activating Kernel DNA Timeline Mode', pid ? `for PID: ${pid}` : '(no PID)');
         this.timelineMode = true;
         this.selectedPid = pid;
         this.timeStart = null; // Reset start time
@@ -955,7 +955,7 @@ class KernelDNAVisualization {
         // Add legend - Diegetic UI style
         const legendDiv = document.createElement('div');
         legendDiv.className = 'dna-legend';
-        legendDiv.innerHTML = `
+        window.setSafeHtml(legendDiv, `
             <div style="color: #c8ccd4; font-family: 'Share Tech Mono', monospace; font-size: 11px; margin-top: 60px; opacity: 0.8;">
                 <div style="margin-bottom: 5px;">A (●) = Syscall</div>
                 <div style="margin-bottom: 5px;">T (■) = Interrupt</div>
@@ -963,7 +963,7 @@ class KernelDNAVisualization {
                 <div style="margin-bottom: 5px;">G (◆) = Lock/Mutex</div>
                 <div style="margin-top: 10px; color: #cc4444;">⚠ Mutations = Anomalies</div>
             </div>
-        `;
+        `);
         legendDiv.style.cssText = `
             position: absolute;
             top: 20px;
@@ -1076,9 +1076,9 @@ class KernelDNAVisualization {
     }
 
     async activate() {
-        console.log('🧬 Activating Kernel DNA Visualization');
-        console.log('🔍 Container exists:', !!this.container);
-        console.log('🔍 Container element:', this.container);
+        debugLog('🧬 Activating Kernel DNA Visualization');
+        debugLog('🔍 Container exists:', !!this.container);
+        debugLog('🔍 Container element:', this.container);
         
         this.isActive = true;
         
@@ -1089,25 +1089,25 @@ class KernelDNAVisualization {
         }
         
         if (this.container) {
-            console.log('✅ Setting container display to block');
+            debugLog('✅ Setting container display to block');
             this.container.style.display = 'block';
             this.container.style.zIndex = '9999';
-            console.log('✅ Container display:', this.container.style.display);
-            console.log('✅ Container z-index:', this.container.style.zIndex);
+            debugLog('✅ Container display:', this.container.style.display);
+            debugLog('✅ Container z-index:', this.container.style.zIndex);
             const computed = window.getComputedStyle(this.container);
-            console.log('✅ Container computed display:', computed.display);
-            console.log('✅ Container computed z-index:', computed.zIndex);
-            console.log('✅ Container in DOM:', document.body.contains(this.container));
+            debugLog('✅ Container computed display:', computed.display);
+            debugLog('✅ Container computed z-index:', computed.zIndex);
+            debugLog('✅ Container in DOM:', document.body.contains(this.container));
         } else {
             console.error('❌ Container still not found after init!');
             return;
         }
         
         // Initial render
-        console.log('🎯 Starting initial render...');
+        debugLog('🎯 Starting initial render...');
         try {
             await this.render();
-            console.log('✅ Initial render completed');
+            debugLog('✅ Initial render completed');
         } catch (error) {
             console.error('❌ Error during initial render:', error);
         }
@@ -1135,7 +1135,7 @@ class KernelDNAVisualization {
     }
 
     deactivate() {
-        console.log('🧬 Deactivating Kernel DNA Visualization');
+        debugLog('🧬 Deactivating Kernel DNA Visualization');
         this.isActive = false;
         this.isAnimating = false; // Stop animation loop
         this.timelineMode = false; // Reset timeline mode
@@ -1340,7 +1340,7 @@ class KernelDNAVisualization {
                     `;
                 }
                 
-                this.tooltip.innerHTML = tooltipContent;
+                window.setSafeHtml(this.tooltip, tooltipContent);
             } else {
                 // Hide tooltip if no valid userData found
                 this.tooltip.style.display = 'none';
@@ -1400,5 +1400,5 @@ class KernelDNAVisualization {
 // Make it globally available
 // Export to window for global access
 window.KernelDNAVisualization = KernelDNAVisualization;
-console.log('🧬 kernel-dna.js: KernelDNAVisualization class exported to window');
-console.log('🧬 kernel-dna.js: window.KernelDNAVisualization:', typeof window.KernelDNAVisualization);
+debugLog('🧬 kernel-dna.js: KernelDNAVisualization class exported to window');
+debugLog('🧬 kernel-dna.js: window.KernelDNAVisualization:', typeof window.KernelDNAVisualization);

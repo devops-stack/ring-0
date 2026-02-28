@@ -1,5 +1,5 @@
 // Main JavaScript file for Linux Kernel Visualization
-// NginxFilesManager is now in nginx_files.js
+
 
 // Global variables
 const svg = d3.select("svg");
@@ -8,17 +8,7 @@ let resizeTimeout;
 let nginxFilesManager;
 let rightSemicircleMenuManager;
 let connectionsManager; // make available for cleanup handlers
-let isolationContextCache = null;
-let isolationContextCacheTs = 0;
-let isolationRenderToken = 0;
 const MOBILE_LAYOUT_BREAKPOINT = 900;
-const lowerFlowTypes = [
-    { id: "disk-io", label: "DISK I/O", stroke: "rgba(58, 58, 58, 0.33)", widthMin: 0.8, widthMax: 1.15, opacityMin: 0.6, opacityMax: 0.85, weight: 0.34 },
-    { id: "network-packets", label: "NETWORK PACKETS", stroke: "rgba(88, 182, 216, 0.28)", widthMin: 0.75, widthMax: 1.05, opacityMin: 0.58, opacityMax: 0.8, weight: 0.28 },
-    { id: "page-faults", label: "PAGE FAULTS", stroke: "rgba(95, 95, 95, 0.28)", widthMin: 0.75, widthMax: 1.0, opacityMin: 0.55, opacityMax: 0.78, weight: 0.24 },
-    { id: "memory-swaps", label: "MEMORY SWAPS", stroke: "rgba(126, 110, 170, 0.25)", widthMin: 0.7, widthMax: 0.95, opacityMin: 0.5, opacityMax: 0.72, weight: 0.14 }
-];
-
 function isMobileLayout() {
     return window.innerWidth <= MOBILE_LAYOUT_BREAKPOINT;
 }
@@ -48,7 +38,7 @@ function syncRealtimeFeedsForViewport() {
 
 // Application initialization
 function initApp() {
-    console.log('🚀 Initializing Linux Kernel Visualization');
+    debugLog('🚀 Initializing Linux Kernel Visualization');
     
     // Initialize system calls manager
     syscallsManager = new SyscallsManager();
@@ -61,20 +51,20 @@ function initApp() {
     window.nginxFilesManager = new NginxFilesManager();
     
     // Initialize right semicircle menu manager
-    console.log('🎯 RightSemicircleMenuManager class available:', typeof RightSemicircleMenuManager);
+    debugLog('🎯 RightSemicircleMenuManager class available:', typeof RightSemicircleMenuManager);
     if (typeof RightSemicircleMenuManager !== 'undefined') {
         window.rightSemicircleMenuManager = new RightSemicircleMenuManager();
-        console.log('🎯 RightSemicircleMenuManager initialized:', window.rightSemicircleMenuManager);
+        debugLog('🎯 RightSemicircleMenuManager initialized:', window.rightSemicircleMenuManager);
     } else {
         console.error('❌ RightSemicircleMenuManager class not found!');
     }
     
     // Initialize Kernel Context Menu
-    console.log('🎯 KernelContextMenu class available:', typeof KernelContextMenu);
+    debugLog('🎯 KernelContextMenu class available:', typeof KernelContextMenu);
     if (typeof KernelContextMenu !== 'undefined') {
         window.kernelContextMenu = new KernelContextMenu();
         window.kernelContextMenu.init();
-        console.log('🎯 KernelContextMenu initialized:', window.kernelContextMenu);
+        debugLog('🎯 KernelContextMenu initialized:', window.kernelContextMenu);
     } else {
         console.error('❌ KernelContextMenu class not found!');
     }
@@ -85,7 +75,7 @@ function initApp() {
     // Then render semicircle AFTER draw() completes
     setTimeout(() => {
         if (window.rightSemicircleMenuManager && !isMobileLayout()) {
-            console.log('🎯 Force rendering semicircle after draw()...');
+            debugLog('🎯 Force rendering semicircle after draw()...');
             window.rightSemicircleMenuManager.renderRightSemicircleMenu();
         } else if (window.rightSemicircleMenuManager && isMobileLayout()) {
             window.rightSemicircleMenuManager.hide();
@@ -105,6 +95,13 @@ function initApp() {
 
 // Setup event handlers
 function setupEventListeners() {
+    window.addEventListener('syscall-subsystem-focus', (event) => {
+        const detail = (event && event.detail) || {};
+        if (window.SubsystemFocus && typeof window.SubsystemFocus.setFocus === 'function') {
+            window.SubsystemFocus.setFocus(detail.subsystemKey || null);
+        }
+    });
+
     // Window resize handler
     window.addEventListener('resize', () => {
         clearTimeout(resizeTimeout);
@@ -114,7 +111,7 @@ function setupEventListeners() {
             // Render semicircle after draw() completes
             setTimeout(() => {
                 if (window.rightSemicircleMenuManager && !isMobileLayout()) {
-                    console.log('🎯 Force rendering semicircle after resize...');
+                    debugLog('🎯 Force rendering semicircle after resize...');
                     window.rightSemicircleMenuManager.renderRightSemicircleMenu();
                 } else if (window.rightSemicircleMenuManager && isMobileLayout()) {
                     window.rightSemicircleMenuManager.hide();
@@ -144,7 +141,7 @@ function draw() {
 
     // Skip drawing if Matrix View is active to prevent elements from appearing above it
     if (!mobileLayout && window.kernelContextMenu && window.kernelContextMenu.currentView === 'matrix') {
-        console.log('⏸️ Skipping draw() - Matrix View is active');
+        debugLog('⏸️ Skipping draw() - Matrix View is active');
         return;
     }
     
@@ -156,7 +153,7 @@ function draw() {
         window.kernelContextMenu.currentView === 'devices' ||
         window.kernelContextMenu.currentView === 'files'
     )) {
-        console.log('⏸️ Skipping draw() - overlay view is active');
+        debugLog('⏸️ Skipping draw() - overlay view is active');
         return;
     }
 
@@ -405,7 +402,7 @@ function updateRing1(centerX, centerY, baseRadius) {
         .then(res => res.json())
         .then(data => {
             // Debug logging
-            console.log('🔄 Ring-1 Update:', {
+            debugLog('🔄 Ring-1 Update:', {
                 mode: data.mode,
                 cpu_state: data.cpu_state,
                 syscall_active: data.syscall_active,
@@ -433,7 +430,7 @@ function updateRing1(centerX, centerY, baseRadius) {
             
             // Handle syscall active - stronger pulsing animation
             if (data.syscall_active) {
-                console.log('✨ Syscall active:', data.syscall_name);
+                debugLog('✨ Syscall active:', data.syscall_name);
                 ringColor = "#888"; // Gray for syscall (changed from gold)
                 pulseAmplitude = 8; // Stronger pulse for syscall
                 pulseSpeed = 200; // Faster pulse for syscall
@@ -460,7 +457,7 @@ function updateRing1(centerX, centerY, baseRadius) {
                     .style("opacity", 0.9);
             } else {
                 // Normal state - subtle pulsing
-                console.log('📊 Normal state, color:', ringColor, 'CPU state:', data.cpu_state);
+                debugLog('📊 Normal state, color:', ringColor, 'CPU state:', data.cpu_state);
                 
                 // Adjust pulse based on CPU state
                 if (data.cpu_state === 'running') {
@@ -572,350 +569,9 @@ function updateRing1(centerX, centerY, baseRadius) {
 }
 
 function renderIrqStackPanel(executionData) {
-    d3.selectAll('.irq-stack-group').remove();
-    d3.selectAll('.irq-route-overlay').remove();
-    if (isMobileLayout()) return;
-
-    const irqStack = executionData && executionData.irq_stack ? executionData.irq_stack : {};
-    const hardRows = Array.isArray(irqStack.hard) ? irqStack.hard : [];
-    const softRows = Array.isArray(irqStack.soft) ? irqStack.soft : [];
-    const summary = irqStack.summary || {};
-
-    const svg = d3.select('svg');
-    // Reuse former "CGROUP PROFILE" slot (left-bottom corner).
-    const panelX = 30;
-    const panelY = Math.max(20, window.innerHeight - 230);
-    const panelW = 230;
-    const rowH = 18;
-    const maxHard = 4;
-    const maxSoft = 2;
-    const shownHard = hardRows.slice(0, maxHard);
-    const shownSoft = softRows.slice(0, maxSoft);
-    const panelH = 24 + (shownHard.length + shownSoft.length + 2) * rowH + 16;
-
-    const group = svg.append('g')
-        .attr('class', 'irq-stack-group');
-
-    group.append('rect')
-        .attr('x', panelX)
-        .attr('y', panelY - 6)
-        .attr('width', panelW)
-        .attr('height', panelH)
-        .attr('rx', 8)
-        .style('fill', '#333')
-        .style('stroke', '#555')
-        .style('stroke-width', '1px');
-
-    group.append('text')
-        .attr('x', panelX + 10)
-        .attr('y', panelY + 8)
-        .style('font-family', 'Share Tech Mono, monospace')
-        .style('font-size', '10px')
-        .style('letter-spacing', '0.5px')
-        .style('fill', '#c8ccd4')
-        .text('IRQ STACK (HARD + SOFT)');
-
-    let y = panelY + 24;
-    shownHard.forEach((row) => {
-        const irqName = String(row.irq || '?');
-        const labelRaw = String(row.label || irqName);
-        const label = labelRaw.length > 14 ? `${labelRaw.slice(0, 13)}~` : labelRaw;
-        const perSec = Number(row.per_sec || 0).toFixed(1);
-        const cpu = row.top_cpu === null || row.top_cpu === undefined ? '-' : row.top_cpu;
-        const rowGroup = group.append('g')
-            .style('cursor', 'pointer')
-            .on('mouseenter', () => {
-                window.__irqRouteMapHover = false;
-                drawIrqRouteOverlay(row, panelX + 10, y - 4);
-            })
-            .on('mouseleave', () => {
-                setTimeout(() => {
-                    if (!window.__irqRouteMapHover) {
-                        d3.selectAll('.irq-route-overlay').remove();
-                    }
-                }, 260);
-            });
-
-        rowGroup.append('rect')
-            .attr('x', panelX + 6)
-            .attr('y', y - 11)
-            .attr('width', panelW - 14)
-            .attr('height', 13)
-            .attr('rx', 3)
-            .attr('fill', 'rgba(70,70,70,0.22)');
-
-        rowGroup.append('text')
-            .attr('x', panelX + 10)
-            .attr('y', y)
-            .style('font-family', 'Share Tech Mono, monospace')
-            .style('font-size', '9px')
-            .style('fill', '#c8ccd4')
-            .text(`IRQ${irqName} ${label} C${cpu} ${perSec}/s`);
-        y += rowH;
-    });
-
-    group.append('line')
-        .attr('x1', panelX + 8)
-        .attr('x2', panelX + panelW - 8)
-        .attr('y1', y - 8)
-        .attr('y2', y - 8)
-        .attr('stroke', 'rgba(120,120,120,0.45)')
-        .attr('stroke-width', 0.8);
-
-    shownSoft.forEach((row) => {
-        const name = String(row.name || 'SOFT').toUpperCase();
-        const perSec = Number(row.per_sec || 0).toFixed(1);
-        group.append('text')
-            .attr('x', panelX + 10)
-            .attr('y', y)
-            .style('font-family', 'Share Tech Mono, monospace')
-            .style('font-size', '9px')
-            .style('fill', '#b6c7d8')
-            .text(`S:${name} ${perSec}/s`);
-        y += rowH;
-    });
-
-    const hardRate = Number(summary.hard_total_per_sec || 0).toFixed(1);
-    const softRate = Number(summary.soft_total_per_sec || 0).toFixed(1);
-    const netRate = Number(summary.net_softirq_per_sec || 0).toFixed(1);
-    group.append('text')
-        .attr('x', panelX + 10)
-        .attr('y', panelY + panelH - 10)
-        .style('font-family', 'Share Tech Mono, monospace')
-        .style('font-size', '9px')
-        .style('fill', '#9ea9b6')
-        .text(`H:${hardRate}/s  S:${softRate}/s  NET:${netRate}/s`);
-}
-
-function getIrqRouteHint(row) {
-    const label = String(row && row.label ? row.label : '').toLowerCase();
-    const subsystem = String(row && row.subsystem ? row.subsystem : '').toLowerCase();
-    if (label.includes('eth') || label.includes('net') || label.includes('wifi') || subsystem.includes('net')) {
-        return {
-            profile: 'NET',
-            soft: 'NET_RX',
-            kernel: 'network stack',
-            process: 'socket activity'
-        };
+    if (window.IrqUI && typeof window.IrqUI.renderIrqStackPanel === 'function') {
+        return window.IrqUI.renderIrqStackPanel(executionData);
     }
-    if (label.includes('nvme') || label.includes('ahci') || label.includes('scsi') || label.includes('blk')) {
-        return {
-            profile: 'BLOCK',
-            soft: 'BLOCK',
-            kernel: 'block layer',
-            process: 'read/write wakeup'
-        };
-    }
-    if (label.includes('timer') || label.includes('sched') || subsystem.includes('timer') || subsystem.includes('sched')) {
-        return {
-            profile: 'TIMER',
-            soft: 'TIMER',
-            kernel: 'scheduler/timer',
-            process: 'task wakeup'
-        };
-    }
-    return {
-        profile: 'GENERIC',
-        soft: 'IRQ_THREAD',
-        kernel: 'driver/core',
-        process: 'syscall/io path'
-    };
-}
-
-function drawIrqRouteOverlay(row, startX, startY) {
-    d3.selectAll('.irq-route-overlay').remove();
-    const svg = d3.select('svg');
-    const overlay = svg.append('g').attr('class', 'irq-route-overlay');
-    const width = window.innerWidth;
-    const height = window.innerHeight;
-    const hint = getIrqRouteHint(row);
-    const irqLabel = String(row && row.irq ? row.irq : '?');
-    const routeLabel = String(row && row.label ? row.label : '').trim();
-    const rate = Number(row && row.per_sec ? row.per_sec : 0);
-    const intensity = Math.max(0.35, Math.min(1, rate / 220));
-
-    const profileColors = {
-        NET: 'rgba(103, 190, 224, 0.95)',
-        BLOCK: 'rgba(224, 175, 98, 0.95)',
-        TIMER: 'rgba(167, 200, 120, 0.95)',
-        GENERIC: 'rgba(186, 194, 204, 0.92)'
-    };
-    const profileColor = profileColors[hint.profile] || profileColors.GENERIC;
-
-    const mapX = Math.max(22, Math.min(width * 0.16, startX + 36));
-    const mapY = Math.max(12, height - 150);
-    const mapW = Math.min(760, width - mapX - 20);
-    const mapH = 104;
-
-    overlay.append('rect')
-        .attr('x', mapX)
-        .attr('y', mapY)
-        .attr('width', mapW)
-        .attr('height', mapH)
-        .attr('rx', 8)
-        .attr('fill', 'rgba(11, 14, 18, 0.9)')
-        .attr('stroke', 'rgba(82, 92, 108, 0.42)')
-        .attr('stroke-width', 0.9);
-
-    const detailLayer = overlay.append('g')
-        .attr('class', 'irq-route-detail')
-        .style('opacity', 0.72);
-
-    // Hover target for fading detailed layer to full opacity.
-    overlay.append('rect')
-        .attr('x', mapX)
-        .attr('y', mapY)
-        .attr('width', mapW)
-        .attr('height', mapH)
-        .attr('rx', 8)
-        .attr('fill', 'transparent')
-        .style('pointer-events', 'all')
-        .on('mouseenter', () => {
-            window.__irqRouteMapHover = true;
-            detailLayer.transition().duration(120).style('opacity', 1);
-        })
-        .on('mouseleave', () => {
-            window.__irqRouteMapHover = false;
-            d3.selectAll('.irq-route-overlay').remove();
-        });
-
-    const p0 = { x: mapX + 26, y: mapY + 38 };
-    const p1 = { x: mapX + Math.min(130, mapW * 0.22), y: mapY + 38 };
-    const p2 = { x: p1.x, y: mapY + 74 };
-    const p3 = { x: mapX + Math.min(300, mapW * 0.5), y: mapY + 74 };
-    const p4 = { x: p3.x, y: mapY + 48 };
-    const p5 = { x: mapX + Math.min(500, mapW * 0.78), y: mapY + 48 };
-    const p6 = { x: p5.x, y: mapY + 74 };
-    const p7 = { x: mapX + mapW - 28, y: mapY + 74 };
-
-    overlay.append('path')
-        .attr('d', `M ${startX} ${startY} Q ${mapX - 24} ${mapY - 8} ${p0.x} ${p0.y}`)
-        .attr('fill', 'none')
-        .attr('stroke', 'rgba(118, 136, 155, 0.5)')
-        .attr('stroke-width', 0.9)
-        .attr('stroke-dasharray', '2 3');
-
-    // Compact route line (always visible) + detailed metro line below.
-    overlay.append('rect')
-        .attr('x', mapX + 10)
-        .attr('y', mapY + 6)
-        .attr('width', mapW - 20)
-        .attr('height', 16)
-        .attr('rx', 4)
-        .attr('fill', 'rgba(16, 20, 25, 0.9)')
-        .attr('stroke', 'rgba(74, 88, 106, 0.45)')
-        .attr('stroke-width', 0.6);
-
-    overlay.append('text')
-        .attr('x', mapX + 14)
-        .attr('y', mapY + 17)
-        .style('font-family', 'Share Tech Mono, monospace')
-        .style('font-size', '8px')
-        .style('letter-spacing', '0.35px')
-        .style('fill', 'rgba(198, 215, 228, 0.92)')
-        .text(`IRQ ${irqLabel} -> ${hint.soft} -> ${hint.kernel} -> ${hint.process}`);
-
-    const metroPath = `M ${p0.x} ${p0.y}
-        L ${p1.x} ${p1.y}
-        L ${p2.x} ${p2.y}
-        L ${p3.x} ${p3.y}
-        L ${p4.x} ${p4.y}
-        L ${p5.x} ${p5.y}
-        L ${p6.x} ${p6.y}
-        L ${p7.x} ${p7.y}`;
-
-    detailLayer.append('path')
-        .attr('d', metroPath)
-        .attr('fill', 'none')
-        .attr('stroke', 'rgba(35, 40, 48, 0.95)')
-        .attr('stroke-width', 4.2 + intensity * 0.7)
-        .attr('stroke-linecap', 'round')
-        .attr('stroke-linejoin', 'round');
-
-    detailLayer.append('path')
-        .attr('d', metroPath)
-        .attr('fill', 'none')
-        .attr('stroke', profileColor)
-        .attr('stroke-width', 1.9 + intensity * 1.1)
-        .attr('stroke-linecap', 'round')
-        .attr('stroke-linejoin', 'round');
-
-    const drawBranch = (path, color, label, lx, ly) => {
-        detailLayer.append('path')
-            .attr('d', path)
-            .attr('fill', 'none')
-            .attr('stroke', 'rgba(35, 40, 48, 0.94)')
-            .attr('stroke-width', 3.2)
-            .attr('stroke-linecap', 'round')
-            .attr('stroke-linejoin', 'round');
-
-        detailLayer.append('path')
-            .attr('d', path)
-            .attr('fill', 'none')
-            .attr('stroke', color)
-            .attr('stroke-width', 1.5 + intensity * 0.9)
-            .attr('stroke-linecap', 'round')
-            .attr('stroke-linejoin', 'round');
-
-        detailLayer.append('text')
-            .attr('x', lx)
-            .attr('y', ly)
-            .style('font-family', 'Share Tech Mono, monospace')
-            .style('font-size', '7px')
-            .style('fill', 'rgba(182, 198, 212, 0.85)')
-            .text(label);
-    };
-
-    if (hint.profile === 'BLOCK') {
-        const b1 = `M ${p3.x} ${p3.y} L ${p3.x + 50} ${p3.y + 16} L ${p3.x + 110} ${p3.y + 16}`;
-        const b2 = `M ${p6.x} ${p6.y} L ${p6.x + 44} ${p6.y - 18} L ${p6.x + 102} ${p6.y - 18}`;
-        drawBranch(b1, 'rgba(224, 175, 98, 0.9)', 'disk completion', p3.x + 56, p3.y + 28);
-        drawBranch(b2, 'rgba(224, 175, 98, 0.9)', 'page cache wakeup', p6.x + 50, p6.y - 24);
-    } else if (hint.profile === 'TIMER') {
-        const t1 = `M ${p2.x} ${p2.y} L ${p2.x + 54} ${p2.y - 20} L ${p2.x + 116} ${p2.y - 20}`;
-        const t2 = `M ${p5.x} ${p5.y} L ${p5.x + 36} ${p5.y + 20} L ${p5.x + 98} ${p5.y + 20}`;
-        drawBranch(t1, 'rgba(167, 200, 120, 0.9)', 'scheduler tick', p2.x + 60, p2.y - 26);
-        drawBranch(t2, 'rgba(167, 200, 120, 0.9)', 'runqueue wakeup', p5.x + 42, p5.y + 30);
-    } else if (hint.profile === 'NET') {
-        const n1 = `M ${p4.x} ${p4.y} L ${p4.x + 52} ${p4.y - 16} L ${p4.x + 120} ${p4.y - 16}`;
-        drawBranch(n1, 'rgba(103, 190, 224, 0.9)', 'socket/epoll wake', p4.x + 58, p4.y - 22);
-    }
-
-    const stations = [
-        { x: p0.x, y: p0.y, title: `IRQ ${irqLabel}`, detail: routeLabel || 'interrupt line', up: true },
-        { x: p2.x, y: p2.y, title: hint.soft, detail: 'softirq', up: false },
-        { x: p4.x, y: p4.y, title: hint.kernel, detail: 'kernel path', up: true },
-        { x: p7.x, y: p7.y, title: hint.process, detail: 'userspace effect', up: false }
-    ];
-
-    stations.forEach((station) => {
-        detailLayer.append('circle')
-            .attr('cx', station.x)
-            .attr('cy', station.y)
-            .attr('r', 4.3)
-            .attr('fill', 'rgba(10, 13, 17, 0.95)')
-            .attr('stroke', 'rgba(148, 214, 238, 0.96)')
-            .attr('stroke-width', 1.3);
-
-        const textY = station.up ? station.y - 9 : station.y + 14;
-        detailLayer.append('text')
-            .attr('x', station.x)
-            .attr('y', textY)
-            .attr('text-anchor', 'middle')
-            .style('font-family', 'Share Tech Mono, monospace')
-            .style('font-size', '8px')
-            .style('fill', 'rgba(196, 215, 228, 0.95)')
-            .text(String(station.title).toUpperCase());
-    });
-
-    overlay.append('text')
-        .attr('x', mapX + mapW - 186)
-        .attr('y', mapY + 17)
-        .style('font-family', 'Share Tech Mono, monospace')
-        .style('font-size', '7px')
-        .style('letter-spacing', '0.5px')
-        .style('fill', 'rgba(140, 155, 171, 0.85)')
-        .text(`IRQ ROUTE MAP  [${hint.profile}]  ${rate.toFixed(1)}/s`);
 }
 
 // Helper function to get point on SVG path at specific distance from start
@@ -981,7 +637,7 @@ function getPointOnPathAtDistance(pathData, targetDistance, centerX, centerY) {
 function drawTagIcons(centerX, centerY) {
     // Skip drawing tag icons if Matrix View is active
     if (window.kernelContextMenu && window.kernelContextMenu.currentView === 'matrix') {
-        console.log('⏸️ Skipping tag icons render - Matrix View is active');
+        debugLog('⏸️ Skipping tag icons render - Matrix View is active');
         return;
     }
     
@@ -1232,7 +888,7 @@ function drawProcessKernelMap2(centerX, centerY) {
             });
             
             if (highlightedProcess) {
-                console.log('✅ Found nginx with files:', highlightedProcess.name, highlightedProcess.pid);
+                debugLog('✅ Found nginx with files:', highlightedProcess.name, highlightedProcess.pid);
             }
             
             // If no nginx with accessible files, try any nginx process (including master process)
@@ -1261,21 +917,21 @@ function drawProcessKernelMap2(centerX, centerY) {
                 }
                 
                 if (highlightedProcess) {
-                    console.log('✅ Found nginx (any):', highlightedProcess.name, highlightedProcess.pid);
+                    debugLog('✅ Found nginx (any):', highlightedProcess.name, highlightedProcess.pid);
                 }
             }
             
             if (!highlightedProcess) {
-                console.log('⚠️ Nginx not found in processes list');
-                console.log('📋 Total processes:', processes.length);
-                console.log('📋 Process names (first 30):', processes.map(p => p.name || p.cmdline || 'unnamed').filter(Boolean).slice(0, 30));
+                debugLog('⚠️ Nginx not found in processes list');
+                debugLog('📋 Total processes:', processes.length);
+                debugLog('📋 Process names (first 30):', processes.map(p => p.name || p.cmdline || 'unnamed').filter(Boolean).slice(0, 30));
                 // Check if there are any processes with "nginx" in cmdline but not in name
                 const nginxInCmdline = processes.filter(p => {
                     const cmdline = (p.cmdline || '').toLowerCase();
                     return cmdline.includes('nginx') && !cmdline.includes('nginx-files');
                 });
                 if (nginxInCmdline.length > 0) {
-                    console.log('🔍 Found processes with nginx in cmdline:', nginxInCmdline.map(p => ({
+                    debugLog('🔍 Found processes with nginx in cmdline:', nginxInCmdline.map(p => ({
                         name: p.name,
                         pid: p.pid,
                         cmdline: p.cmdline
@@ -1310,7 +966,7 @@ function drawProcessKernelMap2(centerX, centerY) {
                     }
                 });
                 if (highlightedProcess) {
-                    console.log('✅ Selected process with most FDs (non-browser):', highlightedProcess.name, highlightedProcess.pid);
+                    debugLog('✅ Selected process with most FDs (non-browser):', highlightedProcess.name, highlightedProcess.pid);
                 }
             }
             
@@ -1322,7 +978,7 @@ function drawProcessKernelMap2(centerX, centerY) {
                     }
                 });
                 if (highlightedProcess) {
-                    console.log('✅ Selected process with most memory (non-browser):', highlightedProcess.name, highlightedProcess.pid);
+                    debugLog('✅ Selected process with most memory (non-browser):', highlightedProcess.name, highlightedProcess.pid);
                 }
             }
             
@@ -1330,12 +986,20 @@ function drawProcessKernelMap2(centerX, centerY) {
             if (!highlightedProcess) {
                 highlightedProcess = processes.find(p => p.name && !isBrowserProcess(p.name));
                 if (highlightedProcess) {
-                    console.log('✅ Selected first non-browser process:', highlightedProcess.name, highlightedProcess.pid);
+                    debugLog('✅ Selected first non-browser process:', highlightedProcess.name, highlightedProcess.pid);
                 }
             }
             
             if (highlightedProcess) {
-                console.log('🎯 Highlighted process:', highlightedProcess.name, 'PID:', highlightedProcess.pid);
+                debugLog('🎯 Highlighted process:', highlightedProcess.name, 'PID:', highlightedProcess.pid);
+                window.__highlightedProcess = {
+                    pid: highlightedProcess.pid,
+                    name: highlightedProcess.name || 'userspace',
+                    memory_mb: highlightedProcess.memory_mb ?? null,
+                    num_fds: highlightedProcess.num_fds ?? null,
+                    updatedAt: Date.now()
+                };
+                window.__highlightedProcessName = highlightedProcess.name || 'userspace';
             } else {
                 console.warn('⚠️ No process selected for highlighting');
             }
@@ -1637,1231 +1301,112 @@ function drawProcessKernelMap2(centerX, centerY) {
         });
 }
 
+const missingModuleFunctionWarnings = new Set();
+
+function callModuleFunction(moduleName, functionName, args = [], fallbackValue) {
+    const mod = window[moduleName];
+    const warningKey = `${moduleName}.${functionName}`;
+    if (mod && typeof mod[functionName] === 'function') {
+        return mod[functionName](...args);
+    }
+    if (!missingModuleFunctionWarnings.has(warningKey)) {
+        const hasModule = Boolean(mod);
+        const warningText = hasModule
+            ? `[Main] Missing function "${functionName}" in module "${moduleName}", using fallback`
+            : `[Main] Missing module "${moduleName}", using fallback for "${functionName}"`;
+        if (typeof debugLog === 'function') {
+            debugLog(warningText);
+        } else {
+            console.warn(warningText);
+        }
+        missingModuleFunctionWarnings.add(warningKey);
+    }
+    return fallbackValue;
+}
+
 function normalizeProcName(name) {
-    if (!name) return '';
-    const lower = String(name).toLowerCase().trim();
-    if (!lower) return '';
-    // Normalize "nginx: master process ..." to "nginx".
-    if (lower.startsWith('nginx:')) return 'nginx';
-    return lower;
+    return callModuleFunction('IpcUI', 'normalizeProcName', [name], '');
 }
 
 function getSharedChannelType(socketWeight, pipeWeight, shmWeight, nsWeight) {
-    const channels = [];
-    if (Number(socketWeight || 0) > 0) channels.push('SOCKET');
-    if (Number(pipeWeight || 0) > 0) channels.push('PIPE');
-    if (Number(shmWeight || 0) > 0) channels.push('SHM');
-    if (Number(nsWeight || 0) > 0) channels.push('NS');
-    if (!channels.length) return 'UNKNOWN';
-    if (channels.length === 1) return channels[0];
-    return `MIXED (${channels.join('+')})`;
+    return callModuleFunction(
+        'IpcUI',
+        'getSharedChannelType',
+        [socketWeight, pipeWeight, shmWeight, nsWeight],
+        'UNKNOWN'
+    );
 }
 
 function drawIpcRelationshipRing(centerX, centerY, processAnchorsByName) {
-    d3.selectAll('.ipc-ring-layer').remove();
-    fetch('/api/ipc-links?max_nodes=18&max_pairs=120')
-        .then(res => {
-            if (!res.ok) {
-                throw new Error(`IPC API HTTP ${res.status}`);
-            }
-            return res.json();
-        })
-        .then(data => {
-            const ringGroup = svg.append('g')
-                .attr('class', 'ipc-ring-layer');
-
-            const ringCx = centerX;
-            const ringCy = centerY;
-            // Place IPC ring around the process circle (outside process endpoints).
-            const ringR = 355;
-
-            ringGroup.append('circle')
-                .attr('cx', ringCx)
-                .attr('cy', ringCy)
-                .attr('r', ringR)
-                .attr('fill', 'none')
-                .attr('stroke', 'rgba(70, 70, 70, 0.26)')
-                .attr('stroke-width', 0.9);
-
-            ringGroup.append('circle')
-                .attr('cx', ringCx)
-                .attr('cy', ringCy)
-                .attr('r', ringR - 12)
-                .attr('fill', 'none')
-                .attr('stroke', 'rgba(70, 70, 70, 0.14)')
-                .attr('stroke-width', 0.7);
-
-            if (!data || data.error) {
-                console.warn('IPC API payload error:', data && data.error);
-            }
-
-            let nodes = ((data && data.process_nodes) || []).slice(0, 14);
-            // Fallback: if IPC endpoint is empty/unavailable on host, still render ring nodes from process anchors.
-            if (!nodes.length) {
-                const fallbackNames = Array.from(processAnchorsByName.keys()).slice(0, 14);
-                nodes = fallbackNames.map((nm) => ({
-                    name: nm,
-                    degree: 1,
-                    socket_degree: 0,
-                    pipe_degree: 0,
-                    shm_degree: 0,
-                    ns_degree: 0
-                }));
-            }
-            if (!nodes.length) {
-                return;
-            }
-
-            const stats = (data && data.stats) || {};
-            ringGroup.append('text')
-                .attr('x', ringCx)
-                .attr('y', ringCy - ringR - 12)
-                .attr('text-anchor', 'middle')
-                .style('font-family', 'Share Tech Mono, monospace')
-                .style('font-size', '8px')
-                .style('letter-spacing', '0.7px')
-                .style('fill', 'rgba(58, 58, 58, 0.58)')
-                .text(`IPC LINKS  SOCKET:${stats.shared_socket_inodes || 0}  PIPE:${stats.shared_pipe_inodes || 0}  SHM:${stats.shared_memory_regions || 0}  NS:${stats.shared_namespace_groups || 0}  PAIRS:${stats.pair_count || 0}`);
-
-            const peerMap = new Map();
-            (((data && data.pair_links) || [])).forEach((link) => {
-                const left = normalizeProcName(link.left || '');
-                const right = normalizeProcName(link.right || '');
-                if (!left || !right) return;
-                if (!peerMap.has(left)) peerMap.set(left, []);
-                if (!peerMap.has(right)) peerMap.set(right, []);
-                peerMap.get(left).push({
-                    peer: link.right || right,
-                    weight: Number(link.weight || 0),
-                    socketWeight: Number(link.socket_weight || 0),
-                    pipeWeight: Number(link.pipe_weight || 0),
-                    shmWeight: Number(link.shm_weight || 0),
-                    nsWeight: Number(link.ns_weight || 0)
-                });
-                peerMap.get(right).push({
-                    peer: link.left || left,
-                    weight: Number(link.weight || 0),
-                    socketWeight: Number(link.socket_weight || 0),
-                    pipeWeight: Number(link.pipe_weight || 0),
-                    shmWeight: Number(link.shm_weight || 0),
-                    nsWeight: Number(link.ns_weight || 0)
-                });
-            });
-            peerMap.forEach((arr, key) => {
-                arr.sort((a, b) => b.weight - a.weight);
-                peerMap.set(key, arr.slice(0, 3));
-            });
-
-            const maxDegree = Math.max(...nodes.map(n => Number(n.degree || 0)), 1);
-            const nodePos = [];
-            nodes.forEach((node, i) => {
-                const t = i / nodes.length;
-                const angle = -Math.PI / 2 + t * (Math.PI * 2);
-                const nx = ringCx + Math.cos(angle) * ringR;
-                const ny = ringCy + Math.sin(angle) * ringR;
-                const degree = Number(node.degree || 0);
-                const radius = 2.8 + (degree / maxDegree) * 2.8;
-                const normalizedName = normalizeProcName(node.name || '');
-                nodePos.push({
-                    x: nx,
-                    y: ny,
-                    name: normalizedName,
-                    displayName: node.name || normalizedName,
-                    radius,
-                    degree,
-                    socketDegree: Number(node.socket_degree || 0),
-                    pipeDegree: Number(node.pipe_degree || 0),
-                    shmDegree: Number(node.shm_degree || 0),
-                    nsDegree: Number(node.ns_degree || 0)
-                });
-
-                ringGroup.append('circle')
-                    .attr('cx', nx)
-                    .attr('cy', ny)
-                    .attr('r', radius)
-                    .attr('fill', 'rgba(90, 90, 90, 0.55)')
-                    .attr('stroke', 'rgba(34, 34, 34, 0.35)')
-                    .attr('stroke-width', 0.7)
-                    .style('pointer-events', 'all')
-                    .style('cursor', 'pointer')
-                    .on('mouseenter', () => {
-                        d3.selectAll('.ipc-link-tooltip').remove();
-                        const peers = peerMap.get(normalizedName) || [];
-                        const peerText = peers.length
-                            ? peers.map((p) => {
-                                const channelType = getSharedChannelType(p.socketWeight, p.pipeWeight, p.shmWeight, p.nsWeight);
-                                return `${p.peer}: ${p.weight} [${channelType}] (s:${p.socketWeight} p:${p.pipeWeight} shm:${p.shmWeight} ns:${p.nsWeight})`;
-                            }).join('<br>')
-                            : 'No peer details';
-                        d3.select('body')
-                            .append('div')
-                            .attr('class', 'tooltip ipc-link-tooltip')
-                            .style('position', 'absolute')
-                            .style('background', 'rgba(0, 0, 0, 0.88)')
-                            .style('color', '#fff')
-                            .style('padding', '8px 10px')
-                            .style('border-radius', '4px')
-                            .style('font-size', '11px')
-                            .style('font-family', 'Share Tech Mono, monospace')
-                            .style('pointer-events', 'none')
-                            .style('z-index', '1200')
-                            .style('left', `${nx + 10}px`)
-                            .style('top', `${ny - 14}px`)
-                            .html(`<strong>${node.name || normalizedName}</strong><br>Links: ${degree}<br>Socket: ${Number(node.socket_degree || 0)} | Pipe: ${Number(node.pipe_degree || 0)} | SHM: ${Number(node.shm_degree || 0)} | NS: ${Number(node.ns_degree || 0)}<br><hr style="border-color:#555;margin:4px 0;">${peerText}`);
-                    })
-                    .on('mouseleave', () => {
-                        d3.selectAll('.ipc-link-tooltip').remove();
-                    });
-
-                if (i < 10) {
-                    const label = String(node.name || normalizedName);
-                    const labelAngle = angle;
-                    const lx = nx + Math.cos(labelAngle) * 11;
-                    const ly = ny + Math.sin(labelAngle) * 11;
-                    ringGroup.append('text')
-                        .attr('x', lx)
-                        .attr('y', ly)
-                        .attr('text-anchor', Math.cos(labelAngle) >= 0 ? 'start' : 'end')
-                        .attr('dominant-baseline', 'middle')
-                        .style('font-family', 'Share Tech Mono, monospace')
-                        .style('font-size', '7px')
-                        .style('fill', 'rgba(62, 62, 62, 0.58)')
-                        .text(label.length > 12 ? `${label.slice(0, 11)}~` : label);
-                }
-            });
-
-            let linkOrdinal = 0;
-            const laneOffsets = [-26, -14, 14, 26, -20, 20];
-            nodePos.forEach((ipcNode) => {
-                const matches = processAnchorsByName.get(ipcNode.name) || [];
-                if (!matches.length) return;
-                const maxLinks = Math.min(3, matches.length);
-                for (let i = 0; i < maxLinks; i++) {
-                    const procAnchor = matches[i];
-                    const laneOffset = laneOffsets[linkOrdinal % laneOffsets.length];
-                    const routedPath = buildIpcRoutedPath(
-                        centerX,
-                        centerY,
-                        procAnchor.x,
-                        procAnchor.y,
-                        ipcNode.x,
-                        ipcNode.y,
-                        ringR,
-                        laneOffset
-                    );
-                    ringGroup.append('path')
-                        .attr('d', routedPath)
-                        .attr('fill', 'none')
-                        .attr('stroke', 'rgba(78, 78, 78, 0.22)')
-                        .attr('stroke-width', 0.7)
-                        .attr('stroke-linecap', 'round')
-                        .style('pointer-events', 'none');
-                    linkOrdinal += 1;
-                }
-            });
-        })
-        .catch((error) => {
-            console.warn('IPC ring data unavailable:', error);
-            // Last-resort fallback ring from process names only.
-            const fallbackNames = Array.from(processAnchorsByName.keys()).slice(0, 14);
-            if (!fallbackNames.length) return;
-            const ringGroup = svg.append('g')
-                .attr('class', 'ipc-ring-layer');
-            const ringCx = centerX;
-            const ringCy = centerY;
-            const ringR = 355;
-            ringGroup.append('circle')
-                .attr('cx', ringCx)
-                .attr('cy', ringCy)
-                .attr('r', ringR)
-                .attr('fill', 'none')
-                .attr('stroke', 'rgba(70, 70, 70, 0.26)')
-                .attr('stroke-width', 0.9);
-            fallbackNames.forEach((name, i) => {
-                const t = i / fallbackNames.length;
-                const angle = -Math.PI / 2 + t * (Math.PI * 2);
-                const nx = ringCx + Math.cos(angle) * ringR;
-                const ny = ringCy + Math.sin(angle) * ringR;
-                ringGroup.append('circle')
-                    .attr('cx', nx)
-                    .attr('cy', ny)
-                    .attr('r', 2.8)
-                    .attr('fill', 'rgba(90, 90, 90, 0.5)')
-                    .attr('stroke', 'rgba(34, 34, 34, 0.3)')
-                    .attr('stroke-width', 0.7);
-                ringGroup.append('text')
-                    .attr('x', nx + Math.cos(angle) * 10)
-                    .attr('y', ny + Math.sin(angle) * 10)
-                    .attr('text-anchor', Math.cos(angle) >= 0 ? 'start' : 'end')
-                    .attr('dominant-baseline', 'middle')
-                    .style('font-family', 'Share Tech Mono, monospace')
-                    .style('font-size', '7px')
-                    .style('fill', 'rgba(62, 62, 62, 0.58)')
-                    .text(name.length > 12 ? `${name.slice(0, 11)}~` : name);
-            });
-        });
+    return callModuleFunction('IpcUI', 'drawIpcRelationshipRing', [centerX, centerY, processAnchorsByName]);
 }
 
 function buildIpcRoutedPath(cx, cy, startX, startY, targetX, targetY, outerRingRadius, laneOffset = 0) {
-    const startAngle = Math.atan2(startY - cy, startX - cx);
-    const targetAngle = Math.atan2(targetY - cy, targetX - cx);
-    const startRadius = Math.hypot(startX - cx, startY - cy);
-    const midBase = startRadius + (outerRingRadius - startRadius) * 0.5;
-    const minR = startRadius + 18;
-    const maxR = outerRingRadius - 18;
-    const midRadius = Math.max(minR, Math.min(maxR, midBase + laneOffset));
-
-    const bendX = cx + Math.cos(startAngle) * midRadius;
-    const bendY = cy + Math.sin(startAngle) * midRadius;
-    const arcEndX = cx + Math.cos(targetAngle) * midRadius;
-    const arcEndY = cy + Math.sin(targetAngle) * midRadius;
-
-    let delta = targetAngle - startAngle;
-    while (delta > Math.PI) delta -= Math.PI * 2;
-    while (delta < -Math.PI) delta += Math.PI * 2;
-    const largeArcFlag = Math.abs(delta) > Math.PI ? 1 : 0;
-    const sweepFlag = delta >= 0 ? 1 : 0;
-
-    return `M ${startX} ${startY}
-            L ${bendX} ${bendY}
-            A ${midRadius} ${midRadius} 0 ${largeArcFlag} ${sweepFlag} ${arcEndX} ${arcEndY}
-            L ${targetX} ${targetY}`;
+    return callModuleFunction(
+        'IpcUI',
+        'buildIpcRoutedPath',
+        [cx, cy, startX, startY, targetX, targetY, outerRingRadius, laneOffset],
+        ''
+    );
 }
 
 function drawBezierDecor(width, height, yBase) {
-    const centerX = width / 2;
-    const railHalfWidth = Math.min(540, Math.max(320, width * 0.32));
-    const originalRailHalfWidth = Math.min(360, Math.max(240, width * 0.24));
-    // Lift the whole I/O layer block so Bezier endpoints visually touch the rails.
-    const railY = Math.min(height - 78, yBase + 8);
-    // Keep lower rail/labels at their original vertical position.
-    const lowerStructureDrop = 12;
-    const lowerRailY = Math.min(height - 58, yBase + 104 + lowerStructureDrop);
-    const labelY = Math.min(height - 36, yBase + 121 + lowerStructureDrop);
-    const legendY = Math.min(height - 22, yBase + 134 + lowerStructureDrop);
-    const decorGroup = svg.append("g")
-        .attr("class", "bezier-decor-layer")
-        .attr("pointer-events", "none");
-
-    // Subtle underlay to visually anchor the curve bundle.
-    decorGroup.append("ellipse")
-        .attr("cx", centerX)
-        .attr("cy", railY + 8)
-        .attr("rx", railHalfWidth + 72)
-        .attr("ry", 20)
-        .attr("fill", "rgba(45, 45, 45, 0.045)");
-
-    // Primary and secondary rails (UI-like track under the bezier network).
-    decorGroup.append("line")
-        .attr("x1", centerX - railHalfWidth)
-        .attr("y1", railY)
-        .attr("x2", centerX + railHalfWidth)
-        .attr("y2", railY)
-        .attr("stroke", "rgba(45, 45, 45, 0.52)")
-        .attr("stroke-width", 1.1)
-        .attr("stroke-linecap", "round")
-        .attr("opacity", 0.8);
-
-    decorGroup.append("line")
-        .attr("x1", centerX - originalRailHalfWidth + 12)
-        .attr("y1", lowerRailY)
-        .attr("x2", centerX + originalRailHalfWidth - 12)
-        .attr("y2", lowerRailY)
-        .attr("stroke", "rgba(45, 45, 45, 0.26)")
-        .attr("stroke-width", 0.85)
-        .attr("stroke-linecap", "round")
-        .attr("opacity", 0.9);
-
-    // Short cyan accent in the center, similar to reference UI treatment.
-    decorGroup.append("line")
-        .attr("x1", centerX - 52)
-        .attr("y1", lowerRailY)
-        .attr("x2", centerX + 52)
-        .attr("y2", lowerRailY)
-        .attr("stroke", "rgba(88, 182, 216, 0.5)")
-        .attr("stroke-width", 0.9)
-        .attr("stroke-linecap", "round");
-
-    // Marker dots and tiny ticks (echoing the diegetic control language).
-    const markers = 9;
-    for (let i = 0; i < markers; i++) {
-        const t = i / (markers - 1);
-        const x = centerX - railHalfWidth + t * (railHalfWidth * 2);
-        decorGroup.append("circle")
-            .attr("cx", x)
-            .attr("cy", railY)
-            .attr("r", i === Math.floor(markers / 2) ? 1.8 : 1.2)
-            .attr("fill", "rgba(45, 45, 45, 0.55)");
-
-        if (i % 2 === 0) {
-            decorGroup.append("line")
-                .attr("x1", x)
-                .attr("y1", railY - 6)
-                .attr("x2", x)
-                .attr("y2", railY - 2.5)
-                .attr("stroke", "rgba(45, 45, 45, 0.32)")
-                .attr("stroke-width", 0.7)
-                .attr("stroke-linecap", "round");
-        }
-    }
-
-    // Semantic label and compact legend for the lower flow layer.
-    decorGroup.append("text")
-        .attr("x", centerX)
-        .attr("y", labelY)
-        .attr("text-anchor", "middle")
-        .style("font-family", "Share Tech Mono, monospace")
-        .style("font-size", "9px")
-        .style("letter-spacing", "1px")
-        .style("fill", "rgba(55, 55, 55, 0.55)")
-        .text("KERNEL I/O LAYER");
-
-    const legendSpacing = 120;
-    const legendStartX = centerX - ((lowerFlowTypes.length - 1) * legendSpacing) / 2;
-    lowerFlowTypes.forEach((flowType, idx) => {
-        const lx = legendStartX + idx * legendSpacing;
-        decorGroup.append("line")
-            .attr("x1", lx - 24)
-            .attr("y1", legendY - 4)
-            .attr("x2", lx - 8)
-            .attr("y2", legendY - 4)
-            .attr("stroke", flowType.stroke)
-            .attr("stroke-width", 1.2)
-            .attr("stroke-linecap", "round");
-
-        decorGroup.append("text")
-            .attr("x", lx)
-            .attr("y", legendY)
-            .attr("text-anchor", "start")
-            .style("font-family", "Share Tech Mono, monospace")
-            .style("font-size", "7.5px")
-            .style("letter-spacing", "0.6px")
-            .style("fill", "rgba(60, 60, 60, 0.48)")
-            .text(flowType.label);
-    });
+    return callModuleFunction('FlowUI', 'drawBezierDecor', [width, height, yBase]);
 }
 
 function drawBezierCoreBridge(width, height, yBase) {
-    const centerX = width / 2;
-    const centerY = height / 2;
-    const bridgeGroup = svg.append("g")
-        .attr("class", "bezier-core-bridge")
-        .attr("pointer-events", "none");
-
-    const anchorY = centerY + 90; // Just below process ring
-    const targetY = yBase - 34;   // Just above lower bezier bundle
-    const bridgeCount = 18;
-
-    for (let i = 0; i < bridgeCount; i++) {
-        const t = bridgeCount <= 1 ? 0 : i / (bridgeCount - 1);
-        const spread = (t - 0.5) * 220;
-        const startX = centerX + spread * 0.42;
-        const endX = centerX + spread;
-
-        const cp1X = centerX + spread * 0.18;
-        const cp1Y = anchorY + 48 + Math.random() * 20;
-        const cp2X = centerX + spread * 0.7;
-        const cp2Y = targetY - 26 - Math.random() * 20;
-
-        const bridgePath = `M${startX},${anchorY} C${cp1X},${cp1Y} ${cp2X},${cp2Y} ${endX},${targetY}`;
-        const isCenter = Math.abs(t - 0.5) < 0.12;
-        const stroke = isCenter ? "rgba(70, 70, 70, 0.2)" : "rgba(70, 70, 70, 0.14)";
-        const widthPx = isCenter ? 0.9 : 0.65;
-        const opacity = isCenter ? 0.55 : 0.42;
-
-        bridgeGroup.append("path")
-            .attr("d", bridgePath)
-            .attr("fill", "none")
-            .attr("stroke", stroke)
-            .attr("stroke-width", widthPx)
-            .attr("opacity", opacity)
-            .attr("stroke-linecap", "round");
-    }
-
-    // Subtle joint nodes where bridge reaches the lower flow layer.
-    const nodeCount = 7;
-    for (let i = 0; i < nodeCount; i++) {
-        const t = nodeCount <= 1 ? 0 : i / (nodeCount - 1);
-        const x = centerX + (t - 0.5) * 180;
-        bridgeGroup.append("circle")
-            .attr("cx", x)
-            .attr("cy", targetY)
-            .attr("r", i === Math.floor(nodeCount / 2) ? 1.7 : 1.2)
-            .attr("fill", "rgba(70, 70, 70, 0.38)");
-    }
+    return callModuleFunction('FlowUI', 'drawBezierCoreBridge', [width, height, yBase]);
 }
 
 // Draw curves at bottom
 function drawLowerBezierGrid(num = 90) {
-    const width = window.innerWidth;
-    console.log("🔧 drawLowerBezierGrid called");
-    console.log("🔧 window.nginxFilesManager:", typeof window.nginxFilesManager);
-    // Initialize nginx files manager - wait for curves to be drawn first
-    // Curves need to be rendered before files can be attached to them
-    setTimeout(() => {
-        if (window.nginxFilesManager) {
-            console.log("🔧 Initializing NginxFilesManager after curves are drawn...");
-            window.nginxFilesManager.init();
-        }
-    }, 1500); // Wait 1.5 seconds for curves to finish animating
-    const height = window.innerHeight;
-    // Lift the whole lower flow construction without changing its geometry.
-    const lowerFlowYOffset = -25;
-    const yBase = height - 200 + lowerFlowYOffset;
-    drawBezierDecor(width, height, yBase);
-
-    for (let i = 0; i < num; i++) {
-        const fromLeft = i < num / 2;
-
-        const startX = fromLeft
-            ? 300 + Math.random() * 100
-            : width - 300 - Math.random() * 100;
-
-        const endX = width / 2 + (Math.random() - 0.5) * 200;
-        const endY = height - 160 - Math.random() * 40 + lowerFlowYOffset;
-
-        const controlX1 = startX + (fromLeft ? 150 : -150) + (Math.random() - 0.5) * 80;
-        const controlY1 = yBase - 60 - Math.random() * 40;
-
-        const controlX2 = endX + (Math.random() - 0.5) * 60;
-        const controlY2 = endY + 40 + Math.random() * 220;
-
-        const path = `M${startX},${yBase} C${controlX1},${controlY1} ${controlX2},${controlY2} ${endX},${endY}`;
-
-        const curveStroke = "rgba(60, 60, 60, 0.3)";
-        const curveStrokeWidth = 0.8;
-        const curveOpacity = 0.3;
-
-        // Draw Bezier curves with layered intensity like in the reference.
-        const bezierCurve = svg.append("path")
-            .attr("d", path)
-            .attr("class", "bezier-curve")
-            .attr("data-curve-index", i) // Add index for file association
-            .attr("stroke", curveStroke)
-            .attr("stroke-width", curveStrokeWidth)
-            .attr("opacity", 0) // Start invisible
-            .attr("data-original-stroke", curveStroke)
-            .attr("data-original-stroke-width", curveStrokeWidth)
-            .attr("data-original-opacity", curveOpacity)
-            .attr("fill", "none")
-            .attr("stroke-dasharray", function() {
-                const length = this.getTotalLength();
-                return length + " " + length;
-            })
-            .attr("stroke-dashoffset", function() {
-                return this.getTotalLength();
-            });
-
-        // Animate Bezier curve appearance
-        bezierCurve.transition()
-            .duration(400 + Math.random() * 300) // Random duration 400-700ms
-            .delay(i * 10) // Staggered animation
-            .attr("opacity", curveOpacity)
-            .attr("stroke-dashoffset", 0);
-    }
+    return callModuleFunction('FlowUI', 'drawLowerBezierGrid', [num]);
 }
 
 function fetchIsolationContext(forceRefresh = false) {
-    const now = Date.now();
-    if (!forceRefresh && isolationContextCache && (now - isolationContextCacheTs < 8000)) {
-        return Promise.resolve(isolationContextCache);
-    }
-    return fetch('/api/isolation-context')
-        .then(res => res.json())
-        .then(data => {
-            if (!data || data.error) {
-                throw new Error(data?.error || 'No isolation data');
-            }
-            isolationContextCache = data;
-            isolationContextCacheTs = now;
-            return data;
-        })
-        .catch(err => {
-            console.warn('Isolation context unavailable:', err.message);
-            return null;
-        });
+    return callModuleFunction('IsolationUI', 'fetchIsolationContext', [forceRefresh], Promise.resolve(null));
 }
 
 function drawIsolationConceptLayer(centerX, centerY, width, height) {
-    const mobileLayout = isMobileLayout();
-    // Skip overlay in Matrix/DNA modes to keep views clean.
-    if (window.kernelContextMenu && ['matrix', 'dna', 'dna-timeline'].includes(window.kernelContextMenu.currentView)) {
-        return;
-    }
-
-    const renderToken = ++isolationRenderToken;
-    d3.selectAll('.namespace-shell-layer, .cgroup-card-layer').remove();
-    fetchIsolationContext().then((data) => {
-        if (renderToken !== isolationRenderToken) return;
-        if (!data) return;
-        if (window.kernelContextMenu && ['matrix', 'dna', 'dna-timeline'].includes(window.kernelContextMenu.currentView)) {
-            return;
-        }
-        drawNamespaceShell(centerX, centerY, data.namespaces || []);
-        // Left-bottom slot is now reserved for IRQ stack panel.
-        // Keep cgroup card disabled to avoid visual overlap/noise.
-        d3.selectAll('.cgroup-card-layer').remove();
-    });
+    return callModuleFunction('IsolationUI', 'drawIsolationConceptLayer', [centerX, centerY, width, height]);
 }
 
 function drawNamespaceShell(centerX, centerY, namespaces) {
-    const shellGroup = svg.selectAll('.tag-icon').empty()
-        ? svg.append('g').attr('class', 'namespace-shell-layer')
-        : svg.insert('g', '.tag-icon').attr('class', 'namespace-shell-layer');
-
-    const preferredOrder = ['mnt', 'pid', 'net', 'ipc', 'uts', 'user'];
-    const byId = {};
-    namespaces.forEach(ns => { byId[ns.id] = ns; });
-    const ordered = preferredOrder.map(id => byId[id]).filter(Boolean);
-    const fallback = namespaces.filter(ns => !preferredOrder.includes(ns.id));
-    const namespaceSlots = [...ordered, ...fallback].slice(0, 8);
-
-    const numSlots = 8;
-    const angleStep = (2 * Math.PI) / numSlots;
-    const gap = 0.04;
-    // Keep enlarged scale while restoring "circle slice" geometry.
-    // Center namespace slices on Icon1 orbit (r=150).
-    const ringInner = 110;
-    const ringOuter = 190;
-
-    for (let i = 0; i < numSlots; i++) {
-        const ns = namespaceSlots[i];
-        if (!ns) continue; // keep free slots empty
-
-        const activity = Math.max(0, Math.min(1, Number(ns.activity || 0)));
-        // Center each namespace slice on the corresponding Icon1 angle.
-        const centerAngle = i * angleStep;
-        const startAngle = centerAngle - angleStep / 2 + gap;
-        const endAngle = centerAngle + angleStep / 2 - gap;
-        const arcPath = d3.arc()
-            .innerRadius(ringInner)
-            .outerRadius(ringOuter)
-            .startAngle(startAngle)
-            .endAngle(endAngle);
-
-        const segment = shellGroup.append('path')
-            .attr('d', arcPath())
-            .attr('transform', `translate(${centerX}, ${centerY})`)
-            .attr('fill', `rgba(60, 60, 60, ${0.07 + activity * 0.16})`)
-            .attr('stroke', `rgba(90, 90, 90, ${0.5 + activity * 0.32})`)
-            .attr('stroke-width', 1 + activity * 1.4)
-            .style('cursor', 'help');
-
-        const mid = (startAngle + endAngle) / 2;
-        const labelR = ringOuter - 12;
-        const lx = centerX + Math.cos(mid - Math.PI / 2) * labelR;
-        const ly = centerY + Math.sin(mid - Math.PI / 2) * labelR;
-        shellGroup.append('text')
-            .attr('x', lx)
-            .attr('y', ly)
-            .attr('text-anchor', 'middle')
-            .style('font-family', 'Share Tech Mono, monospace')
-            .style('font-size', '8px')
-            .style('letter-spacing', '0.5px')
-            .style('fill', '#d2d6de')
-            .text(ns.label || String(ns.id || 'NS').toUpperCase());
-
-        segment
-            .on('mouseenter', (event) => {
-                d3.selectAll('.ns-tooltip').remove();
-                d3.select('body')
-                    .append('div')
-                    .attr('class', 'tooltip ns-tooltip')
-                    .style('opacity', 0.95)
-                    .style('left', `${event.pageX + 10}px`)
-                    .style('top', `${event.pageY - 10}px`)
-                    .html(`
-                        <strong>Namespace ${ns.label || String(ns.id || '').toUpperCase()}</strong><br>
-                        <strong>Unique:</strong> ${ns.unique_count || 0}<br>
-                        <strong>Dominant:</strong> ${ns.dominant_count || 0} procs<br>
-                        <strong>Inode:</strong> ${ns.dominant_inode || 'n/a'}
-                    `);
-            })
-            .on('mousemove', (event) => {
-                d3.selectAll('.ns-tooltip')
-                    .style('left', `${event.pageX + 10}px`)
-                    .style('top', `${event.pageY - 10}px`);
-            })
-            .on('mouseleave', () => d3.selectAll('.ns-tooltip').remove());
-    }
+    return callModuleFunction('IsolationUI', 'drawNamespaceShell', [centerX, centerY, namespaces]);
 }
 
 function drawCgroupConceptCard(width, height, topCgroups) {
-    if (!topCgroups || topCgroups.length === 0) return;
-    const cgroup = topCgroups[0];
-    const cardX = 20;
-    const cardY = height - 230;
-    const cardW = 260;
-    const cardH = 145;
-    const barW = 150;
-
-    const group = svg.append('g')
-        .attr('class', 'cgroup-card-layer');
-
-    group.append('rect')
-        .attr('x', cardX)
-        .attr('y', cardY)
-        .attr('width', cardW)
-        .attr('height', cardH)
-        .attr('rx', 8)
-        .style('fill', '#333')
-        .style('stroke', '#555')
-        .style('stroke-width', '1px')
-        .style('opacity', 0.92);
-
-    group.append('text')
-        .attr('x', cardX + 10)
-        .attr('y', cardY + 18)
-        .style('font-family', 'Share Tech Mono, monospace')
-        .style('font-size', '10px')
-        .style('fill', '#d9dde4')
-        .style('letter-spacing', '0.7px')
-        .text('CGROUP PROFILE');
-
-    const shortPath = (cgroup.path || '/').length > 32 ? `${cgroup.path.slice(0, 29)}...` : (cgroup.path || '/');
-    group.append('text')
-        .attr('x', cardX + 10)
-        .attr('y', cardY + 32)
-        .style('font-family', 'Share Tech Mono, monospace')
-        .style('font-size', '9px')
-        .style('fill', '#c8ccd4')
-        .text(shortPath);
-
-    const drawMetricRow = (label, valueText, ratio, rowIndex) => {
-        const y = cardY + 48 + rowIndex * 22;
-        group.append('text')
-            .attr('x', cardX + 10)
-            .attr('y', y)
-            .style('font-family', 'Share Tech Mono, monospace')
-            .style('font-size', '8.5px')
-            .style('fill', '#c8ccd4')
-            .text(label);
-
-        group.append('rect')
-            .attr('x', cardX + 65)
-            .attr('y', y - 8)
-            .attr('width', barW)
-            .attr('height', 8)
-            .attr('rx', 2)
-            .attr('fill', 'rgba(220, 220, 220, 0.2)');
-
-        group.append('rect')
-            .attr('x', cardX + 65)
-            .attr('y', y - 8)
-            .attr('width', Math.max(2, barW * Math.max(0, Math.min(1, ratio))))
-            .attr('height', 8)
-            .attr('rx', 2)
-            .attr('fill', 'rgba(88, 182, 216, 0.68)');
-
-        group.append('text')
-            .attr('x', cardX + cardW - 8)
-            .attr('y', y)
-            .attr('text-anchor', 'end')
-            .style('font-family', 'Share Tech Mono, monospace')
-            .style('font-size', '8px')
-            .style('fill', '#dde2ea')
-            .text(valueText);
-    };
-
-    const procRatio = Math.min(1, (Number(cgroup.process_count || 0) / 120));
-    const memCurrent = Number(cgroup.memory_current_mb || cgroup.memory_mb_sum || 0);
-    const memMax = Number(cgroup.memory_max_mb || 0);
-    const memRatio = memMax > 0 ? Math.min(1, memCurrent / memMax) : Math.min(1, memCurrent / 4096);
-    const pidsCurrent = Number(cgroup.pids_current || cgroup.process_count || 0);
-    const pidsMax = Number(cgroup.pids_max || 0);
-    const pidsRatio = pidsMax > 0 ? Math.min(1, pidsCurrent / pidsMax) : Math.min(1, pidsCurrent / 256);
-    const ioMb = Number(cgroup.io_total_mb || 0);
-    const ioRatio = Math.min(1, ioMb / 1024);
-
-    drawMetricRow('PROC', `${cgroup.process_count || 0}`, procRatio, 0);
-    drawMetricRow('MEM', `${Math.round(memCurrent)}MB`, memRatio, 1);
-    drawMetricRow('PIDS', pidsMax > 0 ? `${pidsCurrent}/${pidsMax}` : `${pidsCurrent}`, pidsRatio, 2);
-    drawMetricRow('IO', `${Math.round(ioMb)}MB`, ioRatio, 3);
+    return callModuleFunction('IsolationUI', 'drawCgroupConceptCard', [width, height, topCgroups]);
 }
 
 // Show process files at the bottom of Bezier curves
 function showProcessFilesOnCurves(pid, processName) {
-    console.log(`🔍 Showing files for process ${pid} (${processName})`);
-    // Clear existing process files
-    hideProcessFilesOnCurves();
-    
-    // Fetch process files
-    fetch(`/api/process/${pid}/fds`)
-        .then(res => {
-            console.log(`📡 Response status for PID ${pid}:`, res.status);
-            return res.json();
-        })
-        .then(data => {
-            console.log(`📁 Data received for PID ${pid}:`, data);
-            // API returns 'open_files' not 'files'
-            const files = data.open_files || [];
-            console.log(`📄 Files found: ${files.length}`, files);
-            if (files.length === 0) {
-                console.log(`⚠️ No files found for process ${pid} (${processName})`);
-                // Don't show connections if no files - it's confusing
-                // Connections are network sockets, not files
-                console.log(`ℹ️ Skipping connections display - no files available for this process`);
-                return;
-            }
-            
-            const svg = d3.select('svg');
-            const width = window.innerWidth;
-            const height = window.innerHeight;
-            const centerX = width / 2;
-            
-            // Get all Bezier curves
-            const bezierCurves = d3.selectAll('.bezier-curve').nodes();
-            
-            // Select curves from bottom (start points)
-            const bottomCurves = [];
-            bezierCurves.forEach((curve, index) => {
-                const path = d3.select(curve);
-                const pathData = path.attr('d');
-                if (pathData) {
-                    const startMatches = pathData.match(/M([\d.]+),([\d.]+)/);
-                    if (startMatches) {
-                        const startX = parseFloat(startMatches[1]);
-                        const startY = parseFloat(startMatches[2]);
-                        if (startY > height - 250 && startY < height - 150) {
-                            bottomCurves.push({ index, startX, startY });
-                        }
-                    }
-                }
-            });
-            
-            // Sort and select curves evenly
-            bottomCurves.sort((a, b) => a.startX - b.startX);
-            
-            // Display files (filter out IP addresses and invalid paths)
-            const validFiles = files.filter(file => {
-                if (!file.path) return false;
-                const path = String(file.path).trim();
-                
-                // Filter out IP addresses (e.g., "0.0.0.0", "127.0.0.1") - check if entire path is an IP
-                const ipPattern = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?$/;
-                if (ipPattern.test(path)) {
-                    console.log(`🚫 Filtered out IP address: ${path}`);
-                    return false;
-                }
-                
-                // Filter out socket-like patterns
-                if (path.includes('socket:') || path.includes('pipe:') || path.includes('anon_inode:')) {
-                    console.log(`🚫 Filtered out special file: ${path}`);
-                    return false;
-                }
-                
-                // Allow /dev files (like /dev/null, /dev/shm, etc.) - they are valid files
-                if (path.startsWith('/dev/')) {
-                    return true;
-                }
-                
-                // Filter out paths that don't look like file paths (but allow /dev)
-                if (!path.startsWith('/')) {
-                    console.log(`🚫 Filtered out non-absolute path: ${path}`);
-                    return false;
-                }
-                
-                // Additional check: if filename (last part) looks like an IP address, filter it
-                const filename = path.split('/').pop();
-                if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(filename)) {
-                    console.log(`🚫 Filtered out path with IP-like filename: ${path}`);
-                    return false;
-                }
-                
-                return true;
-            });
-            
-            const numValidFiles = Math.min(validFiles.length, bottomCurves.length, 10); // Limit to 10 files
-            const step = Math.max(1, Math.floor(bottomCurves.length / numValidFiles));
-            
-            // Display files
-            console.log(`✅ Filtered ${validFiles.length} valid files from ${files.length} total`);
-            validFiles.slice(0, numValidFiles).forEach((file, i) => {
-                if (i * step < bottomCurves.length) {
-                    const curve = bottomCurves[i * step];
-                    let fileName = file.path ? file.path.split('/').pop() : `FD ${file.fd}`;
-                    // Additional safety check: if filename looks like an IP, skip it
-                    const ipPattern = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/;
-                    if (ipPattern.test(fileName)) {
-                        console.log(`⚠️ Skipping file with IP-like name: ${fileName} (from path: ${file.path})`);
-                        return; // Skip this file
-                    }
-                    const fileType = file.path ? (file.path.includes('log') ? 'log' : file.path.includes('conf') ? 'config' : 'other') : 'other';
-                    
-                    // Create file group
-                    const fileGroup = svg.append("g")
-                        .attr("class", `process-file-${pid}`)
-                        .attr("data-pid", pid);
-                    
-                    // Add endpoint circle
-                    const endpoint = fileGroup.append("circle")
-                        .attr("cx", curve.startX)
-                        .attr("cy", curve.startY)
-                        .attr("r", 4)
-                        .attr("class", "process-file-endpoint")
-                        .attr("fill", getFileTypeColor(fileType))
-                        .attr("stroke", "#fff")
-                        .attr("stroke-width", 1.5)
-                        .attr("opacity", 0.9);
-                    
-                    // Add pulsing animation
-                    const pulse = () => {
-                        endpoint.transition()
-                            .duration(1000)
-                            .attr("r", 6)
-                            .transition()
-                            .duration(1000)
-                            .attr("r", 4)
-                            .on("end", pulse);
-                    };
-                    pulse();
-                    
-                    // Add file label
-                    const label = fileGroup.append("text")
-                        .attr("x", curve.startX)
-                        .attr("y", curve.startY + 20)
-                        .attr("class", "process-file-label")
-                        .attr("text-anchor", "middle")
-                        .attr("font-size", "9px")
-                        .attr("fill", "#333")
-                        .attr("opacity", 0.9)
-                        .text(fileName);
-                    
-                    // Add background
-                    const bbox = label.node().getBBox();
-                    fileGroup.insert("rect", "text")
-                        .attr("x", bbox.x - 3)
-                        .attr("y", bbox.y - 2)
-                        .attr("width", bbox.width + 6)
-                        .attr("height", bbox.height + 4)
-                        .attr("class", "process-file-label-bg")
-                        .attr("fill", "rgba(255,255,255,0.95)")
-                        .attr("stroke", getFileTypeColor(fileType))
-                        .attr("stroke-width", 1)
-                        .attr("rx", 2);
-                    
-                    // Highlight associated curve
-                    const curveElement = bezierCurves[curve.index];
-                    if (curveElement) {
-                        d3.select(curveElement)
-                            .transition()
-                            .duration(200)
-                            .attr("stroke", getFileTypeColor(fileType))
-                            .attr("stroke-width", 1.5)
-                            .attr("opacity", 0.6);
-                    }
-                }
-            });
-        })
-        .catch(error => {
-            console.error(`❌ Error fetching files for process ${pid}:`, error);
-        });
+    return callModuleFunction('ProcessFilesUI', 'showProcessFilesOnCurves', [pid, processName]);
 }
 
 // Show connections on curves (alternative to files)
 function showConnectionsOnCurves(pid, connections) {
-    const svg = d3.select('svg');
-    const width = window.innerWidth;
-    const height = window.innerHeight;
-    const bezierCurves = d3.selectAll('.bezier-curve').nodes();
-    
-    const bottomCurves = [];
-    bezierCurves.forEach((curve, index) => {
-        const path = d3.select(curve);
-        const pathData = path.attr('d');
-        if (pathData) {
-            const startMatches = pathData.match(/M([\d.]+),([\d.]+)/);
-            if (startMatches) {
-                const startX = parseFloat(startMatches[1]);
-                const startY = parseFloat(startMatches[2]);
-                if (startY > height - 250 && startY < height - 150) {
-                    bottomCurves.push({ index, startX, startY });
-                }
-            }
-        }
-    });
-    
-    bottomCurves.sort((a, b) => a.startX - b.startX);
-    const numConnections = Math.min(connections.length, bottomCurves.length, 10);
-    const step = Math.max(1, Math.floor(bottomCurves.length / numConnections));
-    
-    // Filter out localhost connections (0.0.0.0, 127.0.0.1) - they're not interesting
-    const interestingConnections = connections.filter(conn => {
-        const local = conn.local_address || '';
-        const remote = conn.remote_address || '';
-        // Only show connections with remote addresses (active connections)
-        if (!remote) return false;
-        // Filter out localhost connections
-        if (remote.startsWith('127.0.0.1:') || remote.startsWith('::1:')) {
-            return false;
-        }
-        return true;
-    });
-    
-    // If no interesting connections, don't show anything
-    if (interestingConnections.length === 0) {
-        console.log(`ℹ️ No interesting connections to display for process ${pid}`);
-        return;
-    }
-    
-    const numInteresting = Math.min(interestingConnections.length, bottomCurves.length, 10);
-    const stepConn = Math.max(1, Math.floor(bottomCurves.length / numInteresting));
-    
-    interestingConnections.slice(0, numInteresting).forEach((conn, i) => {
-        if (i * stepConn < bottomCurves.length) {
-            const curve = bottomCurves[i * stepConn];
-            // Show remote address (more informative)
-            let connLabel = conn.remote_address || `Connection ${i+1}`;
-            // Extract IP and port for display
-            const parts = connLabel.split(':');
-            if (parts.length === 2) {
-                const ip = parts[0];
-                const port = parts[1];
-                connLabel = `${ip}:${port}`;
-            }
-            
-            const connGroup = svg.append("g")
-                .attr("class", `process-file-${pid}`)
-                .attr("data-pid", pid);
-            
-            const endpoint = connGroup.append("circle")
-                .attr("cx", curve.startX)
-                .attr("cy", curve.startY)
-                .attr("r", 4)
-                .attr("fill", "#4A90E2")
-                .attr("stroke", "#fff")
-                .attr("stroke-width", 1.5)
-                .attr("opacity", 0.9);
-            
-            const pulse = () => {
-                endpoint.transition()
-                    .duration(1000)
-                    .attr("r", 6)
-                    .transition()
-                    .duration(1000)
-                    .attr("r", 4)
-                    .on("end", pulse);
-            };
-            pulse();
-            
-            const label = connGroup.append("text")
-                .attr("x", curve.startX)
-                .attr("y", curve.startY + 20)
-                .attr("text-anchor", "middle")
-                .attr("font-size", "9px")
-                .attr("fill", "#333")
-                .text(connLabel);
-            
-            const bbox = label.node().getBBox();
-            connGroup.insert("rect", "text")
-                .attr("x", bbox.x - 3)
-                .attr("y", bbox.y - 2)
-                .attr("width", bbox.width + 6)
-                .attr("height", bbox.height + 4)
-                .attr("fill", "rgba(255,255,255,0.95)")
-                .attr("stroke", "#4A90E2")
-                .attr("stroke-width", 1)
-                .attr("rx", 2);
-            
-            const curveElement = bezierCurves[curve.index];
-            if (curveElement) {
-                d3.select(curveElement)
-                    .transition()
-                    .duration(200)
-                    .attr("stroke", "#4A90E2")
-                    .attr("stroke-width", 1.5)
-                    .attr("opacity", 0.6);
-            }
-        }
-    });
+    return callModuleFunction('ProcessFilesUI', 'showConnectionsOnCurves', [pid, connections]);
 }
 
 // Hide process files
 function hideProcessFilesOnCurves() {
-    d3.selectAll('[class^="process-file-"]').remove();
-    
-    // Reset all curves to original style
-    d3.selectAll('.bezier-curve')
-        .transition()
-        .duration(200)
-        .attr("stroke", function() {
-            return d3.select(this).attr("data-original-stroke") || "rgba(60, 60, 60, 0.3)";
-        })
-        .attr("stroke-width", function() {
-            return d3.select(this).attr("data-original-stroke-width") || 0.8;
-        })
-        .attr("opacity", function() {
-            return d3.select(this).attr("data-original-opacity") || 0.3;
-        });
+    return callModuleFunction('ProcessFilesUI', 'hideProcessFilesOnCurves');
 }
 
 // Helper function for file type colors
 function getFileTypeColor(type) {
-    const colors = {
-        'config': '#4A90E2',
-        'log': '#E24A4A',
-        'other': '#888'
-    };
-    return colors[type] || colors['other'];
+    return callModuleFunction('ProcessFilesUI', 'getFileTypeColor', [type], '#888');
 }
 
 // Update panel with real data from API
 function updatePanelData() {
-    // Mobile mode keeps only central process composition.
-    if (isMobileLayout()) {
-        d3.selectAll('.subsystem-indicator').remove();
-        return;
-    }
-    // Skip updating if Matrix View is active
-    if (window.kernelContextMenu && window.kernelContextMenu.currentView === 'matrix') {
-        return;
-    }
-    
-    fetch('/api/kernel-data')
-        .then(res => res.json())
-        .then(data => {
-            // Update processes count
-            const processesText = d3.select('#panel-value-2');
-            if (!processesText.empty() && data.processes) {
-                processesText.text(data.processes);
-            }
-            
-            // Update memory usage
-            const memoryText = d3.select('#panel-value-3');
-            if (!memoryText.empty() && data.system_stats) {
-                const memPercent = Math.round(data.system_stats.memory_total / (1024 * 1024 * 1024)); // GB
-                memoryText.text(`${memPercent} GB`);
-            }
-            
-            // Update subsystems visualization if available
-            if (data.subsystems) {
-                updateSubsystemsVisualization(data.subsystems);
-            }
-        })
-        .catch(error => {
-            console.error('Error updating panel data:', error);
-        });
-}
-
-// Update subsystems visualization with color coding
-function updateSubsystemsVisualization(subsystems) {
-    // Never render left metric menu in mobile layout.
-    if (isMobileLayout()) {
-        d3.selectAll('.subsystem-indicator').remove();
-        return;
-    }
-    // Skip rendering if Matrix View is active
-    if (window.kernelContextMenu && window.kernelContextMenu.currentView === 'matrix') {
-        console.log('⏸️ Skipping subsystems visualization - Matrix View is active');
-        return;
-    }
-    
-    const svg = d3.select('svg');
-    const width = window.innerWidth;
-    
-    // Remove old subsystem indicators
-    svg.selectAll('.subsystem-indicator').remove();
-    
-    // Draw subsystem indicators in left panel
-    const subsystemNames = ['memory_management', 'process_scheduler', 'file_system', 'network_stack'];
-    const subsystemLabels = {
-        'memory_management': 'Memory',
-        'process_scheduler': 'Scheduler',
-        'file_system': 'File System',
-        'network_stack': 'Network'
-    };
-    
-    subsystemNames.forEach((name, i) => {
-        const subsystem = subsystems[name];
-        if (!subsystem) return;
-        
-        const usage = subsystem.usage || 0;
-        const processes = subsystem.processes || 0;
-        
-        // Keep original gray color scheme
-        const x = 30;
-        const y = 380 + i * 25;
-        const barWidth = 200;
-        const barHeight = 15;
-        
-        // Background bar
-        svg.append("rect")
-            .attr("x", x)
-            .attr("y", y)
-            .attr("width", barWidth)
-            .attr("height", barHeight)
-            .attr("fill", "rgba(200, 200, 200, 0.2)")
-            .attr("stroke", "#aaa")
-            .attr("stroke-width", 0.5)
-            .attr("class", "subsystem-indicator");
-        
-        // Usage bar - gray color scheme
-        svg.append("rect")
-            .attr("x", x)
-            .attr("y", y)
-            .attr("width", (usage / 100) * barWidth)
-            .attr("height", barHeight)
-            .attr("fill", "#888")
-            .attr("opacity", 0.7)
-            .attr("class", "subsystem-indicator");
-        
-        // Label
-        svg.append("text")
-            .attr("x", x + 5)
-            .attr("y", y + 11)
-            .text(subsystemLabels[name] || name)
-            .attr("class", "feature-text subsystem-indicator")
-            .attr("font-size", "10px")
-            .attr("fill", "#222");
-        
-        // Usage percentage
-        svg.append("text")
-            .attr("x", x + barWidth - 5)
-            .attr("y", y + 11)
-            .text(`${usage}%`)
-            .attr("class", "feature-text subsystem-indicator")
-            .attr("font-size", "10px")
-            .attr("text-anchor", "end")
-            .attr("fill", "#222");
-    });
+    return callModuleFunction('UiChrome', 'updatePanelData');
 }
 
 // Draw social media icons
 function drawSocialIcons(width, height) {
-    // Twitter icon in bottom left corner
-    const twitterX = 30;
-    const twitterY = height - 30;
-    const iconSize = 20;
-    
-    // Create Twitter icon group
-    const twitterGroup = svg.append("g")
-        .attr("class", "social-icon")
-        .attr("transform", `translate(${twitterX}, ${twitterY})`)
-        .style("cursor", "pointer")
-        .on("click", () => {
-            window.open("https://x.com/_telesis", "_blank");
-        })
-        .on("mouseenter", function() {
-            d3.select(this).select("path").transition().duration(200).attr("fill", "#1DA1F2");
-        })
-        .on("mouseleave", function() {
-            d3.select(this).select("path").transition().duration(200).attr("fill", "#666");
-        });
-    
-    // Twitter bird icon (simplified SVG path)
-    twitterGroup.append("path")
-        .attr("d", "M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.114zm-1.161 17.52h1.833L7.084 4.126H5.117z")
-        .attr("fill", "#666")
-        .attr("stroke", "none");
-    
-    // Add subtle background circle
-    twitterGroup.insert("circle", "path")
-        .attr("cx", 0)
-        .attr("cy", 0)
-        .attr("r", iconSize/2 + 2)
-        .attr("fill", "rgba(255, 255, 255, 0.1)")
-        .attr("stroke", "rgba(102, 102, 102, 0.3)")
-        .attr("stroke-width", "0.5");
+    return callModuleFunction('UiChrome', 'drawSocialIcons', [width, height]);
 }
 
 // Start application after DOM load

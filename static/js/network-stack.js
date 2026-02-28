@@ -1,7 +1,7 @@
 // Network Stack Visualization - vertical packet flow through Linux networking layers
 // Version: 1
 
-console.log('🌐 network-stack.js v1: Script loading...');
+debugLog('🌐 network-stack.js v1: Script loading...');
 
 class NetworkStackVisualization {
     constructor() {
@@ -298,7 +298,7 @@ class NetworkStackVisualization {
             border-radius: 6px;
             padding: 10px 12px;
         `;
-        layersPanel.innerHTML = [
+        window.setSafeHtml(layersPanel, [
             'Userspace',
             '-> Socket API',
             '-> TCP/UDP',
@@ -306,7 +306,7 @@ class NetworkStackVisualization {
             '-> Netfilter',
             '-> Driver',
             '-> NIC'
-        ].join('<br>');
+        ].join('<br>'));
         this.container.appendChild(layersPanel);
         this.overlayNodes.push(layersPanel);
 
@@ -688,7 +688,7 @@ class NetworkStackVisualization {
 
         if (this.layerTooltipNode) {
             this.layerTooltipNode.style.display = 'block';
-            this.layerTooltipNode.innerHTML = this.getLayerTooltipContent(layerId);
+            window.setSafeHtml(this.layerTooltipNode, this.getLayerTooltipContent(layerId));
             this.layerTooltipNode.style.left = `${event.clientX + 12}px`;
             this.layerTooltipNode.style.top = `${event.clientY - 8}px`;
         }
@@ -778,4 +778,4 @@ class NetworkStackVisualization {
 }
 
 window.NetworkStackVisualization = NetworkStackVisualization;
-console.log('🌐 network-stack.js: NetworkStackVisualization exported to window');
+debugLog('🌐 network-stack.js: NetworkStackVisualization exported to window');
