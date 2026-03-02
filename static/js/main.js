@@ -272,7 +272,7 @@ function draw() {
 
     // Draw namespaces + cgroups concept overlays
     drawIsolationConceptLayer(centerX, centerY, width, height);
-    
+
     // Render right semicircle menu (after all other elements)
     if (window.rightSemicircleMenuManager) {
         window.rightSemicircleMenuManager.renderRightSemicircleMenu();

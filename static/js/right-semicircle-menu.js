@@ -14,7 +14,7 @@ class RightSemicircleMenuManager {
             { id: 'kernel', icon: '/static/images/linux-kernel.svg', label: 'Kernel DNA' }
         ];
         this.isVisible = false;
-        this.hoveredItemId = null; // Track hovered item (for hover-based selection)
+        this.hoveredItemId = null; // Track hovered item for simple enter/leave coloring
         this.isClickingOverlay = false; // Track if we're in the process of clicking overlay views
     }
 
@@ -28,6 +28,49 @@ class RightSemicircleMenuManager {
 
     isOverlayItem(itemId) {
         return itemId === 'kernel' || itemId === 'network' || itemId === 'devices' || itemId === 'files';
+    }
+
+    setItemHoverState(itemGroup, isHovered, hudStrokeHair, hudStrokeNormal, hudStrokeAccent) {
+        if (!itemGroup || itemGroup.empty()) return;
+
+        itemGroup.select('.right-menu-line')
+            .style('fill', isHovered ? '#ffffff' : '#2f3238')
+            .style('stroke', isHovered ? '#000000' : '#5f646d')
+            .style('stroke-width', isHovered ? `${hudStrokeAccent}px` : `${hudStrokeNormal}px`)
+            .style('filter', isHovered ? 'drop-shadow(0 0 5px rgba(200,210,225,0.4))' : 'none');
+
+        itemGroup.select('.right-menu-separator-top')
+            .style('stroke', isHovered ? 'rgba(0,0,0,0.36)' : 'rgba(206, 212, 220, 0.22)')
+            .style('stroke-width', `${hudStrokeHair}px`);
+
+        itemGroup.select('.right-menu-separator-bottom')
+            .style('stroke', isHovered ? 'rgba(0,0,0,0.32)' : 'rgba(12, 14, 18, 0.35)')
+            .style('stroke-width', `${hudStrokeHair}px`);
+
+        itemGroup.select('.right-menu-label')
+            .style('fill', isHovered ? '#000000' : '#d6dce5')
+            .style('font-weight', isHovered ? 'bold' : 'normal')
+            .style('letter-spacing', isHovered ? '0.35px' : '0.2px');
+
+        itemGroup.select('.right-menu-item')
+            .style('fill', isHovered ? '#ffffff' : '#333')
+            .style('stroke', isHovered ? '#000000' : '#5f646d')
+            .style('stroke-width', isHovered ? `${hudStrokeAccent}px` : `${hudStrokeNormal}px`)
+            .style('filter', isHovered ? 'drop-shadow(0 0 6px rgba(205, 214, 228, 0.45))' : 'none');
+
+        itemGroup.select('.right-menu-icon-bg')
+            .style('opacity', isHovered ? 0.8 : 0);
+
+        itemGroup.select('.right-menu-icon')
+            .style('opacity', isHovered ? 1 : 0.8);
+    }
+
+    clearAllHoverStates(svg, hudStrokeHair, hudStrokeNormal, hudStrokeAccent) {
+        svg.selectAll('.right-menu-item-group').each((_, __, nodes) => {
+            const group = d3.select(nodes[__]);
+            this.setItemHoverState(group, false, hudStrokeHair, hudStrokeNormal, hudStrokeAccent);
+        });
+        this.hoveredItemId = null;
     }
 
     activateOverlayView(itemId) {
@@ -51,6 +94,7 @@ class RightSemicircleMenuManager {
 
         // Clear existing semicircle elements (but preserve kernel submenu)
         this.clearRendered(svg);
+        this.hoveredItemId = null;
 
         // Semicircle parameters
         const menuRadius = height * 0.4;
@@ -178,7 +222,6 @@ class RightSemicircleMenuManager {
             const itemX = menuX + Math.cos(angle) * itemDistance;
             const itemY = menuY + Math.sin(angle) * itemDistance;
 
-            const isHovered = this.hoveredItemId === item.id;
             const isOverlay = this.isOverlayItem(item.id);
             
             // Wide horizontal line (rectangle) extending left from the circle
@@ -231,8 +274,11 @@ class RightSemicircleMenuManager {
                 if (this.isClickingOverlay) {
                     return;
                 }
-                this.hoveredItemId = item.id;
-                this.renderRightSemicircleMenu();
+                if (this.hoveredItemId !== item.id) {
+                    this.clearAllHoverStates(svg, hudStrokeHair, hudStrokeNormal, hudStrokeAccent);
+                    this.hoveredItemId = item.id;
+                    this.setItemHoverState(itemGroup, true, hudStrokeHair, hudStrokeNormal, hudStrokeAccent);
+                }
                 
                 // Show Matrix View submenu ONLY if hovering over Processes item
                 if (item.id === 'processes' && window.kernelContextMenu) {
@@ -284,7 +330,7 @@ class RightSemicircleMenuManager {
                     }
 
                     this.hoveredItemId = null;
-                    this.renderRightSemicircleMenu();
+                    this.setItemHoverState(itemGroup, false, hudStrokeHair, hudStrokeNormal, hudStrokeAccent);
 
                     if (item.id === 'processes' && window.kernelContextMenu) {
                         window.kernelContextMenu.hideSubmenu();
@@ -319,8 +365,7 @@ class RightSemicircleMenuManager {
                     setTimeout(() => {
                         this.isClickingOverlay = false;
                         if (this.hoveredItemId !== null) {
-                            this.hoveredItemId = null;
-                            this.renderRightSemicircleMenu();
+                            this.clearAllHoverStates(svg, hudStrokeHair, hudStrokeNormal, hudStrokeAccent);
                             if (window.kernelContextMenu) {
                                 window.kernelContextMenu.hideSubmenu();
                             }
@@ -358,10 +403,10 @@ class RightSemicircleMenuManager {
                            Q ${lineEndX} ${lineY + lineHeight} ${lineEndX + borderRadius} ${lineY + lineHeight}
                            L ${lineStartX} ${lineY + lineHeight}
                            Z`)
-                .style('fill', isHovered ? '#ffffff' : '#2f3238') // White if hovered, darker HUD fill when idle
-                .style('stroke', isHovered ? '#000000' : '#5f646d') // Keep black outline when bar becomes white
-                .style('stroke-width', isHovered ? `${hudStrokeAccent}px` : `${hudStrokeNormal}px`)
-                .style('filter', isHovered ? 'drop-shadow(0 0 5px rgba(200,210,225,0.4))' : 'none')
+                .style('fill', '#2f3238')
+                .style('stroke', '#5f646d')
+                .style('stroke-width', `${hudStrokeNormal}px`)
+                .style('filter', 'none')
                 .style('transition', 'all 0.3s ease')
                 .style('pointer-events', 'none')
                 .style('cursor', 'pointer')
@@ -370,20 +415,22 @@ class RightSemicircleMenuManager {
 
             // Subtle HUD separators (hairline top highlight + bottom shade).
             itemGroup.append('line')
+                .attr('class', 'right-menu-separator-top')
                 .attr('x1', lineEndX + borderRadius + 2)
                 .attr('y1', lineY + 1.3)
                 .attr('x2', lineStartX - 2)
                 .attr('y2', lineY + 1.3)
-                .style('stroke', isHovered ? 'rgba(0,0,0,0.36)' : 'rgba(206, 212, 220, 0.22)')
+                .style('stroke', 'rgba(206, 212, 220, 0.22)')
                 .style('stroke-width', `${hudStrokeHair}px`)
                 .style('pointer-events', 'none');
 
             itemGroup.append('line')
+                .attr('class', 'right-menu-separator-bottom')
                 .attr('x1', lineEndX + borderRadius + 2)
                 .attr('y1', lineY + lineHeight - 1.2)
                 .attr('x2', lineStartX - 2)
                 .attr('y2', lineY + lineHeight - 1.2)
-                .style('stroke', isHovered ? 'rgba(0,0,0,0.32)' : 'rgba(12, 14, 18, 0.35)')
+                .style('stroke', 'rgba(12, 14, 18, 0.35)')
                 .style('stroke-width', `${hudStrokeHair}px`)
                 .style('pointer-events', 'none');
 
@@ -398,10 +445,10 @@ class RightSemicircleMenuManager {
                 .attr('text-anchor', 'middle')
                 .attr('dominant-baseline', 'central')
                 .style('font-size', '12px')
-                .style('fill', isHovered ? '#000000' : '#d6dce5') // Black text on white bg if hovered, muted white if not
+                .style('fill', '#d6dce5')
                 .style('font-family', 'Share Tech Mono', 'monospace')
-                .style('font-weight', isHovered ? 'bold' : 'normal')
-                .style('letter-spacing', isHovered ? '0.35px' : '0.2px')
+                .style('font-weight', 'normal')
+                .style('letter-spacing', '0.2px')
                 .style('transition', 'all 0.3s ease')
                 .style('pointer-events', 'none')
                 .text(item.label);
@@ -414,26 +461,24 @@ class RightSemicircleMenuManager {
                 .attr('cx', itemX)
                 .attr('cy', itemY)
                 .attr('r', itemRadius)
-                .style('fill', isHovered ? '#ffffff' : '#333') // White if hovered
-                .style('stroke', isHovered ? '#000000' : '#5f646d')
-                .style('stroke-width', isHovered ? `${hudStrokeAccent}px` : `${hudStrokeNormal}px`)
-                .style('filter', isHovered ? 'drop-shadow(0 0 6px rgba(205, 214, 228, 0.45))' : 'none')
+                .style('fill', '#333')
+                .style('stroke', '#5f646d')
+                .style('stroke-width', `${hudStrokeNormal}px`)
+                .style('filter', 'none')
                 .style('cursor', 'pointer')
                 .style('pointer-events', 'none')
                 .style('transition', 'all 0.3s ease');
 
             // SVG icon inside the circle
-            // If hovered (white circle), add dark background for icon visibility
             const iconSize = itemRadius * 1.5;
-            if (isHovered) {
-                // Add dark circle behind icon for contrast on white background
-                itemGroup.append('circle')
-                    .attr('cx', itemX)
-                    .attr('cy', itemY)
-                    .attr('r', itemRadius * 0.7)
-                    .style('fill', '#333')
-                    .style('opacity', 0.8);
-            }
+            itemGroup.append('circle')
+                .attr('class', 'right-menu-icon-bg')
+                .attr('cx', itemX)
+                .attr('cy', itemY)
+                .attr('r', itemRadius * 0.7)
+                .style('fill', '#333')
+                .style('opacity', 0)
+                .style('pointer-events', 'none');
             
             itemGroup.append('image')
                 .attr('class', 'right-menu-icon')
@@ -443,7 +488,8 @@ class RightSemicircleMenuManager {
                 .attr('width', iconSize)
                 .attr('height', iconSize)
                 .attr('href', item.icon)
-                .style('opacity', isHovered ? 1 : 0.8);
+                .style('opacity', 0.8)
+                .style('pointer-events', 'none');
         });
 
         this.isVisible = true;
