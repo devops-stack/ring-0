@@ -34,8 +34,8 @@ class RightSemicircleMenuManager {
         if (!itemGroup || itemGroup.empty()) return;
 
         itemGroup.select('.right-menu-line')
-            .style('fill', isHovered ? '#ffffff' : '#2f3238')
-            .style('stroke', isHovered ? '#000000' : '#5f646d')
+            .style('fill', isHovered ? '#ffffff' : '#333333')
+            .style('stroke', isHovered ? '#000000' : '#555555')
             .style('stroke-width', isHovered ? `${hudStrokeAccent}px` : `${hudStrokeNormal}px`)
             .style('filter', isHovered ? 'drop-shadow(0 0 5px rgba(200,210,225,0.4))' : 'none');
 
@@ -48,13 +48,13 @@ class RightSemicircleMenuManager {
             .style('stroke-width', `${hudStrokeHair}px`);
 
         itemGroup.select('.right-menu-label')
-            .style('fill', isHovered ? '#000000' : '#d6dce5')
+            .style('fill', isHovered ? '#000000' : '#c8ccd4')
             .style('font-weight', isHovered ? 'bold' : 'normal')
             .style('letter-spacing', isHovered ? '0.35px' : '0.2px');
 
         itemGroup.select('.right-menu-item')
             .style('fill', isHovered ? '#ffffff' : '#333')
-            .style('stroke', isHovered ? '#000000' : '#5f646d')
+            .style('stroke', isHovered ? '#000000' : '#555555')
             .style('stroke-width', isHovered ? `${hudStrokeAccent}px` : `${hudStrokeNormal}px`)
             .style('filter', isHovered ? 'drop-shadow(0 0 6px rgba(205, 214, 228, 0.45))' : 'none');
 
@@ -403,8 +403,8 @@ class RightSemicircleMenuManager {
                            Q ${lineEndX} ${lineY + lineHeight} ${lineEndX + borderRadius} ${lineY + lineHeight}
                            L ${lineStartX} ${lineY + lineHeight}
                            Z`)
-                .style('fill', '#2f3238')
-                .style('stroke', '#5f646d')
+                .style('fill', '#333333')
+                .style('stroke', '#555555')
                 .style('stroke-width', `${hudStrokeNormal}px`)
                 .style('filter', 'none')
                 .style('transition', 'all 0.3s ease')
@@ -445,7 +445,7 @@ class RightSemicircleMenuManager {
                 .attr('text-anchor', 'middle')
                 .attr('dominant-baseline', 'central')
                 .style('font-size', '12px')
-                .style('fill', '#d6dce5')
+                .style('fill', '#c8ccd4')
                 .style('font-family', 'Share Tech Mono', 'monospace')
                 .style('font-weight', 'normal')
                 .style('letter-spacing', '0.2px')
@@ -462,7 +462,7 @@ class RightSemicircleMenuManager {
                 .attr('cy', itemY)
                 .attr('r', itemRadius)
                 .style('fill', '#333')
-                .style('stroke', '#5f646d')
+                .style('stroke', '#555555')
                 .style('stroke-width', `${hudStrokeNormal}px`)
                 .style('filter', 'none')
                 .style('cursor', 'pointer')
