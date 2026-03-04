@@ -750,6 +750,7 @@ class KernelDNAVisualization {
             z-index: 1001;
         `;
         this.container.appendChild(titleDiv);
+        this.appendInDevelopmentLabel(52);
 
         // Add process selector
         this.addProcessSelector();
@@ -951,6 +952,7 @@ class KernelDNAVisualization {
             z-index: 1001;
         `;
         this.container.appendChild(titleDiv);
+        this.appendInDevelopmentLabel(52);
         
         // Add legend - Diegetic UI style
         const legendDiv = document.createElement('div');
@@ -971,6 +973,29 @@ class KernelDNAVisualization {
             z-index: 1001;
         `;
         this.container.appendChild(legendDiv);
+    }
+
+    appendInDevelopmentLabel(topPx = 52) {
+        const existing = this.container.querySelectorAll('.dna-dev-label');
+        existing.forEach((node) => node.remove());
+
+        const devLabel = document.createElement('div');
+        devLabel.className = 'dna-dev-label';
+        devLabel.textContent = '(in development)';
+        devLabel.style.cssText = `
+            position: absolute;
+            top: ${topPx}px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(200, 204, 212, 0.68);
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 11px;
+            letter-spacing: 0.55px;
+            z-index: 1001;
+            pointer-events: none;
+            text-transform: lowercase;
+        `;
+        this.container.appendChild(devLabel);
     }
 
     animate() {

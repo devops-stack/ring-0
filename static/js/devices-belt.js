@@ -1,7 +1,7 @@
 // Orbital Device Ring Visualization
-// Version: 3
+// Version: 8
 
-debugLog('🧲 devices-belt.js v3: Script loading...');
+debugLog('🧲 devices-belt.js v8: Script loading...');
 
 class DevicesBeltVisualization {
     constructor() {
@@ -26,12 +26,13 @@ class DevicesBeltVisualization {
         this.pulses = [];
 
         this.subsystemOrder = ['block', 'net', 'char', 'input', 'usb'];
+        // For links/pulses only; circles stay black+white.
         this.subsystemColors = {
-            block: 0xe2b85f,
-            net: 0x58b6d8,
-            char: 0xc28ee8,
-            input: 0x7fd39a,
-            usb: 0xd98fa6
+            block: 0xaab2bc,
+            net: 0x8f99a6,
+            char: 0x7f8894,
+            input: 0x9aa3ad,
+            usb: 0x6f7884
         };
     }
 
@@ -81,11 +82,7 @@ class DevicesBeltVisualization {
         this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
         this.container.appendChild(this.renderer.domElement);
 
-        const ambient = new THREE.AmbientLight(0xffffff, 0.85);
-        const key = new THREE.DirectionalLight(0xffffff, 0.5);
-        key.position.set(5, 8, 9);
-        this.scene.add(ambient);
-        this.scene.add(key);
+        // Intentionally no scene lights: flat HUD look (no 3D shading/highlights).
 
         this.createBaseScene();
         this.createOverlayUI();
@@ -98,18 +95,25 @@ class DevicesBeltVisualization {
     }
 
     createBaseScene() {
-        const coreGeom = new THREE.SphereGeometry(1.05, 30, 30);
-        const coreMat = new THREE.MeshStandardMaterial({
-            color: 0x7b848f,
-            emissive: 0x222831,
-            emissiveIntensity: 0.4,
-            roughness: 0.35,
-            metalness: 0.45,
+        const coreGeom = new THREE.CircleGeometry(1.08, 48);
+        const coreMat = new THREE.MeshBasicMaterial({
+            color: 0x000000,
             transparent: true,
-            opacity: 0.94
+            opacity: 0.95
         });
         this.centralCore = new THREE.Mesh(coreGeom, coreMat);
         this.scene.add(this.centralCore);
+        const coreOutline = new THREE.LineLoop(
+            new THREE.BufferGeometry().setFromPoints(
+                Array.from({ length: 72 }, (_, i) => {
+                    const a = (i / 72) * Math.PI * 2;
+                    return new THREE.Vector3(Math.cos(a) * 1.08, Math.sin(a) * 1.08, 0.001);
+                })
+            ),
+            new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.96 })
+        );
+        this.scene.add(coreOutline);
+        this.ringGuides.push(coreOutline);
 
         const firstRing = new THREE.LineLoop(
             new THREE.BufferGeometry().setFromPoints(
@@ -118,7 +122,7 @@ class DevicesBeltVisualization {
                     return new THREE.Vector3(Math.cos(a) * 4.4, Math.sin(a) * 4.4, 0);
                 })
             ),
-            new THREE.LineBasicMaterial({ color: 0x6a7581, transparent: true, opacity: 0.28 })
+            new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.18 })
         );
 
         const secondRing = new THREE.LineLoop(
@@ -128,15 +132,15 @@ class DevicesBeltVisualization {
                     return new THREE.Vector3(Math.cos(a) * 7.5, Math.sin(a) * 7.5, 0);
                 })
             ),
-            new THREE.LineBasicMaterial({ color: 0x5d6772, transparent: true, opacity: 0.2 })
+            new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.12 })
         );
 
         this.scene.add(firstRing);
         this.scene.add(secondRing);
         this.ringGuides.push(firstRing, secondRing);
 
-        const coreLabel = this.createLabelSprite('KERNEL CORE', '#d6dbe4', 260, 34);
-        coreLabel.position.set(0, -1.7, 0);
+        const coreLabel = this.createLabelSprite('KERNEL CORE', '#ffffff', 260, 13, 1.38, 0.42, 0.3);
+        coreLabel.position.set(0, 0, 0.002);
         this.scene.add(coreLabel);
         this.ringGuides.push(coreLabel);
     }
@@ -154,7 +158,7 @@ class DevicesBeltVisualization {
             letter-spacing: 1px;
             z-index: 1001;
         `;
-        title.textContent = 'ORBITAL DEVICE RING';
+        title.textContent = 'ORBITAL DEVICE RING (in development)';
         this.container.appendChild(title);
         this.overlayNodes.push(title);
 
@@ -254,7 +258,7 @@ class DevicesBeltVisualization {
         this.exitButton = btn;
     }
 
-    createLabelSprite(text, color = '#c8ccd4', width = 220, fontSize = 28) {
+    createLabelSprite(text, color = '#c8ccd4', width = 220, fontSize = 28, scaleX = 1.8, scaleY = 0.52, letterSpacing = 0.3) {
         const canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = 76;
@@ -262,15 +266,27 @@ class DevicesBeltVisualization {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.font = `${fontSize}px "Share Tech Mono", monospace`;
         ctx.fillStyle = color;
-        ctx.textAlign = 'center';
+        ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        ctx.fillText(String(text || ''), canvas.width / 2, canvas.height / 2);
+        const label = String(text || '').toUpperCase();
+        const chars = Array.from(label);
+        let totalWidth = 0;
+        chars.forEach((ch, idx) => {
+            totalWidth += ctx.measureText(ch).width;
+            if (idx < chars.length - 1) totalWidth += letterSpacing;
+        });
+        let x = (canvas.width - totalWidth) / 2;
+        const y = canvas.height / 2;
+        chars.forEach((ch) => {
+            ctx.fillText(ch, x, y);
+            x += ctx.measureText(ch).width + letterSpacing;
+        });
 
         const texture = new THREE.CanvasTexture(canvas);
         texture.needsUpdate = true;
         const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
         const sprite = new THREE.Sprite(material);
-        sprite.scale.set(1.8, 0.52, 1);
+        sprite.scale.set(scaleX, scaleY, 1);
         return sprite;
     }
 
@@ -354,32 +370,37 @@ class DevicesBeltVisualization {
 
             const totalLoad = devicesForSub.reduce((acc, d) => acc + Number(d.load_norm || 0), 0);
             const avgLoad = devicesForSub.length ? totalLoad / devicesForSub.length : 0;
-            const color = this.subsystemColors[sub] || 0x8fa0b3;
-
+            const color = this.subsystemColors[sub] || 0x8a939f;
             const subNode = new THREE.Mesh(
-                new THREE.SphereGeometry(0.45 + avgLoad * 0.2, 22, 22),
-                new THREE.MeshStandardMaterial({
-                    color,
-                    emissive: color,
-                    emissiveIntensity: 0.25 + avgLoad * 0.35,
-                    roughness: 0.5,
-                    metalness: 0.2
+                new THREE.CircleGeometry(0.44 + avgLoad * 0.16, 28),
+                new THREE.MeshBasicMaterial({
+                    color: 0x000000,
+                    transparent: true,
+                    opacity: 0.95
                 })
             );
             subNode.position.copy(pos);
             this.scene.add(subNode);
             this.subsystemNodes.push(subNode);
-
-            const subGlow = new THREE.Mesh(
-                new THREE.SphereGeometry(0.72 + avgLoad * 0.32, 16, 16),
-                new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.12 + avgLoad * 0.2 })
+            const subRadius = 0.44 + avgLoad * 0.16;
+            const subOutline = new THREE.LineLoop(
+                new THREE.BufferGeometry().setFromPoints(
+                    Array.from({ length: 48 }, (_, i) => {
+                        const a = (i / 48) * Math.PI * 2;
+                        return new THREE.Vector3(
+                            pos.x + Math.cos(a) * subRadius,
+                            pos.y + Math.sin(a) * subRadius,
+                            0.001
+                        );
+                    })
+                ),
+                new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.94 })
             );
-            subGlow.position.copy(pos);
-            this.scene.add(subGlow);
-            this.subsystemNodes.push(subGlow);
+            this.scene.add(subOutline);
+            this.subsystemNodes.push(subOutline);
 
-            const subLabel = this.createLabelSprite(sub.toUpperCase(), '#cfd5de', 180, 24);
-            subLabel.position.set(pos.x, pos.y - 0.9, 0);
+            const subLabel = this.createLabelSprite(sub.toUpperCase(), '#ffffff', 180, 11, 0.86, 0.24, 0.3);
+            subLabel.position.set(pos.x, pos.y, 0.002);
             this.scene.add(subLabel);
             this.subsystemNodes.push(subLabel);
 
@@ -393,30 +414,38 @@ class DevicesBeltVisualization {
                 const devPos = new THREE.Vector3(pos.x + dx, pos.y + dy, 0);
 
                 const load = Number(d.load_norm || 0);
+                const devRadius = 0.16 + load * 0.08;
                 const node = new THREE.Mesh(
-                    new THREE.SphereGeometry(0.17 + load * 0.11, 14, 14),
-                    new THREE.MeshBasicMaterial({ color })
+                    new THREE.CircleGeometry(devRadius, 18),
+                    new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.95 })
                 );
                 node.position.copy(devPos);
                 node.userData.device = d;
                 this.scene.add(node);
                 this.deviceNodes.push(node);
-
-                const glow = new THREE.Mesh(
-                    new THREE.SphereGeometry(0.26 + load * 0.17, 12, 12),
-                    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.18 + load * 0.24 })
+                const devOutline = new THREE.LineLoop(
+                    new THREE.BufferGeometry().setFromPoints(
+                        Array.from({ length: 24 }, (_, i) => {
+                            const a = (i / 24) * Math.PI * 2;
+                            return new THREE.Vector3(
+                                devPos.x + Math.cos(a) * devRadius,
+                                devPos.y + Math.sin(a) * devRadius,
+                                0.001
+                            );
+                        })
+                    ),
+                    new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 })
                 );
-                glow.position.copy(devPos);
-                this.scene.add(glow);
-                this.deviceNodes.push(glow);
+                this.scene.add(devOutline);
+                this.deviceNodes.push(devOutline);
 
                 const shortName = String(d.name || '').slice(0, 10);
-                const devLabel = this.createLabelSprite(shortName, '#aeb7c4', 140, 18);
-                devLabel.position.set(devPos.x, devPos.y - 0.46, 0);
+                const devLabel = this.createLabelSprite(shortName, '#ffffff', 140, 10, 0.42, 0.13, 0.3);
+                devLabel.position.set(devPos.x, devPos.y, 0.002);
                 this.scene.add(devLabel);
                 this.deviceNodes.push(devLabel);
 
-                this.linkLine(devPos, pos, color, 0.2 + load * 0.45, d, load);
+                this.linkLine(devPos, pos, color, 0.16 + load * 0.34, d, load);
             });
         });
     }
@@ -427,9 +456,9 @@ class DevicesBeltVisualization {
         const pulse = new THREE.Mesh(
             new THREE.SphereGeometry(0.05 + baseLoad * 0.07, 10, 10),
             new THREE.MeshBasicMaterial({
-                color: 0xc8d4e5,
+                color: 0xb0bac7,
                 transparent: true,
-                opacity: 0.95
+                opacity: 0.88
             })
         );
         pulse.userData = {
