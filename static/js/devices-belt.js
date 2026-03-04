@@ -284,7 +284,12 @@ class DevicesBeltVisualization {
 
         const texture = new THREE.CanvasTexture(canvas);
         texture.needsUpdate = true;
-        const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
+        const material = new THREE.SpriteMaterial({
+            map: texture,
+            transparent: true,
+            depthWrite: false,
+            depthTest: false
+        });
         const sprite = new THREE.Sprite(material);
         sprite.scale.set(scaleX, scaleY, 1);
         return sprite;
@@ -440,8 +445,9 @@ class DevicesBeltVisualization {
                 this.deviceNodes.push(devOutline);
 
                 const shortName = String(d.name || '').slice(0, 10);
-                const devLabel = this.createLabelSprite(shortName, '#ffffff', 140, 10, 0.42, 0.13, 0.3);
-                devLabel.position.set(devPos.x, devPos.y, 0.002);
+                const devLabel = this.createLabelSprite(shortName, '#f2f5fa', 240, 13, 1.95, 0.56, 0.3);
+                // Match syscall caption style and place label under device node.
+                devLabel.position.set(devPos.x, devPos.y - devRadius - 0.24, 0.002);
                 this.scene.add(devLabel);
                 this.deviceNodes.push(devLabel);
 
