@@ -50,6 +50,10 @@ FILESYSTEM_PREV = {
     "timestamp": None,
     "write_bytes": None
 }
+CRYPTO_PREV = {
+    "timestamp": None,
+    "active_flows": 0
+}
 EXEC_CONTEXT_PREV = {
     "timestamp": None,
     "irq_totals": {},
@@ -3185,12 +3189,137 @@ def map_interrupt_to_subsystem(interrupt_name):
     else:
         return 'kernel'
 
+def infer_crypto_protocol(local_port, remote_port, process_name):
+    """Infer protocol likely using kernel crypto from socket and process context."""
+    tls_ports = {443, 465, 636, 853, 993, 995, 2376, 6443, 8443, 9443}
+    ssh_ports = {22}
+    wg_ports = {51820}
+    p_name = (process_name or "").lower()
+    ports = {int(local_port or 0), int(remote_port or 0)}
+
+    if ports & ssh_ports or "sshd" in p_name or "ssh" in p_name:
+        return "SSH", "ChaCha20-Poly1305"
+    if ports & wg_ports or "wg" in p_name or "wireguard" in p_name:
+        return "WireGuard", "ChaCha20"
+    if ports & tls_ports or any(x in p_name for x in ["nginx", "haproxy", "curl", "wget", "openssl", "stunnel", "traefik"]):
+        return "TLS", "AES-GCM/SHA256"
+    return "Crypto API", "AES/SHA"
+
+def collect_crypto_realtime():
+    """
+    Build a near-realtime list of processes likely interacting with kernel crypto.
+    This is heuristic-based and derived from active network/process context.
+    """
+    items = []
+    active_names = set()
+
+    try:
+        connections = psutil.net_connections(kind="inet")
+    except Exception:
+        connections = []
+
+    for conn in connections:
+        pid = getattr(conn, "pid", None)
+        status = str(getattr(conn, "status", "") or "")
+        if not pid or status not in ("ESTABLISHED", "SYN_SENT", "SYN_RECV"):
+            continue
+
+        laddr = getattr(conn, "laddr", None)
+        raddr = getattr(conn, "raddr", None)
+        local_ip = getattr(laddr, "ip", "") if laddr else ""
+        local_port = getattr(laddr, "port", 0) if laddr else 0
+        remote_ip = getattr(raddr, "ip", "") if raddr else ""
+        remote_port = getattr(raddr, "port", 0) if raddr else 0
+
+        try:
+            proc = psutil.Process(pid)
+            process_name = proc.name()
+        except Exception:
+            process_name = f"pid-{pid}"
+
+        protocol, algorithm = infer_crypto_protocol(local_port, remote_port, process_name)
+        active_names.add(process_name.lower())
+        endpoint = f"{remote_ip}:{remote_port}" if remote_ip else f"{local_ip}:{local_port}"
+
+        items.append({
+            "process": process_name.lower(),
+            "pid": int(pid),
+            "protocol": protocol,
+            "algorithm": algorithm,
+            "endpoint": endpoint,
+            "local_port": int(local_port or 0),
+            "remote_port": int(remote_port or 0),
+            "status": status
+        })
+
+    # If no sockets are available, still expose likely crypto actors.
+    if not items:
+        for proc in psutil.process_iter(attrs=["pid", "name"]):
+            try:
+                name = str(proc.info.get("name", "")).lower()
+            except Exception:
+                continue
+            if any(token in name for token in ["nginx", "sshd", "curl", "openssl", "kube", "vpn", "python"]):
+                protocol, algorithm = infer_crypto_protocol(0, 0, name)
+                items.append({
+                    "process": name,
+                    "pid": int(proc.info.get("pid") or 0),
+                    "protocol": protocol,
+                    "algorithm": algorithm,
+                    "endpoint": "-",
+                    "local_port": 0,
+                    "remote_port": 0,
+                    "status": "RUNNING"
+                })
+            if len(items) >= 12:
+                break
+
+    now = time.time()
+    prev_ts = CRYPTO_PREV["timestamp"]
+    prev_flows = CRYPTO_PREV["active_flows"]
+    active_flows = len(items)
+    CRYPTO_PREV["timestamp"] = now
+    CRYPTO_PREV["active_flows"] = active_flows
+
+    if prev_ts:
+        dt = max(now - prev_ts, 0.001)
+        flow_delta = abs(active_flows - prev_flows)
+        ops_per_sec = round((active_flows * 90) + (flow_delta / dt) * 60, 2)
+    else:
+        ops_per_sec = round(active_flows * 90, 2)
+
+    unique_processes = []
+    for item in items:
+        p = item["process"]
+        if p not in unique_processes:
+            unique_processes.append(p)
+
+    return {
+        "items": items[:24],
+        "processes": unique_processes[:16],
+        "meta": {
+            "ops_per_sec": ops_per_sec,
+            "tls_sessions": sum(1 for i in items if i.get("protocol") == "TLS"),
+            "active_flows": active_flows,
+            "source": "live-heuristic",
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }
+    }
+
 @app.route('/api/kernel-dna')
 def kernel_dna():
     """API endpoint for Kernel DNA visualization data"""
     try:
         data = get_kernel_dna_data()
         return jsonify(data)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/crypto-realtime')
+def crypto_realtime():
+    """Realtime-ish crypto interaction feed for crypto visualization."""
+    try:
+        return jsonify(collect_crypto_realtime())
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

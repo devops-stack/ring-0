@@ -4,7 +4,7 @@ class RightSemicircleMenuManager {
     constructor() {
         debugLog('RightSemicircleMenuManager constructor called');
         this.menuItems = [
-            { id: 'scheduler', icon: '/static/images/scheduler.svg', label: 'Scheduler' },
+            { id: 'scheduler', icon: '/static/images/scheduler.svg', label: 'Crypto' },
             { id: 'processes', icon: '/static/images/process-manager.svg', label: 'Processes' },
             { id: 'memory', icon: '/static/images/memory-manager.svg', label: 'Memory' },
             { id: 'files', icon: '/static/images/file-system.svg', label: 'Files' },
@@ -27,7 +27,7 @@ class RightSemicircleMenuManager {
     }
 
     isOverlayItem(itemId) {
-        return itemId === 'kernel' || itemId === 'network' || itemId === 'devices' || itemId === 'files';
+        return itemId === 'kernel' || itemId === 'network' || itemId === 'devices' || itemId === 'files' || itemId === 'scheduler';
     }
 
     setItemHoverState(itemGroup, isHovered, hudStrokeHair, hudStrokeNormal, hudStrokeAccent) {
@@ -75,7 +75,9 @@ class RightSemicircleMenuManager {
 
     activateOverlayView(itemId) {
         if (!window.kernelContextMenu) return;
-        if (itemId === 'kernel') {
+        if (itemId === 'scheduler') {
+            window.kernelContextMenu.activateCryptoView();
+        } else if (itemId === 'kernel') {
             window.kernelContextMenu.activateDNAView();
         } else if (itemId === 'network') {
             window.kernelContextMenu.activateNetworkView();
