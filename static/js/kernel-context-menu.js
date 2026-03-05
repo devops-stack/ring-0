@@ -1,7 +1,7 @@
 // Kernel Context Menu - Submenu and View Modes
-// Version: 12
+// Version: 13
 
-debugLog('🔧 kernel-context-menu.js v12: Script loading...');
+debugLog('🔧 kernel-context-menu.js v13: Script loading...');
 
 class KernelContextMenu {
     constructor() {
@@ -14,6 +14,7 @@ class KernelContextMenu {
         this.submenuGroup = null;
         this.dnaVisualization = null;
         this.networkVisualization = null;
+        this.cryptoVisualization = null;
         this.devicesVisualization = null;
         this.filesVisualization = null;
     }
@@ -434,6 +435,67 @@ class KernelContextMenu {
         }
     }
 
+    activateCryptoView() {
+        debugLog('🔐 Activating Crypto Subsystem View');
+        this.currentView = 'crypto';
+        this.hideSubmenu();
+
+        if (!this.cryptoVisualization) {
+            if (typeof CryptoSubsystemVisualization !== 'undefined') {
+                try {
+                    this.cryptoVisualization = new CryptoSubsystemVisualization();
+                    const initResult = this.cryptoVisualization.init();
+                    if (initResult === false) {
+                        this.cryptoVisualization = null;
+                        return;
+                    }
+                } catch (error) {
+                    console.error('❌ Error initializing CryptoSubsystemVisualization:', error);
+                    alert('Crypto view initialization error: ' + error.message);
+                    return;
+                }
+            } else if (typeof window.CryptoSubsystemVisualization !== 'undefined') {
+                try {
+                    this.cryptoVisualization = new window.CryptoSubsystemVisualization();
+                    const initResult = this.cryptoVisualization.init();
+                    if (initResult === false) {
+                        this.cryptoVisualization = null;
+                        return;
+                    }
+                } catch (error) {
+                    console.error('❌ Error initializing window.CryptoSubsystemVisualization:', error);
+                    alert('Crypto view initialization error: ' + error.message);
+                    return;
+                }
+            } else {
+                console.error('❌ CryptoSubsystemVisualization class not loaded');
+                alert('Crypto visualization is not loaded. Check console for details.');
+                return;
+            }
+        }
+
+        // Hide base UI while crypto view is active.
+        d3.selectAll('.syscall-box, .syscall-text').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+        d3.selectAll('.tag-icon, .connection-line').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+        d3.selectAll('.connection-box, .connection-text, .connection-details').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+        d3.selectAll('.subsystem-indicator').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+        d3.selectAll('.namespace-shell-layer, .cgroup-card-layer').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+
+        if (window.syscallsManager) {
+            window.syscallsManager.stopAutoUpdate();
+        }
+        if (window.connectionsManager) {
+            window.connectionsManager.stopAutoUpdate();
+        }
+
+        try {
+            this.cryptoVisualization.activate();
+            debugLog('✅ Crypto Subsystem visualization activated');
+        } catch (error) {
+            console.error('❌ Error activating Crypto Subsystem visualization:', error);
+        }
+    }
+
     activateDevicesView() {
         debugLog('🧲 Activating Devices Belt View');
         this.currentView = 'devices';
@@ -623,6 +685,9 @@ class KernelContextMenu {
         }
         if (this.networkVisualization) {
             this.networkVisualization.deactivate();
+        }
+        if (this.cryptoVisualization) {
+            this.cryptoVisualization.deactivate();
         }
         if (this.devicesVisualization) {
             this.devicesVisualization.deactivate();
