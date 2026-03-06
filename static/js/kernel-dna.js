@@ -253,11 +253,12 @@ class KernelDNAVisualization {
             exitBtn.style.color = '#c8ccd4';
         };
         exitBtn.onclick = () => {
-            // Reset currentView in kernelContextMenu before deactivating
-            if (window.kernelContextMenu) {
-                window.kernelContextMenu.currentView = null;
+            // Route exit through global view deactivation so no legacy exit buttons remain.
+            if (window.kernelContextMenu && typeof window.kernelContextMenu.deactivateViews === 'function') {
+                window.kernelContextMenu.deactivateViews();
+            } else {
+                this.deactivate();
             }
-            this.deactivate();
         };
         this.container.appendChild(exitBtn);
         this.exitButton = exitBtn; // Store reference
