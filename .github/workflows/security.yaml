@@ -43,7 +43,7 @@ jobs:
 
     - name: Bandit scan
       run: |
-        bandit -c .github/security/bandit.yml -r . -f json -o bandit-report.json
+        bandit -c .github/workflows/security/bandit.yml -r . -f json -o bandit-report.json
 
     ########################################
     # Python dependency scan
@@ -86,7 +86,7 @@ jobs:
       run: |
         if [ -f package.json ]; then
           npm install eslint eslint-plugin-security
-          npx eslint . -c .github/security/eslint-security.json || true
+          npx eslint . -c .github/workflows/security/eslint-security.json || true
         fi
 
     ########################################
@@ -105,7 +105,7 @@ jobs:
       with:
         scan-type: fs
         scan-ref: .
-        config: .github/security/trivy.yaml
+        config: .github/workflows/security/trivy.yaml
 
     ########################################
     # Upload reports
