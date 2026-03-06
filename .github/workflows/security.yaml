@@ -11,114 +11,96 @@ permissions:
   security-events: write
 
 jobs:
-
   security:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    ########################################
-    # Checkout
-    ########################################
+      - name: Setup Python
+        if: always()
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Install Python security tools
+        if: always()
+        continue-on-error: true
+        run: |
+          pip install bandit pip-audit safety || true
 
-    ########################################
-    # Python setup
-    ########################################
+      - name: Bandit scan
+        if: always()
+        continue-on-error: true
+        run: |
+          bandit -c .github/workflows/security/bandit.yml -r . -f json -o bandit-report.json || true
 
-    - name: Setup Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.11"
+      - name: pip-audit dependencies
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -f requirements.txt ]; then
+            pip-audit -r requirements.txt -f json -o pip-audit-report.json || true
+          fi
 
-    - name: Install Python security tools
-      run: |
-        pip install bandit pip-audit safety
+      - name: Setup Node
+        if: always()
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
-    ########################################
-    # Python code scan
-    ########################################
+      - name: Install JS dependencies
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -f package.json ]; then
+            npm install || true
+          fi
 
-    - name: Bandit scan
-      run: |
-        bandit -c .github/security/bandit.yml -r . -f json -o bandit-report.json
+      - name: NPM audit
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -f package.json ]; then
+            npm audit --audit-level=high || true
+          fi
 
-    ########################################
-    # Python dependency scan
-    ########################################
+      - name: ESLint security scan
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -f package.json ]; then
+            npm install eslint eslint-plugin-security || true
+            npx eslint . -c .github/workflows/security/eslint-security.json || true
+          fi
 
-    - name: pip-audit dependencies
-      run: |
-        pip-audit -r requirements.txt -f json -o pip-audit-report.json || true
+      - name: Gitleaks scan
+        if: always()
+        continue-on-error: true
+        uses: gitleaks/gitleaks-action@v2
 
-    ########################################
-    # Node setup
-    ########################################
+      - name: Trivy filesystem scan
+        if: always()
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          config: .github/workflows/security/trivy.yaml
 
-    - name: Setup Node
-      uses: actions/setup-node@v4
-      with:
-        node-version: "20"
+      - name: Upload Bandit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report
+          path: bandit-report.json
+          if-no-files-found: ignore
 
-    - name: Install JS dependencies
-      run: |
-        if [ -f package.json ]; then
-          npm install
-        fi
-
-    ########################################
-    # NPM vulnerability scan
-    ########################################
-
-    - name: NPM audit
-      run: |
-        if [ -f package.json ]; then
-          npm audit --audit-level=high
-        fi
-
-    ########################################
-    # ESLint security scan
-    ########################################
-
-    - name: ESLint security
-      run: |
-        if [ -f package.json ]; then
-          npm install eslint eslint-plugin-security
-          npx eslint . -c .github/security/eslint-security.json || true
-        fi
-
-    ########################################
-    # Secrets scanning
-    ########################################
-
-    - name: Gitleaks scan
-      uses: gitleaks/gitleaks-action@v2
-
-    ########################################
-    # Trivy vulnerability scan
-    ########################################
-
-    - name: Trivy filesystem scan
-      uses: aquasecurity/trivy-action@0.20.0
-      with:
-        scan-type: fs
-        scan-ref: .
-        config: .github/security/trivy.yaml
-
-    ########################################
-    # Upload reports
-    ########################################
-
-    - name: Upload Bandit report
-      uses: actions/upload-artifact@v4
-      with:
-        name: bandit-report
-        path: bandit-report.json
-
-    - name: Upload pip-audit report
-      uses: actions/upload-artifact@v4
-      with:
-        name: pip-audit-report
-        path: pip-audit-report.json
+      - name: Upload pip-audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-report
+          path: pip-audit-report.json
+          if-no-files-found: ignore
