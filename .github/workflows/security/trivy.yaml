@@ -1,0 +1,19 @@
+format: table
+
+severity:
+  - HIGH
+  - CRITICAL
+
+ignore-unfixed: true
+
+vulnerability:
+  type:
+    - os
+    - library
+
+scan:
+  skip-dirs:
+    - node_modules
+    - dist
+    - build
+    - .git
