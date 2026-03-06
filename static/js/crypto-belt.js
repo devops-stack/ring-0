@@ -1,7 +1,7 @@
 // Crypto subsystem realtime interaction visualization
-// Version: 3
+// Version: 4
 
-debugLog('🔐 crypto-belt.js v3: Script loading...');
+debugLog('🔐 crypto-belt.js v4: Script loading...');
 
 class CryptoSubsystemVisualization {
     constructor() {
@@ -11,9 +11,14 @@ class CryptoSubsystemVisualization {
         this.resizeHandler = null;
         this.telemetryInterval = null;
         this.telemetryNode = null;
+        this.terminatorNode = null;
         this.exitButton = null;
+        this.hoverCard = null;
         this.lastPayload = null;
         this.activeAnimationTick = 0;
+        this.prevLaneKeys = new Set();
+        this.laneHistory = new Map();
+        this.recentlyGone = [];
     }
 
     init(containerId = 'crypto-belt-container') {
@@ -47,7 +52,6 @@ class CryptoSubsystemVisualization {
             .style('display', 'block');
 
         const defs = this.svg.append('defs');
-
         defs.append('marker')
             .attr('id', 'crypto-flow-arrow')
             .attr('viewBox', '0 0 10 10')
@@ -79,7 +83,6 @@ class CryptoSubsystemVisualization {
 
         this.resizeHandler = () => this.onResize();
         window.addEventListener('resize', this.resizeHandler);
-
         return true;
     }
 
@@ -114,6 +117,25 @@ class CryptoSubsystemVisualization {
         subtitle.textContent = 'process -> protocol -> crypto subsystem -> algorithm';
         this.container.appendChild(subtitle);
 
+        const terminator = document.createElement('div');
+        terminator.style.cssText = [
+            'position: absolute',
+            'top: 86px',
+            'left: 50%',
+            'transform: translateX(-50%)',
+            'padding: 4px 10px',
+            'background: rgba(8, 12, 18, 0.86)',
+            'border: 1px solid rgba(150, 164, 188, 0.35)',
+            'color: #bfc9d9',
+            'font-family: "Share Tech Mono", monospace',
+            'font-size: 10px',
+            'letter-spacing: 0.35px',
+            'z-index: 1001'
+        ].join(';');
+        terminator.textContent = 'TLS TERMINATED BY: DETECTING...';
+        this.container.appendChild(terminator);
+        this.terminatorNode = terminator;
+
         const telemetry = document.createElement('div');
         telemetry.style.cssText = [
             'position: absolute',
@@ -129,6 +151,87 @@ class CryptoSubsystemVisualization {
         ].join(';');
         this.container.appendChild(telemetry);
         this.telemetryNode = telemetry;
+
+        const hoverCard = document.createElement('div');
+        hoverCard.style.cssText = [
+            'position: absolute',
+            'display: none',
+            'pointer-events: none',
+            'padding: 10px 12px',
+            'background: rgba(7, 10, 16, 0.92)',
+            'border: 1px solid rgba(178, 190, 212, 0.45)',
+            'color: #dee6f2',
+            'font-family: "Share Tech Mono", monospace',
+            'font-size: 10px',
+            'line-height: 1.5',
+            'white-space: pre',
+            'z-index: 1002',
+            'box-shadow: 0 0 14px rgba(150, 175, 220, 0.25)'
+        ].join(';');
+        this.container.appendChild(hoverCard);
+        this.hoverCard = hoverCard;
+    }
+
+    setTerminatorBadge(statusText) {
+        if (!this.terminatorNode) return;
+        const status = String(statusText || '').toUpperCase();
+        let color = '#bfc9d9';
+        let border = 'rgba(150, 164, 188, 0.35)';
+        let bg = 'rgba(8, 12, 18, 0.86)';
+
+        if (status === 'NGINX') {
+            color = '#89f7c5';
+            border = 'rgba(96, 214, 157, 0.55)';
+            bg = 'rgba(8, 18, 14, 0.9)';
+        } else if (status === 'EDGE PROXY') {
+            color = '#ffe19e';
+            border = 'rgba(244, 201, 119, 0.55)';
+            bg = 'rgba(22, 18, 9, 0.9)';
+        } else if (status === 'UNKNOWN') {
+            color = '#ff9f9f';
+            border = 'rgba(235, 126, 126, 0.6)';
+            bg = 'rgba(23, 10, 10, 0.92)';
+        } else if (status === 'EXTERNAL LB / UPSTREAM') {
+            color = '#a7b8ff';
+            border = 'rgba(138, 156, 234, 0.55)';
+            bg = 'rgba(10, 13, 24, 0.9)';
+        } else if (status === 'NO ACTIVE TLS') {
+            color = '#95a0b3';
+            border = 'rgba(126, 138, 158, 0.45)';
+            bg = 'rgba(10, 12, 16, 0.9)';
+        } else if (status === 'MOCK/FALLBACK') {
+            color = '#d3b3ff';
+            border = 'rgba(172, 126, 227, 0.55)';
+            bg = 'rgba(17, 11, 24, 0.9)';
+        }
+
+        this.terminatorNode.style.color = color;
+        this.terminatorNode.style.borderColor = border;
+        this.terminatorNode.style.background = bg;
+        this.terminatorNode.textContent = `TLS TERMINATED BY: ${status}`;
+    }
+
+    detectTlsTerminator(meta, lanes) {
+        const termList = Array.isArray(meta?.tls_terminators) ? meta.tls_terminators.filter(Boolean) : [];
+        const tlsLanes = (Array.isArray(lanes) ? lanes : []).filter((lane) => lane.protocol === 'TLS');
+        const laneTermSet = new Set(
+            tlsLanes
+                .map((lane) => String(lane.tls_terminator || '').toLowerCase())
+                .filter((name) => name && name !== 'n/a')
+        );
+
+        const allCandidates = Array.from(new Set([
+            ...termList.map((x) => String(x).toLowerCase()),
+            ...Array.from(laneTermSet)
+        ]));
+
+        if (allCandidates.some((name) => name.includes('nginx'))) return 'nginx';
+        if (allCandidates.some((name) => name.includes('haproxy') || name.includes('envoy') || name.includes('traefik') || name.includes('caddy'))) {
+            return 'edge proxy';
+        }
+        if (allCandidates.some((name) => name.includes('listener:')) || Number(meta?.unknown_pid_flows || 0) > 0) return 'unknown';
+        if (tlsLanes.length > 0) return 'external lb / upstream';
+        return 'no active tls';
     }
 
     addExitButton() {
@@ -176,6 +279,56 @@ class CryptoSubsystemVisualization {
         this.exitButton = btn;
     }
 
+    inferProtocol(process) {
+        if (process.includes('ssh')) return 'SSH';
+        if (process.includes('wg') || process.includes('wireguard')) return 'WIREGUARD';
+        if (process.includes('nginx') || process.includes('haproxy') || process.includes('curl') || process.includes('openssl')) return 'TLS';
+        return 'CRYPTO API';
+    }
+
+    inferAlgorithm(protocol, process) {
+        const p = (process || '').toLowerCase();
+        const proto = (protocol || '').toUpperCase();
+        if (proto === 'SSH') return 'CHACHA20-POLY1305';
+        if (proto === 'WIREGUARD') return 'CHACHA20';
+        if (p.includes('nginx') || p.includes('haproxy')) return 'AES-GCM/SHA256';
+        if (p.includes('curl') || p.includes('python')) return 'AES-256-GCM';
+        if (proto === 'TLS') return 'AES-GCM/SHA256';
+        return 'AES/SHA';
+    }
+
+    getProtocolPalette(protocol) {
+        const p = String(protocol || '').toUpperCase();
+        if (p === 'TLS') {
+            return {
+                accent: '#6ed0ff',
+                stroke: '#9ec6dd',
+                link: '#7dc4e6',
+                fill: '#0a1218',
+                packet: '#b8e9ff',
+                label: '#87d5fa'
+            };
+        }
+        if (p === 'SSH' || p === 'WIREGUARD') {
+            return {
+                accent: '#e2a8ff',
+                stroke: '#cba8df',
+                link: '#ba98d2',
+                fill: '#120c16',
+                packet: '#f0ccff',
+                label: '#d9b1f4'
+            };
+        }
+        return {
+            accent: '#c6d2e2',
+            stroke: '#a9b5c6',
+            link: '#9eafc4',
+            fill: '#0d1015',
+            packet: '#e6edf8',
+            label: '#c9d4e4'
+        };
+    }
+
     normalizeTelemetry(data) {
         const srcItems = Array.isArray(data?.items) ? data.items : [];
         const normalizedItems = srcItems
@@ -191,12 +344,13 @@ class CryptoSubsystemVisualization {
                     endpoint: String(item.endpoint || '-'),
                     status: String(item.status || ''),
                     pid: Number(item.pid || 0),
+                    tls_terminator: String(item.tls_terminator || 'n/a'),
+                    source_kind: String(item.source_kind || 'connection'),
                     weight: 1
                 };
             })
             .filter(Boolean);
 
-        // Collapse duplicates to keep lanes readable.
         const map = new Map();
         normalizedItems.forEach((item) => {
             const key = `${item.process}|${item.protocol}|${item.algorithm}`;
@@ -222,6 +376,8 @@ class CryptoSubsystemVisualization {
                     endpoint: '-',
                     status: 'IDLE',
                     pid: 0,
+                    tls_terminator: 'n/a',
+                    source_kind: 'fallback',
                     weight: 1
                 };
             });
@@ -232,28 +388,89 @@ class CryptoSubsystemVisualization {
             return a.process.localeCompare(b.process);
         });
 
+        const trimmed = items.slice(0, 12);
+        this.updateLaneLifecycle(trimmed);
+
         return {
-            items: items.slice(0, 12),
+            items: trimmed,
             meta: data?.meta || {}
         };
     }
 
-    inferProtocol(process) {
-        if (process.includes('ssh')) return 'SSH';
-        if (process.includes('wg') || process.includes('wireguard')) return 'WIREGUARD';
-        if (process.includes('nginx') || process.includes('haproxy') || process.includes('curl') || process.includes('openssl')) return 'TLS';
-        return 'CRYPTO API';
+    updateLaneLifecycle(items) {
+        const now = Date.now();
+        const currentKeys = new Set();
+
+        items.forEach((lane) => {
+            const key = `${lane.process}|${lane.protocol}|${lane.algorithm}`;
+            lane.key = key;
+            lane.palette = this.getProtocolPalette(lane.protocol);
+
+            const prevMeta = this.laneHistory.get(key);
+            lane.isNew = !prevMeta;
+            lane.isHot = Boolean(prevMeta && lane.weight > prevMeta.prevWeight);
+
+            this.laneHistory.set(key, {
+                firstSeen: prevMeta ? prevMeta.firstSeen : now,
+                lastSeen: now,
+                prevWeight: lane.weight,
+                label: `${lane.process} -> ${lane.protocol} -> ${lane.algorithm}`
+            });
+            currentKeys.add(key);
+        });
+
+        this.prevLaneKeys.forEach((key) => {
+            if (!currentKeys.has(key)) {
+                const prev = this.laneHistory.get(key);
+                if (prev) {
+                    this.recentlyGone.unshift({
+                        key,
+                        label: prev.label,
+                        at: now
+                    });
+                }
+                this.laneHistory.delete(key);
+            }
+        });
+
+        this.recentlyGone = this.recentlyGone
+            .filter((item) => now - item.at < 9000)
+            .slice(0, 8);
+
+        this.prevLaneKeys = currentKeys;
     }
 
-    inferAlgorithm(protocol, process) {
-        const p = (process || '').toLowerCase();
-        const proto = (protocol || '').toUpperCase();
-        if (proto === 'SSH') return 'CHACHA20-POLY1305';
-        if (proto === 'WIREGUARD') return 'CHACHA20';
-        if (p.includes('nginx') || p.includes('haproxy')) return 'AES-GCM/SHA256';
-        if (p.includes('curl') || p.includes('python')) return 'AES-256-GCM';
-        if (proto === 'TLS') return 'AES-GCM/SHA256';
-        return 'AES/SHA';
+    showHoverCard(lane, event) {
+        if (!this.hoverCard) return;
+        this.hoverCard.textContent = [
+            `process : ${lane.process}`,
+            `pid     : ${lane.pid || '-'}`,
+            `proto   : ${lane.protocol}`,
+            `algo    : ${lane.algorithm}`,
+            `status  : ${lane.status || '-'}`,
+            `endpoint: ${lane.endpoint || '-'}`,
+            `term    : ${lane.tls_terminator || 'n/a'}`,
+            `kind    : ${lane.source_kind || 'connection'}`,
+            `weight  : ${lane.weight}`
+        ].join('\n');
+        this.hoverCard.style.display = 'block';
+        this.positionHoverCard(event);
+    }
+
+    positionHoverCard(event) {
+        if (!this.hoverCard || this.hoverCard.style.display === 'none') return;
+        const width = this.hoverCard.offsetWidth || 180;
+        const height = this.hoverCard.offsetHeight || 120;
+        const left = Math.min(event.clientX + 14, window.innerWidth - width - 12);
+        const top = Math.min(event.clientY + 14, window.innerHeight - height - 12);
+        this.hoverCard.style.left = `${left}px`;
+        this.hoverCard.style.top = `${top}px`;
+    }
+
+    hideHoverCard() {
+        if (this.hoverCard) {
+            this.hoverCard.style.display = 'none';
+        }
     }
 
     drawGrid(layer, width, height) {
@@ -283,12 +500,47 @@ class CryptoSubsystemVisualization {
         }
     }
 
-    drawNode(group, x, y, label, level, intensity) {
+    drawProtocolLegend(layer) {
+        const legend = layer.append('g').attr('class', 'crypto-protocol-legend');
+        const items = [
+            ['TLS', this.getProtocolPalette('TLS').label],
+            ['SSH/WIREGUARD', this.getProtocolPalette('SSH').label],
+            ['CRYPTO API', this.getProtocolPalette('CRYPTO API').label]
+        ];
+
+        const lx = 26;
+        const ly = 92;
+        legend.append('text')
+            .attr('x', lx)
+            .attr('y', ly)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '10px')
+            .style('fill', '#b5bfce')
+            .text('PROTOCOL COLORS');
+
+        items.forEach((entry, idx) => {
+            legend.append('rect')
+                .attr('x', lx)
+                .attr('y', ly + 10 + idx * 15)
+                .attr('width', 9)
+                .attr('height', 9)
+                .style('fill', entry[1]);
+            legend.append('text')
+                .attr('x', lx + 14)
+                .attr('y', ly + 18 + idx * 15)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '10px')
+                .style('fill', '#aab4c5')
+                .text(entry[0]);
+        });
+    }
+
+    drawNode(group, x, y, label, level, intensity, palette, emphasis) {
         const width = Math.min(Math.max(150, String(label).length * 8 + 28), 250);
         const height = 34;
         const radius = 8;
-        const lineColor = intensity > 1.2 ? '#f0f5ff' : '#d6dde8';
-        const fillColor = level === 'crypto' ? '#11161f' : '#090d12';
+        const lineColor = emphasis ? palette.accent : (intensity > 1.2 ? palette.accent : palette.stroke);
+        const fillColor = level === 'crypto' ? '#11161f' : palette.fill;
 
         group.append('rect')
             .attr('x', x - width / 2)
@@ -298,9 +550,9 @@ class CryptoSubsystemVisualization {
             .attr('rx', radius)
             .style('fill', fillColor)
             .style('stroke', lineColor)
-            .style('stroke-width', intensity > 1.2 ? 1.2 : 0.9)
+            .style('stroke-width', emphasis ? 1.5 : (intensity > 1.2 ? 1.2 : 0.9))
             .style('opacity', 0.96)
-            .style('filter', intensity > 1.2 ? 'url(#crypto-line-glow)' : null);
+            .style('filter', emphasis || intensity > 1.2 ? 'url(#crypto-line-glow)' : null);
 
         group.append('text')
             .attr('x', x)
@@ -310,46 +562,42 @@ class CryptoSubsystemVisualization {
             .style('font-family', 'Share Tech Mono, monospace')
             .style('font-size', '11px')
             .style('letter-spacing', '0.35px')
-            .style('fill', '#eef3fb')
+            .style('fill', emphasis ? '#ffffff' : '#eef3fb')
             .text(String(label).toUpperCase());
 
         return {
             top: { x, y: y - height / 2 },
-            bottom: { x, y: y + height / 2 },
-            left: { x: x - width / 2, y },
-            right: { x: x + width / 2, y }
+            bottom: { x, y: y + height / 2 }
         };
     }
 
-    drawPath(group, points, intensity) {
+    drawPath(group, points, intensity, palette, emphasis) {
         const path = d3.path();
         path.moveTo(points[0].x, points[0].y);
         for (let i = 1; i < points.length; i += 1) {
             path.lineTo(points[i].x, points[i].y);
         }
 
-        const stroke = intensity > 1.2 ? '#e8eefb' : '#bbc6d8';
-
         group.append('path')
             .attr('d', path.toString())
             .style('fill', 'none')
-            .style('stroke', stroke)
-            .style('stroke-width', intensity > 1.2 ? 1.25 : 0.9)
-            .style('stroke-opacity', 0.85)
+            .style('stroke', emphasis ? palette.accent : palette.link)
+            .style('stroke-width', emphasis ? 1.6 : (intensity > 1.2 ? 1.25 : 0.9))
+            .style('stroke-opacity', emphasis ? 0.98 : 0.88)
             .attr('marker-end', 'url(#crypto-flow-arrow)')
-            .style('filter', intensity > 1.2 ? 'url(#crypto-line-glow)' : null);
+            .style('filter', emphasis || intensity > 1.2 ? 'url(#crypto-line-glow)' : null);
     }
 
-    animatePacket(group, points, intensity, laneId) {
+    animatePacket(group, points, intensity, laneId, palette, emphasis) {
         const dot = group.append('circle')
-            .attr('r', intensity > 1.2 ? 3 : 2.2)
+            .attr('r', emphasis ? 3.4 : (intensity > 1.2 ? 3 : 2.2))
             .attr('cx', points[0].x)
             .attr('cy', points[0].y)
-            .style('fill', '#f2f7ff')
-            .style('opacity', 0.85)
+            .style('fill', palette.packet)
+            .style('opacity', emphasis ? 0.95 : 0.85)
             .style('filter', 'url(#crypto-line-glow)');
 
-        const segmentDuration = Math.max(260, 440 - Math.round(intensity * 50));
+        const segmentDuration = Math.max(240, (emphasis ? 360 : 440) - Math.round(intensity * 50));
 
         const runLoop = () => {
             if (!this.isActive || laneId !== this.activeAnimationTick) {
@@ -386,38 +634,47 @@ class CryptoSubsystemVisualization {
 
         const layer = this.svg.append('g').attr('class', 'crypto-flow-layer');
         this.drawGrid(layer, width, height);
+        this.drawProtocolLegend(layer);
 
         const lanes = Array.isArray(payload.items) ? payload.items : [];
         const topY = 150;
         const protocolY = 250;
         const cryptoY = 350;
         const algoY = 450;
-        const endpointY = 512;
+        const endpointY = 520;
 
-        const startX = width * 0.12;
-        const usableWidth = width * 0.76;
+        const startX = width * 0.16;
+        const usableWidth = width * 0.70;
         const laneCount = Math.max(lanes.length, 1);
         const laneStep = laneCount > 1 ? usableWidth / (laneCount - 1) : 0;
 
         lanes.forEach((lane, idx) => {
             const x = startX + laneStep * idx;
             const intensity = Math.min(1 + lane.weight * 0.35, 2.2);
+            const emphasis = Boolean(lane.isNew || lane.isHot);
             const laneGroup = layer.append('g').attr('class', 'crypto-lane');
 
-            const pNode = this.drawNode(laneGroup, x, topY, lane.process, 'process', intensity);
-            const protoNode = this.drawNode(laneGroup, x, protocolY, lane.protocol, 'protocol', intensity);
-            const cNode = this.drawNode(laneGroup, x, cryptoY, 'crypto subsystem', 'crypto', intensity);
-            const aNode = this.drawNode(laneGroup, x, algoY, lane.algorithm, 'algorithm', intensity);
+            const pNode = this.drawNode(laneGroup, x, topY, lane.process, 'process', intensity, lane.palette, emphasis);
+            const protoNode = this.drawNode(laneGroup, x, protocolY, lane.protocol, 'protocol', intensity, lane.palette, emphasis);
+            const cNode = this.drawNode(laneGroup, x, cryptoY, 'crypto subsystem', 'crypto', intensity, lane.palette, emphasis);
+            const aNode = this.drawNode(laneGroup, x, algoY, lane.algorithm, 'algorithm', intensity, lane.palette, emphasis);
 
             const p1 = [pNode.bottom, protoNode.top];
             const p2 = [protoNode.bottom, cNode.top];
             const p3 = [cNode.bottom, aNode.top];
 
-            this.drawPath(laneGroup, p1, intensity);
-            this.drawPath(laneGroup, p2, intensity);
-            this.drawPath(laneGroup, p3, intensity);
+            this.drawPath(laneGroup, p1, intensity, lane.palette, emphasis);
+            this.drawPath(laneGroup, p2, intensity, lane.palette, emphasis);
+            this.drawPath(laneGroup, p3, intensity, lane.palette, emphasis);
 
-            this.animatePacket(laneGroup, [pNode.bottom, protoNode.top, protoNode.bottom, cNode.top, cNode.bottom, aNode.top], intensity, tickId);
+            this.animatePacket(
+                laneGroup,
+                [pNode.bottom, protoNode.top, protoNode.bottom, cNode.top, cNode.bottom, aNode.top],
+                intensity,
+                tickId,
+                lane.palette,
+                emphasis
+            );
 
             laneGroup.append('text')
                 .attr('x', x)
@@ -427,13 +684,30 @@ class CryptoSubsystemVisualization {
                 .style('font-size', '10px')
                 .style('fill', '#9ba5b4')
                 .style('letter-spacing', '0.2px')
-                .text(`pid:${lane.pid || '-'}  ${lane.endpoint || '-'}`);
+                .text(`pid:${lane.pid || '?'}  ${lane.endpoint || '-'}`);
+
+            if (lane.isNew || lane.isHot) {
+                laneGroup.append('text')
+                    .attr('x', x)
+                    .attr('y', 118)
+                    .attr('text-anchor', 'middle')
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', '10px')
+                    .style('fill', lane.isNew ? '#86ffd0' : '#ffd38c')
+                    .style('letter-spacing', '0.3px')
+                    .text(lane.isNew ? 'NEW' : 'HOT');
+            }
+
+            laneGroup
+                .style('cursor', 'crosshair')
+                .on('mouseenter', (event) => this.showHoverCard(lane, event))
+                .on('mousemove', (event) => this.positionHoverCard(event))
+                .on('mouseleave', () => this.hideHoverCard());
         });
 
-        // Side legend for quick scan
         const legend = layer.append('g').attr('class', 'crypto-legend');
         const lx = 26;
-        const ly = 126;
+        const ly = 160;
         legend.append('text')
             .attr('x', lx)
             .attr('y', ly)
@@ -442,14 +716,34 @@ class CryptoSubsystemVisualization {
             .style('fill', '#d2d9e5')
             .text('ACTIVE PATHS');
 
-        lanes.slice(0, 10).forEach((lane, idx) => {
+        lanes.slice(0, 8).forEach((lane, idx) => {
             legend.append('text')
                 .attr('x', lx)
                 .attr('y', ly + 22 + idx * 15)
                 .style('font-family', 'Share Tech Mono, monospace')
                 .style('font-size', '10px')
-                .style('fill', '#aab5c5')
+                .style('fill', lane.palette.label)
                 .text(`${lane.process} -> ${lane.protocol} -> ${lane.algorithm}`);
+        });
+
+        const goneY = ly + 165;
+        legend.append('text')
+            .attr('x', lx)
+            .attr('y', goneY)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '10px')
+            .style('fill', '#9fa9b9')
+            .text('RECENTLY CLOSED');
+
+        this.recentlyGone.slice(0, 5).forEach((item, idx) => {
+            const age = Math.max(0, Math.round((Date.now() - item.at) / 1000));
+            legend.append('text')
+                .attr('x', lx)
+                .attr('y', goneY + 16 + idx * 14)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '10px')
+                .style('fill', '#8e98a9')
+                .text(`- ${item.label} (${age}s)`);
         });
     }
 
@@ -480,17 +774,28 @@ class CryptoSubsystemVisualization {
                 const normalized = this.normalizeTelemetry(data);
                 this.renderFlowMap(normalized);
 
+                if (this.terminatorNode) {
+                    const tlsTerminator = this.detectTlsTerminator(data?.meta || {}, normalized.items || []);
+                    this.setTerminatorBadge(tlsTerminator);
+                }
+
                 if (this.telemetryNode) {
                     const ops = Number(data?.meta?.ops_per_sec || 0);
                     const tls = Number(data?.meta?.tls_sessions || 0);
                     const flows = Number(data?.meta?.active_flows || normalized.items.length || 0);
                     const source = String(data?.meta?.source || 'api');
-                    this.telemetryNode.textContent = `ops/s: ${ops} | tls: ${tls} | active flows: ${flows} | source: ${source}`;
+                    const unknownPid = Number(data?.meta?.unknown_pid_flows || 0);
+                    const terms = Array.isArray(data?.meta?.tls_terminators) ? data.meta.tls_terminators.join(',') : '-';
+                    this.telemetryNode.textContent = `ops/s: ${ops} | tls: ${tls} | active: ${flows} | unknown-pid: ${unknownPid} | terminator: ${terms || '-'} | source: ${source}`;
                 }
             })
             .catch(() => {
                 const fallback = this.getFallbackTelemetry();
-                this.renderFlowMap(fallback);
+                const normalized = this.normalizeTelemetry(fallback);
+                this.renderFlowMap(normalized);
+                if (this.terminatorNode) {
+                    this.setTerminatorBadge('mock/fallback');
+                }
                 if (this.telemetryNode) {
                     this.telemetryNode.textContent = `ops/s: ${fallback.meta.ops_per_sec} | tls: ${fallback.meta.tls_sessions} | active flows: ${fallback.meta.active_flows} | source: mock`;
                 }
@@ -519,6 +824,7 @@ class CryptoSubsystemVisualization {
     deactivate() {
         this.isActive = false;
         this.activeAnimationTick += 1;
+        this.hideHoverCard();
 
         if (this.telemetryInterval) {
             clearInterval(this.telemetryInterval);
@@ -534,7 +840,7 @@ class CryptoSubsystemVisualization {
 
     onResize() {
         if (!this.isActive) return;
-        this.renderFlowMap(this.lastPayload || this.getFallbackTelemetry());
+        this.renderFlowMap(this.lastPayload || this.normalizeTelemetry(this.getFallbackTelemetry()));
     }
 }
 

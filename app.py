@@ -3205,23 +3205,88 @@ def infer_crypto_protocol(local_port, remote_port, process_name):
         return "TLS", "AES-GCM/SHA256"
     return "Crypto API", "AES/SHA"
 
+def is_likely_crypto_actor(process_name, local_port, remote_port, protocol):
+    """Heuristic gate to avoid flooding with unrelated sockets."""
+    p_name = (process_name or "").lower()
+    interesting_ports = {22, 443, 465, 636, 853, 993, 995, 2376, 6443, 8443, 9443, 51820}
+    process_tokens = [
+        "nginx", "haproxy", "envoy", "caddy", "apache", "httpd", "traefik",
+        "sshd", "ssh", "wg", "wireguard", "openssl", "stunnel", "curl", "wget",
+        "python", "gunicorn", "uvicorn"
+    ]
+    if protocol in ("TLS", "SSH", "WireGuard"):
+        return True
+    if int(local_port or 0) in interesting_ports or int(remote_port or 0) in interesting_ports:
+        return True
+    return any(token in p_name for token in process_tokens)
+
+def infer_tls_terminator(process_name, local_port, protocol, tls_listener_names):
+    """Guess where TLS termination happens."""
+    if protocol != "TLS":
+        return "n/a"
+    p_name = (process_name or "").lower()
+    if p_name and p_name != "unknown":
+        return p_name
+    if int(local_port or 0) in {443, 8443, 9443, 6443} and tls_listener_names:
+        top = next(iter(tls_listener_names))
+        return f"listener:{top}"
+    if int(local_port or 0) in {443, 8443, 9443, 6443}:
+        return "unknown"
+    return "upstream-or-external-lb"
+
 def collect_crypto_realtime():
     """
     Build a near-realtime list of processes likely interacting with kernel crypto.
     This is heuristic-based and derived from active network/process context.
     """
     items = []
-    active_names = set()
+    tls_listener_by_port = {}
+    tls_listener_names = set()
+    unknown_pid_flows = 0
 
     try:
         connections = psutil.net_connections(kind="inet")
     except Exception:
         connections = []
 
+    # Build TLS listener map first. This helps attribute ESTABLISHED sockets that
+    # may not expose pid under restricted privileges.
+    tls_ports = {443, 8443, 9443, 6443}
+    for conn in connections:
+        status = str(getattr(conn, "status", "") or "")
+        if status != "LISTEN":
+            continue
+        laddr = getattr(conn, "laddr", None)
+        local_port = getattr(laddr, "port", 0) if laddr else 0
+        if int(local_port or 0) not in tls_ports:
+            continue
+        pid = getattr(conn, "pid", None)
+        pid_i = int(pid or 0)
+        process_name = "unknown"
+        if pid_i:
+            try:
+                process_name = psutil.Process(pid_i).name().lower()
+            except Exception:
+                process_name = f"pid-{pid_i}"
+        tls_listener_by_port[int(local_port)] = {"pid": pid_i, "process": process_name}
+        tls_listener_names.add(process_name)
+        items.append({
+            "process": process_name,
+            "pid": pid_i,
+            "protocol": "TLS",
+            "algorithm": "AES-GCM/SHA256",
+            "endpoint": f"0.0.0.0:{int(local_port)}",
+            "local_port": int(local_port),
+            "remote_port": 0,
+            "status": "LISTEN",
+            "tls_terminator": process_name,
+            "source_kind": "listener"
+        })
+
     for conn in connections:
         pid = getattr(conn, "pid", None)
         status = str(getattr(conn, "status", "") or "")
-        if not pid or status not in ("ESTABLISHED", "SYN_SENT", "SYN_RECV"):
+        if status not in ("ESTABLISHED", "SYN_SENT", "SYN_RECV"):
             continue
 
         laddr = getattr(conn, "laddr", None)
@@ -3231,25 +3296,38 @@ def collect_crypto_realtime():
         remote_ip = getattr(raddr, "ip", "") if raddr else ""
         remote_port = getattr(raddr, "port", 0) if raddr else 0
 
-        try:
-            proc = psutil.Process(pid)
-            process_name = proc.name()
-        except Exception:
-            process_name = f"pid-{pid}"
+        pid_i = int(pid or 0)
+        process_name = "unknown"
+        if pid_i:
+            try:
+                proc = psutil.Process(pid_i)
+                process_name = proc.name()
+            except Exception:
+                process_name = f"pid-{pid_i}"
+        else:
+            unknown_pid_flows += 1
+            listener_meta = tls_listener_by_port.get(int(local_port or 0))
+            if listener_meta:
+                process_name = listener_meta.get("process") or "unknown"
 
         protocol, algorithm = infer_crypto_protocol(local_port, remote_port, process_name)
-        active_names.add(process_name.lower())
+        if not is_likely_crypto_actor(process_name, local_port, remote_port, protocol):
+            continue
+
+        tls_terminator = infer_tls_terminator(process_name, local_port, protocol, tls_listener_names)
         endpoint = f"{remote_ip}:{remote_port}" if remote_ip else f"{local_ip}:{local_port}"
 
         items.append({
             "process": process_name.lower(),
-            "pid": int(pid),
+            "pid": pid_i,
             "protocol": protocol,
             "algorithm": algorithm,
             "endpoint": endpoint,
             "local_port": int(local_port or 0),
             "remote_port": int(remote_port or 0),
-            "status": status
+            "status": status,
+            "tls_terminator": tls_terminator,
+            "source_kind": "connection"
         })
 
     # If no sockets are available, still expose likely crypto actors.
@@ -3269,10 +3347,28 @@ def collect_crypto_realtime():
                     "endpoint": "-",
                     "local_port": 0,
                     "remote_port": 0,
-                    "status": "RUNNING"
+                    "status": "RUNNING",
+                    "tls_terminator": "n/a",
+                    "source_kind": "process"
                 })
             if len(items) >= 12:
                 break
+
+    # Deduplicate near-identical rows.
+    deduped = {}
+    for item in items:
+        key = (
+            item.get("process"),
+            int(item.get("pid") or 0),
+            item.get("protocol"),
+            item.get("algorithm"),
+            item.get("endpoint"),
+            item.get("status"),
+            item.get("source_kind")
+        )
+        if key not in deduped:
+            deduped[key] = item
+    items = list(deduped.values())
 
     now = time.time()
     prev_ts = CRYPTO_PREV["timestamp"]
@@ -3301,7 +3397,9 @@ def collect_crypto_realtime():
             "ops_per_sec": ops_per_sec,
             "tls_sessions": sum(1 for i in items if i.get("protocol") == "TLS"),
             "active_flows": active_flows,
-            "source": "live-heuristic",
+            "unknown_pid_flows": int(unknown_pid_flows),
+            "tls_terminators": sorted(list(tls_listener_names))[:8],
+            "source": "live-heuristic-v2",
             "timestamp": datetime.utcnow().isoformat() + "Z"
         }
     }

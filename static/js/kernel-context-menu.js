@@ -139,7 +139,7 @@ class KernelContextMenu {
                             window.connectionsManager.stopAutoUpdate();
                         }
                         
-                        this.addExitButton();
+                        // Timeline DNA view uses its own internal EXIT button.
                     } else {
                         // Fallback to regular timeline if DNA visualization not available
                         if (this.selectedPid) {
@@ -248,8 +248,7 @@ class KernelContextMenu {
             window.connectionsManager.stopAutoUpdate();
         }
         
-        // Add exit button
-        this.addExitButton();
+        // DNA view has its own internal EXIT button.
         
         // Show Matrix View
         this.renderMatrixView();
