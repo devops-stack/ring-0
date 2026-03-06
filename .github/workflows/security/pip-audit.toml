@@ -1,0 +1,7 @@
+[tool.pip-audit]
+
+ignore-vulns = []
+require-hashes = false
+progress-spinner = "on"
+desc = true
+format = "json"
