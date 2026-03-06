@@ -1,0 +1,21 @@
+{
+  "env": {
+    "browser": true,
+    "es2021": true,
+    "node": true
+  },
+  "extends": [
+    "eslint:recommended",
+    "plugin:security/recommended"
+  ],
+  "plugins": [
+    "security"
+  ],
+  "rules": {
+    "security/detect-eval-with-expression": "error",
+    "security/detect-object-injection": "warn",
+    "security/detect-non-literal-regexp": "warn",
+    "security/detect-child-process": "error",
+    "security/detect-unsafe-regex": "warn"
+  }
+}
