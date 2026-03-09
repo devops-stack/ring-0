@@ -3234,6 +3234,109 @@ def infer_tls_terminator(process_name, local_port, protocol, tls_listener_names)
         return "unknown"
     return "upstream-or-external-lb"
 
+def parse_proc_crypto_entries():
+    """Parse /proc/crypto into a list of dict entries."""
+    entries = []
+    try:
+        with open("/proc/crypto", "r", encoding="utf-8", errors="ignore") as f:
+            raw = f.read()
+    except Exception:
+        return entries
+
+    blocks = [block.strip() for block in raw.split("\n\n") if block.strip()]
+    for block in blocks:
+        item = {}
+        for line in block.splitlines():
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            item[key.strip().lower()] = value.strip()
+        if item:
+            entries.append(item)
+    return entries
+
+def collect_algorithm_competition(requested_algorithm="aes"):
+    """
+    Build algorithm implementation competition using kernel crypto registry.
+    The winner is the implementation with highest priority.
+    """
+    entries = parse_proc_crypto_entries()
+    requested = (requested_algorithm or "aes").lower()
+    req_type_allow = {
+        "aes": {"skcipher", "aead", "cipher"},
+        "sha": {"shash", "ahash", "hash"},
+        "chacha20": {"skcipher", "aead", "cipher"}
+    }
+    req_tokens = {
+        "aes": ["aes"],
+        "sha": ["sha"],
+        "chacha20": ["chacha20", "xchacha20", "chacha"]
+    }
+    allowed_types = req_type_allow.get(requested, {"skcipher", "aead", "cipher", "shash", "ahash", "hash"})
+    tokens = req_tokens.get(requested, [requested])
+    candidates = []
+
+    for entry in entries:
+        name = str(entry.get("name", "")).lower()
+        driver = str(entry.get("driver", "")).lower()
+        alg_type = str(entry.get("type", "")).lower()
+
+        if not any(token in name or token in driver for token in tokens):
+            continue
+        if alg_type and alg_type not in allowed_types:
+            continue
+
+        try:
+            priority = int(entry.get("priority", "0") or 0)
+        except ValueError:
+            priority = 0
+
+        impl_name = driver or name or "unknown-impl"
+        candidates.append({
+            "name": impl_name,
+            "priority": priority,
+            "type": alg_type or "unknown",
+            "source": "kernel"
+        })
+
+    # Deduplicate by implementation name, keep the highest priority variant.
+    dedup = {}
+    for item in candidates:
+        existing = dedup.get(item["name"])
+        if existing is None or item["priority"] > existing["priority"]:
+            dedup[item["name"]] = item
+    candidates = list(dedup.values())
+    candidates.sort(key=lambda x: x["priority"], reverse=True)
+
+    if not candidates:
+        # Fallback keeps the UX informative on hosts without readable /proc/crypto.
+        fallback_map = {
+            "aes": [
+                {"name": "aesni-intel", "priority": 300, "type": "skcipher", "source": "mock"},
+                {"name": "aes-avx", "priority": 200, "type": "skcipher", "source": "mock"},
+                {"name": "aes-generic", "priority": 100, "type": "skcipher", "source": "mock"}
+            ],
+            "sha": [
+                {"name": "sha256-avx2", "priority": 240, "type": "shash", "source": "mock"},
+                {"name": "sha256-ssse3", "priority": 180, "type": "shash", "source": "mock"},
+                {"name": "sha256-generic", "priority": 100, "type": "shash", "source": "mock"}
+            ],
+            "chacha20": [
+                {"name": "chacha20-neon", "priority": 260, "type": "skcipher", "source": "mock"},
+                {"name": "chacha20-simd", "priority": 220, "type": "skcipher", "source": "mock"},
+                {"name": "chacha20-generic", "priority": 100, "type": "skcipher", "source": "mock"}
+            ]
+        }
+        candidates = fallback_map.get(requested, fallback_map["aes"])
+
+    selected = candidates[0] if candidates else None
+    return {
+        "request": requested.upper(),
+        "implementations": candidates[:8],
+        "selected": selected,
+        "selection_policy": "max-priority"
+    }
+
 def collect_crypto_realtime():
     """
     Build a near-realtime list of processes likely interacting with kernel crypto.
@@ -3390,6 +3493,12 @@ def collect_crypto_realtime():
         if p not in unique_processes:
             unique_processes.append(p)
 
+    algorithm_competitions = {
+        "aes": collect_algorithm_competition("aes"),
+        "sha": collect_algorithm_competition("sha"),
+        "chacha20": collect_algorithm_competition("chacha20")
+    }
+
     return {
         "items": items[:24],
         "processes": unique_processes[:16],
@@ -3399,6 +3508,8 @@ def collect_crypto_realtime():
             "active_flows": active_flows,
             "unknown_pid_flows": int(unknown_pid_flows),
             "tls_terminators": sorted(list(tls_listener_names))[:8],
+            "algorithm_competition": algorithm_competitions["aes"],
+            "algorithm_competitions": algorithm_competitions,
             "source": "live-heuristic-v2",
             "timestamp": datetime.utcnow().isoformat() + "Z"
         }
