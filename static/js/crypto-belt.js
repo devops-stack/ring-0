@@ -19,6 +19,8 @@ class CryptoSubsystemVisualization {
         this.prevLaneKeys = new Set();
         this.laneHistory = new Map();
         this.recentlyGone = [];
+        this.selectedCompetitionAlgorithm = 'AES';
+        this.algorithmModes = ['AES', 'SHA', 'CHACHA20'];
     }
 
     init(containerId = 'crypto-belt-container') {
@@ -535,6 +537,162 @@ class CryptoSubsystemVisualization {
         });
     }
 
+    getCompetitionPayload(meta) {
+        const selected = String(this.selectedCompetitionAlgorithm || 'AES').toLowerCase();
+        const groups = meta?.algorithm_competitions || null;
+        if (groups && groups[selected]) return groups[selected];
+        return meta?.algorithm_competition || {
+            request: this.selectedCompetitionAlgorithm,
+            implementations: [],
+            selected: null,
+            selection_policy: 'max-priority'
+        };
+    }
+
+    drawAlgorithmCompetition(layer, meta, width) {
+        const comp = this.getCompetitionPayload(meta);
+        const request = String(comp.request || this.selectedCompetitionAlgorithm || 'AES').toUpperCase();
+        const impls = Array.isArray(comp.implementations) ? comp.implementations.slice(0, 5) : [];
+        const selectedName = String(comp?.selected?.name || '').toLowerCase();
+
+        const panelX = Math.floor(width * 0.73);
+        const panelY = 130;
+        const panelW = Math.max(260, Math.floor(width * 0.24));
+        const panelH = Math.max(220, 170 + impls.length * 30);
+
+        const panel = layer.append('g').attr('class', 'crypto-algo-competition');
+        panel.append('rect')
+            .attr('x', panelX)
+            .attr('y', panelY)
+            .attr('width', panelW)
+            .attr('height', panelH)
+            .attr('rx', 8)
+            .style('fill', 'rgba(8, 11, 16, 0.88)')
+            .style('stroke', 'rgba(165, 178, 200, 0.35)')
+            .style('stroke-width', 1);
+
+        panel.append('text')
+            .attr('x', panelX + 14)
+            .attr('y', panelY + 22)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '11px')
+            .style('fill', '#d7ddea')
+            .text('ALGORITHM COMPETITION');
+
+        const toggleY = panelY + 38;
+        this.algorithmModes.forEach((mode, idx) => {
+            const isActive = mode === request;
+            const btnX = panelX + 14 + idx * 86;
+            const btn = panel.append('g')
+                .attr('class', 'algo-toggle-btn')
+                .style('cursor', 'pointer')
+                .on('click', () => {
+                    this.selectedCompetitionAlgorithm = mode;
+                    this.renderFlowMap(this.lastPayload || this.normalizeTelemetry(this.getFallbackTelemetry()));
+                });
+
+            btn.append('rect')
+                .attr('x', btnX)
+                .attr('y', toggleY)
+                .attr('width', 78)
+                .attr('height', 18)
+                .attr('rx', 4)
+                .style('fill', isActive ? 'rgba(32, 52, 81, 0.92)' : 'rgba(12, 16, 22, 0.85)')
+                .style('stroke', isActive ? 'rgba(124, 178, 255, 0.9)' : 'rgba(150, 162, 182, 0.35)')
+                .style('stroke-width', isActive ? 1.1 : 0.8);
+
+            btn.append('text')
+                .attr('x', btnX + 39)
+                .attr('y', toggleY + 12)
+                .attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '9px')
+                .style('letter-spacing', '0.3px')
+                .style('fill', isActive ? '#cfe2ff' : '#a7b3c5')
+                .text(mode);
+        });
+
+        panel.append('text')
+            .attr('x', panelX + 14)
+            .attr('y', panelY + 67)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '10px')
+            .style('fill', '#99a8bd')
+            .text(`request ${request} -> lookup -> pick max priority`);
+
+        const stepsY = panelY + 92;
+        panel.append('text')
+            .attr('x', panelX + 14)
+            .attr('y', stepsY)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '10px')
+            .style('fill', '#b3bece')
+            .text(`${request} REQUEST`);
+
+        panel.append('line')
+            .attr('x1', panelX + 20)
+            .attr('y1', stepsY + 8)
+            .attr('x2', panelX + 20)
+            .attr('y2', stepsY + 28)
+            .style('stroke', '#7c8ca2')
+            .style('stroke-width', 1);
+
+        panel.append('text')
+            .attr('x', panelX + 14)
+            .attr('y', stepsY + 42)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '10px')
+            .style('fill', '#b3bece')
+            .text('CRYPTO LOOKUP');
+
+        const baseY = stepsY + 64;
+        if (!impls.length) {
+            panel.append('text')
+                .attr('x', panelX + 14)
+                .attr('y', baseY)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '10px')
+                .style('fill', '#97a5ba')
+                .text('No implementations detected');
+            return;
+        }
+
+        impls.forEach((impl, idx) => {
+            const y = baseY + idx * 30;
+            const name = String(impl.name || 'unknown');
+            const prio = Number(impl.priority || 0);
+            const isSelected = name.toLowerCase() === selectedName;
+
+            panel.append('rect')
+                .attr('x', panelX + 12)
+                .attr('y', y - 12)
+                .attr('width', panelW - 24)
+                .attr('height', 22)
+                .attr('rx', 5)
+                .style('fill', isSelected ? 'rgba(20, 39, 29, 0.9)' : 'rgba(14, 18, 24, 0.85)')
+                .style('stroke', isSelected ? 'rgba(114, 242, 173, 0.8)' : 'rgba(150, 162, 182, 0.28)')
+                .style('stroke-width', isSelected ? 1.2 : 0.8);
+
+            panel.append('text')
+                .attr('x', panelX + 20)
+                .attr('y', y + 2)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '10px')
+                .style('fill', isSelected ? '#9effca' : '#c5cedb')
+                .text(`${name}  priority ${prio}`);
+
+            if (isSelected) {
+                panel.append('text')
+                    .attr('x', panelX + panelW - 70)
+                    .attr('y', y + 2)
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', '9px')
+                    .style('fill', '#9effca')
+                    .text('SELECTED');
+            }
+        });
+    }
+
     drawNode(group, x, y, label, level, intensity, palette, emphasis) {
         const width = Math.min(Math.max(150, String(label).length * 8 + 28), 250);
         const height = 34;
@@ -635,6 +793,7 @@ class CryptoSubsystemVisualization {
         const layer = this.svg.append('g').attr('class', 'crypto-flow-layer');
         this.drawGrid(layer, width, height);
         this.drawProtocolLegend(layer);
+        this.drawAlgorithmCompetition(layer, payload?.meta || {}, width);
 
         const lanes = Array.isArray(payload.items) ? payload.items : [];
         const topY = 150;
@@ -644,7 +803,7 @@ class CryptoSubsystemVisualization {
         const endpointY = 520;
 
         const startX = width * 0.16;
-        const usableWidth = width * 0.70;
+        const usableWidth = width * 0.52;
         const laneCount = Math.max(lanes.length, 1);
         const laneStep = laneCount > 1 ? usableWidth / (laneCount - 1) : 0;
 
@@ -758,6 +917,48 @@ class CryptoSubsystemVisualization {
                 ops_per_sec: 960,
                 tls_sessions: 2,
                 active_flows: 3,
+                algorithm_competition: {
+                    request: 'AES',
+                    implementations: [
+                        { name: 'aesni-intel', priority: 300, type: 'skcipher' },
+                        { name: 'aes-avx', priority: 200, type: 'skcipher' },
+                        { name: 'aes-generic', priority: 100, type: 'skcipher' }
+                    ],
+                    selected: { name: 'aesni-intel', priority: 300, type: 'skcipher' },
+                    selection_policy: 'max-priority'
+                },
+                algorithm_competitions: {
+                    aes: {
+                        request: 'AES',
+                        implementations: [
+                            { name: 'aesni-intel', priority: 300, type: 'skcipher' },
+                            { name: 'aes-avx', priority: 200, type: 'skcipher' },
+                            { name: 'aes-generic', priority: 100, type: 'skcipher' }
+                        ],
+                        selected: { name: 'aesni-intel', priority: 300, type: 'skcipher' },
+                        selection_policy: 'max-priority'
+                    },
+                    sha: {
+                        request: 'SHA',
+                        implementations: [
+                            { name: 'sha256-avx2', priority: 240, type: 'shash' },
+                            { name: 'sha256-ssse3', priority: 180, type: 'shash' },
+                            { name: 'sha256-generic', priority: 100, type: 'shash' }
+                        ],
+                        selected: { name: 'sha256-avx2', priority: 240, type: 'shash' },
+                        selection_policy: 'max-priority'
+                    },
+                    chacha20: {
+                        request: 'CHACHA20',
+                        implementations: [
+                            { name: 'chacha20-neon', priority: 260, type: 'skcipher' },
+                            { name: 'chacha20-simd', priority: 220, type: 'skcipher' },
+                            { name: 'chacha20-generic', priority: 100, type: 'skcipher' }
+                        ],
+                        selected: { name: 'chacha20-neon', priority: 260, type: 'skcipher' },
+                        selection_policy: 'max-priority'
+                    }
+                },
                 source: 'mock'
             }
         };
@@ -786,7 +987,10 @@ class CryptoSubsystemVisualization {
                     const source = String(data?.meta?.source || 'api');
                     const unknownPid = Number(data?.meta?.unknown_pid_flows || 0);
                     const terms = Array.isArray(data?.meta?.tls_terminators) ? data.meta.tls_terminators.join(',') : '-';
-                    this.telemetryNode.textContent = `ops/s: ${ops} | tls: ${tls} | active: ${flows} | unknown-pid: ${unknownPid} | terminator: ${terms || '-'} | source: ${source}`;
+                    const selectedComp = this.getCompetitionPayload(data?.meta || {});
+                    const selectedImpl = String(selectedComp?.selected?.name || '-');
+                    const reqLabel = String(selectedComp?.request || this.selectedCompetitionAlgorithm || 'AES').toUpperCase();
+                    this.telemetryNode.textContent = `ops/s: ${ops} | tls: ${tls} | active: ${flows} | unknown-pid: ${unknownPid} | terminator: ${terms || '-'} | ${reqLabel}: ${selectedImpl} | source: ${source}`;
                 }
             })
             .catch(() => {
