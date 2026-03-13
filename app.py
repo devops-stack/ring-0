@@ -15,7 +15,7 @@ import ipaddress
 import shutil
 from datetime import datetime
 from threading import Lock
-from flask import Flask, jsonify, render_template, send_from_directory, request
+from flask import Flask, jsonify, render_template, send_from_directory, request, redirect
 import psutil
 
 # Try to import OpenAI (optional)
@@ -707,10 +707,15 @@ def index():
     # Serve index.html from root directory
     return send_from_directory('.', 'index.html')
 
+@app.route('/linux-crypto-subsystem')
+def linux_crypto_subsystem_page():
+    """SEO-friendly Linux crypto subsystem page."""
+    return render_template('linux-crypto-subsystem.html')
+
 @app.route('/crypto')
-def crypto_page():
-    """SEO-friendly crypto subsystem page."""
-    return render_template('crypto.html')
+def crypto_page_legacy():
+    """Legacy path redirect to Linux crypto subsystem page."""
+    return redirect('/linux-crypto-subsystem', code=301)
 
 @app.route('/api/syscalls-realtime')
 def syscalls_realtime():

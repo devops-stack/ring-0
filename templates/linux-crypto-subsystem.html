@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Linux Crypto Kernel Subsystem - Linux Kernel Architecture Visualization</title>
+    <meta name="description" content="Interactive Linux crypto kernel subsystem page: request origin, crypto lookup, algorithm competition, implementation selection, and hardware offload in Linux kernel architecture.">
+    <meta name="keywords" content="
+linux architecture,
+linux crypto,
+linux crypto kernel,
+linux crypto kernel subsystem,
+linux crypto framework,
+linux kernel crypto api,
+linux kernel architecture visualization,
+linux kernel crypto algorithms,
+aes-ni linux,
+chacha20 linux kernel,
+sha256 linux kernel,
+ktls linux,
+wireguard crypto linux
+">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="/linux-crypto-subsystem">
+
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="/linux-crypto-subsystem">
+    <meta property="og:title" content="Linux Crypto Kernel Subsystem Visualization">
+    <meta property="og:description" content="Visualized internals of the Linux crypto kernel subsystem: API requests, lookup, tfm allocation, implementation competition, and offload status.">
+    <meta property="og:image" content="/static/images/009.png">
+
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="/linux-crypto-subsystem">
+    <meta property="twitter:title" content="Linux Crypto Kernel Subsystem Visualization">
+    <meta property="twitter:description" content="How Linux kernel crypto subsystem selects and runs cryptographic implementations.">
+    <meta property="twitter:image" content="/static/images/009.png">
+
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/main.css?v=3">
+    <style>
+        body {
+            margin: 0;
+            background: #090c11;
+            color: #d4dbe8;
+            font-family: "Share Tech Mono", monospace;
+        }
+        .seo-crypto {
+            position: absolute;
+            left: -10000px;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+        }
+        .page-nav {
+            position: fixed;
+            left: 18px;
+            top: 18px;
+            z-index: 10020;
+            display: flex;
+            gap: 8px;
+        }
+        .page-nav a {
+            display: inline-block;
+            text-decoration: none;
+            color: #d2d8e2;
+            border: 1px solid rgba(165, 178, 200, 0.34);
+            padding: 8px 12px;
+            font-size: 11px;
+            background: rgba(10, 14, 21, 0.86);
+        }
+        .page-nav a:hover {
+            color: #ffffff;
+            background: rgba(18, 24, 36, 0.92);
+        }
+    </style>
+</head>
+<body>
+    <h1 class="seo-crypto">Linux Crypto Kernel Subsystem</h1>
+
+    <section class="seo-crypto">
+
+        <h2>Linux Crypto Kernel Subsystem</h2>
+        <p>
+        The Linux crypto kernel subsystem is part of the Linux kernel architecture responsible
+        for providing cryptographic primitives and services to kernel components and
+        userspace interfaces. The Linux crypto framework implements a unified API that
+        allows kernel modules and subsystems to request cryptographic algorithms such as
+        AES, ChaCha20, SHA256, and authenticated encryption modes like AES-GCM or
+        ChaCha20-Poly1305.
+        </p>
+
+        <h2>Linux Kernel Crypto Architecture</h2>
+        <p>
+        Inside the Linux architecture the crypto subsystem works as a modular framework.
+        Kernel clients such as kTLS, WireGuard, dm-crypt, fscrypt, IPsec and AF_ALG
+        request cryptographic operations through the kernel crypto API. The subsystem
+        then performs algorithm lookup, implementation selection, and transform
+        allocation (tfm objects) before executing the operation using software or
+        hardware accelerated implementations.
+        </p>
+
+        <h2>Algorithm Competition in Linux Crypto</h2>
+        <p>
+        One of the key mechanisms of the Linux crypto kernel subsystem is algorithm
+        competition. Multiple implementations of the same algorithm may be registered
+        in the kernel. For example AES can exist as generic software AES, AES-NI CPU
+        instructions, or SIMD optimized implementations. The crypto framework selects
+        the best implementation using priority values and hardware capability checks.
+        </p>
+
+        <h2>Linux Crypto Hardware Acceleration</h2>
+        <p>
+        The Linux crypto subsystem can automatically use hardware acceleration
+        features available on modern CPUs. Examples include AES-NI instructions,
+        ARM crypto extensions, AVX vector acceleration, and dedicated crypto
+        accelerators. If hardware support is unavailable the subsystem automatically
+        falls back to software drivers.
+        </p>
+
+        <h2>Linux Crypto Kernel Visualization</h2>
+        <p>
+        This page visualizes how the Linux crypto kernel subsystem works internally.
+        It shows the request origin process, protocol usage such as TLS or SSH,
+        crypto API interaction, transform lookup, algorithm competition,
+        implementation selection, and hardware offload status inside the Linux
+        kernel architecture.
+        </p>
+
+    </section>
+
+    <nav class="page-nav">
+        <a href="/">BACK TO MAIN</a>
+    </nav>
+
+    <script src="/static/js/safe-utils.js?v=2"></script>
+    <script src="/static/js/frontend-logger.js?v=2"></script>
+    <script src="/static/js/crypto-belt.js?v=20"></script>
+    <script>
+        (function startCryptoPage() {
+            if (typeof window.CryptoSubsystemVisualization !== 'function') {
+                console.error('CryptoSubsystemVisualization is not available');
+                return;
+            }
+            const cryptoViz = new window.CryptoSubsystemVisualization();
+            cryptoViz.init('crypto-belt-container');
+            cryptoViz.activate();
+
+            if (cryptoViz.exitButton) {
+                cryptoViz.exitButton.textContent = 'BACK TO MAIN';
+                cryptoViz.exitButton.onclick = function () {
+                    window.location.href = '/';
+                };
+            }
+        })();
+    </script>
+</body>
+</html>
