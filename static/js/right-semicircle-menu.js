@@ -76,7 +76,7 @@ class RightSemicircleMenuManager {
     activateOverlayView(itemId) {
         if (itemId === 'scheduler') {
             // Force hard navigation to dedicated SEO page.
-            window.location.assign('/crypto');
+            window.location.assign('/linux-crypto-subsystem');
             return;
         }
         if (!window.kernelContextMenu) return;
@@ -348,7 +348,7 @@ class RightSemicircleMenuManager {
                 debugLog('🖱️ Click detected on item:', item.id, item.label);
                 event.stopPropagation(); // Prevent event bubbling
                 if (item.id === 'scheduler') {
-                    window.location.assign('/crypto');
+                    window.location.assign('/linux-crypto-subsystem');
                     return;
                 }
                 if (isOverlay) {
@@ -368,7 +368,7 @@ class RightSemicircleMenuManager {
                     event.preventDefault();
                     event.stopPropagation();
                     if (item.id === 'scheduler') {
-                        window.location.assign('/crypto');
+                        window.location.assign('/linux-crypto-subsystem');
                         return;
                     }
                     // Prevent re-rendering during click

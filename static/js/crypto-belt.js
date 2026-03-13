@@ -22,6 +22,7 @@ class CryptoSubsystemVisualization {
         this.selectedCompetitionAlgorithm = 'AES';
         this.algorithmModes = ['AES', 'SHA', 'CHACHA20'];
         this.selectedClientFilters = new Set();
+        this.selectedRequesterFilter = null;
     }
 
     init(containerId = 'crypto-belt-container') {
@@ -272,7 +273,9 @@ class CryptoSubsystemVisualization {
 
         btn.onclick = () => {
             const path = String(window.location.pathname || '').replace(/\/+$/, '') || '/';
-            if (path === '/crypto' && window.history && typeof window.history.replaceState === 'function') {
+            if ((path === '/crypto' || path === '/linux-crypto-subsystem')
+                && window.history
+                && typeof window.history.replaceState === 'function') {
                 window.history.replaceState({}, '', '/');
             }
             if (window.kernelContextMenu) {
@@ -764,19 +767,47 @@ class CryptoSubsystemVisualization {
                 .attr('y', panelY + 56)
                 .style('font-family', 'Share Tech Mono, monospace')
                 .style('font-size', '9px')
-                .style('fill', '#8696ab')
+                .style('fill', '#708095')
                 .text('none detected');
         } else {
             requesters.forEach((req, idx) => {
                 const reqName = String(req.name || 'unknown');
                 const reqKind = String(req.kind || 'generic');
                 const reqScore = Number(req.score || 0);
-                panel.append('text')
+                const isActiveRequester = Boolean(
+                    this.selectedRequesterFilter
+                    && String(this.selectedRequesterFilter.name || '').toLowerCase() === reqName.toLowerCase()
+                    && String(this.selectedRequesterFilter.kind || '').toLowerCase() === reqKind.toLowerCase()
+                );
+                const row = panel.append('g')
+                    .style('cursor', 'pointer')
+                    .on('click', () => {
+                        if (
+                            this.selectedRequesterFilter
+                            && String(this.selectedRequesterFilter.name || '').toLowerCase() === reqName.toLowerCase()
+                            && String(this.selectedRequesterFilter.kind || '').toLowerCase() === reqKind.toLowerCase()
+                        ) {
+                            this.selectedRequesterFilter = null;
+                        } else {
+                            this.selectedRequesterFilter = { name: reqName, kind: reqKind };
+                        }
+                        this.renderFlowMap(this.lastPayload || this.normalizeTelemetry(this.getFallbackTelemetry()));
+                    });
+                row.append('rect')
+                    .attr('x', panelX + 10)
+                    .attr('y', panelY + 46 + idx * 14)
+                    .attr('width', panelW - 20)
+                    .attr('height', 13)
+                    .attr('rx', 3)
+                .style('fill', isActiveRequester ? 'rgba(37, 58, 92, 0.62)' : 'transparent')
+                .style('stroke', isActiveRequester ? 'rgba(120, 170, 245, 0.72)' : 'transparent')
+                    .style('stroke-width', 0.8);
+                row.append('text')
                     .attr('x', panelX + 14)
                     .attr('y', panelY + 56 + idx * 14)
                     .style('font-family', 'Share Tech Mono, monospace')
                     .style('font-size', '9px')
-                    .style('fill', idx === 0 ? '#cce2ff' : '#95a6bc')
+                    .style('fill', isActiveRequester ? '#e1eeff' : (idx === 0 ? '#cce2ff' : '#95a6bc'))
                     .text(`- ${reqName} [${reqKind}] (${reqScore})`);
             });
         }
@@ -1024,6 +1055,36 @@ class CryptoSubsystemVisualization {
         return false;
     }
 
+    laneMatchesSelectedRequester(lane) {
+        const req = this.selectedRequesterFilter;
+        if (!req) return true;
+
+        const reqName = String(req.name || '').toLowerCase();
+        const reqKind = String(req.kind || '').toLowerCase();
+        const process = String(lane?.process || '').toLowerCase();
+        const protocol = String(lane?.protocol || '').toUpperCase();
+        const algo = String(lane?.algorithm || '').toLowerCase();
+
+        const selectedAlgo = String(this.selectedCompetitionAlgorithm || 'AES').toLowerCase();
+        let algoMatch = true;
+        if (selectedAlgo === 'aes') {
+            algoMatch = algo.includes('aes') || protocol === 'TLS';
+        } else if (selectedAlgo === 'sha') {
+            algoMatch = algo.includes('sha') || protocol === 'TLS';
+        } else if (selectedAlgo === 'chacha20') {
+            algoMatch = algo.includes('chacha') || protocol === 'WIREGUARD' || protocol === 'SSH';
+        }
+        if (!algoMatch) return false;
+
+        if (reqKind === 'kernel-client') {
+            return this.laneMatchesClient(reqName, lane);
+        }
+        if (reqKind === 'process') {
+            return process.includes(reqName);
+        }
+        return process.includes(reqName) || protocol.toLowerCase().includes(reqName) || algo.includes(reqName);
+    }
+
     drawNode(group, x, y, label, level, intensity, palette, emphasis) {
         const width = Math.min(Math.max(150, String(label).length * 8 + 28), 250);
         const height = 34;
@@ -1129,7 +1190,9 @@ class CryptoSubsystemVisualization {
         this.drawStage1Panels(layer, payload?.meta || {}, width, height);
 
         const sourceLanes = Array.isArray(payload.items) ? payload.items : [];
-        const lanes = sourceLanes.filter((lane) => this.laneMatchesSelectedClients(lane));
+        const lanes = sourceLanes.filter(
+            (lane) => this.laneMatchesSelectedClients(lane) && this.laneMatchesSelectedRequester(lane)
+        );
         const topY = 150;
         const protocolY = 250;
         const cryptoY = 350;
@@ -1145,6 +1208,9 @@ class CryptoSubsystemVisualization {
             const selectedLabel = this.selectedClientFilters.size
                 ? Array.from(this.selectedClientFilters).join(' + ')
                 : 'ALL';
+            const requesterLabel = this.selectedRequesterFilter
+                ? ` | requester:${this.selectedRequesterFilter.name}`
+                : '';
             layer.append('text')
                 .attr('x', width * 0.42)
                 .attr('y', 320)
@@ -1152,13 +1218,13 @@ class CryptoSubsystemVisualization {
                 .style('font-family', 'Share Tech Mono, monospace')
                 .style('font-size', '12px')
                 .style('fill', '#8fa0b6')
-                .text(`NO ACTIVE PATHS FOR ${selectedLabel.toUpperCase()}`);
+                .text(`NO ACTIVE PATHS FOR ${selectedLabel.toUpperCase()}${requesterLabel.toUpperCase()}`);
         }
 
         lanes.forEach((lane, idx) => {
             const x = startX + laneStep * idx;
             const intensity = Math.min(1 + lane.weight * 0.35, 2.2);
-            const emphasis = Boolean(lane.isNew || lane.isHot);
+            const emphasis = Boolean(lane.isNew || lane.isHot || this.selectedRequesterFilter);
             const laneGroup = layer.append('g').attr('class', 'crypto-lane');
 
             const pNode = this.drawNode(laneGroup, x, topY, lane.process, 'process', intensity, lane.palette, emphasis);
@@ -1221,9 +1287,18 @@ class CryptoSubsystemVisualization {
             .style('font-family', 'Share Tech Mono, monospace')
             .style('font-size', '11px')
             .style('fill', '#d2d9e5')
-            .text(this.selectedClientFilters.size
-                ? `ACTIVE PATHS (${Array.from(this.selectedClientFilters).join(' + ')})`
-                : 'ACTIVE PATHS');
+            .text(
+                this.selectedClientFilters.size || this.selectedRequesterFilter
+                    ? `ACTIVE PATHS (${[
+                        this.selectedClientFilters.size
+                            ? Array.from(this.selectedClientFilters).join(' + ')
+                            : null,
+                        this.selectedRequesterFilter
+                            ? `requester:${this.selectedRequesterFilter.name}`
+                            : null
+                    ].filter(Boolean).join(' | ')})`
+                    : 'ACTIVE PATHS'
+            );
 
         lanes.slice(0, 8).forEach((lane, idx) => {
             legend.append('text')
@@ -1251,7 +1326,7 @@ class CryptoSubsystemVisualization {
                 .attr('y', goneY + 16 + idx * 14)
                 .style('font-family', 'Share Tech Mono, monospace')
                 .style('font-size', '10px')
-                .style('fill', '#8e98a9')
+            .style('fill', '#8e98a9')
                 .text(`- ${item.label} (${age}s)`);
         });
     }

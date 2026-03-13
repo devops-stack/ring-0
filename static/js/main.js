@@ -92,10 +92,12 @@ function initApp() {
     // Setup event handlers
     setupEventListeners();
 
-    // When nginx serves SPA fallback (/index.html) for /crypto,
+    // When nginx serves SPA fallback (/index.html) for crypto route aliases,
     // open the dedicated crypto view automatically by route.
     const path = String(window.location.pathname || '').replace(/\/+$/, '') || '/';
-    if (path === '/crypto' && window.kernelContextMenu && typeof window.kernelContextMenu.activateCryptoView === 'function') {
+    if ((path === '/crypto' || path === '/linux-crypto-subsystem')
+        && window.kernelContextMenu
+        && typeof window.kernelContextMenu.activateCryptoView === 'function') {
         setTimeout(() => {
             window.kernelContextMenu.activateCryptoView();
         }, 140);
