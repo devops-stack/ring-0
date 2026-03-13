@@ -74,10 +74,13 @@ class RightSemicircleMenuManager {
     }
 
     activateOverlayView(itemId) {
-        if (!window.kernelContextMenu) return;
         if (itemId === 'scheduler') {
-            window.kernelContextMenu.activateCryptoView();
-        } else if (itemId === 'kernel') {
+            // Force hard navigation to dedicated SEO page.
+            window.location.assign('/crypto');
+            return;
+        }
+        if (!window.kernelContextMenu) return;
+        if (itemId === 'kernel') {
             window.kernelContextMenu.activateDNAView();
         } else if (itemId === 'network') {
             window.kernelContextMenu.activateNetworkView();
@@ -344,6 +347,10 @@ class RightSemicircleMenuManager {
             const handleClick = (event) => {
                 debugLog('🖱️ Click detected on item:', item.id, item.label);
                 event.stopPropagation(); // Prevent event bubbling
+                if (item.id === 'scheduler') {
+                    window.location.assign('/crypto');
+                    return;
+                }
                 if (isOverlay) {
                     this.activateOverlayView(item.id);
                 } else {
@@ -360,6 +367,10 @@ class RightSemicircleMenuManager {
                     debugLog('🖱️ Mouse down on overlay item:', item.id);
                     event.preventDefault();
                     event.stopPropagation();
+                    if (item.id === 'scheduler') {
+                        window.location.assign('/crypto');
+                        return;
+                    }
                     // Prevent re-rendering during click
                     this.isClickingOverlay = true;
                     this.activateOverlayView(item.id);
