@@ -91,6 +91,15 @@ function initApp() {
     
     // Setup event handlers
     setupEventListeners();
+
+    // When nginx serves SPA fallback (/index.html) for /crypto,
+    // open the dedicated crypto view automatically by route.
+    const path = String(window.location.pathname || '').replace(/\/+$/, '') || '/';
+    if (path === '/crypto' && window.kernelContextMenu && typeof window.kernelContextMenu.activateCryptoView === 'function') {
+        setTimeout(() => {
+            window.kernelContextMenu.activateCryptoView();
+        }, 140);
+    }
 }
 
 // Setup event handlers

@@ -21,6 +21,7 @@ class CryptoSubsystemVisualization {
         this.recentlyGone = [];
         this.selectedCompetitionAlgorithm = 'AES';
         this.algorithmModes = ['AES', 'SHA', 'CHACHA20'];
+        this.selectedClientFilters = new Set();
     }
 
     init(containerId = 'crypto-belt-container') {
@@ -102,7 +103,7 @@ class CryptoSubsystemVisualization {
             'z-index: 1001',
             'text-shadow: 0 0 8px rgba(180, 210, 255, 0.25)'
         ].join(';');
-        title.textContent = 'CRYPTO LIVE INTERACTIONS (in development)';
+        title.textContent = 'KERNEL CRYPTO LIVE INTERACTIONS (in development)';
         this.container.appendChild(title);
 
         const subtitle = document.createElement('div');
@@ -270,6 +271,10 @@ class CryptoSubsystemVisualization {
         };
 
         btn.onclick = () => {
+            const path = String(window.location.pathname || '').replace(/\/+$/, '') || '/';
+            if (path === '/crypto' && window.history && typeof window.history.replaceState === 'function') {
+                window.history.replaceState({}, '', '/');
+            }
             if (window.kernelContextMenu) {
                 window.kernelContextMenu.deactivateViews();
             } else {
@@ -549,6 +554,26 @@ class CryptoSubsystemVisualization {
         };
     }
 
+    getDecisionPipelinePayload(meta) {
+        const selected = String(this.selectedCompetitionAlgorithm || 'AES').toLowerCase();
+        const groups = meta?.crypto_decision_pipelines || null;
+        if (groups && groups[selected]) return groups[selected];
+        return meta?.crypto_decision_pipeline || {
+            request: this.selectedCompetitionAlgorithm,
+            request_origin: 'user/kernel request',
+            requesters: [{ name: 'user/kernel request', kind: 'generic', score: 1 }],
+            tfm_lookup: 'crypto_lookup(?)',
+            impl_shortlist: [],
+            priority_check: 'max priority wins',
+            capability_check: 'generic-cpu-only',
+            selected_driver: 'unknown',
+            fallback_driver: 'none',
+            fallback_active: false,
+            fallback_reason: 'not-triggered',
+            source: 'mock'
+        };
+    }
+
     drawAlgorithmCompetition(layer, meta, width) {
         const comp = this.getCompetitionPayload(meta);
         const request = String(comp.request || this.selectedCompetitionAlgorithm || 'AES').toUpperCase();
@@ -693,6 +718,312 @@ class CryptoSubsystemVisualization {
         });
     }
 
+    drawDecisionPipeline(layer, meta, width, height) {
+        const pipeline = this.getDecisionPipelinePayload(meta);
+        const request = String(pipeline.request || this.selectedCompetitionAlgorithm || 'AES').toUpperCase();
+        const shortlist = Array.isArray(pipeline.impl_shortlist) ? pipeline.impl_shortlist.slice(0, 3) : [];
+        const requesters = Array.isArray(pipeline.requesters) ? pipeline.requesters.slice(0, 3) : [];
+        const selectedDriver = String(pipeline.selected_driver || 'unknown');
+        const fallbackDriver = String(pipeline.fallback_driver || 'none');
+        const fallbackActive = Boolean(pipeline.fallback_active);
+        const panelX = Math.floor(width * 0.73);
+        const panelW = Math.max(260, Math.floor(width * 0.24));
+        const panelY = Math.max(450, Math.floor(height * 0.52));
+        const panelH = 278;
+
+        const panel = layer.append('g').attr('class', 'crypto-decision-pipeline');
+        panel.append('rect')
+            .attr('x', panelX)
+            .attr('y', panelY)
+            .attr('width', panelW)
+            .attr('height', panelH)
+            .attr('rx', 8)
+            .style('fill', 'rgba(8, 11, 16, 0.88)')
+            .style('stroke', 'rgba(165, 178, 200, 0.35)')
+            .style('stroke-width', 1);
+
+        panel.append('text')
+            .attr('x', panelX + 14)
+            .attr('y', panelY + 20)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '11px')
+            .style('fill', '#d7ddea')
+            .text('CRYPTO DECISION PIPELINE');
+
+        panel.append('text')
+            .attr('x', panelX + 14)
+            .attr('y', panelY + 40)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '10px')
+            .style('fill', '#a8b7cd')
+            .text('requestors -> request');
+
+        if (!requesters.length) {
+            panel.append('text')
+                .attr('x', panelX + 14)
+                .attr('y', panelY + 56)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '9px')
+                .style('fill', '#8696ab')
+                .text('none detected');
+        } else {
+            requesters.forEach((req, idx) => {
+                const reqName = String(req.name || 'unknown');
+                const reqKind = String(req.kind || 'generic');
+                const reqScore = Number(req.score || 0);
+                panel.append('text')
+                    .attr('x', panelX + 14)
+                    .attr('y', panelY + 56 + idx * 14)
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', '9px')
+                    .style('fill', idx === 0 ? '#cce2ff' : '#95a6bc')
+                    .text(`- ${reqName} [${reqKind}] (${reqScore})`);
+            });
+        }
+
+        const stepsBaseY = panelY + 102;
+        const lines = [
+            `request (${request}) from ${String(pipeline.request_origin || 'user/kernel request')}`,
+            `tfm lookup: ${String(pipeline.tfm_lookup || 'crypto_lookup(?)')}`,
+            `impl shortlist: ${shortlist.length ? shortlist.join(' | ') : 'none'}`,
+            `priority check: ${String(pipeline.priority_check || 'max priority wins')}`,
+            `capability check: ${String(pipeline.capability_check || 'generic-cpu-only')}`,
+            `selected driver: ${selectedDriver}`
+        ];
+
+        lines.forEach((line, idx) => {
+            panel.append('text')
+                .attr('x', panelX + 14)
+                .attr('y', stepsBaseY + idx * 22)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '10px')
+                .style('fill', idx === 5 ? '#a4ffcf' : '#b8c3d4')
+                .text(line);
+        });
+
+        panel.append('text')
+            .attr('x', panelX + 14)
+            .attr('y', panelY + 240)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '10px')
+            .style('fill', fallbackActive ? '#ffb0b0' : '#95a6bc')
+            .text(`fallback: ${fallbackDriver} (${fallbackActive ? 'active' : 'not active'})`);
+
+        panel.append('text')
+            .attr('x', panelX + 14)
+            .attr('y', panelY + 258)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', '#8393a8')
+            .text(`reason: ${String(pipeline.fallback_reason || 'not-triggered')}`);
+    }
+
+    drawStage1Panels(layer, meta, width, height) {
+        const stage = meta?.crypto_stage1 || {};
+        const clients = Array.isArray(stage.kernel_clients) ? stage.kernel_clients.slice(0, 6) : [];
+        const syncAsync = stage.sync_async || {};
+        const offload = Array.isArray(stage.hw_offload) ? stage.hw_offload.slice(0, 5) : [];
+
+        const panelW = Math.max(270, Math.floor(width * 0.23));
+        const baseX = 26;
+        const gap = 12;
+        const clientsH = 134;
+        const queueH = 86;
+        const offloadH = 116;
+        const totalH = clientsH + queueH + offloadH + (gap * 2);
+        // Keep stage-1 HUD fully visible even on shorter viewports.
+        const baseY = Math.max(180, height - totalH - 20);
+        const isAllSelected = this.selectedClientFilters.size === 0;
+
+        const drawPanelShell = (x, y, w, h, title) => {
+            const g = layer.append('g').attr('class', 'crypto-stage1-panel');
+            g.append('rect')
+                .attr('x', x)
+                .attr('y', y)
+                .attr('width', w)
+                .attr('height', h)
+                .attr('rx', 8)
+                .style('fill', 'rgba(8, 11, 16, 0.84)')
+                .style('stroke', 'rgba(155, 168, 190, 0.32)')
+                .style('stroke-width', 1);
+            g.append('text')
+                .attr('x', x + 12)
+                .attr('y', y + 18)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '10px')
+                .style('fill', '#d2d9e6')
+                .text(title);
+            return g;
+        };
+
+        const clientsPanel = drawPanelShell(baseX, baseY, panelW, clientsH, 'KERNEL CRYPTO CLIENTS');
+        const resetGroup = clientsPanel.append('g')
+            .style('cursor', 'pointer')
+            .on('click', () => {
+                this.selectedClientFilters.clear();
+                this.renderFlowMap(this.lastPayload || this.normalizeTelemetry(this.getFallbackTelemetry()));
+            });
+        resetGroup.append('rect')
+            .attr('x', baseX + panelW - 56)
+            .attr('y', baseY + 7)
+            .attr('width', 42)
+            .attr('height', 14)
+            .attr('rx', 4)
+            .style('fill', isAllSelected ? 'rgba(40, 66, 100, 0.9)' : 'rgba(13, 18, 24, 0.82)')
+            .style('stroke', isAllSelected ? 'rgba(129, 180, 255, 0.9)' : 'rgba(150, 164, 184, 0.3)')
+            .style('stroke-width', 0.8);
+        resetGroup.append('text')
+            .attr('x', baseX + panelW - 35)
+            .attr('y', baseY + 17)
+            .attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', isAllSelected ? '#d3e7ff' : '#9aa9bc')
+            .text('ALL');
+
+        clientsPanel.append('text')
+            .attr('x', baseX + panelW - 96)
+            .attr('y', baseY + 34)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '8px')
+            .style('fill', '#7f8ea4')
+            .text('multi-select');
+
+        if (!clients.length) {
+            clientsPanel.append('text')
+                .attr('x', baseX + 12)
+                .attr('y', baseY + 40)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '10px')
+                .style('fill', '#95a4b7')
+                .text('No active clients');
+        } else {
+            clients.forEach((item, idx) => {
+                const y = baseY + 36 + idx * 16;
+                const status = String(item.status || 'idle').toLowerCase();
+                const dotColor = status === 'active' ? '#8effc8' : '#8f9caf';
+                const itemName = String(item.name || '');
+                const isActiveFilter = this.selectedClientFilters.has(itemName);
+                const row = clientsPanel.append('g')
+                    .style('cursor', 'pointer')
+                    .on('click', () => {
+                        if (this.selectedClientFilters.has(itemName)) {
+                            this.selectedClientFilters.delete(itemName);
+                        } else {
+                            this.selectedClientFilters.add(itemName);
+                        }
+                        this.renderFlowMap(this.lastPayload || this.normalizeTelemetry(this.getFallbackTelemetry()));
+                    });
+                row.append('rect')
+                    .attr('x', baseX + 8)
+                    .attr('y', y - 12)
+                    .attr('width', panelW - 16)
+                    .attr('height', 14)
+                    .attr('rx', 3)
+                    .style('fill', isActiveFilter ? 'rgba(37, 58, 92, 0.62)' : 'transparent')
+                    .style('stroke', isActiveFilter ? 'rgba(120, 170, 245, 0.72)' : 'transparent')
+                    .style('stroke-width', 0.8);
+                row.append('circle')
+                    .attr('cx', baseX + 14)
+                    .attr('cy', y - 3)
+                    .attr('r', 2.8)
+                    .style('fill', dotColor);
+                row.append('text')
+                    .attr('x', baseX + 22)
+                    .attr('y', y)
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', '10px')
+                    .style('fill', isActiveFilter ? '#d8e7ff' : '#b7c2d3')
+                    .text(`${itemName}: ${status} (${Number(item.active_flows || 0)})`);
+            });
+        }
+
+        const queueY = baseY + clientsH + gap;
+        const queuePanel = drawPanelShell(baseX, queueY, panelW, queueH, 'SYNC VS ASYNC QUEUE');
+        const syncOps = Number(syncAsync.sync_ops_est || 0);
+        const asyncOps = Number(syncAsync.async_ops_est || 0);
+        const qDepth = Number(syncAsync.queue_depth_est || 0);
+        const qLat = Number(syncAsync.queue_latency_ms_est || 0);
+        queuePanel.append('text')
+            .attr('x', baseX + 12)
+            .attr('y', queueY + 38)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '10px')
+            .style('fill', '#aeb9ca')
+            .text(`sync:${syncOps}  async:${asyncOps}  depth:${qDepth}`);
+        queuePanel.append('text')
+            .attr('x', baseX + 12)
+            .attr('y', queueY + 56)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '10px')
+            .style('fill', '#aeb9ca')
+            .text(`queue latency est: ${qLat.toFixed(2)} ms`);
+
+        const offloadY = queueY + queueH + gap;
+        const offloadPanel = drawPanelShell(baseX, offloadY, panelW, offloadH, 'HW OFFLOAD STATUS');
+        if (!offload.length) {
+            offloadPanel.append('text')
+                .attr('x', baseX + 12)
+                .attr('y', offloadY + 38)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '10px')
+                .style('fill', '#95a4b7')
+                .text('No offload providers detected');
+        } else {
+            offload.forEach((item, idx) => {
+                const y = offloadY + 34 + idx * 16;
+                const status = String(item.status || 'unavailable').toLowerCase();
+                const color = status === 'active'
+                    ? '#8effc8'
+                    : (status === 'available' ? '#ffe39f' : '#9aa7b9');
+                offloadPanel.append('text')
+                    .attr('x', baseX + 12)
+                    .attr('y', y)
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', '10px')
+                    .style('fill', color)
+                    .text(`${item.engine}: ${status}`);
+            });
+        }
+    }
+
+    laneMatchesClient(clientName, lane) {
+        const client = String(clientName || '').toLowerCase();
+        if (!client || client === 'all') return true;
+        const process = String(lane?.process || '').toLowerCase();
+        const protocol = String(lane?.protocol || '').toUpperCase();
+        const algo = String(lane?.algorithm || '').toLowerCase();
+        const sourceKind = String(lane?.source_kind || '').toLowerCase();
+
+        if (client === 'ktls') {
+            return protocol === 'TLS' || ['nginx', 'haproxy', 'envoy', 'caddy', 'apache', 'httpd', 'traefik'].some((x) => process.includes(x));
+        }
+        if (client === 'wireguard') {
+            return protocol === 'WIREGUARD' || process.includes('wg') || process.includes('wireguard');
+        }
+        if (client === 'ipsec/xfrm') {
+            return process.includes('ipsec') || process.includes('strongswan') || process.includes('charon') || process.includes('racoon');
+        }
+        if (client === 'dm-crypt') {
+            return process.includes('crypt') || process.includes('luks') || sourceKind === 'process';
+        }
+        if (client === 'fscrypt') {
+            return process.includes('fscrypt');
+        }
+        if (client === 'af_alg') {
+            return ['openssl', 'python', 'curl', 'wget'].some((x) => process.includes(x)) || sourceKind === 'connection';
+        }
+        return true;
+    }
+
+    laneMatchesSelectedClients(lane) {
+        if (!this.selectedClientFilters.size) return true;
+        for (const clientName of this.selectedClientFilters) {
+            if (this.laneMatchesClient(clientName, lane)) return true;
+        }
+        return false;
+    }
+
     drawNode(group, x, y, label, level, intensity, palette, emphasis) {
         const width = Math.min(Math.max(150, String(label).length * 8 + 28), 250);
         const height = 34;
@@ -794,8 +1125,11 @@ class CryptoSubsystemVisualization {
         this.drawGrid(layer, width, height);
         this.drawProtocolLegend(layer);
         this.drawAlgorithmCompetition(layer, payload?.meta || {}, width);
+        this.drawDecisionPipeline(layer, payload?.meta || {}, width, height);
+        this.drawStage1Panels(layer, payload?.meta || {}, width, height);
 
-        const lanes = Array.isArray(payload.items) ? payload.items : [];
+        const sourceLanes = Array.isArray(payload.items) ? payload.items : [];
+        const lanes = sourceLanes.filter((lane) => this.laneMatchesSelectedClients(lane));
         const topY = 150;
         const protocolY = 250;
         const cryptoY = 350;
@@ -806,6 +1140,20 @@ class CryptoSubsystemVisualization {
         const usableWidth = width * 0.52;
         const laneCount = Math.max(lanes.length, 1);
         const laneStep = laneCount > 1 ? usableWidth / (laneCount - 1) : 0;
+
+        if (!lanes.length) {
+            const selectedLabel = this.selectedClientFilters.size
+                ? Array.from(this.selectedClientFilters).join(' + ')
+                : 'ALL';
+            layer.append('text')
+                .attr('x', width * 0.42)
+                .attr('y', 320)
+                .attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '12px')
+                .style('fill', '#8fa0b6')
+                .text(`NO ACTIVE PATHS FOR ${selectedLabel.toUpperCase()}`);
+        }
 
         lanes.forEach((lane, idx) => {
             const x = startX + laneStep * idx;
@@ -873,7 +1221,9 @@ class CryptoSubsystemVisualization {
             .style('font-family', 'Share Tech Mono, monospace')
             .style('font-size', '11px')
             .style('fill', '#d2d9e5')
-            .text('ACTIVE PATHS');
+            .text(this.selectedClientFilters.size
+                ? `ACTIVE PATHS (${Array.from(this.selectedClientFilters).join(' + ')})`
+                : 'ACTIVE PATHS');
 
         lanes.slice(0, 8).forEach((lane, idx) => {
             legend.append('text')
@@ -958,6 +1308,120 @@ class CryptoSubsystemVisualization {
                         selected: { name: 'chacha20-neon', priority: 260, type: 'skcipher' },
                         selection_policy: 'max-priority'
                     }
+                },
+                crypto_stage1: {
+                    kernel_clients: [
+                        { name: 'kTLS', status: 'active', active_flows: 2 },
+                        { name: 'WireGuard', status: 'idle', active_flows: 0 },
+                        { name: 'IPsec/XFRM', status: 'idle', active_flows: 0 },
+                        { name: 'dm-crypt', status: 'active', active_flows: 1 },
+                        { name: 'fscrypt', status: 'idle', active_flows: 0 },
+                        { name: 'AF_ALG', status: 'active', active_flows: 1 }
+                    ],
+                    sync_async: {
+                        sync_ops_est: 3,
+                        async_ops_est: 2,
+                        queue_depth_est: 1,
+                        queue_latency_ms_est: 1.28
+                    },
+                    hw_offload: [
+                        { engine: 'AES-NI / CPU INSTR', status: 'active' },
+                        { engine: 'SIMD (AVX/NEON)', status: 'available' },
+                        { engine: 'ARM CRYPTO EXT', status: 'unavailable' },
+                        { engine: 'QAT OFFLOAD', status: 'unavailable' },
+                        { engine: 'VIRTIO-CRYPTO', status: 'unavailable' }
+                    ]
+                },
+                crypto_decision_pipeline: {
+                    request: 'AES',
+                    request_origin: 'kernel client: kTLS',
+                    requesters: [
+                        { name: 'kTLS', kind: 'kernel-client', score: 3 },
+                        { name: 'nginx', kind: 'process', score: 2 },
+                        { name: 'AF_ALG', kind: 'kernel-client', score: 1 }
+                    ],
+                    tfm_lookup: 'crypto_alloc_skcipher(aes)',
+                    impl_shortlist: ['aesni-intel', 'aes-avx', 'aes-generic'],
+                    priority_check: 'max priority wins',
+                    capability_check: 'AES-NI / CPU INSTR, SIMD (AVX/NEON)',
+                    selected_driver: 'aesni-intel',
+                    fallback_driver: 'aes-generic',
+                    fallback_active: false,
+                    fallback_reason: 'not-triggered',
+                    source: 'mock'
+                },
+                crypto_decision_pipelines: {
+                    aes: {
+                        request: 'AES',
+                        request_origin: 'kernel client: kTLS',
+                        requesters: [
+                            { name: 'kTLS', kind: 'kernel-client', score: 3 },
+                            { name: 'nginx', kind: 'process', score: 2 },
+                            { name: 'AF_ALG', kind: 'kernel-client', score: 1 }
+                        ],
+                        tfm_lookup: 'crypto_alloc_skcipher(aes)',
+                        impl_shortlist: ['aesni-intel', 'aes-avx', 'aes-generic'],
+                        priority_check: 'max priority wins',
+                        capability_check: 'AES-NI / CPU INSTR, SIMD (AVX/NEON)',
+                        selected_driver: 'aesni-intel',
+                        fallback_driver: 'aes-generic',
+                        fallback_active: false,
+                        fallback_reason: 'not-triggered',
+                        source: 'mock'
+                    },
+                    sha: {
+                        request: 'SHA',
+                        request_origin: 'kernel client: AF_ALG',
+                        requesters: [
+                            { name: 'AF_ALG', kind: 'kernel-client', score: 2 },
+                            { name: 'kTLS', kind: 'kernel-client', score: 1 },
+                            { name: 'nginx', kind: 'process', score: 1 }
+                        ],
+                        tfm_lookup: 'crypto_alloc_shash(sha*)',
+                        impl_shortlist: ['sha256-avx2', 'sha256-ssse3', 'sha256-generic'],
+                        priority_check: 'max priority wins',
+                        capability_check: 'SIMD (AVX/NEON)',
+                        selected_driver: 'sha256-avx2',
+                        fallback_driver: 'sha256-generic',
+                        fallback_active: false,
+                        fallback_reason: 'not-triggered',
+                        source: 'mock'
+                    },
+                    chacha20: {
+                        request: 'CHACHA20',
+                        request_origin: 'kernel client: WireGuard',
+                        requesters: [
+                            { name: 'WireGuard', kind: 'kernel-client', score: 2 },
+                            { name: 'sshd', kind: 'process', score: 1 },
+                            { name: 'AF_ALG', kind: 'kernel-client', score: 1 }
+                        ],
+                        tfm_lookup: 'crypto_alloc_skcipher(chacha20)',
+                        impl_shortlist: ['chacha20-neon', 'chacha20-simd', 'chacha20-generic'],
+                        priority_check: 'max priority wins',
+                        capability_check: 'SIMD (AVX/NEON)',
+                        selected_driver: 'chacha20-neon',
+                        fallback_driver: 'chacha20-generic',
+                        fallback_active: false,
+                        fallback_reason: 'not-triggered',
+                        source: 'mock'
+                    }
+                },
+                algorithm_requesters: {
+                    aes: [
+                        { name: 'kTLS', kind: 'kernel-client', score: 3 },
+                        { name: 'nginx', kind: 'process', score: 2 },
+                        { name: 'AF_ALG', kind: 'kernel-client', score: 1 }
+                    ],
+                    sha: [
+                        { name: 'AF_ALG', kind: 'kernel-client', score: 2 },
+                        { name: 'kTLS', kind: 'kernel-client', score: 1 },
+                        { name: 'nginx', kind: 'process', score: 1 }
+                    ],
+                    chacha20: [
+                        { name: 'WireGuard', kind: 'kernel-client', score: 2 },
+                        { name: 'sshd', kind: 'process', score: 1 },
+                        { name: 'AF_ALG', kind: 'kernel-client', score: 1 }
+                    ]
                 },
                 source: 'mock'
             }
