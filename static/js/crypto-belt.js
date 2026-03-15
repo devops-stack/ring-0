@@ -1092,10 +1092,11 @@ class CryptoSubsystemVisualization {
         const panelX = Math.floor(width * 0.41) + 10;
         const maxSafeW = Math.max(300, rightColumnX - panelX - 16);
         const panelW = Math.max(330, Math.min(Math.min(470, Math.floor(width * 0.3)), maxSafeW));
-        const panelH = 238;
         const decisionPanelY = Math.max(450, Math.floor(height * 0.52));
         const materialCardH = 226;
-        const panelY = Math.min(height - panelH - 22, decisionPanelY + materialCardH + 16);
+        const panelY = decisionPanelY + materialCardH + 16;
+        const maxPanelH = Math.max(120, height - panelY - 22);
+        const panelH = Math.min(238, maxPanelH);
         const panel = layer.append('g').attr('class', 'crypto-entropy-cloud');
 
         panel.append('rect')
@@ -1146,7 +1147,7 @@ class CryptoSubsystemVisualization {
         const cloudY = panelY + 86;
         // Keep particle viewport compact so right-side source metrics fit comfortably.
         const cloudW = Math.max(130, panelW - 220);
-        const cloudH = panelH - 100;
+        const cloudH = Math.max(60, panelH - 102);
         panel.append('rect')
             .attr('x', cloudX)
             .attr('y', cloudY)
@@ -1178,7 +1179,8 @@ class CryptoSubsystemVisualization {
         const keyRate = Number(entropy.key_birth_rate_est || 0);
         const keyNodes = Math.max(1, Math.min(5, Math.round(keyRate / 2.2)));
         const keyBaseX = panelX + panelW - 110;
-        const keyBaseY = panelY + 112;
+        const srcY = panelY + panelH - 66;
+        const keyBaseY = srcY - 28;
         panel.append('text')
             .attr('x', keyBaseX)
             .attr('y', keyBaseY - 12)
@@ -1210,7 +1212,6 @@ class CryptoSubsystemVisualization {
             .style('stroke-opacity', 0.7);
 
         const srcX = panelX + panelW - 158;
-        const srcY = panelY + 152;
         const sourceBarX = srcX + 70;
         const sourceBarW = Math.max(64, Math.min(76, panelX + panelW - sourceBarX - 8));
         panel.append('text')
@@ -1274,8 +1275,9 @@ class CryptoSubsystemVisualization {
         const queueH = 86;
         const offloadH = 116;
         const totalH = clientsH + queueH + offloadH + (gap * 2);
-        // Keep stage-1 HUD fully visible even on shorter viewports.
-        const baseY = Math.max(180, height - totalH - 20);
+        // Align left stage stack with Algorithm Material Card top level.
+        const decisionPanelY = Math.max(450, Math.floor(height * 0.52));
+        const baseY = Math.min(decisionPanelY, Math.max(180, height - totalH - 20));
         const isAllSelected = this.selectedClientFilters.size === 0;
 
         const drawPanelShell = (x, y, w, h, title) => {
@@ -1489,9 +1491,9 @@ class CryptoSubsystemVisualization {
     }
 
     drawNode(group, x, y, label, level, intensity, palette, emphasis) {
-        const width = Math.min(Math.max(150, String(label).length * 8 + 28), 250);
-        const height = 34;
-        const radius = 8;
+        const width = Math.min(Math.max(132, String(label).length * 7 + 24), 220);
+        const height = 30;
+        const radius = 7;
         const lineColor = emphasis ? palette.accent : (intensity > 1.2 ? palette.accent : palette.stroke);
         const fillColor = level === 'crypto' ? '#11161f' : palette.fill;
 
@@ -1513,7 +1515,7 @@ class CryptoSubsystemVisualization {
             .attr('text-anchor', 'middle')
             .attr('dominant-baseline', 'middle')
             .style('font-family', 'Share Tech Mono, monospace')
-            .style('font-size', '11px')
+            .style('font-size', '10px')
             .style('letter-spacing', '0.35px')
             .style('fill', emphasis ? '#ffffff' : '#eef3fb')
             .text(String(label).toUpperCase());

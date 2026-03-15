@@ -1545,6 +1545,10 @@ def get_filesystem_blocks():
         zone_writing = int(round(writing_blocks_total * zone_write_share))
         zone_writing = max(0, min(zone_used, zone_writing))
         zone_writing_total += zone_writing
+        inode_pressure = int(max(0, min(
+            100,
+            round((z["activity"] * 2.6) + (zone_writing * 0.9) + (local_used_ratio * 38.0))
+        )))
 
         cell_index = 0
         for r in range(row_start, row_end + 1):
@@ -1578,13 +1582,18 @@ def get_filesystem_blocks():
             "row_end": row_end,
             "activity": int(z["activity"]),
             "used_percent": round(local_used_ratio * 100.0, 1),
-            "writing_blocks": zone_writing
+            "writing_blocks": zone_writing,
+            "inode_pressure": inode_pressure
         })
 
     writing_blocks = sum(1 for b in blocks if b["state"] == "writing")
 
     FILESYSTEM_PREV["timestamp"] = now
     FILESYSTEM_PREV["write_bytes"] = write_bytes
+
+    inode_pressure_global = 0
+    if zones:
+        inode_pressure_global = int(round(sum(int(z.get("inode_pressure", 0)) for z in zones) / len(zones)))
 
     return {
         "timestamp": datetime.now().isoformat(),
@@ -1598,7 +1607,8 @@ def get_filesystem_blocks():
             "free_gb": free_gb,
             "used_percent": round(used_percent, 2),
             "write_bps": round(write_bps, 2),
-            "writing_blocks": writing_blocks
+            "writing_blocks": writing_blocks,
+            "inode_pressure": inode_pressure_global
         }
     }
 
