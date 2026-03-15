@@ -578,6 +578,26 @@ class CryptoSubsystemVisualization {
         };
     }
 
+    getEntropyPayload(meta) {
+        return meta?.entropy_cloud || {
+            entropy_pool_bits: 256,
+            entropy_pool_size_bits: 256,
+            crng_state: 'ready',
+            random_subsystem_state: 'stable',
+            particle_density: 44,
+            key_birth_rate_est: 6.2,
+            sources: [
+                { source: 'interrupt timing', intensity: 72, status: 'active' },
+                { source: 'disk IO', intensity: 45, status: 'active' },
+                { source: 'network timing', intensity: 38, status: 'active' },
+                { source: 'hardware RNG', intensity: 62, status: 'active' }
+            ],
+            read_wakeup_threshold: 128,
+            write_wakeup_threshold: 64,
+            mode: 'mock'
+        };
+    }
+
     drawAlgorithmCompetition(layer, meta, width) {
         const comp = this.getCompetitionPayload(meta);
         const request = String(comp.request || this.selectedCompetitionAlgorithm || 'AES').toUpperCase();
@@ -922,17 +942,13 @@ class CryptoSubsystemVisualization {
         const requesters = Array.isArray(pipeline?.requesters) ? pipeline.requesters : [];
         const topRequester = requesters.length ? requesters[0] : null;
 
-        const cardW = Math.max(320, Math.min(430, Math.floor(width * 0.27)));
-        const cardH = 214;
-        const cardX = Math.floor(width * 0.43);
-        // Align card vertically with the Stage-1 left stack (starts at KERNEL CRYPTO CLIENTS).
-        const stageGap = 12;
-        const stageClientsH = 134;
-        const stageQueueH = 86;
-        const stageOffloadH = 116;
-        const stageTotalH = stageClientsH + stageQueueH + stageOffloadH + (stageGap * 2);
-        const stageBaseY = Math.max(180, height - stageTotalH - 20);
-        const cardY = stageBaseY;
+        const rightColumnX = Math.floor(width * 0.73);
+        const cardX = Math.floor(width * 0.41) + 10;
+        const maxSafeW = Math.max(300, rightColumnX - cardX - 16);
+        const cardW = Math.max(330, Math.min(Math.min(470, Math.floor(width * 0.3)), maxSafeW));
+        const cardH = 226;
+        const decisionPanelY = Math.max(450, Math.floor(height * 0.52));
+        const cardY = decisionPanelY;
 
         const card = layer.append('g').attr('class', 'crypto-material-card');
         card.append('rect')
@@ -1052,7 +1068,7 @@ class CryptoSubsystemVisualization {
 
         card.append('text')
             .attr('x', cloudX + 8)
-            .attr('y', cardY + cardH - 12)
+            .attr('y', cardY + cardH - 14)
             .style('font-family', 'Share Tech Mono, monospace')
             .style('font-size', '8.5px')
             .style('fill', '#8f9eb3')
@@ -1061,12 +1077,188 @@ class CryptoSubsystemVisualization {
         if (this.selectedImplementationClassFilter) {
             card.append('text')
                 .attr('x', leftX)
-                .attr('y', cardY + cardH - 12)
+                .attr('y', cardY + cardH - 14)
                 .style('font-family', 'Share Tech Mono, monospace')
                 .style('font-size', '8.5px')
                 .style('fill', '#c8d6ea')
                 .text(`class filter: ${this.selectedImplementationClassFilter} (click dot to clear)`);
         }
+    }
+
+    drawEntropyCloud(layer, meta, width, height) {
+        const entropy = this.getEntropyPayload(meta);
+        const sources = Array.isArray(entropy.sources) ? entropy.sources.slice(0, 4) : [];
+        const rightColumnX = Math.floor(width * 0.73);
+        const panelX = Math.floor(width * 0.41) + 10;
+        const maxSafeW = Math.max(300, rightColumnX - panelX - 16);
+        const panelW = Math.max(330, Math.min(Math.min(470, Math.floor(width * 0.3)), maxSafeW));
+        const panelH = 238;
+        const decisionPanelY = Math.max(450, Math.floor(height * 0.52));
+        const materialCardH = 226;
+        const panelY = Math.min(height - panelH - 22, decisionPanelY + materialCardH + 16);
+        const panel = layer.append('g').attr('class', 'crypto-entropy-cloud');
+
+        panel.append('rect')
+            .attr('x', panelX)
+            .attr('y', panelY)
+            .attr('width', panelW)
+            .attr('height', panelH)
+            .attr('rx', 9)
+            .style('fill', 'rgba(7, 10, 15, 0.9)')
+            .style('stroke', 'rgba(162, 176, 198, 0.32)')
+            .style('stroke-width', 1);
+
+        panel.append('text')
+            .attr('x', panelX + 14)
+            .attr('y', panelY + 22)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '11px')
+            .style('letter-spacing', '0.45px')
+            .style('fill', '#d7ddea')
+            .text('KERNEL ENTROPY CLOUD');
+
+        const poolBits = Number(entropy.entropy_pool_bits || 0);
+        const poolSizeBits = Math.max(Number(entropy.entropy_pool_size_bits || 256), 1);
+        const poolPct = Math.max(0, Math.min(100, (poolBits / poolSizeBits) * 100));
+        panel.append('text')
+            .attr('x', panelX + 14)
+            .attr('y', panelY + 42)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9.5px')
+            .style('fill', '#a8b5c8')
+            .text(`entropy pool: ${poolBits}/${poolSizeBits} bits (${poolPct.toFixed(0)}%)`);
+        panel.append('text')
+            .attr('x', panelX + 14)
+            .attr('y', panelY + 58)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9.5px')
+            .style('fill', '#a8b5c8')
+            .text(`CRNG (ChaCha20): ${String(entropy.crng_state || 'unknown').toUpperCase()}`);
+        panel.append('text')
+            .attr('x', panelX + 14)
+            .attr('y', panelY + 74)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9.5px')
+            .style('fill', '#a8b5c8')
+            .text(`random subsystem: ${String(entropy.random_subsystem_state || 'unknown').toUpperCase()}`);
+
+        const cloudX = panelX + 12;
+        const cloudY = panelY + 86;
+        // Keep particle viewport compact so right-side source metrics fit comfortably.
+        const cloudW = Math.max(130, panelW - 220);
+        const cloudH = panelH - 100;
+        panel.append('rect')
+            .attr('x', cloudX)
+            .attr('y', cloudY)
+            .attr('width', cloudW)
+            .attr('height', cloudH)
+            .attr('rx', 7)
+            .style('fill', 'rgba(11, 16, 22, 0.7)')
+            .style('stroke', 'rgba(108, 120, 139, 0.24)')
+            .style('stroke-width', 0.8);
+
+        const particleCount = Math.max(12, Math.min(90, Number(entropy.particle_density || 32)));
+        for (let i = 0; i < particleCount; i += 1) {
+            const h = this.hashText(`entropy-${i}`);
+            const px = cloudX + 10 + (h % Math.max(12, cloudW - 20));
+            const py = cloudY + 10 + ((Math.floor(h / 9)) % Math.max(12, cloudH - 20));
+            const phase = (this.activeAnimationTick * 0.55) + (i * 0.37);
+            const pulse = 0.45 + 0.55 * ((Math.sin(phase) + 1) / 2);
+            const radius = 1.3 + ((h % 17) / 18) * 2.1 + pulse * 1.25;
+            const alpha = 0.28 + pulse * 0.64;
+            const hue = i % 7 === 0 ? '#80dbe8' : '#6eb1d5';
+            panel.append('circle')
+                .attr('cx', px)
+                .attr('cy', py)
+                .attr('r', radius)
+                .style('fill', hue)
+                .style('opacity', Math.min(alpha, 0.86));
+        }
+
+        const keyRate = Number(entropy.key_birth_rate_est || 0);
+        const keyNodes = Math.max(1, Math.min(5, Math.round(keyRate / 2.2)));
+        const keyBaseX = panelX + panelW - 110;
+        const keyBaseY = panelY + 112;
+        panel.append('text')
+            .attr('x', keyBaseX)
+            .attr('y', keyBaseY - 12)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', '#99a8bd')
+            .text(`key births/s est: ${keyRate.toFixed(2)}`);
+
+        for (let i = 0; i < keyNodes; i += 1) {
+            const x = keyBaseX + (i % 3) * 20;
+            const y = keyBaseY + Math.floor(i / 3) * 18;
+            panel.append('rect')
+                .attr('x', x)
+                .attr('y', y)
+                .attr('width', 8)
+                .attr('height', 8)
+                .attr('transform', `rotate(45, ${x + 4}, ${y + 4})`)
+                .style('fill', '#9de8ff')
+                .style('opacity', 0.84);
+        }
+
+        panel.append('line')
+            .attr('x1', cloudX + cloudW + 4)
+            .attr('y1', cloudY + Math.floor(cloudH / 2))
+            .attr('x2', keyBaseX - 6)
+            .attr('y2', keyBaseY + 2)
+            .style('stroke', '#7fc4e8')
+            .style('stroke-width', 1)
+            .style('stroke-opacity', 0.7);
+
+        const srcX = panelX + panelW - 158;
+        const srcY = panelY + 152;
+        const sourceBarX = srcX + 70;
+        const sourceBarW = Math.max(64, Math.min(76, panelX + panelW - sourceBarX - 8));
+        panel.append('text')
+            .attr('x', srcX)
+            .attr('y', srcY)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', '#a2b0c4')
+            .text('entropy sources');
+
+        sources.forEach((item, idx) => {
+            const y = srcY + 15 + idx * 16;
+            const intensity = Math.max(0, Math.min(100, Number(item.intensity || 0)));
+            const status = String(item.status || 'low').toLowerCase();
+            const barW = Math.round((intensity / 100) * sourceBarW);
+            const color = status === 'active' ? '#8ff0ff' : (status === 'limited' ? '#ffd18d' : '#8798ad');
+            panel.append('text')
+                .attr('x', srcX)
+                .attr('y', y)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '8.5px')
+                .style('fill', '#95a5bb')
+                .text(String(item.source || 'source'));
+            panel.append('rect')
+                .attr('x', sourceBarX)
+                .attr('y', y - 8)
+                .attr('width', sourceBarW)
+                .attr('height', 5)
+                .attr('rx', 2)
+                .style('fill', 'rgba(35, 42, 52, 0.9)');
+            panel.append('rect')
+                .attr('x', sourceBarX)
+                .attr('y', y - 8)
+                .attr('width', barW)
+                .attr('height', 5)
+                .attr('rx', 2)
+                .style('fill', color)
+                .style('opacity', 0.88);
+        });
+
+        panel.append('text')
+            .attr('x', panelX + panelW - 10)
+            .attr('y', panelY + panelH - 8)
+            .attr('text-anchor', 'end')
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '8px')
+            .style('fill', '#718199')
+            .text(`mode: ${String(entropy.mode || 'live-heuristic')}`);
     }
 
     drawStage1Panels(layer, meta, width, height) {
@@ -1396,6 +1588,7 @@ class CryptoSubsystemVisualization {
         const layer = this.svg.append('g').attr('class', 'crypto-flow-layer');
         this.drawGrid(layer, width, height);
         this.drawProtocolLegend(layer);
+        this.drawEntropyCloud(layer, payload?.meta || {}, width, height);
         this.drawAlgorithmCompetition(layer, payload?.meta || {}, width);
         this.drawDecisionPipeline(layer, payload?.meta || {}, width, height);
         this.drawAlgorithmMaterialCard(layer, payload?.meta || {}, width, height);
@@ -1723,6 +1916,23 @@ class CryptoSubsystemVisualization {
                         { name: 'sshd', kind: 'process', score: 1 },
                         { name: 'AF_ALG', kind: 'kernel-client', score: 1 }
                     ]
+                },
+                entropy_cloud: {
+                    entropy_pool_bits: 238,
+                    entropy_pool_size_bits: 256,
+                    crng_state: 'ready',
+                    random_subsystem_state: 'stable',
+                    particle_density: 52,
+                    key_birth_rate_est: 7.4,
+                    sources: [
+                        { source: 'interrupt timing', intensity: 76, status: 'active' },
+                        { source: 'disk IO', intensity: 42, status: 'active' },
+                        { source: 'network timing', intensity: 38, status: 'active' },
+                        { source: 'hardware RNG', intensity: 64, status: 'active' }
+                    ],
+                    read_wakeup_threshold: 128,
+                    write_wakeup_threshold: 64,
+                    mode: 'mock'
                 },
                 source: 'mock'
             }
