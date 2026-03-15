@@ -53,6 +53,14 @@ CRYPTO_PREV = {
     "timestamp": None,
     "active_flows": 0
 }
+ENTROPY_PREV = {
+    "timestamp": None,
+    "disk_read_bytes": None,
+    "disk_write_bytes": None,
+    "net_sent_bytes": None,
+    "net_recv_bytes": None,
+    "interrupt_total": None
+}
 EXEC_CONTEXT_PREV = {
     "timestamp": None,
     "irq_totals": {},
@@ -3464,6 +3472,137 @@ def collect_hw_offload_status(entries, algorithm_competitions):
         })
     return result
 
+def read_sysctl_int(path, default=0):
+    """Read integer sysctl/proc file value safely."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            raw = f.read().strip()
+        return int(raw or default)
+    except Exception:
+        return int(default)
+
+def read_proc_interrupt_total():
+    """Read total interrupts count from /proc/stat."""
+    try:
+        with open("/proc/stat", "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if line.startswith("intr "):
+                    parts = line.strip().split()
+                    if len(parts) >= 2:
+                        return int(parts[1])
+    except Exception:
+        return 0
+    return 0
+
+def collect_entropy_cloud_status():
+    """
+    Collect Linux random subsystem entropy status and source activity.
+    This is a best-effort realtime heuristic for UI visualization.
+    """
+    now = time.time()
+    entropy_bits = read_sysctl_int("/proc/sys/kernel/random/entropy_avail", 0)
+    pool_size_bits = read_sysctl_int("/proc/sys/kernel/random/poolsize", 256)
+    read_threshold = read_sysctl_int("/proc/sys/kernel/random/read_wakeup_threshold", 128)
+    write_threshold = read_sysctl_int("/proc/sys/kernel/random/write_wakeup_threshold", 64)
+
+    try:
+        disk = psutil.disk_io_counters()
+    except Exception:
+        disk = None
+    try:
+        net = psutil.net_io_counters()
+    except Exception:
+        net = None
+    intr_total = read_proc_interrupt_total()
+
+    prev_ts = ENTROPY_PREV.get("timestamp")
+    dt = max(now - prev_ts, 0.001) if prev_ts else None
+
+    disk_read_now = int(getattr(disk, "read_bytes", 0) or 0)
+    disk_write_now = int(getattr(disk, "write_bytes", 0) or 0)
+    net_sent_now = int(getattr(net, "bytes_sent", 0) or 0)
+    net_recv_now = int(getattr(net, "bytes_recv", 0) or 0)
+
+    if dt:
+        disk_delta = max(
+            (disk_read_now - int(ENTROPY_PREV.get("disk_read_bytes") or disk_read_now))
+            + (disk_write_now - int(ENTROPY_PREV.get("disk_write_bytes") or disk_write_now)),
+            0
+        )
+        net_delta = max(
+            (net_sent_now - int(ENTROPY_PREV.get("net_sent_bytes") or net_sent_now))
+            + (net_recv_now - int(ENTROPY_PREV.get("net_recv_bytes") or net_recv_now)),
+            0
+        )
+        intr_delta = max(intr_total - int(ENTROPY_PREV.get("interrupt_total") or intr_total), 0)
+    else:
+        disk_delta = 0
+        net_delta = 0
+        intr_delta = 0
+
+    ENTROPY_PREV["timestamp"] = now
+    ENTROPY_PREV["disk_read_bytes"] = disk_read_now
+    ENTROPY_PREV["disk_write_bytes"] = disk_write_now
+    ENTROPY_PREV["net_sent_bytes"] = net_sent_now
+    ENTROPY_PREV["net_recv_bytes"] = net_recv_now
+    ENTROPY_PREV["interrupt_total"] = intr_total
+
+    def scale_intensity(rate_value, scale):
+        return int(max(0, min(100, (float(rate_value) / float(scale)) * 100.0)))
+
+    disk_rate = (disk_delta / dt) if dt else 0
+    net_rate = (net_delta / dt) if dt else 0
+    intr_rate = (intr_delta / dt) if dt else 0
+
+    irq_intensity = scale_intensity(intr_rate, 25000)
+    disk_intensity = scale_intensity(disk_rate, 80 * 1024 * 1024)
+    net_intensity = scale_intensity(net_rate, 120 * 1024 * 1024)
+    hwrng_intensity = 68 if entropy_bits > max(read_threshold, 128) else 34
+
+    sources = [
+        {
+            "source": "interrupt timing",
+            "intensity": irq_intensity,
+            "status": "active" if irq_intensity >= 25 else "low"
+        },
+        {
+            "source": "disk IO",
+            "intensity": disk_intensity,
+            "status": "active" if disk_intensity >= 18 else "low"
+        },
+        {
+            "source": "network timing",
+            "intensity": net_intensity,
+            "status": "active" if net_intensity >= 18 else "low"
+        },
+        {
+            "source": "hardware RNG",
+            "intensity": hwrng_intensity,
+            "status": "active" if hwrng_intensity >= 50 else "limited"
+        }
+    ]
+
+    source_avg = int(sum(s["intensity"] for s in sources) / max(len(sources), 1))
+    entropy_pct = max(0.0, min(1.0, float(entropy_bits) / max(float(pool_size_bits), 1.0)))
+    particle_density = max(16, min(84, int(18 + entropy_pct * 42 + source_avg * 0.35)))
+    key_birth_rate = round(0.6 + entropy_pct * 9.4 + source_avg * 0.06, 2)
+
+    crng_state = "ready" if entropy_bits >= max(read_threshold, 128) else "warming"
+    random_state = "stable" if entropy_bits >= max(write_threshold, 64) else "refilling"
+
+    return {
+        "entropy_pool_bits": int(entropy_bits),
+        "entropy_pool_size_bits": int(pool_size_bits),
+        "crng_state": crng_state,
+        "random_subsystem_state": random_state,
+        "particle_density": int(particle_density),
+        "key_birth_rate_est": float(key_birth_rate),
+        "sources": sources,
+        "read_wakeup_threshold": int(read_threshold),
+        "write_wakeup_threshold": int(write_threshold),
+        "mode": "live-heuristic"
+    }
+
 def collect_algorithm_requesters(items, kernel_clients):
     """Infer likely requestor objects that trigger algorithm competition."""
     algo_map = {"aes": {}, "sha": {}, "chacha20": {}}
@@ -3747,6 +3886,7 @@ def collect_crypto_realtime():
         hw_offload=hw_offload,
         algorithm_requesters=algorithm_requesters
     )
+    entropy_cloud = collect_entropy_cloud_status()
 
     return {
         "items": items[:24],
@@ -3761,6 +3901,7 @@ def collect_crypto_realtime():
             "algorithm_competitions": algorithm_competitions,
             "algorithm_requesters": algorithm_requesters,
             "crypto_stage1": crypto_stage1,
+            "entropy_cloud": entropy_cloud,
             "crypto_decision_pipeline": crypto_decision_pipelines.get("aes", {}),
             "crypto_decision_pipelines": crypto_decision_pipelines,
             "source": "live-heuristic-v2",
