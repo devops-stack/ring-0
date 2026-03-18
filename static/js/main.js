@@ -92,8 +92,8 @@ function initApp() {
     // Setup event handlers
     setupEventListeners();
 
-    // When nginx serves SPA fallback (/index.html) for crypto route aliases,
-    // open the dedicated crypto view automatically by route.
+    // When nginx serves SPA fallback (/index.html) for subsystem route aliases,
+    // open dedicated views automatically by route.
     const path = String(window.location.pathname || '').replace(/\/+$/, '') || '/';
     if ((path === '/crypto' || path === '/linux-crypto-subsystem')
         && window.kernelContextMenu
@@ -101,6 +101,13 @@ function initApp() {
         setTimeout(() => {
             window.kernelContextMenu.activateCryptoView();
         }, 140);
+    }
+    if ((path === '/security' || path === '/linux-security-subsystem')
+        && window.kernelContextMenu
+        && typeof window.kernelContextMenu.activateSecurityView === 'function') {
+        setTimeout(() => {
+            window.kernelContextMenu.activateSecurityView();
+        }, 160);
     }
 }
 
@@ -162,14 +169,15 @@ function draw() {
         window.kernelContextMenu.currentView === 'dna-timeline' ||
         window.kernelContextMenu.currentView === 'network' ||
         window.kernelContextMenu.currentView === 'devices' ||
-        window.kernelContextMenu.currentView === 'files'
+        window.kernelContextMenu.currentView === 'files' ||
+        window.kernelContextMenu.currentView === 'security'
     )) {
         debugLog('⏸️ Skipping draw() - overlay view is active');
         return;
     }
 
     // Safety: ensure overlay containers never leak into the main view.
-    ['kernel-dna-container', 'network-stack-container', 'devices-belt-container', 'filesystem-map-container'].forEach((id) => {
+    ['kernel-dna-container', 'network-stack-container', 'devices-belt-container', 'filesystem-map-container', 'security-belt-container'].forEach((id) => {
         const node = document.getElementById(id);
         if (node) {
             node.style.display = 'none';

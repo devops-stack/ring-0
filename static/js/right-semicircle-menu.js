@@ -27,7 +27,12 @@ class RightSemicircleMenuManager {
     }
 
     isOverlayItem(itemId) {
-        return itemId === 'kernel' || itemId === 'network' || itemId === 'devices' || itemId === 'files' || itemId === 'scheduler';
+        return itemId === 'kernel'
+            || itemId === 'network'
+            || itemId === 'devices'
+            || itemId === 'files'
+            || itemId === 'scheduler'
+            || itemId === 'security';
     }
 
     setItemHoverState(itemGroup, isHovered, hudStrokeHair, hudStrokeNormal, hudStrokeAccent) {
@@ -77,6 +82,10 @@ class RightSemicircleMenuManager {
         if (itemId === 'scheduler') {
             // Force hard navigation to dedicated SEO page.
             window.location.assign('/linux-crypto-subsystem');
+            return;
+        }
+        if (itemId === 'security') {
+            window.location.assign('/linux-security-subsystem');
             return;
         }
         if (!window.kernelContextMenu) return;
@@ -351,6 +360,10 @@ class RightSemicircleMenuManager {
                     window.location.assign('/linux-crypto-subsystem');
                     return;
                 }
+                if (item.id === 'security') {
+                    window.location.assign('/linux-security-subsystem');
+                    return;
+                }
                 if (isOverlay) {
                     this.activateOverlayView(item.id);
                 } else {
@@ -369,6 +382,10 @@ class RightSemicircleMenuManager {
                     event.stopPropagation();
                     if (item.id === 'scheduler') {
                         window.location.assign('/linux-crypto-subsystem');
+                        return;
+                    }
+                    if (item.id === 'security') {
+                        window.location.assign('/linux-security-subsystem');
                         return;
                     }
                     // Prevent re-rendering during click
