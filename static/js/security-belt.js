@@ -1,7 +1,7 @@
-// Security Subsystem Visualization (Stage 1)
-// Version: 6
+// Security Subsystem Visualization (Stage 3)
+// Version: 10
 
-debugLog('🛡️ security-belt.js v6: Script loading...');
+debugLog('🛡️ security-belt.js v10: Script loading...');
 
 class SecuritySubsystemVisualization {
     constructor() {
@@ -22,6 +22,7 @@ class SecuritySubsystemVisualization {
         this.selectedProcessFilter = null;
         this.hoveredProcessPid = null;
         this.trustNodeHitAreas = [];
+        this.capabilityRowHitAreas = [];
         this.canvasClickHandler = null;
         this.canvasMouseMoveHandler = null;
     }
@@ -85,7 +86,7 @@ class SecuritySubsystemVisualization {
             z-index: 1001;
             text-shadow: 0 0 8px rgba(180, 210, 255, 0.25);
         `;
-        title.textContent = 'KERNEL SECURITY SUBSYSTEM (stage 1)';
+        title.textContent = 'KERNEL SECURITY SUBSYSTEM (stage 3)';
         this.container.appendChild(title);
         this.overlayNodes.push(title);
 
@@ -100,7 +101,7 @@ class SecuritySubsystemVisualization {
             font-size: 11px;
             z-index: 1001;
         `;
-        legend.textContent = 'threat decision pipeline + process trust graph + attack surface map';
+        legend.textContent = 'pipeline + trust + attack surface + lsm/capabilities/seccomp tools';
         this.container.appendChild(legend);
         this.overlayNodes.push(legend);
 
@@ -265,6 +266,14 @@ class SecuritySubsystemVisualization {
                 break;
             }
         }
+        if (!matched) {
+            for (const row of this.capabilityRowHitAreas) {
+                if (x >= row.x && x <= row.x + row.w && y >= row.y && y <= row.y + row.h) {
+                    matched = row;
+                    break;
+                }
+            }
+        }
         if (!matched) return;
         const pid = Number(matched.pid || 0);
         if (this.selectedProcessFilter && Number(this.selectedProcessFilter.pid || 0) === pid) {
@@ -292,6 +301,14 @@ class SecuritySubsystemVisualization {
             if (dist <= node.r + 4) {
                 hovered = Number(node.pid || 0);
                 break;
+            }
+        }
+        if (!hovered) {
+            for (const row of this.capabilityRowHitAreas) {
+                if (x >= row.x && x <= row.x + row.w && y >= row.y && y <= row.y + row.h) {
+                    hovered = Number(row.pid || 0);
+                    break;
+                }
             }
         }
         this.hoveredProcessPid = hovered;
@@ -513,6 +530,110 @@ class SecuritySubsystemVisualization {
         });
     }
 
+    drawLsmStatusCard(x, y, w, h, telemetry) {
+        this.drawPanel(x, y, w, h, 'LSM STATUS MATRIX');
+        const rows = Array.isArray(telemetry?.security_tools?.lsm_status)
+            ? telemetry.security_tools.lsm_status.slice(0, 6)
+            : [];
+        rows.forEach((row, idx) => {
+            const yy = y + 40 + idx * 22;
+            const status = String(row.status || 'unknown').toLowerCase();
+            let color = '#8a9cea';
+            if (status.includes('enforcing') || status.includes('blocked') || status.includes('hardened') || status.includes('present')) color = '#60d69d';
+            if (status.includes('relaxed')) color = '#f4c977';
+            if (status.includes('disabled') || status.includes('absent')) color = '#eb7e7e';
+            this.ctx.fillStyle = 'rgba(10, 14, 20, 0.46)';
+            this.ctx.fillRect(x + 12, yy - 12, w - 24, 18);
+            this.ctx.fillStyle = '#cfdced';
+            this.ctx.font = '10px "Share Tech Mono", monospace';
+            this.ctx.fillText(String(row.name || 'lsm'), x + 16, yy);
+            this.ctx.fillStyle = color;
+            this.ctx.fillText(String(row.status || 'unknown').toUpperCase(), x + Math.floor(w * 0.56), yy);
+            this.ctx.fillStyle = 'rgba(185, 200, 220, 0.7)';
+            this.ctx.fillText(String(row.detail || ''), x + w - 74, yy);
+        });
+    }
+
+    drawCapabilitiesCard(x, y, w, h, telemetry) {
+        this.drawPanel(x, y, w, h, 'CAPABILITIES DRIFT');
+        this.capabilityRowHitAreas = [];
+        const rows = Array.isArray(telemetry?.security_tools?.capabilities_drift)
+            ? telemetry.security_tools.capabilities_drift.slice(0, 6)
+            : [];
+        rows.forEach((row, idx) => {
+            const yy = y + 40 + idx * 22;
+            const pid = Number(row.pid || 0);
+            const risk = Number(row.risk_score || 0);
+            const danger = Array.isArray(row.dangerous) ? row.dangerous : [];
+            const color = risk >= 70 ? '#eb7e7e' : (risk >= 45 ? '#f4c977' : '#8a9cea');
+            const isSelected = this.selectedProcessFilter && Number(this.selectedProcessFilter.pid || 0) === pid;
+            const isHovered = Number(this.hoveredProcessPid || 0) === pid;
+            const rowX = x + 12;
+            const rowY = yy - 12;
+            const rowW = w - 24;
+            const rowH = 18;
+            this.ctx.fillStyle = isSelected ? 'rgba(32, 52, 81, 0.62)' : (isHovered ? 'rgba(22, 34, 52, 0.56)' : 'rgba(10, 14, 20, 0.46)');
+            this.ctx.fillRect(rowX, rowY, rowW, rowH);
+            if (isSelected || isHovered) {
+                this.ctx.strokeStyle = isSelected ? 'rgba(124, 178, 255, 0.95)' : 'rgba(112, 152, 216, 0.72)';
+                this.ctx.lineWidth = isSelected ? 1.2 : 0.9;
+                this.ctx.strokeRect(rowX + 0.5, rowY + 0.5, rowW - 1, rowH - 1);
+            }
+            this.ctx.fillStyle = '#d8e5f7';
+            this.ctx.font = '10px "Share Tech Mono", monospace';
+            this.ctx.fillText(`${String(row.name || 'proc').slice(0, 10)}:${pid || 0}`, x + 16, yy);
+            this.ctx.fillStyle = color;
+            this.ctx.fillText(`risk ${risk}`, x + Math.floor(w * 0.40), yy);
+            this.ctx.fillStyle = 'rgba(185, 200, 220, 0.72)';
+            this.ctx.fillText(danger.slice(0, 2).join(','), x + Math.floor(w * 0.56), yy);
+            this.capabilityRowHitAreas.push({
+                x: rowX,
+                y: rowY,
+                w: rowW,
+                h: rowH,
+                pid,
+                name: row.name || 'unknown'
+            });
+        });
+    }
+
+    drawSeccompCoverageCard(x, y, w, h, telemetry) {
+        this.drawPanel(x, y, w, h, 'SECCOMP COVERAGE');
+        const cov = telemetry?.security_tools?.seccomp_coverage || {};
+        const none = Number(cov.none || 0);
+        const strict = Number(cov.strict || 0);
+        const filter = Number(cov.filter || 0);
+        const unknown = Number(cov.unknown || 0);
+        const coverage = Number(cov.coverage_percent || 0);
+
+        this.ctx.fillStyle = 'rgba(179, 203, 232, 0.9)';
+        this.ctx.font = '11px "Share Tech Mono", monospace';
+        this.ctx.fillText(`coverage ${coverage.toFixed(2)}%`, x + 14, y + 42);
+        this.ctx.fillText(`filter:${filter} strict:${strict} none:${none} unknown:${unknown}`, x + 14, y + 60);
+
+        const barX = x + 14;
+        const barY = y + 72;
+        const barW = w - 28;
+        const barH = 12;
+        this.ctx.fillStyle = 'rgba(12, 16, 22, 0.62)';
+        this.ctx.fillRect(barX, barY, barW, barH);
+        const fillW = Math.max(0, Math.min(barW, (coverage / 100) * barW));
+        this.ctx.fillStyle = coverage >= 80 ? '#60d69d' : (coverage >= 50 ? '#f4c977' : '#eb7e7e');
+        this.ctx.fillRect(barX, barY, fillW, barH);
+
+        const unsandboxed = Array.isArray(cov.high_risk_unsandboxed) ? cov.high_risk_unsandboxed.slice(0, 4) : [];
+        unsandboxed.forEach((row, idx) => {
+            const yy = y + 102 + idx * 20;
+            this.ctx.fillStyle = 'rgba(10, 14, 20, 0.46)';
+            this.ctx.fillRect(x + 12, yy - 11, w - 24, 16);
+            this.ctx.fillStyle = '#d8e5f7';
+            this.ctx.font = '10px "Share Tech Mono", monospace';
+            this.ctx.fillText(`${String(row.name || 'proc').slice(0, 14)}:${row.pid || 0}`, x + 16, yy);
+            this.ctx.fillStyle = '#eb7e7e';
+            this.ctx.fillText(`risk ${Number(row.risk_score || 0)}`, x + w - 88, yy);
+        });
+    }
+
     drawHeaderStats(telemetry) {
         const meta = telemetry?.meta || {};
         this.ctx.fillStyle = 'rgba(179, 203, 232, 0.92)';
@@ -525,12 +646,13 @@ class SecuritySubsystemVisualization {
             500,
             114
         );
+        this.ctx.fillText(`seccomp coverage ${Number(meta.seccomp_coverage_percent || 0).toFixed(2)}%`, 930, 114);
         this.ctx.fillStyle = 'rgba(180, 196, 220, 0.86)';
         const selected = this.selectedProcessFilter;
         if (selected) {
             this.ctx.fillText(`selected process: ${selected.name}:${selected.pid} (click again to clear)`, 26, 132);
         } else {
-            this.ctx.fillText('tip: click a process node in PROCESS TRUST GRAPH to filter pipeline', 26, 132);
+            this.ctx.fillText('tip: click a process node or CAPABILITIES DRIFT row to filter pipeline', 26, 132);
         }
     }
 
@@ -577,7 +699,8 @@ class SecuritySubsystemVisualization {
 
         const gap = 16;
         const panelTop = 172;
-        const panelH = Math.max(340, h - panelTop - 24);
+        const toolsH = Math.max(128, Math.min(176, Math.floor(h * 0.22)));
+        const panelH = Math.max(220, h - panelTop - toolsH - gap - 24);
         const leftW = Math.max(440, Math.floor(w * 0.42));
         const centerW = Math.max(330, Math.floor(w * 0.26));
         const rightW = Math.max(310, w - leftW - centerW - gap * 4);
@@ -585,10 +708,17 @@ class SecuritySubsystemVisualization {
         const leftX = gap;
         const centerX = leftX + leftW + gap;
         const rightX = centerX + centerW + gap;
+        const toolsY = panelTop + panelH + gap;
+        const toolsW = Math.max(220, Math.floor((w - gap * 4) / 3));
+        const tools2X = leftX + toolsW + gap;
+        const tools3X = tools2X + toolsW + gap;
 
         this.drawDecisionPipeline(leftX, panelTop, leftW, panelH, this.telemetry);
         this.drawTrustGraph(centerX, panelTop, centerW, panelH, this.telemetry);
         this.drawAttackSurface(rightX, panelTop, rightW, panelH, this.telemetry);
+        this.drawLsmStatusCard(leftX, toolsY, toolsW, toolsH, this.telemetry);
+        this.drawCapabilitiesCard(tools2X, toolsY, toolsW, toolsH, this.telemetry);
+        this.drawSeccompCoverageCard(tools3X, toolsY, toolsW, toolsH, this.telemetry);
     }
 
     animate() {
