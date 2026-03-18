@@ -66,6 +66,10 @@ EXEC_CONTEXT_PREV = {
     "irq_totals": {},
     "softirq_totals": {}
 }
+SECURITY_PREV = {
+    "timestamp": None,
+    "events": 0
+}
 FRONTEND_LOG_WRITE_LOCK = Lock()
 FRONTEND_LOG_FILE = os.getenv("FRONTEND_LOG_FILE", "/opt/ring0/kernel-ai/logs/frontend-events.jsonl")
 
@@ -724,6 +728,16 @@ def linux_crypto_subsystem_page():
 def crypto_page_legacy():
     """Legacy path redirect to Linux crypto subsystem page."""
     return redirect('/linux-crypto-subsystem', code=301)
+
+@app.route('/linux-security-subsystem')
+def linux_security_subsystem_page():
+    """SEO-friendly Linux security subsystem page."""
+    return render_template('linux-security-subsystem.html')
+
+@app.route('/security')
+def security_page_legacy():
+    """Legacy path redirect to Linux security subsystem page."""
+    return redirect('/linux-security-subsystem', code=301)
 
 @app.route('/api/syscalls-realtime')
 def syscalls_realtime():
@@ -3919,6 +3933,191 @@ def collect_crypto_realtime():
         }
     }
 
+def collect_security_realtime():
+    """
+    Stage-1 security subsystem telemetry:
+    - Threat decision pipeline
+    - Process trust graph
+    - Attack surface map
+    """
+    now = time.time()
+    process_rows = []
+    suspicious_tokens = {
+        "nmap", "masscan", "hydra", "sqlmap", "metasploit", "msfconsole",
+        "netcat", "nc", "ncat", "socat", "john", "hashcat", "strace", "gdb"
+    }
+    trusted_tokens = {
+        "systemd", "sshd", "nginx", "python", "containerd", "dockerd",
+        "kubelet", "cron", "rsyslogd", "dbus-daemon"
+    }
+    ptrace_like = {"strace", "gdb", "ltrace"}
+
+    def classify_trust(score):
+        if score >= 70:
+            return "blocked"
+        if score >= 48:
+            return "suspicious"
+        if score >= 28:
+            return "observe"
+        return "trusted"
+
+    # Process sample and heuristic score.
+    for proc in psutil.process_iter(["pid", "name", "username", "memory_percent", "status", "num_threads"]):
+        try:
+            pid = int(proc.info.get("pid") or 0)
+            name = str(proc.info.get("name") or "unknown").lower()
+            mem = float(proc.info.get("memory_percent") or 0.0)
+            threads = int(proc.info.get("num_threads") or 0)
+            status = str(proc.info.get("status") or "unknown")
+            user = str(proc.info.get("username") or "")
+
+            score = 12
+            if any(tok in name for tok in suspicious_tokens):
+                score += 38
+            if any(tok in name for tok in trusted_tokens):
+                score -= 10
+            if user == "root":
+                score += 14
+            if threads > 120:
+                score += 8
+            if mem > 8.0:
+                score += 8
+            if status in {"zombie", "stopped"}:
+                score += 10
+            score = max(0, min(100, score))
+            trust = classify_trust(score)
+
+            process_rows.append({
+                "pid": pid,
+                "name": name,
+                "trust": trust,
+                "risk_score": score,
+                "threads": threads,
+                "mem_percent": round(mem, 2),
+                "status": status,
+                "user": user
+            })
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+        except Exception:
+            continue
+
+    # Focus on the most security-relevant rows.
+    process_rows.sort(key=lambda p: (p["risk_score"], p["mem_percent"], p["threads"]), reverse=True)
+    trust_graph = process_rows[:12]
+
+    # Build threat pipeline lanes from top rows.
+    request_candidates = [
+        "open /etc/shadow",
+        "connect tcp:443",
+        "exec /usr/bin/sudo",
+        "ptrace attach",
+        "bpf program load",
+        "write /usr/lib/systemd/*"
+    ]
+    hook_candidates = [
+        "security_file_open",
+        "security_socket_connect",
+        "security_bprm_check",
+        "seccomp-bpf",
+        "cgroup device policy",
+        "audit hook"
+    ]
+    lanes = []
+    for idx, row in enumerate(trust_graph[:10]):
+        req = request_candidates[idx % len(request_candidates)]
+        hook = hook_candidates[idx % len(hook_candidates)]
+        score = int(row.get("risk_score") or 0)
+        if score >= 70:
+            verdict = "deny"
+        elif score >= 45:
+            verdict = "audit"
+        else:
+            verdict = "allow"
+        lanes.append({
+            "process": row.get("name", "unknown"),
+            "pid": int(row.get("pid", 0)),
+            "request": req,
+            "hook": hook,
+            "verdict": verdict,
+            "reason": "risk-score-policy",
+            "risk_score": score
+        })
+
+    # Attack surface metrics.
+    try:
+        listen_ports = len([
+            c for c in psutil.net_connections(kind="inet")
+            if str(getattr(c, "status", "") or "") == "LISTEN"
+        ])
+    except Exception:
+        listen_ports = 0
+
+    try:
+        with open("/proc/modules", "r", encoding="utf-8") as f:
+            loaded_modules = sum(1 for _ in f)
+    except Exception:
+        loaded_modules = 0
+
+    ptrace_processes = sum(1 for p in process_rows if any(tok in p.get("name", "") for tok in ptrace_like))
+    root_processes = sum(1 for p in process_rows if p.get("user") == "root")
+    suspicious_processes = sum(1 for p in process_rows if p.get("trust") in {"suspicious", "blocked"})
+
+    setuid_bins = 0
+    try:
+        out = subprocess.check_output(
+            "find /usr/bin /usr/sbin -xdev -perm -4000 -type f 2>/dev/null | wc -l",
+            shell=True,
+            text=True,
+            timeout=1.8
+        ).strip()
+        setuid_bins = int(out or 0)
+    except Exception:
+        setuid_bins = 0
+
+    attack_surface = [
+        {"name": "open-listen-ports", "value": int(listen_ports), "severity": "high" if listen_ports > 40 else "medium"},
+        {"name": "setuid-binaries", "value": int(setuid_bins), "severity": "high" if setuid_bins > 70 else "medium"},
+        {"name": "loaded-kernel-modules", "value": int(loaded_modules), "severity": "medium" if loaded_modules > 180 else "low"},
+        {"name": "ptrace-capable-processes", "value": int(ptrace_processes), "severity": "high" if ptrace_processes > 0 else "low"},
+        {"name": "root-processes", "value": int(root_processes), "severity": "medium" if root_processes > 120 else "low"},
+        {"name": "suspicious-processes", "value": int(suspicious_processes), "severity": "high" if suspicious_processes > 6 else "medium"}
+    ]
+
+    prev_ts = SECURITY_PREV["timestamp"]
+    prev_events = int(SECURITY_PREV["events"] or 0)
+    current_events = len(lanes)
+    SECURITY_PREV["timestamp"] = now
+    SECURITY_PREV["events"] = current_events
+    if prev_ts:
+        dt = max(0.001, now - prev_ts)
+        decisions_per_sec = round((current_events / dt) + abs(current_events - prev_events) * 0.6, 2)
+    else:
+        decisions_per_sec = float(current_events)
+
+    return {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "pipeline": {
+            "stages": [
+                "request event",
+                "LSM/seccomp hook",
+                "policy verdict"
+            ],
+            "lanes": lanes
+        },
+        "trust_graph": trust_graph,
+        "attack_surface": attack_surface,
+        "meta": {
+            "decisions_per_sec": decisions_per_sec,
+            "events": current_events,
+            "trusted": sum(1 for p in trust_graph if p.get("trust") == "trusted"),
+            "observe": sum(1 for p in trust_graph if p.get("trust") == "observe"),
+            "suspicious": sum(1 for p in trust_graph if p.get("trust") == "suspicious"),
+            "blocked": sum(1 for p in trust_graph if p.get("trust") == "blocked"),
+            "mode": "live-heuristic-v1"
+        }
+    }
+
 @app.route('/api/kernel-dna')
 def kernel_dna():
     """API endpoint for Kernel DNA visualization data"""
@@ -3933,6 +4132,14 @@ def crypto_realtime():
     """Realtime-ish crypto interaction feed for crypto visualization."""
     try:
         return jsonify(collect_crypto_realtime())
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/security-realtime')
+def security_realtime():
+    """Realtime-ish security interaction feed for security visualization."""
+    try:
+        return jsonify(collect_security_realtime())
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

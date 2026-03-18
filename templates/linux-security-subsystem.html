@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Linux Security Kernel Subsystem - Linux Kernel Architecture Visualization</title>
+    <meta name="description" content="Interactive Linux security kernel subsystem page: threat decision pipeline, LSM and seccomp checks, process trust graph, and attack surface map.">
+    <meta name="keywords" content="
+linux security subsystem,
+linux kernel security,
+linux lsm,
+linux seccomp,
+linux apparmor,
+linux selinux,
+linux kernel hardening,
+linux attack surface,
+linux process trust graph,
+linux security visualization
+">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="/linux-security-subsystem">
+
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="/linux-security-subsystem">
+    <meta property="og:title" content="Linux Security Kernel Subsystem Visualization">
+    <meta property="og:description" content="Visualized internals of Linux security subsystem: request checks, policy verdicts, process trust levels, and system attack surface.">
+    <meta property="og:image" content="/static/images/009.png">
+
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="/linux-security-subsystem">
+    <meta property="twitter:title" content="Linux Security Kernel Subsystem Visualization">
+    <meta property="twitter:description" content="How Linux kernel security controls evaluate requests and enforce policy decisions.">
+    <meta property="twitter:image" content="/static/images/009.png">
+
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/main.css?v=3">
+    <style>
+        body {
+            margin: 0;
+            background: #090c11;
+            color: #d4dbe8;
+            font-family: "Share Tech Mono", monospace;
+        }
+        .seo-security {
+            position: absolute;
+            left: -10000px;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+        }
+        .page-nav {
+            position: fixed;
+            left: 18px;
+            top: 18px;
+            z-index: 10020;
+            display: flex;
+            gap: 8px;
+        }
+        .page-nav a {
+            display: inline-block;
+            text-decoration: none;
+            color: #d2d8e2;
+            border: 1px solid rgba(165, 178, 200, 0.34);
+            padding: 8px 12px;
+            font-size: 11px;
+            background: rgba(10, 14, 21, 0.86);
+        }
+        .page-nav a:hover {
+            color: #ffffff;
+            background: rgba(18, 24, 36, 0.92);
+        }
+    </style>
+</head>
+<body>
+    <h1 class="seo-security">Linux Security Kernel Subsystem</h1>
+
+    <section class="seo-security">
+        <h2>Linux Security Subsystem</h2>
+        <p>
+            The Linux security subsystem enforces runtime security policy in kernel space.
+            It evaluates process and I/O requests using Linux Security Module hooks,
+            seccomp filters, and policy checks before allowing or denying operations.
+        </p>
+
+        <h2>Threat Decision Pipeline</h2>
+        <p>
+            Security decisions in Linux follow a request pipeline: request event,
+            policy hook evaluation, and final verdict. This page visualizes how
+            events are classified into allow, audit, or deny outcomes.
+        </p>
+
+        <h2>Process Trust Graph</h2>
+        <p>
+            Process trust is represented as a graph driven by heuristic risk scoring.
+            It highlights trusted, observed, suspicious, and blocked candidates to
+            help understand the security posture in real time.
+        </p>
+
+        <h2>Attack Surface Map</h2>
+        <p>
+            The attack surface map summarizes key indicators such as open listen ports,
+            setuid binaries, loaded kernel modules, ptrace-capable tooling, and root
+            process distribution.
+        </p>
+    </section>
+
+    <nav class="page-nav">
+        <a href="/">BACK TO MAIN</a>
+    </nav>
+
+    <script src="/static/js/safe-utils.js?v=2"></script>
+    <script src="/static/js/frontend-logger.js?v=2"></script>
+    <script src="/static/js/security-belt.js?v=6"></script>
+    <script>
+        (function startSecurityPage() {
+            if (typeof window.SecuritySubsystemVisualization !== 'function') {
+                console.error('SecuritySubsystemVisualization is not available');
+                return;
+            }
+            const securityViz = new window.SecuritySubsystemVisualization();
+            securityViz.init('security-belt-container');
+            securityViz.activate();
+
+            if (securityViz.exitButton) {
+                securityViz.exitButton.textContent = 'BACK TO MAIN';
+                securityViz.exitButton.onclick = function () {
+                    window.location.href = '/';
+                };
+            }
+        })();
+    </script>
+</body>
+</html>

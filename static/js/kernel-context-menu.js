@@ -17,6 +17,7 @@ class KernelContextMenu {
         this.cryptoVisualization = null;
         this.devicesVisualization = null;
         this.filesVisualization = null;
+        this.securityVisualization = null;
     }
 
     init() {
@@ -614,6 +615,66 @@ class KernelContextMenu {
             console.error('❌ Error activating Filesystem Map visualization:', error);
         }
     }
+
+    activateSecurityView() {
+        debugLog('🛡️ Activating Security Subsystem View');
+        this.currentView = 'security';
+        this.hideSubmenu();
+
+        if (!this.securityVisualization) {
+            if (typeof SecuritySubsystemVisualization !== 'undefined') {
+                try {
+                    this.securityVisualization = new SecuritySubsystemVisualization();
+                    const initResult = this.securityVisualization.init();
+                    if (initResult === false) {
+                        this.securityVisualization = null;
+                        return;
+                    }
+                } catch (error) {
+                    console.error('❌ Error initializing SecuritySubsystemVisualization:', error);
+                    alert('Security view initialization error: ' + error.message);
+                    return;
+                }
+            } else if (typeof window.SecuritySubsystemVisualization !== 'undefined') {
+                try {
+                    this.securityVisualization = new window.SecuritySubsystemVisualization();
+                    const initResult = this.securityVisualization.init();
+                    if (initResult === false) {
+                        this.securityVisualization = null;
+                        return;
+                    }
+                } catch (error) {
+                    console.error('❌ Error initializing window.SecuritySubsystemVisualization:', error);
+                    alert('Security view initialization error: ' + error.message);
+                    return;
+                }
+            } else {
+                console.error('❌ SecuritySubsystemVisualization class not loaded');
+                alert('Security visualization is not loaded. Check console for details.');
+                return;
+            }
+        }
+
+        d3.selectAll('.syscall-box, .syscall-text').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+        d3.selectAll('.tag-icon, .connection-line').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+        d3.selectAll('.connection-box, .connection-text, .connection-details').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+        d3.selectAll('.subsystem-indicator').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+        d3.selectAll('.namespace-shell-layer, .cgroup-card-layer').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
+
+        if (window.syscallsManager) {
+            window.syscallsManager.stopAutoUpdate();
+        }
+        if (window.connectionsManager) {
+            window.connectionsManager.stopAutoUpdate();
+        }
+
+        try {
+            this.securityVisualization.activate();
+            debugLog('✅ Security Subsystem visualization activated');
+        } catch (error) {
+            console.error('❌ Error activating Security Subsystem visualization:', error);
+        }
+    }
     
     addExitButton() {
         // Remove existing exit button
@@ -693,6 +754,9 @@ class KernelContextMenu {
         }
         if (this.filesVisualization) {
             this.filesVisualization.deactivate();
+        }
+        if (this.securityVisualization) {
+            this.securityVisualization.deactivate();
         }
         
         // Clear exit button immediately (both old class and new class)
