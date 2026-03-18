@@ -4085,6 +4085,140 @@ def collect_security_realtime():
         {"name": "suspicious-processes", "value": int(suspicious_processes), "severity": "high" if suspicious_processes > 6 else "medium"}
     ]
 
+    # Stage 3: kernel security tools insights.
+    def _read_text(path):
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                return str(f.read().strip())
+        except Exception:
+            return ""
+
+    # LSM status matrix (best effort, distro dependent).
+    apparmor_raw = _read_text("/sys/module/apparmor/parameters/enabled")
+    selinux_enforce = _read_text("/sys/fs/selinux/enforce")
+    yama_scope = _read_text("/proc/sys/kernel/yama/ptrace_scope")
+    bpf_unpriv = _read_text("/proc/sys/kernel/unprivileged_bpf_disabled")
+    landlock_present = os.path.exists("/sys/kernel/security/landlock")
+    ima_present = os.path.exists("/sys/kernel/security/ima")
+    lsm_status = [
+        {
+            "name": "AppArmor",
+            "status": "enforcing" if apparmor_raw.lower().startswith("y") else ("disabled" if apparmor_raw else "unknown"),
+            "detail": apparmor_raw or "n/a"
+        },
+        {
+            "name": "SELinux",
+            "status": "enforcing" if selinux_enforce == "1" else ("disabled" if selinux_enforce == "0" else "unknown"),
+            "detail": selinux_enforce or "n/a"
+        },
+        {
+            "name": "Yama ptrace",
+            "status": "hardened" if yama_scope in {"2", "3"} else ("relaxed" if yama_scope in {"0", "1"} else "unknown"),
+            "detail": yama_scope or "n/a"
+        },
+        {
+            "name": "unprivileged bpf",
+            "status": "blocked" if bpf_unpriv == "1" else ("allowed" if bpf_unpriv == "0" else "unknown"),
+            "detail": bpf_unpriv or "n/a"
+        },
+        {
+            "name": "Landlock",
+            "status": "present" if landlock_present else "absent",
+            "detail": "sysfs" if landlock_present else "n/a"
+        },
+        {
+            "name": "IMA/EVM",
+            "status": "present" if ima_present else "absent",
+            "detail": "sysfs" if ima_present else "n/a"
+        }
+    ]
+
+    # Capabilities drift (CapEff/CapPrm from /proc/<pid>/status).
+    dangerous_caps = {
+        12: "CAP_NET_ADMIN",
+        16: "CAP_SYS_MODULE",
+        17: "CAP_SYS_RAWIO",
+        19: "CAP_SYS_PTRACE",
+        21: "CAP_SYS_ADMIN",
+        39: "CAP_BPF"
+    }
+    capabilities_rows = []
+    seccomp_counts = {"none": 0, "strict": 0, "filter": 0, "unknown": 0}
+
+    for row in process_rows[:180]:
+        pid = int(row.get("pid") or 0)
+        if pid <= 0:
+            continue
+        cap_eff_hex = ""
+        cap_prm_hex = ""
+        seccomp_mode = "unknown"
+        try:
+            with open(f"/proc/{pid}/status", "r", encoding="utf-8", errors="ignore") as f:
+                for ln in f:
+                    if ln.startswith("CapEff:"):
+                        cap_eff_hex = ln.split(":", 1)[1].strip()
+                    elif ln.startswith("CapPrm:"):
+                        cap_prm_hex = ln.split(":", 1)[1].strip()
+                    elif ln.startswith("Seccomp:"):
+                        seccomp_raw = ln.split(":", 1)[1].strip()
+                        if seccomp_raw == "0":
+                            seccomp_mode = "none"
+                        elif seccomp_raw == "1":
+                            seccomp_mode = "strict"
+                        elif seccomp_raw == "2":
+                            seccomp_mode = "filter"
+                        else:
+                            seccomp_mode = "unknown"
+        except Exception:
+            pass
+
+        seccomp_counts[seccomp_mode] = seccomp_counts.get(seccomp_mode, 0) + 1
+        if not cap_eff_hex:
+            continue
+        try:
+            cap_eff_val = int(cap_eff_hex, 16)
+            cap_prm_val = int(cap_prm_hex or "0", 16)
+        except Exception:
+            continue
+
+        matched = [name for bit, name in dangerous_caps.items() if (cap_eff_val & (1 << bit))]
+        if not matched:
+            continue
+        risk = min(100, 20 + len(matched) * 16 + (10 if row.get("user") == "root" else 0))
+        capabilities_rows.append({
+            "pid": pid,
+            "name": row.get("name", "unknown"),
+            "user": row.get("user", ""),
+            "seccomp": seccomp_mode,
+            "cap_eff": cap_eff_hex,
+            "cap_prm": cap_prm_hex or "0",
+            "dangerous": matched[:4],
+            "risk_score": int(risk)
+        })
+
+    capabilities_rows.sort(key=lambda x: (x.get("risk_score", 0), len(x.get("dangerous", []))), reverse=True)
+    capabilities_drift = capabilities_rows[:8]
+
+    # Seccomp coverage summary + top unsandboxed risky processes.
+    total_seccomp_sample = max(1, sum(seccomp_counts.values()))
+    unsandboxed = [r for r in capabilities_rows if r.get("seccomp") == "none"]
+    unsandboxed.sort(key=lambda x: x.get("risk_score", 0), reverse=True)
+    seccomp_coverage = {
+        "none": int(seccomp_counts.get("none", 0)),
+        "strict": int(seccomp_counts.get("strict", 0)),
+        "filter": int(seccomp_counts.get("filter", 0)),
+        "unknown": int(seccomp_counts.get("unknown", 0)),
+        "coverage_percent": round((seccomp_counts.get("filter", 0) + seccomp_counts.get("strict", 0)) * 100.0 / total_seccomp_sample, 2),
+        "high_risk_unsandboxed": [
+            {
+                "pid": int(r.get("pid", 0)),
+                "name": str(r.get("name", "unknown")),
+                "risk_score": int(r.get("risk_score", 0))
+            }
+            for r in unsandboxed[:6]
+        ]
+    }
+
     prev_ts = SECURITY_PREV["timestamp"]
     prev_events = int(SECURITY_PREV["events"] or 0)
     current_events = len(lanes)
@@ -4108,6 +4242,11 @@ def collect_security_realtime():
         },
         "trust_graph": trust_graph,
         "attack_surface": attack_surface,
+        "security_tools": {
+            "lsm_status": lsm_status,
+            "capabilities_drift": capabilities_drift,
+            "seccomp_coverage": seccomp_coverage
+        },
         "meta": {
             "decisions_per_sec": decisions_per_sec,
             "events": current_events,
@@ -4115,6 +4254,7 @@ def collect_security_realtime():
             "observe": sum(1 for p in trust_graph if p.get("trust") == "observe"),
             "suspicious": sum(1 for p in trust_graph if p.get("trust") == "suspicious"),
             "blocked": sum(1 for p in trust_graph if p.get("trust") == "blocked"),
+            "seccomp_coverage_percent": seccomp_coverage.get("coverage_percent", 0.0),
             "mode": "live-heuristic-v1"
         }
     }
