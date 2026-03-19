@@ -1,7 +1,7 @@
-// Security Subsystem Visualization (Stage 3)
-// Version: 10
+// Security Subsystem Visualization (Stage 4: Kernel Security Core)
+// Version: 11
 
-debugLog('🛡️ security-belt.js v10: Script loading...');
+debugLog('🛡️ security-belt.js v11: Script loading...');
 
 class SecuritySubsystemVisualization {
     constructor() {
@@ -634,6 +634,140 @@ class SecuritySubsystemVisualization {
         });
     }
 
+    drawSecurityCore(x, y, w, h, telemetry) {
+        this.drawPanel(x, y, w, h, 'KERNEL SECURITY CORE');
+        const core = telemetry?.security_core || {};
+        const lsmEngines = Array.isArray(core.lsm_engines) ? core.lsm_engines : [];
+        const seccompProcs = Array.isArray(core.seccomp_processes) ? core.seccomp_processes : [];
+        const capProcs = Array.isArray(core.capabilities_processes) ? core.capabilities_processes : [];
+        const stacking = Boolean(core.stacking_enabled);
+        
+        // Draw LSM engines section (left side).
+        this.ctx.fillStyle = '#9ed4ff';
+        this.ctx.font = '10px "Share Tech Mono", monospace';
+        this.ctx.fillText('LSM POLICY ENGINES', x + 14, y + 38);
+        if (stacking) {
+            this.ctx.fillStyle = '#60d69d';
+            this.ctx.fillText('STACKING: ON', x + w - 120, y + 38);
+        }
+        
+        lsmEngines.forEach((engine, idx) => {
+            const yy = y + 52 + idx * 32;
+            const name = String(engine.name || 'LSM');
+            const status = String(engine.status || 'unknown');
+            const decisions = Number(engine.decisions_per_sec || 0);
+            const hooks = Array.isArray(engine.hooks) ? engine.hooks : [];
+            
+            this.drawRoundedRect(x + 12, yy - 14, Math.floor(w * 0.48), 26, 4);
+            this.ctx.fillStyle = status === 'enforcing' ? 'rgba(32, 52, 81, 0.72)' : 'rgba(10, 14, 20, 0.46)';
+            this.ctx.fill();
+            this.ctx.strokeStyle = status === 'enforcing' ? 'rgba(124, 178, 255, 0.65)' : 'rgba(112, 123, 140, 0.28)';
+            this.ctx.lineWidth = 0.9;
+            this.ctx.stroke();
+            
+            this.ctx.fillStyle = status === 'enforcing' ? '#d9ecff' : 'rgba(185, 200, 220, 0.62)';
+            this.ctx.font = '10px "Share Tech Mono", monospace';
+            this.ctx.fillText(name, x + 16, yy);
+            this.ctx.fillStyle = status === 'enforcing' ? '#60d69d' : '#8a9cea';
+            this.ctx.fillText(`${decisions}/s`, x + Math.floor(w * 0.28), yy);
+            this.ctx.fillStyle = 'rgba(185, 200, 220, 0.72)';
+            this.ctx.font = '8px "Share Tech Mono", monospace';
+            this.ctx.fillText(hooks.slice(0, 2).join(', '), x + 16, yy + 12);
+        });
+        
+        // Draw seccomp section (top right).
+        const seccompY = y + 52;
+        this.ctx.fillStyle = '#9ed4ff';
+        this.ctx.font = '10px "Share Tech Mono", monospace';
+        this.ctx.fillText('SECCOMP SANDBOX', x + Math.floor(w * 0.52), seccompY - 14);
+        
+        seccompProcs.slice(0, 3).forEach((proc, idx) => {
+            const yy = seccompY + idx * 32;
+            const pid = Number(proc.pid || 0);
+            const name = String(proc.name || 'proc').slice(0, 10);
+            const mode = String(proc.mode || 'none');
+            const allowed = Array.isArray(proc.allowed_syscalls) ? proc.allowed_syscalls : [];
+            const blocked = Array.isArray(proc.blocked_syscalls) ? proc.blocked_syscalls : [];
+            
+            this.drawRoundedRect(x + Math.floor(w * 0.52), yy - 14, Math.floor(w * 0.46), 26, 4);
+            this.ctx.fillStyle = mode === 'strict' ? 'rgba(32, 52, 81, 0.72)' : (mode === 'filter' ? 'rgba(22, 34, 52, 0.56)' : 'rgba(10, 14, 20, 0.46)');
+            this.ctx.fill();
+            this.ctx.strokeStyle = mode === 'strict' ? '#60d69d' : (mode === 'filter' ? '#f4c977' : 'rgba(112, 123, 140, 0.28)');
+            this.ctx.lineWidth = 0.9;
+            this.ctx.stroke();
+            
+            this.ctx.fillStyle = '#d8e5f7';
+            this.ctx.font = '9px "Share Tech Mono", monospace';
+            this.ctx.fillText(`${name}:${pid}`, x + Math.floor(w * 0.54), yy);
+            this.ctx.fillStyle = mode === 'strict' ? '#60d69d' : '#f4c977';
+            this.ctx.fillText(`${allowed.length} allow`, x + Math.floor(w * 0.54), yy + 12);
+            this.ctx.fillStyle = '#eb7e7e';
+            this.ctx.fillText(`${blocked.length} block`, x + Math.floor(w * 0.72), yy + 12);
+        });
+        
+        // Draw capabilities section (bottom).
+        const capY = y + Math.floor(h * 0.48);
+        this.ctx.fillStyle = '#9ed4ff';
+        this.ctx.font = '10px "Share Tech Mono", monospace';
+        this.ctx.fillText('CAPABILITIES (GRANULAR RIGHTS)', x + 14, capY);
+        
+        capProcs.slice(0, 4).forEach((proc, idx) => {
+            const yy = capY + 18 + idx * 28;
+            const pid = Number(proc.pid || 0);
+            const name = String(proc.name || 'proc').slice(0, 10);
+            const caps = Array.isArray(proc.capabilities) ? proc.capabilities : [];
+            const dangerous = Array.isArray(proc.dangerous_caps) ? proc.dangerous_caps : [];
+            
+            this.drawRoundedRect(x + 12, yy - 12, w - 24, 22, 4);
+            this.ctx.fillStyle = dangerous.length > 0 ? 'rgba(32, 52, 81, 0.72)' : 'rgba(10, 14, 20, 0.46)';
+            this.ctx.fill();
+            this.ctx.strokeStyle = dangerous.length > 0 ? '#eb7e7e' : 'rgba(112, 123, 140, 0.28)';
+            this.ctx.lineWidth = 0.9;
+            this.ctx.stroke();
+            
+            this.ctx.fillStyle = '#d8e5f7';
+            this.ctx.font = '9px "Share Tech Mono", monospace';
+            this.ctx.fillText(`${name}:${pid}`, x + 16, yy + 2);
+            
+            // Draw capability "keys" as small squares.
+            const keySize = 6;
+            const keySpacing = 8;
+            let keyX = x + Math.floor(w * 0.28);
+            caps.slice(0, 12).forEach((cap, capIdx) => {
+                const isDangerous = dangerous.includes(cap);
+                this.ctx.fillStyle = isDangerous ? '#eb7e7e' : (cap.startsWith('CAP_SYS') ? '#f4c977' : '#60d69d');
+                this.ctx.fillRect(keyX + capIdx * keySpacing, yy + 6, keySize, keySize);
+                this.ctx.strokeStyle = '#0e1621';
+                this.ctx.lineWidth = 0.5;
+                this.ctx.strokeRect(keyX + capIdx * keySpacing, yy + 6, keySize, keySize);
+            });
+            
+            if (dangerous.length > 0) {
+                this.ctx.fillStyle = '#eb7e7e';
+                this.ctx.font = '8px "Share Tech Mono", monospace';
+                this.ctx.fillText(`⚠ ${dangerous.slice(0, 2).join(', ')}`, x + Math.floor(w * 0.78), yy + 2);
+            }
+        });
+        
+        // Draw enforcement flow arrow (center).
+        const flowY = y + Math.floor(h * 0.42);
+        const flowX = x + Math.floor(w * 0.5);
+        this.ctx.strokeStyle = 'rgba(124, 178, 255, 0.45)';
+        this.ctx.lineWidth = 1.2;
+        this.ctx.beginPath();
+        this.ctx.moveTo(flowX - 40, flowY);
+        this.ctx.lineTo(flowX + 40, flowY);
+        this.ctx.stroke();
+        this.ctx.beginPath();
+        this.ctx.moveTo(flowX + 35, flowY - 3);
+        this.ctx.lineTo(flowX + 40, flowY);
+        this.ctx.lineTo(flowX + 35, flowY + 3);
+        this.ctx.stroke();
+        this.ctx.fillStyle = 'rgba(180, 196, 220, 0.86)';
+        this.ctx.font = '8px "Share Tech Mono", monospace';
+        this.ctx.fillText('ENFORCEMENT FLOW', flowX - 38, flowY - 6);
+    }
+
     drawHeaderStats(telemetry) {
         const meta = telemetry?.meta || {};
         this.ctx.fillStyle = 'rgba(179, 203, 232, 0.92)';
@@ -700,7 +834,8 @@ class SecuritySubsystemVisualization {
         const gap = 16;
         const panelTop = 172;
         const toolsH = Math.max(128, Math.min(176, Math.floor(h * 0.22)));
-        const panelH = Math.max(220, h - panelTop - toolsH - gap - 24);
+        const coreH = Math.max(240, Math.floor(h * 0.28));
+        const panelH = Math.max(220, h - panelTop - toolsH - coreH - gap * 3 - 24);
         const leftW = Math.max(440, Math.floor(w * 0.42));
         const centerW = Math.max(330, Math.floor(w * 0.26));
         const rightW = Math.max(310, w - leftW - centerW - gap * 4);
@@ -712,6 +847,7 @@ class SecuritySubsystemVisualization {
         const toolsW = Math.max(220, Math.floor((w - gap * 4) / 3));
         const tools2X = leftX + toolsW + gap;
         const tools3X = tools2X + toolsW + gap;
+        const coreY = toolsY + toolsH + gap;
 
         this.drawDecisionPipeline(leftX, panelTop, leftW, panelH, this.telemetry);
         this.drawTrustGraph(centerX, panelTop, centerW, panelH, this.telemetry);
@@ -719,6 +855,7 @@ class SecuritySubsystemVisualization {
         this.drawLsmStatusCard(leftX, toolsY, toolsW, toolsH, this.telemetry);
         this.drawCapabilitiesCard(tools2X, toolsY, toolsW, toolsH, this.telemetry);
         this.drawSeccompCoverageCard(tools3X, toolsY, toolsW, toolsH, this.telemetry);
+        this.drawSecurityCore(leftX, coreY, w - gap * 2, coreH, this.telemetry);
     }
 
     animate() {
