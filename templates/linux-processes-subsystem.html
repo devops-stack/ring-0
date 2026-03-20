@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Linux Processes Kernel Subsystem - Linux Kernel Architecture Visualization</title>
+    <meta name="description" content="Interactive Linux processes subsystem page: syscall interception, network tracing, and security hooks visualized as a neural layer above the kernel.">
+    <meta name="keywords" content="
+linux processes subsystem,
+linux syscall interception,
+linux network tracing,
+linux security hooks,
+linux process tracing,
+linux seccomp processes,
+linux lsm hooks,
+linux kernel process visualization
+">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="/linux-processes-subsystem">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="/linux-processes-subsystem">
+    <meta property="og:title" content="Linux Processes Kernel Subsystem Visualization">
+    <meta property="og:description" content="Visualized Linux process security path: syscall interception, network tracing and security hooks in real time.">
+    <meta property="og:image" content="/static/images/009.png">
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="/linux-processes-subsystem">
+    <meta property="twitter:title" content="Linux Processes Kernel Subsystem Visualization">
+    <meta property="twitter:description" content="How Linux process activity is intercepted, traced and secured inside kernel paths.">
+    <meta property="twitter:image" content="/static/images/009.png">
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/main.css?v=3">
+    <style>
+        body {
+            margin: 0;
+            background: #090c11;
+            color: #d4dbe8;
+            font-family: "Share Tech Mono", monospace;
+        }
+        .seo-processes {
+            position: absolute;
+            left: -10000px;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body>
+    <h1 class="seo-processes">Linux Processes Kernel Subsystem</h1>
+    <section class="seo-processes">
+        <h2>Processes Security Path in Linux Kernel</h2>
+        <p>
+            This page visualizes Linux process activity as a neural layer over kernel internals:
+            syscall interception, network tracing, and security hooks (LSM/seccomp/Yama) that
+            participate in runtime enforcement.
+        </p>
+    </section>
+    <script src="/static/js/safe-utils.js?v=2"></script>
+    <script src="/static/js/frontend-logger.js?v=2"></script>
+    <script src="/static/js/processes-belt.js?v=6"></script>
+    <script>
+        (function startProcessesPage() {
+            if (typeof window.ProcessesSubsystemVisualization !== 'function') {
+                console.error('ProcessesSubsystemVisualization is not available');
+                return;
+            }
+            const viz = new window.ProcessesSubsystemVisualization();
+            viz.init('processes-belt-container');
+            viz.activate();
+        })();
+    </script>
+</body>
+</html>
