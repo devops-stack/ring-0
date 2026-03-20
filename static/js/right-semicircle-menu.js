@@ -32,6 +32,7 @@ class RightSemicircleMenuManager {
             || itemId === 'devices'
             || itemId === 'files'
             || itemId === 'scheduler'
+            || itemId === 'processes'
             || itemId === 'security';
     }
 
@@ -86,6 +87,10 @@ class RightSemicircleMenuManager {
         }
         if (itemId === 'security') {
             window.location.assign('/linux-security-subsystem');
+            return;
+        }
+        if (itemId === 'processes') {
+            window.location.assign('/linux-processes-subsystem.html');
             return;
         }
         if (!window.kernelContextMenu) return;
@@ -294,15 +299,9 @@ class RightSemicircleMenuManager {
                     this.setItemHoverState(itemGroup, true, hudStrokeHair, hudStrokeNormal, hudStrokeAccent);
                 }
                 
-                // Show Matrix View submenu ONLY if hovering over Processes item
-                if (item.id === 'processes' && window.kernelContextMenu) {
-                    debugLog('🎯 Showing Processes submenu (Matrix View), lineEndX:', lineEndX, 'itemY:', itemY, 'angle:', angle);
-                    window.kernelContextMenu.showSubmenu(lineEndX, itemY, angle);
-                } else {
-                    // Hide submenu if hovering over any other menu item
-                    if (window.kernelContextMenu) {
-                        window.kernelContextMenu.hideSubmenu();
-                    }
+                // Hide submenu for dedicated-page items.
+                if (window.kernelContextMenu) {
+                    window.kernelContextMenu.hideSubmenu();
                 }
             };
             
@@ -360,6 +359,10 @@ class RightSemicircleMenuManager {
                     window.location.assign('/linux-crypto-subsystem');
                     return;
                 }
+                if (item.id === 'processes') {
+                    window.location.assign('/linux-processes-subsystem.html');
+                    return;
+                }
                 if (item.id === 'security') {
                     window.location.assign('/linux-security-subsystem');
                     return;
@@ -382,6 +385,10 @@ class RightSemicircleMenuManager {
                     event.stopPropagation();
                     if (item.id === 'scheduler') {
                         window.location.assign('/linux-crypto-subsystem');
+                        return;
+                    }
+                    if (item.id === 'processes') {
+                        window.location.assign('/linux-processes-subsystem.html');
                         return;
                     }
                     if (item.id === 'security') {
