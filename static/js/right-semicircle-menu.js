@@ -33,6 +33,7 @@ class RightSemicircleMenuManager {
             || itemId === 'files'
             || itemId === 'scheduler'
             || itemId === 'processes'
+            || itemId === 'memory'
             || itemId === 'security';
     }
 
@@ -91,6 +92,10 @@ class RightSemicircleMenuManager {
         }
         if (itemId === 'processes') {
             window.location.assign('/linux-processes-subsystem.html');
+            return;
+        }
+        if (itemId === 'memory') {
+            window.location.assign('/linux-memory-subsystem');
             return;
         }
         if (!window.kernelContextMenu) return;
@@ -363,6 +368,10 @@ class RightSemicircleMenuManager {
                     window.location.assign('/linux-processes-subsystem.html');
                     return;
                 }
+                if (item.id === 'memory') {
+                    window.location.assign('/linux-memory-subsystem');
+                    return;
+                }
                 if (item.id === 'security') {
                     window.location.assign('/linux-security-subsystem');
                     return;
@@ -389,6 +398,10 @@ class RightSemicircleMenuManager {
                     }
                     if (item.id === 'processes') {
                         window.location.assign('/linux-processes-subsystem.html');
+                        return;
+                    }
+                    if (item.id === 'memory') {
+                        window.location.assign('/linux-memory-subsystem');
                         return;
                     }
                     if (item.id === 'security') {

@@ -749,6 +749,16 @@ def processes_page_legacy():
     """Legacy path redirect to Linux processes subsystem page."""
     return redirect('/linux-processes-subsystem', code=301)
 
+@app.route('/linux-memory-subsystem')
+def linux_memory_subsystem_page():
+    """SEO-friendly Linux memory subsystem page."""
+    return render_template('linux-memory-subsystem.html')
+
+
+@app.route('/linux-memory-subsystem.html')
+def linux_memory_subsystem_html():
+    return redirect('/linux-memory-subsystem', code=301)
+
 @app.route('/api/syscalls-realtime')
 def syscalls_realtime():
     """API for real-time system calls"""
@@ -4457,6 +4467,151 @@ def collect_security_realtime():
         }
     }
 
+def _parse_meminfo_kb():
+    """Linux /proc/meminfo values in kB (same units as psutil docs)."""
+    out = {}
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2 and parts[1].isdigit():
+                    out[parts[0].rstrip(":")] = int(parts[1])
+    except Exception:
+        pass
+    return out
+
+
+def _memory_strip_blocks(kind, kb_k, mem_total_kb, n_blocks, seed0):
+    """Variable-width blocks in one horizontal strip; heat ~ share of RAM in this category."""
+    mem_total_kb = max(1, int(mem_total_kb))
+    kb_k = max(0, int(kb_k))
+    weights = []
+    for i in range(n_blocks):
+        v = (((seed0 + i * 104729) % 1000) + 40) / 1040.0
+        weights.append(v)
+    sw = sum(weights)
+    share = kb_k / float(mem_total_kb)
+    blocks = []
+    for i in range(n_blocks):
+        w = weights[i] / sw
+        heat = min(
+            1.0,
+            0.05 + min(0.92, share * 2.0) + (((seed0 + i * 31) % 15) / 120.0),
+        )
+        blocks.append({"w": round(w, 6), "heat": round(heat, 4), "kind": kind})
+    return blocks
+
+
+def _build_memory_visual_rows(meminfo_kb, syscall_nodes, vm, swap):
+    """
+    Rows of horizontal strips: each row ≈ one kernel/accounting bucket from /proc/meminfo.
+    Block widths are stylistic subdivisions; row mass is proportional to kb / MemTotal.
+    """
+    mi = meminfo_kb or {}
+    mt = max(1, int(mi.get("MemTotal") or 0))
+    if mt <= 1:
+        try:
+            mt = max(1, int(getattr(vm, "total", 0) / 1024))
+        except Exception:
+            mt = 1
+
+    seed_base = (mt % 100000) + int(mi.get("Active", 0) or 0) % 50000
+
+    row_specs = [
+        ("buffers", "buffers", mi.get("Buffers", 0)),
+        ("cached", "page cache", mi.get("Cached", 0)),
+        ("anon", "anonymous (heap/stack)", mi.get("AnonPages", 0)),
+        ("slab", "slab / kmalloc", mi.get("Slab", 0)),
+        ("shmem", "shmem / tmpfs", mi.get("Shmem", 0)),
+        ("mapped", "file mappings", mi.get("Mapped", 0)),
+    ]
+    swap_tot = int(mi.get("SwapTotal", 0) or 0)
+    swap_free = int(mi.get("SwapFree", 0) or 0)
+    swap_used = max(0, swap_tot - swap_free)
+    if swap_tot > 0:
+        row_specs.append(("swap", "swap occupied", swap_used))
+
+    pt = int(mi.get("PageTables", 0) or 0)
+    ks = int(mi.get("KernelStack", 0) or 0)
+    if pt + ks > 0:
+        row_specs.append(("kmeta", "pagetables + kernel stacks", pt + ks))
+
+    rows = []
+    for sk, label, kb in row_specs:
+        kb = int(kb or 0)
+        if kb <= 0 and sk != "swap":
+            continue
+        if sk == "swap" and kb <= 0:
+            continue
+        sk_seed = sum(ord(c) for c in sk) * 31 + len(sk)
+        n_blocks = 22 + (seed_base % 11) + (sk_seed % 9)
+        seed0 = seed_base + (sk_seed % 100000)
+        blocks = _memory_strip_blocks(sk, kb, mt, n_blocks, seed0)
+        rows.append(
+            {
+                "id": sk,
+                "label": label,
+                "kb": kb,
+                "pct_of_ram": round(100.0 * kb / float(mt), 2) if mt else 0.0,
+                "blocks": blocks,
+            }
+        )
+
+    top_tasks = sorted(
+        syscall_nodes,
+        key=lambda x: int(x.get("rss_bytes") or 0),
+        reverse=True,
+    )[:6]
+    if top_tasks:
+        tr_bytes = sum(int(x.get("rss_bytes") or 0) for x in top_tasks) or 1
+        tr_kb = max(1, int(tr_bytes / 1024))
+        task_blocks = []
+        for p in top_tasks:
+            rss = int(p.get("rss_bytes") or 0)
+            if rss <= 0:
+                continue
+            w = rss / float(tr_bytes)
+            mp = float(p.get("memory_percent") or 0.0)
+            heat = min(1.0, 0.2 + (mp / 100.0) * 0.75 + (rss / float(tr_bytes)) * 0.15)
+            task_blocks.append(
+                {
+                    "w": round(w, 6),
+                    "heat": round(heat, 4),
+                    "kind": "task",
+                    "pid": int(p.get("pid") or 0),
+                    "name": str(p.get("name") or "")[:14],
+                }
+            )
+        if task_blocks:
+            sw = sum(b["w"] for b in task_blocks)
+            if sw > 0:
+                for b in task_blocks:
+                    b["w"] = round(b["w"] / sw, 6)
+            rows.append(
+                {
+                    "id": "tasks",
+                    "label": "sampled tasks RSS (top)",
+                    "kb": tr_kb,
+                    "pct_of_ram": round(100.0 * tr_kb / float(mt), 2) if mt else 0.0,
+                    "blocks": task_blocks,
+                }
+            )
+
+    summary = {
+        "total_mb": round(mt / 1024.0, 1),
+        "used_percent": round(vm.percent, 1) if vm else 0.0,
+        "available_mb": round((mi.get("MemAvailable", 0) or 0) / 1024.0, 1),
+        "swap_percent": round(swap.percent, 1) if swap else 0.0,
+        "buffers_mb": round((mi.get("Buffers", 0) or 0) / 1024.0, 1),
+        "cached_mb": round((mi.get("Cached", 0) or 0) / 1024.0, 1),
+        "anon_mb": round((mi.get("AnonPages", 0) or 0) / 1024.0, 1),
+        "slab_mb": round((mi.get("Slab", 0) or 0) / 1024.0, 1),
+        "swap_used_mb": round(swap_used / 1024.0, 1) if swap_tot else 0.0,
+        "source": "proc_meminfo+psutil",
+    }
+    return rows, summary
+
+
 def collect_processes_realtime():
     """
     Processes subsystem telemetry focused on:
@@ -4492,6 +4647,11 @@ def collect_processes_realtime():
             cpu = float(proc.info.get("cpu_percent") or 0.0)
             mem = float(proc.info.get("memory_percent") or 0.0)
             threads = int(proc.info.get("num_threads") or 0)
+            rss = 0
+            try:
+                rss = int(getattr(proc.memory_info(), "rss", 0) or 0)
+            except Exception:
+                rss = 0
             fd_count = 0
             try:
                 fd_count = int(proc.num_fds() or 0)
@@ -4520,7 +4680,9 @@ def collect_processes_realtime():
                 "user": user,
                 "fd_count": fd_count,
                 "syscall_pressure": syscall_pressure,
-                "seccomp_mode": seccomp_mode
+                "seccomp_mode": seccomp_mode,
+                "memory_percent": round(mem, 2),
+                "rss_bytes": rss,
             })
         except Exception:
             continue
@@ -4622,7 +4784,9 @@ def collect_processes_realtime():
             "fd_count": int(row.get("fd_count") or 0),
             "seccomp_mode": str(row.get("seccomp_mode") or "unknown"),
             "connections": 0,
-            "unique_peers": 0
+            "unique_peers": 0,
+            "memory_percent": float(row.get("memory_percent") or 0.0),
+            "rss_bytes": int(row.get("rss_bytes") or 0),
         }
     for row in network_tracing[:16]:
         pid = int(row.get("pid") or 0)
@@ -4638,7 +4802,9 @@ def collect_processes_realtime():
                 "fd_count": 0,
                 "seccomp_mode": "unknown",
                 "connections": 0,
-                "unique_peers": 0
+                "unique_peers": 0,
+                "memory_percent": 0.0,
+                "rss_bytes": 0,
             }
         node_pool[pid]["connections"] = int(row.get("connections") or 0)
         node_pool[pid]["unique_peers"] = int(row.get("unique_peers") or 0)
@@ -4709,6 +4875,29 @@ def collect_processes_realtime():
     nodes = list(node_pool.values())[:18]
     edges = edges[:64]
 
+    try:
+        vm = psutil.virtual_memory()
+        swap = psutil.swap_memory()
+        meminfo_kb = _parse_meminfo_kb()
+        strip_rows, mem_summary = _build_memory_visual_rows(meminfo_kb, syscall_nodes, vm, swap)
+        memory_visual = {
+            "layout": "strips",
+            "rows": strip_rows,
+            "summary": mem_summary,
+        }
+    except Exception:
+        memory_visual = {
+            "layout": "strips",
+            "rows": [],
+            "summary": {
+                "total_mb": 0,
+                "used_percent": 0.0,
+                "available_mb": 0,
+                "swap_percent": 0.0,
+                "source": "error",
+            },
+        }
+
     return {
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "syscalls_interception": syscall_nodes,
@@ -4718,6 +4907,7 @@ def collect_processes_realtime():
             "nodes": nodes,
             "edges": edges
         },
+        "memory_visual": memory_visual,
         "meta": {
             "processes_sampled": len(syscall_nodes),
             "network_processes": len(network_tracing),
