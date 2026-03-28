@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Linux Memory Kernel Subsystem - Linux Kernel Architecture Visualization</title>
+    <meta name="description" content="Interactive Linux memory kernel subsystem page: /proc/meminfo accounting, page cache, anonymous memory, slab, swap and task RSS strips.">
+    <meta name="keywords" content="
+linux memory subsystem,
+linux kernel memory,
+proc meminfo,
+linux page cache,
+linux anonymous memory,
+linux slab,
+linux swap,
+linux kernel visualization
+">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="/linux-memory-subsystem">
+
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="/linux-memory-subsystem">
+    <meta property="og:title" content="Linux Memory Kernel Subsystem Visualization">
+    <meta property="og:description" content="Visualized Linux memory accounting: meminfo buckets, strip topology, and sampled process RSS.">
+    <meta property="og:image" content="/static/images/009.png">
+
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="/linux-memory-subsystem">
+    <meta property="twitter:title" content="Linux Memory Kernel Subsystem Visualization">
+    <meta property="twitter:description" content="How Linux kernel reports memory usage and sampled task RSS in the visualization.">
+    <meta property="twitter:image" content="/static/images/009.png">
+
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/main.css?v=3">
+    <style>
+        body {
+            margin: 0;
+            background: #020305;
+            color: #d4dbe8;
+            font-family: "Share Tech Mono", monospace;
+        }
+        .seo-memory {
+            position: absolute;
+            left: -10000px;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+        }
+        .page-nav {
+            position: fixed;
+            left: 18px;
+            top: 18px;
+            z-index: 10020;
+            display: flex;
+            gap: 8px;
+        }
+        .page-nav a {
+            display: inline-block;
+            text-decoration: none;
+            color: #d2d8e2;
+            border: 1px solid rgba(0, 200, 220, 0.4);
+            padding: 8px 12px;
+            font-size: 11px;
+            background: rgba(0, 12, 18, 0.92);
+        }
+        .page-nav a:hover {
+            color: #ffffff;
+            background: rgba(0, 40, 50, 0.95);
+        }
+    </style>
+</head>
+<body>
+    <h1 class="seo-memory">Linux Memory Kernel Subsystem</h1>
+
+    <section class="seo-memory">
+        <h2>Linux kernel memory management</h2>
+        <p>
+            This page visualizes memory accounting from Linux kernel sources such as /proc/meminfo
+            and sampled process RSS, shown as horizontal strips and block topology.
+        </p>
+    </section>
+
+    <nav class="page-nav">
+        <a href="/">BACK TO MAIN</a>
+    </nav>
+
+    <script src="/static/js/safe-utils.js?v=2"></script>
+    <script src="/static/js/frontend-logger.js?v=2"></script>
+    <script src="/static/js/memory-belt.js?v=1"></script>
+    <script>
+        (function startMemoryPage() {
+            if (typeof window.MemorySubsystemVisualization !== 'function') {
+                console.error('MemorySubsystemVisualization is not available');
+                return;
+            }
+            const viz = new window.MemorySubsystemVisualization();
+            viz.init('memory-belt-container');
+            if (viz.exitButton) {
+                viz.exitButton.textContent = 'BACK TO MAIN';
+                viz.exitButton.onclick = function () {
+                    window.location.href = '/';
+                };
+            }
+            viz.activate();
+        })();
+    </script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 // Processes Subsystem Visualization
-// Version: 6
+// Version: 13
 
-debugLog('🧠 processes-belt.js v6: Script loading...');
+debugLog('🧠 processes-belt.js v13: Script loading...');
 
 class ProcessesSubsystemVisualization {
     constructor() {
@@ -52,7 +52,7 @@ class ProcessesSubsystemVisualization {
         this.exitButton = document.createElement('button');
         this.exitButton.textContent = 'BACK TO MAIN';
         this.exitButton.style.cssText = `
-            position:absolute;top:20px;right:20px;padding:10px 18px;z-index:1001;
+            position:absolute;top:18px;right:18px;padding:8px 14px;z-index:10021;
             background: rgba(7, 10, 16, 0.92); border:1px solid rgba(178,190,212,0.45);
             color:#d5dce8; font-family:'Share Tech Mono', monospace; font-size:12px; cursor:pointer;
             box-shadow: 0 0 14px rgba(150,175,220,0.25);
@@ -69,10 +69,10 @@ class ProcessesSubsystemVisualization {
     createModeToggle() {
         const panel = document.createElement('div');
         panel.style.cssText = `
-            position:absolute;top:20px;left:20px;display:flex;gap:8px;z-index:1001;
+            position:absolute;top:18px;left:18px;display:flex;gap:8px;z-index:1001;
         `;
         const modes = [
-            { key: 'temporal', label: 'TEMPORAL T-1/T/T+1' },
+            { key: 'temporal', label: '3-LAYER GRAPH' },
             { key: 'radial', label: 'RADIAL GRAPH' }
         ];
         modes.forEach((m) => {
@@ -106,7 +106,7 @@ class ProcessesSubsystemVisualization {
     createEdgeFilterToggle() {
         const panel = document.createElement('div');
         panel.style.cssText = `
-            position:absolute;top:56px;left:20px;display:flex;gap:6px;z-index:1001;
+            position:absolute;top:54px;left:18px;display:flex;flex-wrap:wrap;max-width:min(520px,92vw);gap:6px;z-index:1001;
         `;
         const filters = [
             { key: 'all', label: 'ALL' },
@@ -177,7 +177,9 @@ class ProcessesSubsystemVisualization {
             });
     }
 
-    drawPanel(x, y, w, h, title) {
+    drawPanel(x, y, w, h, title, opts = {}) {
+        const alpha = typeof opts.alpha === 'number' ? opts.alpha : 0.88;
+        const showTitle = opts.showTitle !== false;
         const r = Math.max(0, Math.min(8, w / 2, h / 2));
         this.ctx.beginPath();
         this.ctx.moveTo(x + r, y);
@@ -190,14 +192,177 @@ class ProcessesSubsystemVisualization {
         this.ctx.lineTo(x, y + r);
         this.ctx.quadraticCurveTo(x, y, x + r, y);
         this.ctx.closePath();
-        this.ctx.fillStyle = 'rgba(8, 11, 16, 0.88)';
+        this.ctx.fillStyle = `rgba(5, 9, 16, ${alpha})`;
         this.ctx.fill();
-        this.ctx.strokeStyle = 'rgba(165, 178, 200, 0.35)';
+        this.ctx.strokeStyle = 'rgba(140, 168, 210, 0.38)';
         this.ctx.lineWidth = 1;
         this.ctx.stroke();
-        this.ctx.fillStyle = '#d8e5f7';
-        this.ctx.font = '13px "Share Tech Mono", monospace';
-        this.ctx.fillText(title, x + 14, y + 22);
+        if (showTitle && title) {
+            this.ctx.fillStyle = '#e8f0fc';
+            this.ctx.font = '12px "Share Tech Mono", monospace';
+            this.ctx.fillText(title, x + 12, y + 20);
+        }
+    }
+
+    drawPerspectiveGrid(areaX, areaY, areaW, areaH) {
+        const vpX = areaX + areaW * 0.5;
+        const vpY = areaY - areaH * 1.35;
+        const rows = 16;
+        for (let i = 0; i <= rows; i++) {
+            const t = i / rows;
+            const yy = areaY + t * areaH;
+            const spread = 0.42 + t * 1.05;
+            this.ctx.beginPath();
+            this.ctx.moveTo(vpX - areaW * spread, yy);
+            this.ctx.lineTo(vpX + areaW * spread, yy);
+            this.ctx.strokeStyle = `rgba(130, 185, 255, ${0.06 + t * 0.28})`;
+            this.ctx.lineWidth = 1;
+            this.ctx.stroke();
+        }
+        for (let i = -10; i <= 10; i++) {
+            const tx = 0.5 + i * 0.055;
+            const xb = areaX + areaW * tx;
+            this.ctx.beginPath();
+            this.ctx.moveTo(vpX, vpY);
+            this.ctx.lineTo(xb, areaY + areaH);
+            this.ctx.strokeStyle = 'rgba(110, 165, 235, 0.14)';
+            this.ctx.stroke();
+        }
+    }
+
+    drawSparklineInBox(bx, by, bw, bh, seed) {
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+        this.ctx.fillRect(bx, by, bw, bh);
+        this.ctx.strokeStyle = 'rgba(57, 255, 120, 0.45)';
+        this.ctx.strokeRect(bx, by, bw, bh);
+        this.ctx.strokeStyle = 'rgba(74, 222, 128, 0.92)';
+        this.ctx.lineWidth = 1.25;
+        this.ctx.shadowColor = 'rgba(74, 255, 140, 0.55)';
+        this.ctx.shadowBlur = 6;
+        this.ctx.beginPath();
+        const steps = 20;
+        for (let i = 0; i <= steps; i++) {
+            const t = i / steps;
+            const vx = bx + 2 + t * (bw - 4);
+            const wave = Math.sin(this.tick * 0.065 + seed * 1.7 + t * 9.2)
+                + 0.35 * Math.sin(this.tick * 0.11 + t * 14);
+            const vy = by + bh * 0.55 + wave * (bh * 0.32);
+            if (i === 0) this.ctx.moveTo(vx, vy);
+            else this.ctx.lineTo(vx, vy);
+        }
+        this.ctx.stroke();
+        this.ctx.shadowBlur = 0;
+    }
+
+    drawLayerMeta(cx, topY, wBox, lines) {
+        const hBox = 12 + lines.length * 14;
+        const x0 = cx - wBox * 0.5;
+        this.ctx.fillStyle = 'rgba(4, 8, 14, 0.82)';
+        this.ctx.strokeStyle = 'rgba(150, 178, 220, 0.4)';
+        this.ctx.lineWidth = 1;
+        this.ctx.beginPath();
+        const r = 4;
+        this.ctx.moveTo(x0 + r, topY);
+        this.ctx.lineTo(x0 + wBox - r, topY);
+        this.ctx.quadraticCurveTo(x0 + wBox, topY, x0 + wBox, topY + r);
+        this.ctx.lineTo(x0 + wBox, topY + hBox - r);
+        this.ctx.quadraticCurveTo(x0 + wBox, topY + hBox, x0 + wBox - r, topY + hBox);
+        this.ctx.lineTo(x0 + r, topY + hBox);
+        this.ctx.quadraticCurveTo(x0, topY + hBox, x0, topY + hBox - r);
+        this.ctx.lineTo(x0, topY + r);
+        this.ctx.quadraticCurveTo(x0, topY, x0 + r, topY);
+        this.ctx.closePath();
+        this.ctx.fill();
+        this.ctx.stroke();
+        this.ctx.fillStyle = 'rgba(220, 232, 248, 0.95)';
+        this.ctx.font = '10px "Share Tech Mono", monospace';
+        lines.forEach((line, i) => {
+            this.ctx.fillText(line, x0 + 8, topY + 16 + i * 14);
+        });
+    }
+
+    drawKernelHeader() {
+        const w = window.innerWidth;
+        this.ctx.textAlign = 'center';
+        this.ctx.fillStyle = 'rgba(232, 240, 252, 0.92)';
+        this.ctx.font = '12px "Share Tech Mono", monospace';
+        this.ctx.fillText('linux kernel · process management subsystem', w * 0.5, 26);
+        this.ctx.textAlign = 'start';
+    }
+
+    quadraticControlForEdge(x1, y1, x2, y2, salt) {
+        const mx = (x1 + x2) * 0.5;
+        const my = (y1 + y2) * 0.5;
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const len = Math.max(1e-6, Math.hypot(dx, dy));
+        const nx = -dy / len;
+        const ny = dx / len;
+        const u = this.stableUnit(salt);
+        const sign = u >= 0.5 ? 1 : -1;
+        const wobble = (u - 0.5) * 0.55;
+        const mag = Math.min(130, len * 0.4) * (0.55 + Math.abs(u - 0.5) * 0.9);
+        return {
+            cx: mx + nx * mag * (sign + wobble),
+            cy: my + ny * mag * (sign + wobble)
+        };
+    }
+
+    quadBezierPoint(x0, y0, cx, cy, x1, y1, t) {
+        const omt = 1 - t;
+        return {
+            x: omt * omt * x0 + 2 * omt * t * cx + t * t * x1,
+            y: omt * omt * y0 + 2 * omt * t * cy + t * t * y1
+        };
+    }
+
+    quadBezierTangent(x0, y0, cx, cy, x1, y1, t) {
+        const omt = 1 - t;
+        const tx = 2 * omt * (cx - x0) + 2 * t * (x1 - cx);
+        const ty = 2 * omt * (cy - y0) + 2 * t * (y1 - cy);
+        const l = Math.hypot(tx, ty) || 1;
+        return { tx: tx / l, ty: ty / l };
+    }
+
+    drawCurvedStroke(x1, y1, x2, y2, color, width, salt, withArrow, controlOverride) {
+        const { cx, cy } = controlOverride || this.quadraticControlForEdge(x1, y1, x2, y2, salt);
+        this.ctx.beginPath();
+        this.ctx.moveTo(x1, y1);
+        this.ctx.quadraticCurveTo(cx, cy, x2, y2);
+        this.ctx.strokeStyle = color;
+        this.ctx.lineWidth = width;
+        this.ctx.stroke();
+        if (withArrow) {
+            const tip = this.quadBezierPoint(x1, y1, cx, cy, x2, y2, 0.995);
+            const tan = this.quadBezierTangent(x1, y1, cx, cy, x2, y2, 0.98);
+            const ux = tan.tx;
+            const uy = tan.ty;
+            const back = 7;
+            const ex = tip.x - ux * back;
+            const ey = tip.y - uy * back;
+            this.ctx.beginPath();
+            this.ctx.moveTo(tip.x, tip.y);
+            this.ctx.lineTo(ex - uy * 3 - ux * 4, ey + ux * 3 - uy * 4);
+            this.ctx.lineTo(ex + uy * 3 - ux * 4, ey - ux * 3 - uy * 4);
+            this.ctx.closePath();
+            this.ctx.fillStyle = color;
+            this.ctx.fill();
+        }
+    }
+
+    radialCurveControl(sx, sy, tx, ty, centerX, centerY, salt) {
+        const mx = (sx + tx) * 0.5;
+        const my = (sy + ty) * 0.5;
+        const vx = mx - centerX;
+        const vy = my - centerY;
+        const len = Math.hypot(vx, vy) || 1;
+        const u = this.stableUnit(salt);
+        const bump = (u - 0.5) * 2;
+        const amp = Math.min(95, Math.hypot(tx - sx, ty - sy) * 0.42);
+        return {
+            cx: mx + (vx / len) * amp * (0.65 + bump * 0.35),
+            cy: my + (vy / len) * amp * (0.65 + bump * 0.35)
+        };
     }
 
     edgeColor(type) {
@@ -208,85 +373,132 @@ class ProcessesSubsystemVisualization {
         return 'rgba(165,178,200,0.38)';
     }
 
-    drawArrow(x1, y1, x2, y2, color, width = 1) {
-        const dx = x2 - x1;
-        const dy = y2 - y1;
-        const len = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-        const ux = dx / len;
-        const uy = dy / len;
-        const ex = x2 - ux * 7;
-        const ey = y2 - uy * 7;
-        this.ctx.beginPath();
-        this.ctx.moveTo(x1, y1);
-        this.ctx.lineTo(ex, ey);
-        this.ctx.strokeStyle = color;
-        this.ctx.lineWidth = width;
-        this.ctx.stroke();
-        this.ctx.beginPath();
-        this.ctx.moveTo(ex, ey);
-        this.ctx.lineTo(ex - uy * 3 - ux * 4, ey + ux * 3 - uy * 4);
-        this.ctx.lineTo(ex + uy * 3 - ux * 4, ey - ux * 3 - uy * 4);
-        this.ctx.closePath();
-        this.ctx.fillStyle = color;
-        this.ctx.fill();
+    stableUnit(n) {
+        const u = ((Number(n) * 1103515245 + 12345) >>> 0) % 10001;
+        return u / 10000;
     }
 
     drawNeuralGraph(x, y, w, h) {
-        this.drawPanel(x, y, w, h, 'PROCESS NEURAL GRAPH');
+        this.drawPanel(x, y, w, 36, 'task graph · fork / wait / signals / IO', { alpha: 0.9 });
+        const innerY = y + 42;
+        const innerH = h - 50;
         const graph = this.telemetry?.neural_graph || {};
-        const nodes = Array.isArray(graph.nodes) ? graph.nodes.slice(0, 18) : [];
-        const rawEdges = Array.isArray(graph.edges) ? graph.edges.slice(0, 72) : [];
+        const nodes = Array.isArray(graph.nodes) ? graph.nodes.slice(0, 24) : [];
+        const rawEdges = Array.isArray(graph.edges) ? graph.edges.slice(0, 180) : [];
         const edges = rawEdges.filter((e) => this.edgeFilter === 'all' || String(e.type || '') === this.edgeFilter);
         if (!nodes.length) {
             this.ctx.fillStyle = 'rgba(196,207,224,0.72)';
             this.ctx.font = '12px "Share Tech Mono", monospace';
-            this.ctx.fillText('NO PROCESS GRAPH DATA', x + 20, y + 56);
+            this.ctx.fillText('NO PROCESS GRAPH DATA', x + 20, innerY + 28);
             return;
         }
 
-        const pos = new Map();
-        this.nodeHitAreas = [];
+        this.ctx.save();
+        this.ctx.beginPath();
+        this.ctx.rect(x + 2, innerY, w - 4, innerH);
+        this.ctx.clip();
+        this.drawPerspectiveGrid(x + 4, innerY + innerH * 0.5, w - 8, innerH * 0.48);
+        this.ctx.restore();
+
         if (this.layoutMode === 'radial') {
-            this.drawRadialNeuralGraph(nodes, edges, pos, x, y, w, h);
+            const pos = new Map();
+            this.drawRadialNeuralGraph(nodes, edges, pos, x, innerY, w, innerH);
             return;
         }
 
-        // Temporal layers to mimic T-1 / T / T+1 style.
-        const layerXs = [x + w * 0.24, x + w * 0.5, x + w * 0.76];
-        const layerLabels = ['T-1', 'T', 'T+1'];
-        const layers = [[], [], []];
-        nodes.forEach((node, idx) => layers[idx % 3].push(node));
+        this.nodeHitAreas = [];
+        const leftX = x + w * 0.2;
+        const midX = x + w * 0.5;
+        const rightX = x + w * 0.8;
+        const panelY = innerY + 44;
+        const panelH = innerH - 56;
+        const panelW = Math.min(300, w * 0.29);
+        const metaW = Math.min(168, panelW - 8);
 
-        layerXs.forEach((lx, li) => {
-            this.ctx.strokeStyle = 'rgba(160, 176, 200, 0.15)';
-            this.ctx.lineWidth = 1;
-            this.ctx.beginPath();
-            this.ctx.moveTo(lx, y + 40);
-            this.ctx.lineTo(lx, y + h - 36);
-            this.ctx.stroke();
-            this.ctx.fillStyle = 'rgba(200, 214, 232, 0.78)';
-            this.ctx.font = '15px "Share Tech Mono", monospace';
-            this.ctx.fillText(layerLabels[li], lx - 16, y + h - 12);
-        });
+        this.drawPanel(leftX - panelW * 0.5, panelY, panelW, panelH, '', { alpha: 0.74, showTitle: false });
+        this.drawPanel(midX - panelW * 0.5, panelY, panelW, panelH, '', { alpha: 0.74, showTitle: false });
+        this.drawPanel(rightX - panelW * 0.5, panelY, panelW, panelH, '', { alpha: 0.74, showTitle: false });
 
-        layers.forEach((layerNodes, li) => {
-            const lx = layerXs[li];
-            const step = Math.max(30, (h - 120) / Math.max(1, layerNodes.length));
-            const startY = y + 66 + Math.max(0, ((h - 130) - step * layerNodes.length) * 0.5);
-            layerNodes.forEach((node, idx) => {
+        const leftNodes = nodes.slice(0, 9);
+        const midNodes = nodes.slice(9, 18);
+        const rightNodes = nodes.slice(18, 24);
+        const outLabels = [
+            'RUNNING', 'SLEEP (S)', 'DISK (D)', 'STOPPED (T)', 'ZOMBIE', 'TRACE (t)',
+            'RT BAND', 'CGROUP', 'IDLE', 'FORCED', 'IOWAIT', 'NICE+'
+        ];
+
+        this.drawLayerMeta(leftX, innerY + 8, metaW, [
+            `tasks sampled: ${leftNodes.length}`,
+            'metrics: cpu · rss · ctx · faults'
+        ]);
+        this.drawLayerMeta(midX, innerY + 8, metaW, [
+            `related tasks: ${midNodes.length}`,
+            'links: parent/child · fd · ipc'
+        ]);
+        this.drawLayerMeta(rightX, innerY + 8, metaW, [
+            `task_state: ${rightNodes.length}`,
+            'scheduler: CFS · runqueue'
+        ]);
+
+        const leftPos = [];
+        const midPos = [];
+        const rightPos = [];
+        const positionByPid = new Map();
+        const metricNames = [
+            'CPU %', 'RSS MiB', 'CTX/s', 'FAULT/s', 'OPEN FD', 'NICE', 'THREADS',
+            'IO WAIT', 'CGROUP Q'
+        ];
+
+        const highlightIdx = Math.floor(this.tick / 55) % Math.max(1, leftNodes.length);
+
+        const setLayer = (arr, colX, list, mode) => {
+            const step = panelH / (Math.max(1, list.length) + 1);
+            list.forEach((node, idx) => {
+                const yy = panelY + step * (idx + 1);
                 const pid = Number(node.pid || 0);
-                const wave = Math.sin(this.tick * 0.02 + idx * 0.6 + li * 0.8) * 8;
-                const nx = lx + wave;
-                const ny = startY + idx * step;
-                pos.set(pid, { x: nx, y: ny, layer: li });
+                let tag = '';
+                if (mode === 'input') {
+                    tag = `${metricNames[idx % metricNames.length]} · ${String(node.name || 'proc').slice(0, 8)}`;
+                } else if (mode === 'hidden') {
+                    tag = `pid ${pid || idx + 1}`;
+                } else {
+                    tag = outLabels[idx % outLabels.length];
+                }
+                const point = { x: colX, y: yy, node, pid, tag, idx, mode };
+                arr.push(point);
+                positionByPid.set(pid, point);
             });
+        };
+        setLayer(leftPos, leftX, leftNodes, 'input');
+        setLayer(midPos, midX, midNodes, 'hidden');
+        setLayer(rightPos, rightX, rightNodes, 'output');
+
+        const drawDense = (from, to, alphaScale) => {
+            from.forEach((a, ai) => {
+                to.forEach((b, bi) => {
+                    const pairSalt = ai * 7919 + bi * 104729;
+                    const alpha = Math.min(0.34, (0.1 + this.stableUnit(pairSalt) * 0.16) * alphaScale);
+                    this.ctx.globalAlpha = alpha;
+                    this.drawCurvedStroke(a.x, a.y, b.x, b.y, 'rgba(228, 236, 252, 0.92)', 0.7, pairSalt, false);
+                    this.ctx.globalAlpha = 1;
+                });
+            });
+        };
+        drawDense(leftPos, midPos, 1.0);
+        drawDense(midPos, rightPos, 1.08);
+
+        edges.forEach((edge, eidx) => {
+            const s = positionByPid.get(Number(edge.source || 0));
+            const t = positionByPid.get(Number(edge.target || 0));
+            if (!s || !t) return;
+            const color = this.edgeColor(String(edge.type || ''));
+            const isHoverEdge = this.hoveredNodePid && (s.pid === this.hoveredNodePid || t.pid === this.hoveredNodePid);
+            this.ctx.globalAlpha = isHoverEdge ? 0.92 : 0.52;
+            const salt = Number(edge.source || 0) * 31 + Number(edge.target || 0) * 17 + eidx * 13;
+            this.drawCurvedStroke(s.x, s.y, t.x, t.y, color, isHoverEdge ? 1.15 : 0.85, salt, true);
+            this.ctx.globalAlpha = 1;
         });
 
-        // Track short history to show trails (T-2/T-1/T).
-        this.positionHistory.push(pos);
-        if (this.positionHistory.length > 3) this.positionHistory.shift();
-
-        // Hover neighborhood detection.
         const neighborPids = new Set();
         if (this.hoveredNodePid) {
             edges.forEach((edge) => {
@@ -297,87 +509,87 @@ class ProcessesSubsystemVisualization {
             });
         }
 
-        // Intra-layer dense links (neural cluster style)
-        layers.forEach((layerNodes) => {
-            for (let i = 0; i < layerNodes.length; i++) {
-                for (let j = i + 1; j < Math.min(layerNodes.length, i + 4); j++) {
-                    const pa = pos.get(Number(layerNodes[i].pid || 0));
-                    const pb = pos.get(Number(layerNodes[j].pid || 0));
-                    if (!pa || !pb) continue;
-                    this.ctx.beginPath();
-                    this.ctx.moveTo(pa.x, pa.y);
-                    this.ctx.lineTo(pb.x, pb.y);
-                    this.ctx.strokeStyle = 'rgba(196, 220, 245, 0.24)';
-                    this.ctx.lineWidth = 0.9;
-                    this.ctx.stroke();
-                }
+        const sparkW = 52;
+        const sparkH = 18;
+        const labelLeftPad = leftX - panelW * 0.46;
+        const outputHighlightIdx = Math.floor(this.tick / 70) % Math.max(1, rightPos.length);
+
+        const rowYellow = (p) => p.mode === 'input' && highlightIdx === p.idx;
+
+        leftPos.forEach((p) => {
+            const rowHi = highlightIdx === p.idx && p.mode === 'input';
+            if (rowHi) {
+                this.ctx.fillStyle = 'rgba(255, 214, 64, 0.34)';
+                this.ctx.fillRect(labelLeftPad - 6, p.y - 14, leftX - labelLeftPad + sparkW + 36, 30);
             }
+            this.ctx.fillStyle = 'rgba(232, 240, 252, 0.95)';
+            this.ctx.font = '10px "Share Tech Mono", monospace';
+            this.ctx.textAlign = 'right';
+            const shortLabel = p.tag.split('·')[0].trim();
+            this.ctx.fillText(shortLabel, leftX - sparkW - 14, p.y + 3);
+            this.ctx.textAlign = 'start';
+            this.drawSparklineInBox(leftX - sparkW - 6, p.y - 10, sparkW, sparkH, p.pid + p.idx);
+            const v = this.stableUnit(p.pid + this.tick * 0);
+            const pressure = Number(p.node.syscall_pressure || 0);
+            const val = (pressure / 100 * 0.4 + v * 0.6).toFixed(3);
+            this.ctx.fillStyle = 'rgba(200, 214, 232, 0.88)';
+            this.ctx.font = '9px "Share Tech Mono", monospace';
+            this.ctx.fillText(val, leftX - sparkW - 6, p.y + 14);
         });
 
-        // Inter-layer long links from telemetry edges.
-        edges.forEach((edge, idx) => {
-            const s = pos.get(Number(edge.source || 0));
-            const t = pos.get(Number(edge.target || 0));
-            if (!s || !t) return;
-            const wv = Number(edge.weight || 0.4);
-            const color = this.edgeColor(String(edge.type || ''));
-            const isHoverEdge = this.hoveredNodePid && (Number(edge.source || 0) === this.hoveredNodePid || Number(edge.target || 0) === this.hoveredNodePid);
-            this.ctx.globalAlpha = isHoverEdge ? 0.95 : (0.2 + wv * 0.4);
-            this.drawArrow(s.x, s.y, t.x, t.y, color, 0.7 + wv * 1.1);
-            this.ctx.globalAlpha = 1;
-            const tpos = (this.tick * 0.006 + idx * 0.07) % 1;
-            const px = s.x + (t.x - s.x) * tpos;
-            const py = s.y + (t.y - s.y) * tpos;
-            this.ctx.beginPath();
-            this.ctx.arc(px, py, 1.8, 0, Math.PI * 2);
-            this.ctx.fillStyle = color.replace('0.4', '0.95');
-            this.ctx.fill();
-        });
+        const drawNeuron = (p, style) => {
+            const pressure = Number(p.node.syscall_pressure || 0);
+            const danger = pressure >= 72;
+            const isHovered = this.hoveredNodePid && p.pid === this.hoveredNodePid;
+            const isNeighbor = this.hoveredNodePid && neighborPids.has(p.pid);
+            const r = isHovered ? 8.5 : 6.5;
+            const fill = danger ? '#ff8a8a' : '#f4f8ff';
 
-        nodes.forEach((node, idx) => {
-            const pid = Number(node.pid || 0);
-            const p = pos.get(pid);
-            if (!p) return;
-            const pressure = Number(node.syscall_pressure || 0);
-            const nodeR = 8 + Math.min(7, pressure / 20);
-            const danger = pressure >= 70;
-            const mode = String(node.seccomp_mode || 'unknown');
-            const fill = danger ? '#eb7e7e' : (mode === 'filter' || mode === 'strict' ? '#60d69d' : '#8a9cea');
-            const isHovered = this.hoveredNodePid && pid === this.hoveredNodePid;
-            const isNeighbor = this.hoveredNodePid && neighborPids.has(pid);
-
-            // Draw node trail ghosts.
-            for (let hi = 0; hi < this.positionHistory.length - 1; hi++) {
-                const histPos = this.positionHistory[hi].get(pid);
-                if (!histPos) continue;
-                const ghostAlpha = 0.08 + hi * 0.08;
+            if (isHovered || rowYellow(p)) {
+                const g = this.ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 3.2);
+                g.addColorStop(0, 'rgba(255, 255, 255, 0.45)');
+                g.addColorStop(1, 'rgba(255, 255, 255, 0)');
                 this.ctx.beginPath();
-                this.ctx.arc(histPos.x, histPos.y, Math.max(2, nodeR * 0.6), 0, Math.PI * 2);
-                this.ctx.fillStyle = fill;
-                this.ctx.globalAlpha = ghostAlpha;
+                this.ctx.arc(p.x, p.y, r * 3.2, 0, Math.PI * 2);
+                this.ctx.fillStyle = g;
                 this.ctx.fill();
             }
-            this.ctx.globalAlpha = 1;
 
             this.ctx.beginPath();
-            this.ctx.arc(p.x, p.y, nodeR, 0, Math.PI * 2);
+            this.ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
             this.ctx.fillStyle = fill;
-            this.ctx.globalAlpha = isHovered ? 1 : (isNeighbor ? 0.95 : 0.85);
+            this.ctx.globalAlpha = isHovered ? 1 : (isNeighbor ? 0.94 : 0.9);
             this.ctx.fill();
             this.ctx.globalAlpha = 1;
-            this.ctx.strokeStyle = isHovered ? 'rgba(255,255,255,0.98)' : 'rgba(227, 241, 255, 0.95)';
-            this.ctx.lineWidth = isHovered ? 2 : 1.1;
+            this.ctx.strokeStyle = isHovered ? '#fff6a8' : 'rgba(255, 255, 255, 0.92)';
+            this.ctx.lineWidth = isHovered ? 2 : 1;
             this.ctx.stroke();
-            this.ctx.fillStyle = '#d8e5f7';
-            this.ctx.font = '9px "Share Tech Mono", monospace';
-            this.ctx.fillText(`${String(node.name || 'proc').slice(0, 8)}`, p.x - 20, p.y + nodeR + 13);
-            this.nodeHitAreas.push({ x: p.x, y: p.y, r: nodeR, pid });
-        });
 
-        // Legend
-        this.ctx.fillStyle = '#a7b6cb';
-        this.ctx.font = '10px "Share Tech Mono", monospace';
-        this.ctx.fillText('hover node: highlight neighborhood | trails show T-2/T-1/T', x + 14, y + h - 14);
+            this.ctx.fillStyle = '#eaf1fb';
+            this.ctx.font = '10px "Share Tech Mono", monospace';
+            if (style === 'hidden') {
+                this.ctx.textAlign = 'right';
+                this.ctx.fillText(p.tag, p.x - r - 6, p.y + 3);
+                this.ctx.textAlign = 'start';
+            } else if (style === 'output') {
+                const hi = isHovered || (p.idx === outputHighlightIdx);
+                if (hi) {
+                    this.ctx.fillStyle = 'rgba(255, 224, 70, 0.42)';
+                    this.ctx.fillRect(p.x + r + 4, p.y - 10, panelW * 0.42, 20);
+                }
+                this.ctx.fillStyle = '#f0f6ff';
+                this.ctx.fillText(p.tag, p.x + r + 10, p.y + 3);
+            }
+            this.nodeHitAreas.push({ x: p.x, y: p.y, r, pid: p.pid });
+        };
+
+        leftPos.forEach((p) => drawNeuron(p, 'input'));
+        midPos.forEach((p) => drawNeuron(p, 'hidden'));
+        rightPos.forEach((p) => drawNeuron(p, 'output'));
+
+        this.ctx.fillStyle = 'rgba(140, 158, 188, 0.85)';
+        this.ctx.font = '9px "Share Tech Mono", monospace';
+        this.ctx.fillText('hover task: highlight syscall / ipc / net / vfs edges', x + 12, y + h - 10);
     }
 
     drawRadialNeuralGraph(nodes, edges, pos, x, y, w, h) {
@@ -388,7 +600,7 @@ class ProcessesSubsystemVisualization {
         nodes.forEach((node, idx) => {
             const pid = Number(node.pid || 0);
             const a = ((Math.PI * 2) / Math.max(1, nodes.length)) * idx - Math.PI / 2;
-            const drift = Math.sin(this.tick * 0.02 + idx * 0.4) * 0.06;
+            const drift = Math.sin(this.tick * 0.0035 + idx * 0.4) * 0.018;
             const nx = cx + Math.cos(a + drift) * (ring * (0.75 + (idx % 4) * 0.07));
             const ny = cy + Math.sin(a + drift) * (ring * (0.75 + (idx % 4) * 0.07));
             pos.set(pid, { x: nx, y: ny });
@@ -424,14 +636,15 @@ class ProcessesSubsystemVisualization {
             const color = this.edgeColor(String(edge.type || ''));
             const isHoverEdge = this.hoveredNodePid && (Number(edge.source || 0) === this.hoveredNodePid || Number(edge.target || 0) === this.hoveredNodePid);
             this.ctx.globalAlpha = isHoverEdge ? 0.95 : (0.2 + wv * 0.38);
-            this.drawArrow(s.x, s.y, t.x, t.y, color, 0.7 + wv);
+            const salt = idx * 97 + Number(edge.source || 0) + Number(edge.target || 0);
+            const ctrl = this.radialCurveControl(s.x, s.y, t.x, t.y, cx, cy, salt);
+            this.drawCurvedStroke(s.x, s.y, t.x, t.y, color, 0.65 + wv, salt, true, ctrl);
             this.ctx.globalAlpha = 1;
             const tp = (this.tick * 0.006 + idx * 0.08) % 1;
-            const px = s.x + (t.x - s.x) * tp;
-            const py = s.y + (t.y - s.y) * tp;
+            const p = this.quadBezierPoint(s.x, s.y, ctrl.cx, ctrl.cy, t.x, t.y, tp);
             this.ctx.beginPath();
-            this.ctx.arc(px, py, 1.7, 0, Math.PI * 2);
-            this.ctx.fillStyle = color.replace('0.4', '0.95');
+            this.ctx.arc(p.x, p.y, 1.7, 0, Math.PI * 2);
+            this.ctx.fillStyle = 'rgba(240, 248, 255, 0.95)';
             this.ctx.fill();
         });
 
@@ -476,22 +689,22 @@ class ProcessesSubsystemVisualization {
 
         this.ctx.fillStyle = '#a7b6cb';
         this.ctx.font = '10px "Share Tech Mono", monospace';
-        this.ctx.fillText('radial mode: global coupling + hover neighborhood + short trails', x + 14, y + h - 14);
+        this.ctx.fillText('radial: task ring · curved edges · hover neighborhood', x + 14, y + h - 14);
     }
 
     drawTopStats(x, y, w, h) {
-        this.drawPanel(x, y, w, h, 'BEHAVIOR SIGNALS');
+        this.drawPanel(x, y, w, h, 'runtime snapshot');
         const meta = this.telemetry?.meta || {};
         const graph = this.telemetry?.neural_graph || {};
         const n = Array.isArray(graph.nodes) ? graph.nodes.length : 0;
         const e = Array.isArray(graph.edges) ? graph.edges.length : 0;
         this.ctx.fillStyle = '#d8e5f7';
         this.ctx.font = '11px "Share Tech Mono", monospace';
-        this.ctx.fillText(`nodes ${n}`, x + 16, y + 50);
-        this.ctx.fillText(`edges ${e}`, x + 130, y + 50);
-        this.ctx.fillText(`seccomp ${Number(meta.seccomp_filter_percent || 0).toFixed(2)}%`, x + 232, y + 50);
+        this.ctx.fillText(`tasks ${n}`, x + 16, y + 50);
+        this.ctx.fillText(`relations ${e}`, x + 118, y + 50);
+        this.ctx.fillText(`seccomp filter ${Number(meta.seccomp_filter_percent || 0).toFixed(1)}%`, x + 238, y + 50);
         this.ctx.fillStyle = '#a7b6cb';
-        this.ctx.fillText('processes as neural behavior graph: nodes=processes, edges=syscalls/ipc/network/file', x + 16, y + 72);
+        this.ctx.fillText('vertices: processes · edges: syscalls · ipc · sockets · vfs', x + 16, y + 72);
     }
 
     drawScene() {
@@ -501,25 +714,20 @@ class ProcessesSubsystemVisualization {
         this.ctx.clearRect(0, 0, w, h);
         this.tick += 1;
 
-        const bg = this.ctx.createRadialGradient(w * 0.5, h * 0.4, 0, w * 0.5, h * 0.4, Math.max(w, h) * 0.72);
-        bg.addColorStop(0, '#121821');
-        bg.addColorStop(0.7, '#0a0d12');
-        bg.addColorStop(1, '#0a0d12');
+        const gap = 16;
+        const top = 58;
+        const statsH = 98;
+        const graphY = top + statsH + gap;
+        const graphH = Math.max(260, h - graphY - 36);
+
+        const bg = this.ctx.createRadialGradient(w * 0.5, h * 0.38, 0, w * 0.5, h * 0.38, Math.max(w, h) * 0.78);
+        bg.addColorStop(0, '#0f1a2e');
+        bg.addColorStop(0.55, '#070d18');
+        bg.addColorStop(1, '#03060e');
         this.ctx.fillStyle = bg;
         this.ctx.fillRect(0, 0, w, h);
 
-        this.ctx.fillStyle = '#d4dbe8';
-        this.ctx.font = '24px "Share Tech Mono", monospace';
-        this.ctx.fillText('KERNEL PROCESSES SUBSYSTEM', w * 0.5 - 220, 42);
-        this.ctx.fillStyle = '#a7b6cb';
-        this.ctx.font = '11px "Share Tech Mono", monospace';
-        this.ctx.fillText('neural behavior model: processes as nodes, kernel interactions as edges', w * 0.5 - 290, 64);
-
-        const gap = 16;
-        const top = 86;
-        const statsH = 98;
-        const graphY = top + statsH + gap;
-        const graphH = Math.max(260, h - graphY - 20);
+        this.drawKernelHeader();
         this.drawTopStats(gap, top, w - gap * 2, statsH);
         this.drawNeuralGraph(gap, graphY, w - gap * 2, graphH);
     }
