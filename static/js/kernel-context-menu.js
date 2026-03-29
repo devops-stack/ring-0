@@ -1,12 +1,12 @@
 // Kernel Context Menu - Submenu and View Modes
-// Version: 13
+// Version: 15
 
 debugLog('🔧 kernel-context-menu.js v13: Script loading...');
 
 class KernelContextMenu {
     constructor() {
         this.isVisible = false;
-        this.currentView = null; // 'matrix', 'timeline', 'dna', or null
+        this.currentView = null; // 'matrix', 'timeline', 'dna', 'kernel-flow', or null
         this.selectedPid = null;
         this.matrixData = [];
         this.timelineData = [];
@@ -21,178 +21,12 @@ class KernelContextMenu {
     }
 
     init() {
-        // Submenu will be created dynamically in right-semicircle-menu.js
-    }
-
-    showSubmenu(x, y, angle) {
-        const svg = d3.select('svg');
-        
-        // Remove existing submenu
-        this.hideSubmenu();
-        
-        // Calculate submenu position (to the left of Kernel item)
-        const submenuX = x - 150;
-        const submenuY = y;
-        
-        // Create submenu group
-        this.submenuGroup = svg.append('g')
-            .attr('class', 'kernel-submenu')
-            .style('opacity', 0)
-            .style('pointer-events', 'all');
-        
-        debugLog('✅ Submenu group created');
-        
-        // Background - diegetic UI style panel (like "SUBJECT U454.1" from example)
-        const bg = this.submenuGroup.append('rect')
-            .attr('x', submenuX - 10)
-            .attr('y', submenuY - 80)
-            .attr('width', 140)
-            .attr('height', 110)
-            .attr('rx', 2)
-            .style('fill', 'rgba(5, 8, 12, 0.85)') // Very dark background, slightly transparent
-            .style('stroke', 'rgba(200, 200, 200, 0.15)') // Subtle light gray border
-            .style('stroke-width', '0.5px')
-            .style('pointer-events', 'all')
-            .style('filter', 'drop-shadow(0 0 2px rgba(200, 200, 200, 0.1))'); // Subtle glow
-        
-        debugLog('✅ Background rect created at:', submenuX - 10, submenuY - 60);
-        
-        // Menu items
-        const items = [
-            { id: 'matrix', label: 'Matrix View' },
-            { id: 'timeline', label: 'Timeline / Flow' },
-            { id: 'filters', label: 'Filters / Settings' }
-        ];
-        
-        items.forEach((item, i) => {
-            const itemY = submenuY - 65 + (i * 25);
-            const isActive = item.id === this.currentView;
-            const baseColor = '#c8ccd4';       // milk-gray
-            const accentColor = '#58b6d8';     // cold cyan accent
-            const itemGroup = this.submenuGroup.append('g')
-                .attr('class', `submenu-item submenu-${item.id}`)
-                .style('cursor', 'pointer');
-            
-            // Create individual panel for each item (like "SUBJECT U454.1" style)
-            const itemPanel = itemGroup.append('rect')
-                .attr('x', submenuX - 8)
-                .attr('y', itemY - 9)
-                .attr('width', 136)
-                .attr('height', 20)
-                .attr('rx', 8) // More rounded corners like in example
-                .style('fill', '#333') // Same base color as right menu panels
-                .style('stroke', '#555') // Same border color as right menu panels
-                .style('stroke-width', '1px')
-                .style('pointer-events', 'all');
-                // No opacity - same as right menu panels (fully opaque)
-            
-            // Text - positioned inside the panel
-            const text = itemGroup.append('text')
-                .attr('x', submenuX)
-                .attr('y', itemY + 2)
-                .text(item.label.toUpperCase())
-                .style('font-family', 'Share Tech Mono, monospace')
-                .style('font-size', '10px')
-                .style('fill', isActive ? accentColor : baseColor)
-                .style('pointer-events', 'none')
-                .style('letter-spacing', '0.5px'); // Slight letter spacing for clarity
-            
-            // Hover handlers for the panel
-            const handleMouseEnter = () => {
-                itemPanel
-                    .style('fill', '#ffffff')
-                    .style('stroke', '#ffffff')
-                    .style('opacity', 1);
-                // On hover, use dark text (like right menu)
-                text.style('fill', isActive ? accentColor : '#000000');
-            };
-            
-            const handleMouseLeave = () => {
-                itemPanel
-                    .style('fill', '#333')
-                    .style('stroke', '#555');
-                    // No opacity - same as right menu panels (fully opaque)
-                text.style('fill', isActive ? accentColor : baseColor);
-            };
-            
-            // Click handler function
-            const handleClick = () => {
-                if (item.id === 'matrix') {
-                    this.activateMatrixView();
-                } else if (item.id === 'timeline') {
-                    // Activate DNA Timeline mode (with or without PID)
-                    if (this.dnaVisualization) {
-                        this.dnaVisualization.activateTimelineMode(this.selectedPid || null);
-                        this.currentView = 'dna-timeline';
-                        this.hideSubmenu();
-                        
-                        // Hide other UI elements
-                        d3.selectAll('.syscall-box, .syscall-text').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
-                        d3.selectAll('.tag-icon, .connection-line').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
-                        d3.selectAll('.connection-box, .connection-text, .connection-details').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
-                        d3.selectAll('.subsystem-indicator').style('opacity', 0).style('pointer-events', 'none').style('visibility', 'hidden');
-                        
-                        // Stop auto-updates
-                        if (window.syscallsManager) {
-                            window.syscallsManager.stopAutoUpdate();
-                        }
-                        if (window.connectionsManager) {
-                            window.connectionsManager.stopAutoUpdate();
-                        }
-                        
-                        // Timeline DNA view uses its own internal EXIT button.
-                    } else {
-                        // Fallback to regular timeline if DNA visualization not available
-                        if (this.selectedPid) {
-                            this.activateTimelineView();
-                        } else {
-                            alert('Please select a PID from Matrix View first');
-                        }
-                    }
-                } else if (item.id === 'filters') {
-                    // Placeholder for future
-                    debugLog('Filters/Settings - coming soon');
-                }
-            };
-            
-            // Add hover and click handlers to panel
-            itemPanel
-                .on('mouseenter', handleMouseEnter)
-                .on('mouseleave', handleMouseLeave)
-                .on('click', handleClick);
-            
-            // Also add hover and click handlers to text area for better UX
-            const textHoverArea = itemGroup.append('rect')
-                .attr('x', submenuX - 8)
-                .attr('y', itemY - 9)
-                .attr('width', 136)
-                .attr('height', 20)
-                .style('fill', 'transparent')
-                .style('pointer-events', 'all')
-                .on('mouseenter', handleMouseEnter)
-                .on('mouseleave', handleMouseLeave)
-                .on('click', handleClick);
-        });
-        
-        // Animate appearance
-        this.submenuGroup.transition()
-            .duration(200)
-            .style('opacity', 1)
-            .on('end', () => {
-                debugLog('✅ Submenu animation completed');
-            });
-        
-        debugLog('✅ Submenu created and animated');
+        // Kernel submenu removed; DNA view includes process timeline UI.
     }
 
     hideSubmenu() {
-        debugLog('🔒 hideSubmenu called');
-        if (this.submenuGroup) {
-            this.submenuGroup.remove();
-            this.submenuGroup = null;
-        }
-        // Also remove by class in case group reference is lost
         d3.selectAll('.kernel-submenu').remove();
+        this.submenuGroup = null;
     }
 
     activateMatrixView() {
@@ -280,6 +114,191 @@ class KernelContextMenu {
         this.startAutoUpdate();
     }
 
+    /**
+     * Full-screen diagram: how data moves userspace → socket → TCP → kernel net stack → NIC.
+     * Educational / illustrative ordering (real paths vary by workload).
+     */
+    activateKernelFlowMode() {
+        debugLog('🌊 activateKernelFlowMode');
+        this.currentView = 'kernel-flow';
+        this.hideSubmenu();
+
+        d3.selectAll('.kernel-flow-layer, .kernel-flow-backdrop').remove();
+
+        d3.selectAll('.process-line, .process-circle, .process-name')
+            .transition()
+            .duration(300)
+            .style('opacity', 0.15);
+
+        d3.selectAll('.syscall-box, .syscall-text')
+            .transition()
+            .duration(300)
+            .style('opacity', 0)
+            .style('pointer-events', 'none')
+            .style('visibility', 'hidden');
+
+        d3.selectAll('.connection-box, .connection-text, .connection-details')
+            .transition()
+            .duration(300)
+            .style('opacity', 0)
+            .style('pointer-events', 'none');
+
+        d3.selectAll('.tag-icon, .connection-line')
+            .transition()
+            .duration(300)
+            .style('opacity', 0)
+            .style('pointer-events', 'none')
+            .style('visibility', 'hidden');
+
+        d3.selectAll('.subsystem-indicator')
+            .transition()
+            .duration(300)
+            .style('opacity', 0)
+            .style('pointer-events', 'none')
+            .style('visibility', 'hidden');
+
+        if (window.syscallsManager) {
+            window.syscallsManager.stopAutoUpdate();
+        }
+        if (window.connectionsManager) {
+            window.connectionsManager.stopAutoUpdate();
+        }
+
+        d3.selectAll('.bezier-curve')
+            .transition()
+            .duration(400)
+            .attr('opacity', 0.12);
+
+        this.renderKernelFlowDiagram();
+        this.addExitButton();
+    }
+
+    renderKernelFlowDiagram() {
+        const svg = d3.select('svg');
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+
+        const backdrop = svg.append('rect')
+            .attr('class', 'kernel-flow-backdrop')
+            .attr('x', 0)
+            .attr('y', 0)
+            .attr('width', width)
+            .attr('height', height)
+            .attr('fill', 'rgba(2, 3, 6, 0.72)')
+            .style('pointer-events', 'all');
+
+        const g = svg.append('g').attr('class', 'kernel-flow-layer');
+
+        const defs = g.append('defs');
+        defs.append('marker')
+            .attr('id', 'kernel-flow-arrowhead')
+            .attr('viewBox', '0 -5 10 10')
+            .attr('refX', 8)
+            .attr('refY', 0)
+            .attr('markerWidth', 5)
+            .attr('markerHeight', 5)
+            .attr('orient', 'auto')
+            .append('path')
+            .attr('d', 'M0,-5L10,0L0,5')
+            .attr('fill', 'rgba(88, 182, 216, 0.75)');
+
+        const steps = [
+            { main: 'nginx', sub: 'userspace' },
+            { main: 'socket', sub: 'fd · buffers' },
+            { main: 'TCP', sub: 'sk_buff' },
+            { main: 'kernel', sub: 'net stack' },
+            { main: 'NIC', sub: 'driver → DMA' }
+        ];
+
+        const nodeW = Math.min(118, Math.max(88, (width - 160) / 6.2));
+        const gap = Math.min(32, Math.max(14, (width - 160 - steps.length * nodeW) / (steps.length - 1)));
+        const totalW = steps.length * nodeW + (steps.length - 1) * gap;
+        const startX = (width - totalW) / 2;
+        const cy = height * 0.44;
+
+        g.append('text')
+            .attr('x', width / 2)
+            .attr('y', cy - 72)
+            .attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '13px')
+            .style('fill', 'rgba(200, 210, 225, 0.92)')
+            .style('letter-spacing', '2px')
+            .text('KERNEL FLOW MODE');
+
+        g.append('text')
+            .attr('x', width / 2)
+            .attr('y', cy - 48)
+            .attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', 'rgba(120, 140, 160, 0.75)')
+            .text('nginx → socket → TCP → kernel → NIC  ·  illustrative TX/RX path');
+
+        steps.forEach((step, i) => {
+            const x = startX + i * (nodeW + gap);
+            const node = g.append('g').attr('transform', `translate(${x},${cy})`);
+
+            node.append('rect')
+                .attr('width', nodeW)
+                .attr('height', 52)
+                .attr('rx', 6)
+                .attr('fill', 'rgba(12, 18, 28, 0.92)')
+                .attr('stroke', 'rgba(88, 182, 216, 0.45)')
+                .attr('stroke-width', 1);
+
+            node.append('text')
+                .attr('x', nodeW / 2)
+                .attr('y', 22)
+                .attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '12px')
+                .style('fill', '#e8eef8')
+                .text(step.main);
+
+            node.append('text')
+                .attr('x', nodeW / 2)
+                .attr('y', 40)
+                .attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '8px')
+                .style('fill', 'rgba(140, 160, 185, 0.85)')
+                .text(step.sub);
+
+            if (i < steps.length - 1) {
+                const x1 = x + nodeW + 4;
+                const x2 = x + nodeW + gap - 4;
+                g.append('line')
+                    .attr('x1', x1)
+                    .attr('y1', cy + 26)
+                    .attr('x2', x2)
+                    .attr('y2', cy + 26)
+                    .attr('stroke', 'rgba(88, 182, 216, 0.55)')
+                    .attr('stroke-width', 1.2)
+                    .attr('marker-end', 'url(#kernel-flow-arrowhead)');
+            }
+        });
+
+        g.append('text')
+            .attr('x', width / 2)
+            .attr('y', cy + 88)
+            .attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '8px')
+            .style('fill', 'rgba(90, 105, 125, 0.8)')
+            .text('Ordering is simplified; buffers, softirq, and qdisc can reorder work in real kernels.');
+
+        g.style('opacity', 0)
+            .transition()
+            .duration(350)
+            .style('opacity', 1);
+
+        backdrop.style('opacity', 0)
+            .transition()
+            .duration(300)
+            .style('opacity', 1);
+    }
+
     activateDNAView() {
         debugLog('🧬 Activating Kernel DNA View');
         debugLog('🔍 KernelDNAVisualization available:', typeof KernelDNAVisualization);
@@ -345,6 +364,13 @@ class KernelContextMenu {
             }
         } else {
             debugLog('✅ Using existing dnaVisualization instance');
+        }
+
+        if (this.dnaVisualization) {
+            this.dnaVisualization.timelineMode = false;
+            this.dnaVisualization.selectedPid = null;
+            this.dnaVisualization.timeStart = null;
+            this.dnaVisualization.currentTimelineHeight = 0;
         }
         
         // Hide other UI elements
@@ -792,7 +818,8 @@ class KernelContextMenu {
             .transition()
             .duration(300)
             .style('opacity', 1)
-            .style('pointer-events', 'all');
+            .style('pointer-events', 'all')
+            .style('visibility', 'visible');
 
         // Restore active connections blocks
         d3.selectAll('.connection-box, .connection-text, .connection-details')
@@ -838,6 +865,8 @@ class KernelContextMenu {
         
         // Clear Timeline events
         d3.selectAll('.timeline-event').remove();
+
+        d3.selectAll('.kernel-flow-layer, .kernel-flow-backdrop').remove();
         
         // Restore Bezier curves - ensure all curves are visible with original styles
         d3.selectAll('.bezier-curve')

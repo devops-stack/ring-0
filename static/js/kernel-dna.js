@@ -1,10 +1,10 @@
 // Kernel DNA Visualization - Double Helix Structure
 // Represents Linux kernel execution paths as DNA strands
-// Version: 19
+// Version: 21 — UX: enter/exit transitions, loading skeleton, staggered UI reveal
 
-debugLog('🧬 kernel-dna.js v19: Script loading...');
-debugLog('🧬 kernel-dna.js v19: THREE available:', typeof THREE);
-debugLog('🧬 kernel-dna.js v19: Browser:', navigator.userAgent);
+debugLog('🧬 kernel-dna.js v21: Script loading...');
+debugLog('🧬 kernel-dna.js v21: THREE available:', typeof THREE);
+debugLog('🧬 kernel-dna.js v21: Browser:', navigator.userAgent);
 
 class KernelDNAVisualization {
     constructor() {
@@ -37,6 +37,8 @@ class KernelDNAVisualization {
         this.mouseMoveHandler = null; // Store mouse move handler reference
         this.hoveredNucleotide = null; // Track hovered nucleotide for yellow highlight
         this.exitButton = null; // Store exit button reference
+        this._loadingOverlay = null;
+        this._uxStylesInjected = false;
         
         // Color palette - New design system
         this.colors = {
@@ -213,6 +215,9 @@ class KernelDNAVisualization {
         
         // Add exit button
         this.addExitButton();
+        
+        this.container.classList.add('kernel-dna-ux');
+        this._ensureUxStyles();
         
         // Handle window resize
         window.addEventListener('resize', () => this.onWindowResize());
@@ -455,6 +460,141 @@ class KernelDNAVisualization {
         }
     }
 
+    _ensureUxStyles() {
+        if (this._uxStylesInjected || typeof document === 'undefined') return;
+        const style = document.createElement('style');
+        style.id = 'kernel-dna-ux-styles';
+        style.textContent = `
+            #kernel-dna-container.kernel-dna-ux {
+                transition: opacity 0.42s cubic-bezier(0.22, 1, 0.36, 1),
+                    transform 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+            }
+            #kernel-dna-container .dna-loading-overlay {
+                position: absolute;
+                inset: 0;
+                z-index: 10050;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                gap: 20px;
+                background: rgba(14, 17, 20, 0.92);
+                backdrop-filter: blur(6px);
+                pointer-events: none;
+                transition: opacity 0.32s ease;
+            }
+            #kernel-dna-container .dna-loading-overlay.dna-loading-out {
+                opacity: 0;
+            }
+            #kernel-dna-container .dna-loading-label {
+                font-family: 'Share Tech Mono', monospace;
+                font-size: 11px;
+                letter-spacing: 0.35px;
+                color: rgba(200, 204, 212, 0.75);
+            }
+            #kernel-dna-container .dna-skeleton-wrap {
+                width: min(280px, 70vw);
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+            }
+            #kernel-dna-container .dna-skeleton-bar {
+                height: 8px;
+                border-radius: 4px;
+                background: linear-gradient(90deg,
+                    rgba(90, 98, 108, 0.25) 0%,
+                    rgba(130, 140, 155, 0.45) 50%,
+                    rgba(90, 98, 108, 0.25) 100%);
+                background-size: 200% 100%;
+                animation: kernel-dna-skel 1.1s ease-in-out infinite;
+            }
+            #kernel-dna-container .dna-skeleton-bar:nth-child(2) { width: 88%; }
+            #kernel-dna-container .dna-skeleton-bar:nth-child(3) { width: 72%; }
+            @keyframes kernel-dna-skel {
+                0% { background-position: 200% 0; }
+                100% { background-position: -200% 0; }
+            }
+        `;
+        document.head.appendChild(style);
+        this._uxStylesInjected = true;
+    }
+
+    _showLoadingOverlay(labelText = 'Loading kernel view') {
+        if (!this.container) return;
+        this._hideLoadingOverlayImmediate();
+        const ov = document.createElement('div');
+        ov.className = 'dna-loading-overlay';
+        ov.setAttribute('aria-busy', 'true');
+        ov.setAttribute('aria-label', labelText);
+        window.setSafeHtml(ov, `
+            <div class="dna-skeleton-wrap">
+                <div class="dna-skeleton-bar"></div>
+                <div class="dna-skeleton-bar"></div>
+                <div class="dna-skeleton-bar"></div>
+            </div>
+            <div class="dna-loading-label">${labelText}</div>
+        `);
+        this.container.appendChild(ov);
+        this._loadingOverlay = ov;
+    }
+
+    _hideLoadingOverlayImmediate() {
+        if (this._loadingOverlay && this._loadingOverlay.parentNode) {
+            this._loadingOverlay.parentNode.removeChild(this._loadingOverlay);
+        }
+        this._loadingOverlay = null;
+    }
+
+    _hideLoadingOverlay() {
+        return new Promise((resolve) => {
+            const ov = this._loadingOverlay;
+            if (!ov) {
+                resolve();
+                return;
+            }
+            const done = () => {
+                this._hideLoadingOverlayImmediate();
+                resolve();
+            };
+            ov.classList.add('dna-loading-out');
+            const t = window.setTimeout(done, 340);
+            ov.addEventListener('transitionend', () => {
+                window.clearTimeout(t);
+                done();
+            }, { once: true });
+        });
+    }
+
+    _applyStaggeredReveal(nodes) {
+        const valid = nodes.filter(Boolean);
+        if (valid.length === 0) return;
+        const step = 88;
+        const ease = '0.42s cubic-bezier(0.22, 1, 0.36, 1)';
+        valid.forEach((el) => {
+            el.style.transition = `opacity ${ease}, transform ${ease}`;
+            el.style.opacity = '0';
+            if (el.classList.contains('dna-title') || el.classList.contains('dna-timeline-subtitle') || el.classList.contains('dna-dev-label')) {
+                el.style.transform = 'translate(-50%, 12px)';
+            } else {
+                el.style.transform = 'translateY(12px)';
+            }
+        });
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                valid.forEach((el, i) => {
+                    window.setTimeout(() => {
+                        el.style.opacity = '1';
+                        if (el.classList.contains('dna-title') || el.classList.contains('dna-timeline-subtitle') || el.classList.contains('dna-dev-label')) {
+                            el.style.transform = 'translate(-50%, 0)';
+                        } else {
+                            el.style.transform = 'translateY(0)';
+                        }
+                    }, i * step);
+                });
+            });
+        });
+    }
+
     async render() {
         if (!this.isActive) return;
         
@@ -476,10 +616,14 @@ class KernelDNAVisualization {
         
         // Clear previous visualization
         this.clear();
+        this._showLoadingOverlay('Loading kernel DNA');
         
         // Load data
         const data = await this.loadData();
-        if (!data) return;
+        if (!data) {
+            await this._hideLoadingOverlay();
+            return;
+        }
         
         // Create helix strands
         const leftHelix = this.createHelixStrand(true);
@@ -544,8 +688,10 @@ class KernelDNAVisualization {
             });
         }
         
-        // Add labels
-        this.addLabels(data);
+        await this._hideLoadingOverlay();
+        
+        // Add labels + SELECT PROCESS (same panel as former DNA Timeline mode)
+        await this.addLabels(data);
         
         // Start animation only if not already animating
         if (!this.isAnimating) {
@@ -556,9 +702,13 @@ class KernelDNAVisualization {
 
     async renderTimeline() {
         if (!this.selectedPid) {
-            // Show process selector if no PID selected
+            this._showLoadingOverlay('Loading processes');
             this.clear();
-            this.addTimelineLabels(null);
+            try {
+                await this.addTimelineLabels(null);
+            } finally {
+                await this._hideLoadingOverlay();
+            }
             return;
         }
 
@@ -572,6 +722,7 @@ class KernelDNAVisualization {
             savedRightRotation = this.helixRight.rotation.y;
         }
 
+        this._showLoadingOverlay('Loading timeline');
         // Load timeline data
         try {
             const response = await fetch(`/api/proc-timeline?pid=${this.selectedPid}`);
@@ -679,7 +830,7 @@ class KernelDNAVisualization {
             this.addTimelineMarkers(leftHelix.curve);
 
             // Update labels for timeline mode
-            this.addTimelineLabels(data);
+            await this.addTimelineLabels(data);
 
             // Start animation
             if (!this.isAnimating) {
@@ -688,6 +839,8 @@ class KernelDNAVisualization {
             }
         } catch (error) {
             console.error('❌ Error rendering timeline:', error);
+        } finally {
+            await this._hideLoadingOverlay();
         }
     }
 
@@ -731,15 +884,15 @@ class KernelDNAVisualization {
         this.helixLeft.add(markerGroup);
     }
 
-    addTimelineLabels(data) {
+    async addTimelineLabels(data) {
         // Remove old labels
-        const oldLabels = this.container.querySelectorAll('.dna-title, .dna-legend, .dna-timeline-info, .dna-process-selector');
+        const oldLabels = this.container.querySelectorAll('.dna-title, .dna-timeline-subtitle, .dna-legend, .dna-dev-label, .dna-timeline-info, .dna-process-selector');
         oldLabels.forEach(label => label.remove());
 
         // Add title
         const titleDiv = document.createElement('div');
         titleDiv.className = 'dna-title';
-        titleDiv.textContent = 'KERNEL DNA TIMELINE';
+        titleDiv.textContent = 'KERNEL DNA';
         titleDiv.style.cssText = `
             position: absolute;
             top: 20px;
@@ -751,10 +904,26 @@ class KernelDNAVisualization {
             z-index: 1001;
         `;
         this.container.appendChild(titleDiv);
-        this.appendInDevelopmentLabel(52);
+        const sub = document.createElement('div');
+        sub.className = 'dna-timeline-subtitle';
+        sub.textContent = 'single-process timeline';
+        sub.style.cssText = `
+            position: absolute;
+            top: 72px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(88, 182, 216, 0.85);
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 11px;
+            letter-spacing: 0.4px;
+            z-index: 1001;
+        `;
+        this.container.appendChild(sub);
+        const devLabel = this.appendInDevelopmentLabel(52);
 
         // Add process selector
-        this.addProcessSelector();
+        await this.addProcessSelector();
+        const selectorEl = this.container.querySelector('.dna-process-selector');
 
         // Add timeline info
         const infoDiv = document.createElement('div');
@@ -779,6 +948,8 @@ class KernelDNAVisualization {
             z-index: 1001;
         `;
         this.container.appendChild(infoDiv);
+
+        this._applyStaggeredReveal([titleDiv, sub, devLabel, selectorEl, infoDiv]);
     }
 
     async addProcessSelector() {
@@ -800,10 +971,13 @@ class KernelDNAVisualization {
             font-family: 'Share Tech Mono', monospace;
         `;
 
-        // Add header
+        // Add header + optional clear (back to full kernel DNA view)
         const header = document.createElement('div');
-        header.textContent = 'SELECT PROCESS';
         header.style.cssText = `
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
             color: #c8ccd4;
             font-size: 12px;
             font-weight: bold;
@@ -811,6 +985,32 @@ class KernelDNAVisualization {
             padding-bottom: 8px;
             border-bottom: 1px solid rgba(160, 170, 190, 0.2);
         `;
+        const headerTitle = document.createElement('span');
+        headerTitle.textContent = 'SELECT PROCESS';
+        header.appendChild(headerTitle);
+        if (this.selectedPid) {
+            const clearBtn = document.createElement('button');
+            clearBtn.type = 'button';
+            clearBtn.textContent = 'Show all kernel';
+            clearBtn.style.cssText = `
+                background: rgba(5, 8, 12, 0.8);
+                border: 1px solid rgba(88, 182, 216, 0.45);
+                color: #58b6d8;
+                font-family: 'Share Tech Mono', monospace;
+                font-size: 10px;
+                padding: 4px 8px;
+                border-radius: 3px;
+                cursor: pointer;
+            `;
+            clearBtn.onclick = async () => {
+                this.timelineMode = false;
+                this.selectedPid = null;
+                this.timeStart = null;
+                this.currentTimelineHeight = 0;
+                await this.render();
+            };
+            header.appendChild(clearBtn);
+        }
         selectorDiv.appendChild(header);
 
         // Add search input
@@ -888,11 +1088,12 @@ class KernelDNAVisualization {
                             procItem.style.borderColor = 'rgba(160, 170, 190, 0.15)';
                         }
                     };
-                    procItem.onclick = () => {
+                    procItem.onclick = async () => {
                         this.selectedPid = proc.pid;
-                        this.timeStart = null; // Reset timeline
+                        this.timelineMode = true;
+                        this.timeStart = null;
                         this.currentTimelineHeight = 0;
-                        this.renderTimeline();
+                        await this.renderTimeline();
                     };
 
                     processList.appendChild(procItem);
@@ -933,9 +1134,9 @@ class KernelDNAVisualization {
         }
     }
 
-    addLabels(data) {
+    async addLabels(data) {
         // Remove old labels first
-        const oldLabels = this.container.querySelectorAll('.dna-title, .dna-legend');
+        const oldLabels = this.container.querySelectorAll('.dna-title, .dna-legend, .dna-dev-label, .dna-process-selector');
         oldLabels.forEach(label => label.remove());
         
         // Add title
@@ -953,7 +1154,7 @@ class KernelDNAVisualization {
             z-index: 1001;
         `;
         this.container.appendChild(titleDiv);
-        this.appendInDevelopmentLabel(52);
+        const devLabel = this.appendInDevelopmentLabel(52);
         
         // Add legend - Diegetic UI style
         const legendDiv = document.createElement('div');
@@ -974,6 +1175,10 @@ class KernelDNAVisualization {
             z-index: 1001;
         `;
         this.container.appendChild(legendDiv);
+
+        await this.addProcessSelector();
+        const selectorEl = this.container.querySelector('.dna-process-selector');
+        this._applyStaggeredReveal([titleDiv, devLabel, legendDiv, selectorEl]);
     }
 
     appendInDevelopmentLabel(topPx = 52) {
@@ -997,6 +1202,7 @@ class KernelDNAVisualization {
             text-transform: lowercase;
         `;
         this.container.appendChild(devLabel);
+        return devLabel;
     }
 
     animate() {
@@ -1097,7 +1303,7 @@ class KernelDNAVisualization {
         }
         
         // Remove labels (but keep exit button)
-        const labels = this.container.querySelectorAll('.dna-title, .dna-legend, .dna-timeline-info, .dna-process-selector');
+        const labels = this.container.querySelectorAll('.dna-title, .dna-timeline-subtitle, .dna-legend, .dna-dev-label, .dna-timeline-info, .dna-process-selector');
         labels.forEach(label => label.remove());
     }
 
@@ -1107,6 +1313,7 @@ class KernelDNAVisualization {
         debugLog('🔍 Container element:', this.container);
         
         this.isActive = true;
+        this._ensureUxStyles();
         
         // Ensure container exists and is visible
         if (!this.container) {
@@ -1118,6 +1325,15 @@ class KernelDNAVisualization {
             debugLog('✅ Setting container display to block');
             this.container.style.display = 'block';
             this.container.style.zIndex = '9999';
+            this.container.style.opacity = '0';
+            this.container.style.transform = 'translateY(14px)';
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    if (!this.container || !this.isActive) return;
+                    this.container.style.opacity = '1';
+                    this.container.style.transform = 'translateY(0)';
+                });
+            });
             debugLog('✅ Container display:', this.container.style.display);
             debugLog('✅ Container z-index:', this.container.style.zIndex);
             const computed = window.getComputedStyle(this.container);
@@ -1199,11 +1415,40 @@ class KernelDNAVisualization {
             }
         });
         
-        if (this.container) {
-            this.container.style.display = 'none';
+        const finalizeHide = () => {
+            this._hideLoadingOverlayImmediate();
+            if (this.container) {
+                this.container.style.display = 'none';
+                this.container.style.pointerEvents = '';
+                this.container.style.opacity = '';
+                this.container.style.transform = '';
+            }
+            this.clear();
+        };
+
+        if (this.container && this.container.style.display !== 'none') {
+            this.container.style.pointerEvents = 'none';
+            let finalized = false;
+            const runFinalize = () => {
+                if (finalized) return;
+                finalized = true;
+                window.clearTimeout(fallbackTimer);
+                if (this.container) {
+                    this.container.removeEventListener('transitionend', onEnd);
+                }
+                finalizeHide();
+            };
+            const onEnd = (e) => {
+                if (e && e.propertyName && e.propertyName !== 'opacity' && e.propertyName !== 'transform') return;
+                runFinalize();
+            };
+            this.container.addEventListener('transitionend', onEnd);
+            this.container.style.opacity = '0';
+            this.container.style.transform = 'translateY(12px)';
+            const fallbackTimer = window.setTimeout(runFinalize, 480);
+        } else {
+            finalizeHide();
         }
-        
-        this.clear();
     }
 
     onWindowResize() {
