@@ -158,8 +158,11 @@ function draw() {
     const mobileLayout = isMobileLayout();
 
     // Skip drawing if Matrix View is active to prevent elements from appearing above it
-    if (!mobileLayout && window.kernelContextMenu && window.kernelContextMenu.currentView === 'matrix') {
-        debugLog('⏸️ Skipping draw() - Matrix View is active');
+    if (!mobileLayout && window.kernelContextMenu && (
+        window.kernelContextMenu.currentView === 'matrix' ||
+        window.kernelContextMenu.currentView === 'kernel-flow'
+    )) {
+        debugLog('⏸️ Skipping draw() - Matrix or Kernel Flow view is active');
         return;
     }
     
@@ -274,7 +277,8 @@ function draw() {
     // Use setTimeout to ensure this happens after all other rendering
     // But skip if Matrix View is active
     setTimeout(() => {
-        if (syscallsManager && (!window.kernelContextMenu || window.kernelContextMenu.currentView !== 'matrix')) {
+        const cv = window.kernelContextMenu && window.kernelContextMenu.currentView;
+        if (syscallsManager && cv !== 'matrix' && cv !== 'kernel-flow') {
             // Force update to ensure system calls are displayed
             syscallsManager.updateSyscallsTable();
         }
@@ -655,8 +659,11 @@ function getPointOnPathAtDistance(pathData, targetDistance, centerX, centerY) {
 // Draw tag icons
 function drawTagIcons(centerX, centerY) {
     // Skip drawing tag icons if Matrix View is active
-    if (window.kernelContextMenu && window.kernelContextMenu.currentView === 'matrix') {
-        debugLog('⏸️ Skipping tag icons render - Matrix View is active');
+    if (window.kernelContextMenu && (
+        window.kernelContextMenu.currentView === 'matrix' ||
+        window.kernelContextMenu.currentView === 'kernel-flow'
+    )) {
+        debugLog('⏸️ Skipping tag icons render - Matrix or Kernel Flow view is active');
         return;
     }
     

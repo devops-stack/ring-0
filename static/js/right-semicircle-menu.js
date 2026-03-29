@@ -91,7 +91,7 @@ class RightSemicircleMenuManager {
             return;
         }
         if (itemId === 'processes') {
-            window.location.assign('/linux-processes-subsystem.html');
+            window.location.assign('/linux-processes-subsystem');
             return;
         }
         if (itemId === 'memory') {
@@ -101,6 +101,7 @@ class RightSemicircleMenuManager {
         if (!window.kernelContextMenu) return;
         if (itemId === 'kernel') {
             window.kernelContextMenu.activateDNAView();
+            return;
         } else if (itemId === 'network') {
             window.kernelContextMenu.activateNetworkView();
         } else if (itemId === 'devices') {
@@ -304,7 +305,6 @@ class RightSemicircleMenuManager {
                     this.setItemHoverState(itemGroup, true, hudStrokeHair, hudStrokeNormal, hudStrokeAccent);
                 }
                 
-                // Hide submenu for dedicated-page items.
                 if (window.kernelContextMenu) {
                     window.kernelContextMenu.hideSubmenu();
                 }
@@ -314,14 +314,6 @@ class RightSemicircleMenuManager {
             const handleMouseLeave = (event) => {
                 // Проверяем, не перешли ли мы на другой элемент меню или подменю
                 const relatedTarget = event.relatedTarget;
-                
-                // Если ушли на подменю Processes, не сбрасываем hover
-                if (item.id === 'processes' && window.kernelContextMenu) {
-                    const submenu = d3.select('.kernel-submenu').node();
-                    if (submenu && (submenu.contains(relatedTarget) || submenu === relatedTarget)) {
-                        return; // Не сбрасываем, если перешли на подменю
-                    }
-                }
                 
                 // Проверяем, не перешли ли на другой элемент этого же меню
                 if (relatedTarget) {
@@ -333,20 +325,6 @@ class RightSemicircleMenuManager {
                 
                 // Reset hover immediately to avoid perceived "stuck active" delay.
                 if (this.hoveredItemId === item.id) {
-                    // Keep hover only while pointer is over Processes submenu.
-                    if (item.id === 'processes' && window.kernelContextMenu) {
-                        const submenu = d3.select('.kernel-submenu').node();
-                        if (submenu) {
-                            const submenuRect = submenu.getBoundingClientRect();
-                            const mouseX = event.clientX || 0;
-                            const mouseY = event.clientY || 0;
-                            if (mouseX >= submenuRect.left && mouseX <= submenuRect.right &&
-                                mouseY >= submenuRect.top && mouseY <= submenuRect.bottom) {
-                                return;
-                            }
-                        }
-                    }
-
                     this.hoveredItemId = null;
                     this.setItemHoverState(itemGroup, false, hudStrokeHair, hudStrokeNormal, hudStrokeAccent);
 
@@ -365,7 +343,7 @@ class RightSemicircleMenuManager {
                     return;
                 }
                 if (item.id === 'processes') {
-                    window.location.assign('/linux-processes-subsystem.html');
+                    window.location.assign('/linux-processes-subsystem');
                     return;
                 }
                 if (item.id === 'memory') {
@@ -378,11 +356,6 @@ class RightSemicircleMenuManager {
                 }
                 if (isOverlay) {
                     this.activateOverlayView(item.id);
-                } else {
-                    debugLog('⚠️ Click on kernel item but conditions not met:', {
-                        itemId: item.id,
-                        hasContextMenu: !!window.kernelContextMenu
-                    });
                 }
             };
             
@@ -397,7 +370,7 @@ class RightSemicircleMenuManager {
                         return;
                     }
                     if (item.id === 'processes') {
-                        window.location.assign('/linux-processes-subsystem.html');
+                        window.location.assign('/linux-processes-subsystem');
                         return;
                     }
                     if (item.id === 'memory') {

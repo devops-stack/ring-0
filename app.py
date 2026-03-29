@@ -287,110 +287,181 @@ SYSCALL_NAMES = {
     395: 'futex_wake_requeue_pi'
 }
 
+# Max PIDs to scan for /proc/[pid]/syscall (tasks currently blocked in a syscall).
+KERNEL_DNA_MAX_PROCS = int(os.environ.get('KERNEL_DNA_MAX_PROCS', '1200'))
+
+
+def _kernel_dna_read_proc_vmstat():
+    """Parse /proc/vmstat into a dict of int counters."""
+    vm = {}
+    try:
+        with open('/proc/vmstat', 'r', encoding='utf-8', errors='replace') as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    vm[parts[0]] = int(parts[1])
+    except (OSError, ValueError):
+        pass
+    return vm
+
+
+def _kernel_dna_vmstat_activity_nucleotides():
+    """Real VM counters when no per-task syscall sample is available."""
+    result = []
+    vm = _kernel_dna_read_proc_vmstat()
+    mapping = [
+        ('pgfault', 'mm'),
+        ('pgmajfault', 'mm'),
+        ('pswpin', 'mm'),
+        ('pswpout', 'mm'),
+        ('oom_kill', 'mm'),
+        ('nr_dirty', 'mm'),
+        ('nr_written', 'mm'),
+        ('pgscan_kswapd', 'mm'),
+        ('pgscan_direct', 'mm'),
+        ('workingset_refault', 'mm'),
+    ]
+    for key, sub in mapping:
+        if key in vm and vm[key] > 0:
+            result.append({'name': f'vm:{key}', 'count': vm[key], 'subsystem': sub})
+    return result
+
+
+def _kernel_dna_block_device_activity_nucleotides():
+    """Cumulative I/O from /sys/block/<dev>/stat."""
+    result = []
+    tr = tw = tsr = tsw = 0
+    try:
+        for name in os.listdir('/sys/block'):
+            if name.startswith(('loop', 'ram')):
+                continue
+            stat_path = os.path.join('/sys/block', name, 'stat')
+            if not os.path.isfile(stat_path):
+                continue
+            with open(stat_path, 'r', encoding='utf-8', errors='replace') as f:
+                st = f.read().split()
+            if len(st) < 7:
+                continue
+            tr += int(st[0])
+            tsr += int(st[2])
+            tw += int(st[4])
+            tsw += int(st[6])
+    except (OSError, ValueError, IndexError):
+        pass
+    if tr > 0:
+        result.append({'name': 'disk:read_ios', 'count': tr, 'subsystem': 'fs'})
+    if tw > 0:
+        result.append({'name': 'disk:write_ios', 'count': tw, 'subsystem': 'fs'})
+    if tsr > 0:
+        result.append({'name': 'disk:sectors_read', 'count': tsr, 'subsystem': 'fs'})
+    if tsw > 0:
+        result.append({'name': 'disk:sectors_written', 'count': tsw, 'subsystem': 'fs'})
+    return result
+
+
+def _kernel_dna_sockstat_activity_nucleotides():
+    """Socket counts from /proc/net/sockstat."""
+    result = []
+    try:
+        with open('/proc/net/sockstat', 'r', encoding='utf-8', errors='replace') as f:
+            for line in f:
+                parts = line.split()
+                if line.startswith('TCP:') and len(parts) >= 3:
+                    result.append({'name': 'net:tcp_inuse', 'count': int(parts[2]), 'subsystem': 'net'})
+                elif line.startswith('UDP:') and len(parts) >= 3:
+                    result.append({'name': 'net:udp_inuse', 'count': int(parts[2]), 'subsystem': 'net'})
+    except (OSError, ValueError, IndexError):
+        pass
+    return result
+
+
+def _kernel_dna_softirq_nucleotides(limit=8):
+    """Per-vector softirq totals from /proc/softirqs."""
+    out = []
+    try:
+        with open('/proc/softirqs', 'r', encoding='utf-8', errors='replace') as f:
+            lines = f.readlines()
+        if len(lines) < 2:
+            return out
+        for line in lines[1 : 1 + limit]:
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            vec = parts[0].rstrip(':')
+            total = sum(int(x) for x in parts[1:] if x.isdigit())
+            if total > 0:
+                out.append({
+                    'type': 'interrupt',
+                    'code': 'T',
+                    'name': f'softirq:{vec}',
+                    'count': total,
+                    'subsystem': map_interrupt_to_subsystem(vec),
+                    'timestamp': datetime.now().isoformat(),
+                })
+    except (OSError, ValueError):
+        pass
+    return out
+
+
 def get_real_system_calls():
-    """Get real system calls from /proc filesystem"""
+    """Blocked-in-syscall sample from /proc/[pid]/syscall; else real vmstat + block + sockstat (no random on Linux)."""
     try:
         if platform.system() != 'Linux':
             return get_mock_system_calls()
-        
-        # Dictionary to count syscalls
-        syscall_counts = {}
-        
-        # Read /proc/*/syscall for all processes
-        # This shows the current syscall each process is executing
-        proc_dirs = []
+
         try:
             proc_dirs = [d for d in os.listdir('/proc') if d.isdigit()]
         except PermissionError:
-            # If we can't read /proc, use limited access
-            pass
-        
-        # Sample up to 100 processes to avoid performance issues
-        sampled_procs = proc_dirs[:100] if len(proc_dirs) > 100 else proc_dirs
-        
-        for pid in sampled_procs:
+            proc_dirs = []
+
+        sampled = sorted(proc_dirs, key=int)[: min(KERNEL_DNA_MAX_PROCS, len(proc_dirs))]
+
+        syscall_counts = {}
+        for pid in sampled:
             try:
                 syscall_path = f'/proc/{pid}/syscall'
-                if os.path.exists(syscall_path):
-                    with open(syscall_path, 'r') as f:
-                        line = f.read().strip()
-                        if line and line != '-1':
-                            # Format: syscall_number arg1 arg2 ... (or just number)
-                            parts = line.split()
-                            if parts:
-                                try:
-                                    syscall_num = int(parts[0])
-                                    syscall_name = SYSCALL_NAMES.get(syscall_num, f'syscall_{syscall_num}')
-                                    syscall_counts[syscall_name] = syscall_counts.get(syscall_name, 0) + 1
-                                except ValueError:
-                                    continue
-            except (PermissionError, FileNotFoundError, IOError):
-                # Process may have terminated or we don't have permission
+                if not os.path.exists(syscall_path):
+                    continue
+                with open(syscall_path, 'r', encoding='utf-8', errors='replace') as f:
+                    line = f.read().strip()
+                if not line or line in ('-1', 'running'):
+                    continue
+                parts = line.split()
+                if not parts:
+                    continue
+                try:
+                    syscall_num = int(parts[0])
+                except ValueError:
+                    continue
+                syscall_name = SYSCALL_NAMES.get(syscall_num, f'syscall_{syscall_num}')
+                syscall_counts[syscall_name] = syscall_counts.get(syscall_name, 0) + 1
+            except (PermissionError, FileNotFoundError, IOError, ValueError):
                 continue
-        
-        # Also get CPU statistics from /proc/stat which includes context switches
-        try:
-            with open('/proc/stat', 'r') as f:
-                stat_lines = f.readlines()
-                for line in stat_lines:
-                    if line.startswith('ctxt '):
-                        # Context switches indicate syscall activity
-                        ctxt_switches = int(line.split()[1])
-                        # Use this to scale our counts
-                        break
-        except (IOError, ValueError, IndexError):
-            ctxt_switches = 0
-        
-        # Convert counts to list format expected by frontend
-        syscalls = []
+
         if syscall_counts:
-            # Sort by count and take top 10
-            sorted_syscalls = sorted(syscall_counts.items(), key=lambda x: x[1], reverse=True)[:10]
-            
-            for name, count in sorted_syscalls:
-                # Format: "count total" where total is a larger number
-                # This matches the frontend expectation
-                total = count * 1000 + random.randint(100, 999)  # Add some variation
-                formatted_count = f"{count:03d} {total:06d}"
-                syscalls.append({'name': name, 'count': formatted_count})
-        else:
-            # Fallback: use /proc/stat to infer activity
-            try:
-                with open('/proc/stat', 'r') as f:
-                    cpu_line = f.readline()
-                    if cpu_line.startswith('cpu '):
-                        # CPU stats include user and system time
-                        parts = cpu_line.split()
-                        if len(parts) >= 4:
-                            user_time = int(parts[1])
-                            system_time = int(parts[3])
-                            # Estimate syscall activity from system time
-                            activity_level = system_time % 1000
-                            
-                            # Common syscalls that are likely active
-                            common_syscalls = ['read', 'write', 'open', 'close', 'mmap', 
-                                              'fork', 'execve', 'socket', 'connect', 'accept']
-                            
-                            for i, name in enumerate(common_syscalls[:10]):
-                                # Use activity level to create realistic counts
-                                count = (activity_level + i * 10) % 999 + 1
-                                total = count * 1000 + random.randint(100, 999)
-                                formatted_count = f"{count:03d} {total:06d}"
-                                syscalls.append({'name': name, 'count': formatted_count})
-            except (IOError, ValueError, IndexError):
-                pass
-        
-        # If we still don't have data, use mock
-        if not syscalls:
-            return get_mock_system_calls()
-        
-        return syscalls
-        
+            syscalls = []
+            for name, count in sorted(syscall_counts.items(), key=lambda x: x[1], reverse=True)[:20]:
+                syscalls.append({
+                    'name': name,
+                    'count': count,
+                    'subsystem': map_syscall_to_subsystem(name),
+                })
+            return syscalls
+
+        merged = []
+        merged.extend(_kernel_dna_vmstat_activity_nucleotides())
+        merged.extend(_kernel_dna_block_device_activity_nucleotides())
+        merged.extend(_kernel_dna_sockstat_activity_nucleotides())
+        if merged:
+            merged.sort(key=lambda x: x['count'], reverse=True)
+            return merged[:20]
+        return []
+
     except Exception as e:
         print(f"Error getting system calls: {e}")
         import traceback
         traceback.print_exc()
-        return get_mock_system_calls()
+        return [] if platform.system() == 'Linux' else get_mock_system_calls()
 
 def get_mock_system_calls():
     """Mock data for system calls"""
@@ -749,6 +820,22 @@ def linux_processes_subsystem_page():
 def processes_page_legacy():
     """Legacy path redirect to Linux processes subsystem page."""
     return redirect('/linux-processes-subsystem', code=301)
+
+
+@app.route('/linux-crypto-subsystem.html')
+def linux_crypto_subsystem_html():
+    return redirect('/linux-crypto-subsystem', code=301)
+
+
+@app.route('/linux-security-subsystem.html')
+def linux_security_subsystem_html():
+    return redirect('/linux-security-subsystem', code=301)
+
+
+@app.route('/linux-processes-subsystem.html')
+def linux_processes_subsystem_html():
+    return redirect('/linux-processes-subsystem', code=301)
+
 
 @app.route('/linux-memory-subsystem')
 def linux_memory_subsystem_page():
@@ -2684,14 +2771,11 @@ def get_proc_timeline():
         
         # Get process info
         proc_info = proc.as_dict(['pid', 'name', 'create_time', 'status'])
-        
-        # Event: exec (process creation)
-        timeline.append({
-            'type': 'exec',
-            'timestamp': datetime.fromtimestamp(proc_info['create_time']).isoformat(),
-            'pid': pid
-        })
-        
+        base_ts = float(proc_info['create_time'])
+        # Ordered real-derived events; timestamps are monotonic from process start (precise times not in /proc).
+        ordered_events = []
+        ordered_events.append({'type': 'exec', 'pid': pid})
+
         # Event: mmap (from /proc/[pid]/maps)
         try:
             maps_path = f'/proc/{pid}/maps'
@@ -2699,15 +2783,14 @@ def get_proc_timeline():
                 with open(maps_path, 'r') as f:
                     map_count = len(f.readlines())
                     if map_count > 0:
-                        timeline.append({
+                        ordered_events.append({
                             'type': 'mmap',
-                            'timestamp': datetime.now().isoformat(),
                             'pid': pid,
                             'count': map_count
                         })
         except (IOError, PermissionError):
             pass
-        
+
         # Event: read/write (from /proc/[pid]/io)
         try:
             io_path = f'/proc/{pid}/io'
@@ -2718,61 +2801,54 @@ def get_proc_timeline():
                         if ':' in line:
                             key, value = line.split(':', 1)
                             io_data[key.strip()] = int(value.strip())
-                    
+
                     if io_data.get('read_bytes', 0) > 0:
-                        timeline.append({
+                        ordered_events.append({
                             'type': 'read',
-                            'timestamp': datetime.now().isoformat(),
                             'pid': pid,
                             'bytes': io_data.get('read_bytes', 0)
                         })
-                    
+
                     if io_data.get('write_bytes', 0) > 0:
-                        timeline.append({
+                        ordered_events.append({
                             'type': 'write',
-                            'timestamp': datetime.now().isoformat(),
                             'pid': pid,
                             'bytes': io_data.get('write_bytes', 0)
                         })
         except (IOError, PermissionError):
             pass
-        
+
         # Event: connect/accept (from /proc/[pid]/net/tcp)
         try:
             tcp_path = f'/proc/{pid}/net/tcp'
             if os.path.exists(tcp_path):
                 with open(tcp_path, 'r') as f:
                     lines = f.readlines()
-                    if len(lines) > 1:  # Has connections (excluding header)
-                        # Check connection states
-                        for line in lines[1:]:  # Skip header
+                    if len(lines) > 1:
+                        for line in lines[1:]:
                             parts = line.split()
                             if len(parts) >= 4:
                                 state = parts[3]
-                                # State 01 = ESTABLISHED (connect), 0A = LISTEN (accept)
                                 if state == '01':
-                                    timeline.append({
-                                        'type': 'connect',
-                                        'timestamp': datetime.now().isoformat(),
-                                        'pid': pid
-                                    })
+                                    ordered_events.append({'type': 'connect', 'pid': pid})
                                 elif state == '0A':
-                                    timeline.append({
-                                        'type': 'accept',
-                                        'timestamp': datetime.now().isoformat(),
-                                        'pid': pid
-                                    })
+                                    ordered_events.append({'type': 'accept', 'pid': pid})
         except (IOError, PermissionError):
             pass
-        
-        # Sort timeline by timestamp
-        timeline.sort(key=lambda x: x['timestamp'])
+
+        step = 0.35
+        timeline = []
+        for i, ev in enumerate(ordered_events):
+            ev = dict(ev)
+            ev['timestamp'] = datetime.fromtimestamp(base_ts + i * step).isoformat()
+            timeline.append(ev)
         
         return jsonify({
             'timeline': timeline,
             'pid': pid,
             'name': proc_info.get('name', 'unknown'),
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now().isoformat(),
+            'timeline_time_basis': 'Events are ordered from process start; 0.35s steps separate rows for the helix (kernel does not expose per-event wall times for these signals).',
         })
         
     except Exception as e:
@@ -3091,8 +3167,8 @@ def get_kernel_dna_data():
                 'type': 'syscall',
                 'code': 'A',
                 'name': syscall['name'],
-                'count': syscall.get('count', '0'),
-                'subsystem': map_syscall_to_subsystem(syscall['name']),
+                'count': syscall.get('count', 0),
+                'subsystem': syscall.get('subsystem') or map_syscall_to_subsystem(syscall['name']),
                 'timestamp': datetime.now().isoformat()
             })
     except Exception as e:
@@ -3119,16 +3195,7 @@ def get_kernel_dna_data():
                         })
     except (IOError, ValueError, PermissionError) as e:
         print(f"Error collecting interrupts: {e}")
-        # Fallback: generate some sample interrupts
-        for irq_name in ['timer', 'keyboard', 'mouse', 'network']:
-            dna_data['nucleotides'].append({
-                'type': 'interrupt',
-                'code': 'T',
-                'name': irq_name,
-                'count': random.randint(100, 1000),
-                'subsystem': map_interrupt_to_subsystem(irq_name),
-                'timestamp': datetime.now().isoformat()
-            })
+        dna_data['nucleotides'].extend(_kernel_dna_softirq_nucleotides())
     
     # 3. Collect context switches (C nucleotides)
     try:
@@ -3227,6 +3294,14 @@ def get_kernel_dna_data():
 
 def map_syscall_to_subsystem(syscall_name):
     """Map syscall name to kernel subsystem"""
+    if not syscall_name:
+        return 'kernel'
+    if syscall_name.startswith('vm:'):
+        return 'mm'
+    if syscall_name.startswith('disk:'):
+        return 'fs'
+    if syscall_name.startswith('net:'):
+        return 'net'
     syscall_lower = syscall_name.lower()
     if any(x in syscall_lower for x in ['read', 'write', 'open', 'close', 'stat', 'fsync']):
         return 'fs'
@@ -4522,10 +4597,39 @@ def _build_memory_visual_rows(meminfo_kb, syscall_nodes, vm, swap):
         ("buffers", "buffers", mi.get("Buffers", 0)),
         ("cached", "page cache", mi.get("Cached", 0)),
         ("anon", "anonymous (heap/stack)", mi.get("AnonPages", 0)),
-        ("slab", "slab / kmalloc", mi.get("Slab", 0)),
-        ("shmem", "shmem / tmpfs", mi.get("Shmem", 0)),
-        ("mapped", "file mappings", mi.get("Mapped", 0)),
     ]
+    # Slab: split reclaimable vs unreclaimable when both exist (Linux 2.6.19+).
+    if mi.get("SReclaimable") is not None and mi.get("SUnreclaim") is not None:
+        row_specs.append(("sreclaim", "slab reclaimable", mi.get("SReclaimable", 0)))
+        row_specs.append(("sunreclaim", "slab unreclaimable", mi.get("SUnreclaim", 0)))
+    else:
+        row_specs.append(("slab", "slab / kmalloc", mi.get("Slab", 0)))
+    row_specs.extend(
+        [
+            ("shmem", "shmem / tmpfs", mi.get("Shmem", 0)),
+            ("mapped", "file mappings", mi.get("Mapped", 0)),
+        ]
+    )
+    dirty_wb = int(mi.get("Dirty", 0) or 0) + int(mi.get("Writeback", 0) or 0) + int(
+        mi.get("WritebackTmp", 0) or 0
+    )
+    if dirty_wb > 0:
+        row_specs.append(("dirty_wb", "dirty + writeback", dirty_wb))
+    ah = int(mi.get("AnonHugePages", 0) or 0)
+    if ah > 0:
+        row_specs.append(("anon_huge", "transparent huge pages (anon)", ah))
+    shm_h = int(mi.get("ShmemHugePages", 0) or 0)
+    if shm_h > 0:
+        row_specs.append(("shmem_huge", "huge pages (shmem)", shm_h))
+    vmu = int(mi.get("VmallocUsed", 0) or 0)
+    if vmu > 0:
+        row_specs.append(("vmalloc", "vmalloc used", vmu))
+    ac = int(mi.get("Active", 0) or 0)
+    iac = int(mi.get("Inactive", 0) or 0)
+    if ac > 0:
+        row_specs.append(("active", "active (LRU)", ac))
+    if iac > 0:
+        row_specs.append(("inactive", "inactive (LRU)", iac))
     swap_tot = int(mi.get("SwapTotal", 0) or 0)
     swap_free = int(mi.get("SwapFree", 0) or 0)
     swap_used = max(0, swap_tot - swap_free)
@@ -4598,6 +4702,11 @@ def _build_memory_visual_rows(meminfo_kb, syscall_nodes, vm, swap):
                 }
             )
 
+    dirty_kb = int(mi.get("Dirty", 0) or 0)
+    wb_kb = int(mi.get("Writeback", 0) or 0)
+    sr_kb = int(mi.get("SReclaimable", 0) or 0)
+    su_kb = int(mi.get("SUnreclaim", 0) or 0)
+    slab_total_kb = int(mi.get("Slab", 0) or 0) or (sr_kb + su_kb)
     summary = {
         "total_mb": round(mt / 1024.0, 1),
         "used_percent": round(vm.percent, 1) if vm else 0.0,
@@ -4606,9 +4715,19 @@ def _build_memory_visual_rows(meminfo_kb, syscall_nodes, vm, swap):
         "buffers_mb": round((mi.get("Buffers", 0) or 0) / 1024.0, 1),
         "cached_mb": round((mi.get("Cached", 0) or 0) / 1024.0, 1),
         "anon_mb": round((mi.get("AnonPages", 0) or 0) / 1024.0, 1),
-        "slab_mb": round((mi.get("Slab", 0) or 0) / 1024.0, 1),
+        "slab_mb": round(slab_total_kb / 1024.0, 1),
+        "sreclaimable_mb": round(sr_kb / 1024.0, 1),
+        "sunreclaim_mb": round(su_kb / 1024.0, 1),
+        "dirty_mb": round(dirty_kb / 1024.0, 2),
+        "writeback_mb": round(wb_kb / 1024.0, 2),
+        "dirty_writeback_mb": round(dirty_wb / 1024.0, 2),
+        "anon_huge_mb": round(ah / 1024.0, 2),
+        "shmem_huge_mb": round(shm_h / 1024.0, 2),
+        "vmalloc_mb": round(vmu / 1024.0, 2),
+        "active_mb": round(ac / 1024.0, 1),
+        "inactive_mb": round(iac / 1024.0, 1),
         "swap_used_mb": round(swap_used / 1024.0, 1) if swap_tot else 0.0,
-        "source": "proc_meminfo+psutil",
+        "source": "proc_meminfo+psutil+v2",
     }
     return rows, summary
 

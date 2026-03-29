@@ -1,5 +1,5 @@
 // Linux memory subsystem — strip map (same API payload as processes-realtime memory_visual)
-// Version: 1
+// Version: 2 — deeper meminfo: slab split, dirty/writeback, THP, vmalloc, LRU
 
 debugLog('💾 memory-belt.js v1: Script loading...');
 
@@ -145,9 +145,29 @@ class MemorySubsystemVisualization {
         this.ctx.fillText(`avail ${Number(sum.available_mb || 0).toFixed(0)} MiB`, x + 238, y + 46);
         this.ctx.fillText(`swap ${Number(sum.swap_percent || 0).toFixed(1)}%`, x + 388, y + 46);
         this.ctx.fillText(`buf ${Number(sum.buffers_mb ?? 0).toFixed(0)} · cache ${Number(sum.cached_mb ?? 0).toFixed(0)} · anon ${Number(sum.anon_mb ?? 0).toFixed(0)} MiB`, x + 16, y + 64);
+        const sr = Number(sum.sreclaimable_mb ?? 0);
+        const su = Number(sum.sunreclaim_mb ?? 0);
+        const slabLine = sr > 0 || su > 0
+            ? `slab ${Number(sum.slab_mb ?? 0).toFixed(0)} MiB (recl ${sr.toFixed(0)} · unrecl ${su.toFixed(0)})`
+            : `slab ${Number(sum.slab_mb ?? 0).toFixed(0)} MiB`;
+        this.ctx.fillText(slabLine, x + 16, y + 80);
+        const dw = Number(sum.dirty_writeback_mb ?? 0);
+        const dirty = Number(sum.dirty_mb ?? 0);
+        const wb = Number(sum.writeback_mb ?? 0);
+        const line3 = [
+            dw > 0 ? `dirty+wb ${dw.toFixed(2)} MiB (d ${dirty.toFixed(2)} · wb ${wb.toFixed(2)})` : null,
+            Number(sum.anon_huge_mb ?? 0) > 0 ? `THP anon ${Number(sum.anon_huge_mb).toFixed(2)} MiB` : null,
+            Number(sum.shmem_huge_mb ?? 0) > 0 ? `huge shmem ${Number(sum.shmem_huge_mb).toFixed(2)} MiB` : null,
+            Number(sum.vmalloc_mb ?? 0) > 0 ? `vmalloc ${Number(sum.vmalloc_mb).toFixed(1)} MiB` : null,
+            Number(sum.active_mb ?? 0) > 0 ? `LRU act ${Number(sum.active_mb).toFixed(0)}` : null,
+            Number(sum.inactive_mb ?? 0) > 0 ? `inact ${Number(sum.inactive_mb).toFixed(0)} MiB` : null,
+        ].filter(Boolean).join('  ·  ');
+        if (line3) {
+            this.ctx.fillText(line3.slice(0, 118), x + 16, y + 96);
+        }
         this.ctx.fillStyle = 'rgba(0, 229, 255, 0.55)';
         this.ctx.font = '9px "Share Tech Mono", monospace';
-        this.ctx.fillText('strips ≈ meminfo buckets; task row = RSS share of sampled PIDs; not a physical PFN map', x + 16, y + 80);
+        this.ctx.fillText('strips ≈ meminfo buckets; task row = RSS share of sampled PIDs; not a physical PFN map', x + 16, y + 112);
     }
 
     tronHeatColor(t) {
@@ -166,7 +186,19 @@ class MemorySubsystemVisualization {
         if (k === 'cached' || k === 'buffers' || k === 'mapped') {
             return `rgba(${Math.floor(0 + 30 * u)}, ${Math.floor(165 + 90 * u)}, ${Math.floor(220)}, ${0.14 + u * 0.38})`;
         }
-        if (k === 'slab' || k === 'kmeta') {
+        if (k === 'dirty_wb') {
+            return `rgba(${Math.floor(255 * u)}, ${Math.floor(120 + 80 * u)}, ${Math.floor(40 + 40 * u)}, ${0.22 + u * 0.42})`;
+        }
+        if (k === 'anon_huge' || k === 'shmem_huge') {
+            return `rgba(${Math.floor(60 + 100 * u)}, ${Math.floor(220)}, ${Math.floor(140 + 60 * u)}, ${0.18 + u * 0.4})`;
+        }
+        if (k === 'vmalloc') {
+            return `rgba(${Math.floor(180 + 50 * u)}, ${Math.floor(80 + 100 * u)}, ${Math.floor(255)}, ${0.2 + u * 0.38})`;
+        }
+        if (k === 'active' || k === 'inactive') {
+            return `rgba(${Math.floor(40 + 80 * u)}, ${Math.floor(200 + 40 * u)}, ${Math.floor(255)}, ${0.15 + u * 0.35})`;
+        }
+        if (k === 'slab' || k === 'sreclaim' || k === 'sunreclaim' || k === 'kmeta') {
             return `rgba(${Math.floor(80 + 60 * u)}, ${Math.floor(100 + 80 * u)}, ${Math.floor(240)}, ${0.16 + u * 0.42})`;
         }
         if (k === 'swap') {
@@ -211,7 +243,7 @@ class MemorySubsystemVisualization {
         const side = 42;
         const bottomH = 42;
         const pad = 6;
-        const labelCol = 108;
+        const labelCol = 132;
         const innerX = Math.floor(x + pad + side);
         const innerY = Math.floor(y + titleH + pad);
         const innerW = Math.floor(w - pad * 2 - side * 2);
@@ -270,7 +302,7 @@ class MemorySubsystemVisualization {
             this.ctx.fillStyle = 'rgba(0, 229, 255, 0.42)';
             this.ctx.font = '8px "Share Tech Mono", monospace';
             const pct = row.pct_of_ram != null ? `${Number(row.pct_of_ram).toFixed(1)}%` : '';
-            this.ctx.fillText(String(row.label || row.id || '').slice(0, 22), innerX + 4, ry + rowAreaH * 0.62);
+            this.ctx.fillText(String(row.label || row.id || '').slice(0, 28), innerX + 4, ry + rowAreaH * 0.62);
             this.ctx.fillStyle = 'rgba(0, 180, 200, 0.55)';
             this.ctx.font = '7px "Share Tech Mono", monospace';
             this.ctx.fillText(`${pct} · ${Number(row.kb || 0).toFixed(0)}k`, innerX + 4, ry + rowAreaH * 0.95);
@@ -359,7 +391,7 @@ class MemorySubsystemVisualization {
 
         const gap = 16;
         const top = 58;
-        const statsH = 98;
+        const statsH = 128;
         const graphY = top + statsH + gap;
         const graphH = Math.max(260, h - graphY - 36);
 
