@@ -666,6 +666,23 @@ def get_proc_matrix_data():
 
 # API Endpoints
 
+
+def api_json(producer, error_status=500, error_extra=None, exception_statuses=None):
+    """Execute producer and serialize response/error as JSON."""
+    try:
+        return jsonify(producer())
+    except Exception as e:
+        status = error_status
+        if exception_statuses:
+            for exc_type, exc_status in exception_statuses:
+                if isinstance(e, exc_type):
+                    status = exc_status
+                    break
+        payload = {"error": str(e)}
+        if error_extra:
+            payload.update(error_extra)
+        return jsonify(payload), status
+
 def index():
     """Main page"""
     return send_from_directory(str(PROJECT_ROOT), "index.html")
@@ -717,22 +734,20 @@ def linux_memory_subsystem_html():
 
 def syscalls_realtime():
     """API for real-time system calls"""
-    try:
-        data = {
+    return api_json(
+        lambda: {
             'timestamp': datetime.now().isoformat(),
             'syscalls': get_real_system_calls(),
             'cpu_usage': psutil.cpu_percent(interval=1),
             'memory_usage': psutil.virtual_memory().percent,
             'system_info': get_system_info()
         }
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    )
 
 def kernel_data():
     """API for kernel data"""
-    try:
-        data = {
+    return api_json(
+        lambda: {
             'timestamp': datetime.now().isoformat(),
             'syscalls': get_real_system_calls(),
             'subsystems': get_kernel_subsystem_status(),
@@ -743,21 +758,15 @@ def kernel_data():
                 'disk_usage': psutil.disk_usage('/').percent
             }
         }
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    )
 
 def process_kernel_map():
     """API for process to kernel subsystem mapping"""
-    try:
-        data = get_process_kernel_map()
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    return api_json(get_process_kernel_map)
 
 def get_processes():
     """API for getting all Linux processes"""
-    try:
+    def _payload():
         processes = []
         for proc in psutil.process_iter(['pid', 'name', 'status', 'memory_info']):
             try:
@@ -771,10 +780,9 @@ def get_processes():
                 })
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
-        
-        return jsonify({'processes': processes})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return {'processes': processes}
+
+    return api_json(_payload)
 
 def health_check():
     """Application health check"""
@@ -843,11 +851,7 @@ def get_mock_nginx_files():
 
 def nginx_files():
     """API for nginx open files"""
-    try:
-        files = get_nginx_open_files()
-        return jsonify({"files": files})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return api_json(lambda: {"files": get_nginx_open_files()})
 def get_active_connections():
     """Get active network connections."""
     return _network_service.get_active_connections()
@@ -1210,84 +1214,49 @@ def get_traceroute_info(remote_ip, max_hops=8):
 
 def active_connections():
     """API for active network connections"""
-    try:
-        connections = get_active_connections()
-        return jsonify({"connections": connections})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return api_json(lambda: {"connections": get_active_connections()})
 
 def traceroute_info():
     """API endpoint for traceroute path to remote IP."""
-    try:
+    def _payload():
         remote_ip = request.args.get("ip", "").strip()
         if not remote_ip:
-            return jsonify({"error": "Missing 'ip' query parameter"}), 400
+            raise ValueError("Missing 'ip' query parameter")
+        return get_traceroute_info(remote_ip)
 
-        data = get_traceroute_info(remote_ip)
-        return jsonify(data)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return api_json(_payload, exception_statuses=[(ValueError, 400)])
 
 def network_stack_realtime():
     """Live telemetry for Network Stack visualization."""
-    try:
-        return jsonify(get_network_stack_realtime())
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return api_json(get_network_stack_realtime)
 
 def devices_realtime():
     """Live telemetry for Devices belt visualization."""
-    try:
-        return jsonify(get_devices_realtime())
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return api_json(get_devices_realtime)
 
 def filesystem_blocks():
     """Live block-map style filesystem telemetry."""
-    try:
-        return jsonify(get_filesystem_blocks())
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return api_json(get_filesystem_blocks)
 
 def isolation_context():
     """API endpoint for cgroups + namespaces design layer."""
-    try:
-        return jsonify(get_isolation_context())
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return api_json(get_isolation_context)
 
 def get_process_threads(pid):
     """API for getting thread information for a specific process"""
-    try:
-        thread_info = get_process_threads_info(pid)
-        return jsonify(thread_info)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return api_json(lambda: get_process_threads_info(pid))
 
 def get_process_cpu(pid):
     """API for getting CPU statistics for a specific process"""
-    try:
-        cpu_info = get_process_cpu_info(pid)
-        return jsonify(cpu_info)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return api_json(lambda: get_process_cpu_info(pid))
 
 def get_process_fds(pid):
     """API for getting file descriptors for a specific process"""
-    try:
-        fds_info = get_process_fds_info(pid)
-        return jsonify(fds_info)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return api_json(lambda: get_process_fds_info(pid))
 
 def get_processes_detailed():
     """API for getting all processes with detailed information (threads, CPU, FDs)"""
-    try:
-        return jsonify({"processes": _processes_service.get_processes_detailed_data()})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    return api_json(lambda: {"processes": _processes_service.get_processes_detailed_data()})
 
 
 def get_ipc_links_summary(max_pairs=120, max_nodes=24):
@@ -1296,14 +1265,14 @@ def get_ipc_links_summary(max_pairs=120, max_nodes=24):
 
 def get_ipc_links():
     """API: shared IPC/socket links across processes."""
-    try:
+    def _payload():
         max_pairs = request.args.get("max_pairs", default=120, type=int)
         max_nodes = request.args.get("max_nodes", default=24, type=int)
         max_pairs = max(20, min(300, max_pairs))
         max_nodes = max(8, min(64, max_nodes))
-        return jsonify(get_ipc_links_summary(max_pairs=max_pairs, max_nodes=max_nodes))
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return get_ipc_links_summary(max_pairs=max_pairs, max_nodes=max_nodes)
+
+    return api_json(_payload)
 
 def get_process_threads_info(pid):
     """Get thread information for a specific process."""
@@ -1320,14 +1289,14 @@ def get_process_fds_info(pid):
 
 def get_proc_matrix():
     """API: Matrix view data (processes vs CPU / MEM / IO / NET / FD)"""
-    try:
+    def _payload():
         matrix = get_proc_matrix_data()
-        return jsonify({
+        return {
             'matrix': matrix,
             'timestamp': datetime.now().isoformat(),
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        }
+
+    return api_json(_payload)
 
 def get_proc_timeline():
     """API: Timeline view data - events for a specific process"""
@@ -1432,16 +1401,15 @@ def get_proc_timeline():
 
 def get_execution_context():
     """Get execution context data for Ring-1 visualization."""
-    try:
-        return jsonify(
+    return api_json(
+        lambda: (
             _execution_service.get_execution_context_data(
                 syscall_names=SYSCALL_NAMES,
                 map_interrupt_to_subsystem_fn=map_interrupt_to_subsystem,
                 exec_context_prev=EXEC_CONTEXT_PREV,
             )
         )
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    )
 
 def get_kernel_dna_data():
     return _execution_service.get_kernel_dna_data(
@@ -1508,32 +1476,19 @@ def collect_processes_realtime():
 
 def kernel_dna():
     """API endpoint for Kernel DNA visualization data"""
-    try:
-        data = get_kernel_dna_data()
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    return api_json(get_kernel_dna_data)
 
 def crypto_realtime():
     """Realtime-ish crypto interaction feed for crypto visualization."""
-    try:
-        return jsonify(collect_crypto_realtime())
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    return api_json(collect_crypto_realtime)
 
 def security_realtime():
     """Realtime-ish security interaction feed for security visualization."""
-    try:
-        return jsonify(collect_security_realtime())
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    return api_json(collect_security_realtime)
 
 def processes_realtime():
     """Realtime-ish processes interaction feed for processes visualization."""
-    try:
-        return jsonify(collect_processes_realtime())
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    return api_json(collect_processes_realtime)
 
 def ingest_frontend_logs():
     """Receive frontend logs in ECS-like JSON and append to local JSONL file."""
@@ -1562,18 +1517,12 @@ def ingest_frontend_logs():
 
 def get_proc_graph():
     """3D /proc graph for ``proc-3d-visualization.js``: nodes with x,y,z and edges {from,to}."""
-    try:
-        return jsonify(_processes_service.get_proc_graph_data())
-    except Exception as e:
-        return jsonify({"error": str(e), "nodes": [], "edges": []}), 500
+    return api_json(_processes_service.get_proc_graph_data, error_extra={"nodes": [], "edges": []})
 
 
 def get_process_files():
     """Bezier process↔file curves for ``bezier_curves.js`` (optional real data; empty → decorative fallback)."""
-    try:
-        return jsonify({"curves": [], "timestamp": datetime.now().isoformat()})
-    except Exception as e:
-        return jsonify({"error": str(e), "curves": []}), 500
+    return api_json(lambda: {"curves": [], "timestamp": datetime.now().isoformat()}, error_extra={"curves": []})
 
 
 register_http_routes(app)
