@@ -130,3 +130,13 @@ def processes_realtime():
 @bp.route("/frontend-logs", methods=["POST", "OPTIONS"])
 def ingest_frontend_logs():
     return _core().ingest_frontend_logs()
+
+
+@bp.route("/proc-graph")
+def proc_graph():
+    return _core().get_proc_graph()
+
+
+@bp.route("/process-files")
+def process_files():
+    return _core().get_process_files()
