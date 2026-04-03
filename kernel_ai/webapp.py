@@ -25,6 +25,7 @@ from kernel_ai.services import crypto_security as _crypto_security_service
 from kernel_ai.services import core_observability as _core_observability_service
 from kernel_ai.services import devices as _devices_service
 from kernel_ai.services import process_inspect as _process_inspect_service
+from kernel_ai.services import process_timeline as _process_timeline_service
 from kernel_ai.services import processes as _processes_service
 from kernel_ai.services import syscalls as _syscalls_service
 from kernel_ai.services import system_view as _system_view_service
@@ -583,104 +584,14 @@ def get_proc_matrix():
 
 def get_proc_timeline():
     """API: Timeline view data - events for a specific process"""
-    try:
-        from flask import request
-        pid = request.args.get('pid', type=int)
-        if not pid:
-            return jsonify({'error': 'PID parameter required'}), 400
-        
-        timeline = []
-        
-        # Check if process exists
-        try:
-            proc = psutil.Process(pid)
-        except psutil.NoSuchProcess:
-            return jsonify({'error': f'Process {pid} not found'}), 404
-        
-        # Get process info
-        proc_info = proc.as_dict(['pid', 'name', 'create_time', 'status'])
-        base_ts = float(proc_info['create_time'])
-        # Ordered real-derived events; timestamps are monotonic from process start (precise times not in /proc).
-        ordered_events = []
-        ordered_events.append({'type': 'exec', 'pid': pid})
+    def _payload():
+        pid = request.args.get("pid", type=int)
+        return _process_timeline_service.get_proc_timeline_data(pid)
 
-        # Event: mmap (from /proc/[pid]/maps)
-        try:
-            maps_path = f'/proc/{pid}/maps'
-            if os.path.exists(maps_path):
-                with open(maps_path, 'r') as f:
-                    map_count = len(f.readlines())
-                    if map_count > 0:
-                        ordered_events.append({
-                            'type': 'mmap',
-                            'pid': pid,
-                            'count': map_count
-                        })
-        except (IOError, PermissionError):
-            pass
-
-        # Event: read/write (from /proc/[pid]/io)
-        try:
-            io_path = f'/proc/{pid}/io'
-            if os.path.exists(io_path):
-                with open(io_path, 'r') as f:
-                    io_data = {}
-                    for line in f:
-                        if ':' in line:
-                            key, value = line.split(':', 1)
-                            io_data[key.strip()] = int(value.strip())
-
-                    if io_data.get('read_bytes', 0) > 0:
-                        ordered_events.append({
-                            'type': 'read',
-                            'pid': pid,
-                            'bytes': io_data.get('read_bytes', 0)
-                        })
-
-                    if io_data.get('write_bytes', 0) > 0:
-                        ordered_events.append({
-                            'type': 'write',
-                            'pid': pid,
-                            'bytes': io_data.get('write_bytes', 0)
-                        })
-        except (IOError, PermissionError):
-            pass
-
-        # Event: connect/accept (from /proc/[pid]/net/tcp)
-        try:
-            tcp_path = f'/proc/{pid}/net/tcp'
-            if os.path.exists(tcp_path):
-                with open(tcp_path, 'r') as f:
-                    lines = f.readlines()
-                    if len(lines) > 1:
-                        for line in lines[1:]:
-                            parts = line.split()
-                            if len(parts) >= 4:
-                                state = parts[3]
-                                if state == '01':
-                                    ordered_events.append({'type': 'connect', 'pid': pid})
-                                elif state == '0A':
-                                    ordered_events.append({'type': 'accept', 'pid': pid})
-        except (IOError, PermissionError):
-            pass
-
-        step = 0.35
-        timeline = []
-        for i, ev in enumerate(ordered_events):
-            ev = dict(ev)
-            ev['timestamp'] = datetime.fromtimestamp(base_ts + i * step).isoformat()
-            timeline.append(ev)
-        
-        return jsonify({
-            'timeline': timeline,
-            'pid': pid,
-            'name': proc_info.get('name', 'unknown'),
-            'timestamp': datetime.now().isoformat(),
-            'timeline_time_basis': 'Events are ordered from process start; 0.35s steps separate rows for the helix (kernel does not expose per-event wall times for these signals).',
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    return api_json(
+        _payload,
+        exception_statuses=[(ValueError, 400), (ProcessLookupError, 404)],
+    )
 
 def get_execution_context():
     """Get execution context data for Ring-1 visualization."""
