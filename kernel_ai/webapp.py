@@ -8,9 +8,7 @@ import os
 import json
 import time
 import random
-import platform
 import subprocess
-import re
 import shutil
 from datetime import datetime
 from flask import Flask, jsonify, render_template, send_from_directory, request, redirect
@@ -25,8 +23,11 @@ from kernel_ai.services import execution as _execution_service
 from kernel_ai.services import network as _network_service
 from kernel_ai.services import crypto_security as _crypto_security_service
 from kernel_ai.services import core_observability as _core_observability_service
+from kernel_ai.services import devices as _devices_service
 from kernel_ai.services import process_inspect as _process_inspect_service
+from kernel_ai.services import process_timeline as _process_timeline_service
 from kernel_ai.services import processes as _processes_service
+from kernel_ai.services import syscalls as _syscalls_service
 from kernel_ai.services import system_view as _system_view_service
 from kernel_ai.state import (
     CRYPTO_PREV,
@@ -225,90 +226,6 @@ SYSCALL_NAMES = {
 KERNEL_DNA_MAX_PROCS = int(os.environ.get('KERNEL_DNA_MAX_PROCS', '1200'))
 
 
-def _kernel_dna_read_proc_vmstat():
-    """Parse /proc/vmstat into a dict of int counters."""
-    vm = {}
-    try:
-        with open('/proc/vmstat', 'r', encoding='utf-8', errors='replace') as f:
-            for line in f:
-                parts = line.split()
-                if len(parts) >= 2:
-                    vm[parts[0]] = int(parts[1])
-    except (OSError, ValueError):
-        pass
-    return vm
-
-
-def _kernel_dna_vmstat_activity_nucleotides():
-    """Real VM counters when no per-task syscall sample is available."""
-    result = []
-    vm = _kernel_dna_read_proc_vmstat()
-    mapping = [
-        ('pgfault', 'mm'),
-        ('pgmajfault', 'mm'),
-        ('pswpin', 'mm'),
-        ('pswpout', 'mm'),
-        ('oom_kill', 'mm'),
-        ('nr_dirty', 'mm'),
-        ('nr_written', 'mm'),
-        ('pgscan_kswapd', 'mm'),
-        ('pgscan_direct', 'mm'),
-        ('workingset_refault', 'mm'),
-    ]
-    for key, sub in mapping:
-        if key in vm and vm[key] > 0:
-            result.append({'name': f'vm:{key}', 'count': vm[key], 'subsystem': sub})
-    return result
-
-
-def _kernel_dna_block_device_activity_nucleotides():
-    """Cumulative I/O from /sys/block/<dev>/stat."""
-    result = []
-    tr = tw = tsr = tsw = 0
-    try:
-        for name in os.listdir('/sys/block'):
-            if name.startswith(('loop', 'ram')):
-                continue
-            stat_path = os.path.join('/sys/block', name, 'stat')
-            if not os.path.isfile(stat_path):
-                continue
-            with open(stat_path, 'r', encoding='utf-8', errors='replace') as f:
-                st = f.read().split()
-            if len(st) < 7:
-                continue
-            tr += int(st[0])
-            tsr += int(st[2])
-            tw += int(st[4])
-            tsw += int(st[6])
-    except (OSError, ValueError, IndexError):
-        pass
-    if tr > 0:
-        result.append({'name': 'disk:read_ios', 'count': tr, 'subsystem': 'fs'})
-    if tw > 0:
-        result.append({'name': 'disk:write_ios', 'count': tw, 'subsystem': 'fs'})
-    if tsr > 0:
-        result.append({'name': 'disk:sectors_read', 'count': tsr, 'subsystem': 'fs'})
-    if tsw > 0:
-        result.append({'name': 'disk:sectors_written', 'count': tsw, 'subsystem': 'fs'})
-    return result
-
-
-def _kernel_dna_sockstat_activity_nucleotides():
-    """Socket counts from /proc/net/sockstat."""
-    result = []
-    try:
-        with open('/proc/net/sockstat', 'r', encoding='utf-8', errors='replace') as f:
-            for line in f:
-                parts = line.split()
-                if line.startswith('TCP:') and len(parts) >= 3:
-                    result.append({'name': 'net:tcp_inuse', 'count': int(parts[2]), 'subsystem': 'net'})
-                elif line.startswith('UDP:') and len(parts) >= 3:
-                    result.append({'name': 'net:udp_inuse', 'count': int(parts[2]), 'subsystem': 'net'})
-    except (OSError, ValueError, IndexError):
-        pass
-    return result
-
-
 def _kernel_dna_softirq_nucleotides(limit=8):
     """Per-vector softirq totals from /proc/softirqs."""
     out = []
@@ -338,64 +255,13 @@ def _kernel_dna_softirq_nucleotides(limit=8):
 
 
 def get_real_system_calls():
-    """Blocked-in-syscall sample from /proc/[pid]/syscall; else real vmstat + block + sockstat (no random on Linux)."""
-    try:
-        if platform.system() != 'Linux':
-            return get_mock_system_calls()
-
-        try:
-            proc_dirs = [d for d in os.listdir('/proc') if d.isdigit()]
-        except PermissionError:
-            proc_dirs = []
-
-        sampled = sorted(proc_dirs, key=int)[: min(KERNEL_DNA_MAX_PROCS, len(proc_dirs))]
-
-        syscall_counts = {}
-        for pid in sampled:
-            try:
-                syscall_path = f'/proc/{pid}/syscall'
-                if not os.path.exists(syscall_path):
-                    continue
-                with open(syscall_path, 'r', encoding='utf-8', errors='replace') as f:
-                    line = f.read().strip()
-                if not line or line in ('-1', 'running'):
-                    continue
-                parts = line.split()
-                if not parts:
-                    continue
-                try:
-                    syscall_num = int(parts[0])
-                except ValueError:
-                    continue
-                syscall_name = SYSCALL_NAMES.get(syscall_num, f'syscall_{syscall_num}')
-                syscall_counts[syscall_name] = syscall_counts.get(syscall_name, 0) + 1
-            except (PermissionError, FileNotFoundError, IOError, ValueError):
-                continue
-
-        if syscall_counts:
-            syscalls = []
-            for name, count in sorted(syscall_counts.items(), key=lambda x: x[1], reverse=True)[:20]:
-                syscalls.append({
-                    'name': name,
-                    'count': count,
-                    'subsystem': map_syscall_to_subsystem(name),
-                })
-            return syscalls
-
-        merged = []
-        merged.extend(_kernel_dna_vmstat_activity_nucleotides())
-        merged.extend(_kernel_dna_block_device_activity_nucleotides())
-        merged.extend(_kernel_dna_sockstat_activity_nucleotides())
-        if merged:
-            merged.sort(key=lambda x: x['count'], reverse=True)
-            return merged[:20]
-        return []
-
-    except Exception as e:
-        print(f"Error getting system calls: {e}")
-        import traceback
-        traceback.print_exc()
-        return [] if platform.system() == 'Linux' else get_mock_system_calls()
+    """Blocked-in-syscall sample from /proc/[pid]/syscall; else vm/block/net counters."""
+    return _syscalls_service.get_real_system_calls(
+        syscall_names=SYSCALL_NAMES,
+        map_syscall_to_subsystem_fn=map_syscall_to_subsystem,
+        kernel_dna_max_procs=KERNEL_DNA_MAX_PROCS,
+        fallback_mock_calls_fn=get_mock_system_calls,
+    )
 
 def get_mock_system_calls():
     """Mock data for system calls."""
@@ -595,314 +461,13 @@ def _get_ss_tcp_metrics():
     """Extract cwnd/rtt/retrans and tx queue from ss -tin (best effort)."""
     return _network_service._get_ss_tcp_metrics()
 
-def _read_major_minor_from_devfile(devfile_path):
-    value = _proc_fs.safe_read_text(devfile_path)
-    if not value or ":" not in value:
-        return (None, None)
-    major_s, minor_s = value.split(":", 1)
-    try:
-        return (int(major_s), int(minor_s))
-    except ValueError:
-        return (None, None)
-
-def _driver_from_symlink(base_path):
-    link_path = os.path.join(base_path, "device", "driver")
-    try:
-        if os.path.islink(link_path):
-            return os.path.basename(os.path.realpath(link_path))
-    except OSError:
-        pass
-    return None
-
-def _detect_bus(sys_path, category):
-    if category == "net":
-        return "net"
-    real = ""
-    try:
-        real = os.path.realpath(sys_path).lower()
-    except OSError:
-        real = str(sys_path).lower()
-    if "/usb" in real:
-        return "usb"
-    if "/pci" in real:
-        return "pcie"
-    if "/virtual" in real:
-        return "virtual"
-    return "pcie"
-
-def _irq_total_for_tokens(interrupt_lines, tokens):
-    if not tokens:
-        return 0
-    token_set = [t.lower() for t in tokens if t]
-    total = 0
-    for line_lower, irq_total in interrupt_lines:
-        if any(tok in line_lower for tok in token_set):
-            total += irq_total
-    return total
-
-def _subsystem_for_category(category):
-    mapping = {
-        "block": "block -> VFS",
-        "net": "network -> net stack",
-        "char": "char -> tty/mem",
-        "misc": "misc -> kernel core",
-        "usb": "usb core -> usbfs",
-        "input": "input -> evdev",
-        "gpu": "drm -> graphics"
-    }
-    return mapping.get(category, "kernel core")
-
-def _user_interaction_for_category(category):
-    mapping = {
-        "block": "open/read/write/ioctl",
-        "net": "socket/send/recv",
-        "char": "read/write/ioctl",
-        "misc": "ioctl/control",
-        "usb": "udev/hotplug/ioctl",
-        "input": "events -> userspace",
-        "gpu": "drm ioctl/mmap"
-    }
-    return mapping.get(category, "syscall/ioctl")
-
-def _collect_block_devices(disk_now, dt):
-    devices = []
-    for name, sectors_total in disk_now.items():
-        prev = DEVICES_PREV["disk_sectors"].get(name)
-        delta_sectors = max(0, sectors_total - prev) if prev is not None else 0
-        bps = (delta_sectors * 512) / dt
-        sys_path = os.path.join("/sys/block", name)
-        major, minor = _read_major_minor_from_devfile(os.path.join(sys_path, "dev"))
-        devices.append({
-            "name": name,
-            "category": "block",
-            "bus": _detect_bus(sys_path, "block"),
-            "sys_path": sys_path,
-            "driver": _driver_from_symlink(sys_path),
-            "major": major,
-            "minor": minor,
-            "throughput_bps": bps,
-            "irq_tokens": [name],
-            "subsystem": _subsystem_for_category("block"),
-            "user_interaction": _user_interaction_for_category("block")
-        })
-    return devices
-
-def _collect_net_devices(dt):
-    devices = []
-    net_now = {}
-    try:
-        pernic = psutil.net_io_counters(pernic=True)
-        for iface, counters in pernic.items():
-            total_bytes = counters.bytes_recv + counters.bytes_sent
-            net_now[iface] = total_bytes
-            prev = DEVICES_PREV["net_bytes"].get(iface)
-            delta = max(0, total_bytes - prev) if prev is not None else 0
-            bps = delta / dt
-            sys_path = os.path.join("/sys/class/net", iface)
-            major, minor = _read_major_minor_from_devfile(os.path.join(sys_path, "dev"))
-            devices.append({
-                "name": iface,
-                "category": "net",
-                "bus": "net",
-                "sys_path": sys_path,
-                "driver": _driver_from_symlink(sys_path),
-                "major": major,
-                "minor": minor,
-                "throughput_bps": bps,
-                "irq_tokens": [iface],
-                "errors": int(counters.errin + counters.errout),
-                "drops": int(counters.dropin + counters.dropout),
-                "subsystem": _subsystem_for_category("net"),
-                "user_interaction": _user_interaction_for_category("net")
-            })
-    except Exception:
-        return [], {}
-    return devices, net_now
-
-def _collect_char_devices():
-    devices = []
-    seeds = [("tty0", "/sys/class/tty/tty0"), ("null", "/sys/devices/virtual/mem/null"), ("random", "/sys/devices/virtual/mem/random")]
-    for name, sys_path in seeds:
-        major, minor = _read_major_minor_from_devfile(os.path.join(sys_path, "dev"))
-        devices.append({
-            "name": name,
-            "category": "char",
-            "bus": _detect_bus(sys_path, "char"),
-            "sys_path": sys_path,
-            "driver": _driver_from_symlink(sys_path),
-            "major": major,
-            "minor": minor,
-            "throughput_bps": 0.0,
-            "irq_tokens": [name, "tty"] if "tty" in name else [name],
-            "subsystem": _subsystem_for_category("char"),
-            "user_interaction": _user_interaction_for_category("char")
-        })
-    return devices
-
-def _collect_misc_input_gpu_usb():
-    out = []
-
-    misc_path = "/sys/class/misc"
-    if os.path.isdir(misc_path):
-        for name in sorted(os.listdir(misc_path))[:4]:
-            sys_path = os.path.join(misc_path, name)
-            major, minor = _read_major_minor_from_devfile(os.path.join(sys_path, "dev"))
-            out.append({
-                "name": name,
-                "category": "misc",
-                "bus": _detect_bus(sys_path, "misc"),
-                "sys_path": sys_path,
-                "driver": _driver_from_symlink(sys_path),
-                "major": major,
-                "minor": minor,
-                "throughput_bps": 0.0,
-                "irq_tokens": [name],
-                "subsystem": _subsystem_for_category("misc"),
-                "user_interaction": _user_interaction_for_category("misc")
-            })
-
-    input_path = "/sys/class/input"
-    if os.path.isdir(input_path):
-        for name in sorted(os.listdir(input_path)):
-            if not name.startswith("event"):
-                continue
-            sys_path = os.path.join(input_path, name)
-            major, minor = _read_major_minor_from_devfile(os.path.join(sys_path, "dev"))
-            out.append({
-                "name": name,
-                "category": "input",
-                "bus": _detect_bus(sys_path, "input"),
-                "sys_path": sys_path,
-                "driver": _driver_from_symlink(sys_path),
-                "major": major,
-                "minor": minor,
-                "throughput_bps": 0.0,
-                "irq_tokens": [name, "input"],
-                "subsystem": _subsystem_for_category("input"),
-                "user_interaction": _user_interaction_for_category("input")
-            })
-            if len([d for d in out if d["category"] == "input"]) >= 4:
-                break
-
-    drm_path = "/sys/class/drm"
-    if os.path.isdir(drm_path):
-        for name in sorted(os.listdir(drm_path)):
-            if not re.match(r"^card\d+$", name):
-                continue
-            sys_path = os.path.join(drm_path, name)
-            major, minor = _read_major_minor_from_devfile(os.path.join(sys_path, "dev"))
-            out.append({
-                "name": name,
-                "category": "gpu",
-                "bus": _detect_bus(sys_path, "gpu"),
-                "sys_path": sys_path,
-                "driver": _driver_from_symlink(sys_path),
-                "major": major,
-                "minor": minor,
-                "throughput_bps": 0.0,
-                "irq_tokens": [name, "drm", "gpu"],
-                "subsystem": _subsystem_for_category("gpu"),
-                "user_interaction": _user_interaction_for_category("gpu")
-            })
-            if len([d for d in out if d["category"] == "gpu"]) >= 2:
-                break
-
-    usb_path = "/sys/bus/usb/devices"
-    if os.path.isdir(usb_path):
-        for name in sorted(os.listdir(usb_path)):
-            if ":" in name or name in ("usb1", "usb2", "usb3", "usb4"):
-                continue
-            sys_path = os.path.join(usb_path, name)
-            if not os.path.isdir(sys_path):
-                continue
-            out.append({
-                "name": name,
-                "category": "usb",
-                "bus": "usb",
-                "sys_path": sys_path,
-                "driver": _driver_from_symlink(sys_path),
-                "major": None,
-                "minor": None,
-                "throughput_bps": 0.0,
-                "irq_tokens": [name, "usb"],
-                "subsystem": _subsystem_for_category("usb"),
-                "user_interaction": _user_interaction_for_category("usb")
-            })
-            if len([d for d in out if d["category"] == "usb"]) >= 4:
-                break
-
-    return out
-
 def get_devices_realtime():
-    now = time.time()
-    prev_ts = DEVICES_PREV["timestamp"]
-    dt = max(0.001, now - prev_ts) if prev_ts else 1.0
-    disk_now = _proc_fs.read_diskstats()
-    block_devices = _collect_block_devices(disk_now, dt)
-    net_devices, net_now = _collect_net_devices(dt)
-    char_devices = _collect_char_devices()
-    extra_devices = _collect_misc_input_gpu_usb()
-
-    devices = block_devices + net_devices + char_devices + extra_devices
-    interrupt_lines = _proc_fs.read_interrupt_lines()
-
-    max_bps = max([d.get("throughput_bps", 0.0) for d in devices] + [1.0])
-    for d in devices:
-        key = f"{d.get('category','unknown')}::{d.get('name','unknown')}"
-        irq_total = _irq_total_for_tokens(interrupt_lines, d.get("irq_tokens", []))
-        prev_irq = DEVICES_PREV["irq_by_key"].get(key)
-        irq_per_sec = 0.0 if prev_irq is None else max(0.0, (irq_total - prev_irq) / dt)
-
-        throughput = float(d.get("throughput_bps", 0.0))
-        synthetic = irq_per_sec * 4096.0
-        weighted = max(throughput, synthetic)
-        d["throughput_bps"] = round(throughput, 2)
-        d["throughput_mb_s"] = round(throughput / (1024 * 1024), 4)
-        d["irq_total"] = int(irq_total)
-        d["irq_per_sec"] = round(irq_per_sec, 2)
-        d["load_norm"] = round(min(1.0, weighted / max_bps), 4)
-        d["layer_path"] = [
-            "Physical layer",
-            "Driver layer",
-            "Kernel subsystem",
-            "User interaction"
-        ]
-        d["driver"] = d.get("driver") or "n/a"
-
-    devices.sort(key=lambda d: (d.get("load_norm", 0.0), d.get("throughput_bps", 0.0), d.get("irq_per_sec", 0.0)), reverse=True)
-    top_devices = devices[:20]
-
-    DEVICES_PREV["timestamp"] = now
-    DEVICES_PREV["disk_sectors"] = disk_now
-    DEVICES_PREV["net_bytes"] = net_now
-    DEVICES_PREV["tty_irq_total"] = _proc_fs.read_tty_irq_total()
-    DEVICES_PREV["irq_by_key"] = {
-        f"{d.get('category','unknown')}::{d.get('name','unknown')}": d.get("irq_total", 0)
-        for d in top_devices
-    }
-
-    bus_counts = {"pcie": 0, "usb": 0, "virtual": 0, "net": 0}
-    category_counts = {}
-    for d in top_devices:
-        bus_counts[d.get("bus", "pcie")] = bus_counts.get(d.get("bus", "pcie"), 0) + 1
-        c = d.get("category", "unknown")
-        category_counts[c] = category_counts.get(c, 0) + 1
-
-    return {
-        "timestamp": datetime.now().isoformat(),
-        "layout": {
-            "name": "Hardware Bus Map",
-            "layers": ["Physical layer", "Driver layer", "Kernel subsystem", "User interaction"],
-            "buses": ["pcie", "usb", "virtual", "net"]
-        },
-        "devices": top_devices,
-        "meta": {
-            "count": len(top_devices),
-            "max_throughput_bps": round(max_bps, 2),
-            "bus_counts": bus_counts,
-            "category_counts": category_counts
-        }
-    }
+    return _devices_service.get_devices_realtime(
+        devices_prev=DEVICES_PREV,
+        read_diskstats_fn=_proc_fs.read_diskstats,
+        read_interrupt_lines_fn=_proc_fs.read_interrupt_lines,
+        read_tty_irq_total_fn=_proc_fs.read_tty_irq_total,
+    )
 
 def get_filesystem_blocks():
     return _system_view_service.get_filesystem_blocks()
@@ -1019,104 +584,14 @@ def get_proc_matrix():
 
 def get_proc_timeline():
     """API: Timeline view data - events for a specific process"""
-    try:
-        from flask import request
-        pid = request.args.get('pid', type=int)
-        if not pid:
-            return jsonify({'error': 'PID parameter required'}), 400
-        
-        timeline = []
-        
-        # Check if process exists
-        try:
-            proc = psutil.Process(pid)
-        except psutil.NoSuchProcess:
-            return jsonify({'error': f'Process {pid} not found'}), 404
-        
-        # Get process info
-        proc_info = proc.as_dict(['pid', 'name', 'create_time', 'status'])
-        base_ts = float(proc_info['create_time'])
-        # Ordered real-derived events; timestamps are monotonic from process start (precise times not in /proc).
-        ordered_events = []
-        ordered_events.append({'type': 'exec', 'pid': pid})
+    def _payload():
+        pid = request.args.get("pid", type=int)
+        return _process_timeline_service.get_proc_timeline_data(pid)
 
-        # Event: mmap (from /proc/[pid]/maps)
-        try:
-            maps_path = f'/proc/{pid}/maps'
-            if os.path.exists(maps_path):
-                with open(maps_path, 'r') as f:
-                    map_count = len(f.readlines())
-                    if map_count > 0:
-                        ordered_events.append({
-                            'type': 'mmap',
-                            'pid': pid,
-                            'count': map_count
-                        })
-        except (IOError, PermissionError):
-            pass
-
-        # Event: read/write (from /proc/[pid]/io)
-        try:
-            io_path = f'/proc/{pid}/io'
-            if os.path.exists(io_path):
-                with open(io_path, 'r') as f:
-                    io_data = {}
-                    for line in f:
-                        if ':' in line:
-                            key, value = line.split(':', 1)
-                            io_data[key.strip()] = int(value.strip())
-
-                    if io_data.get('read_bytes', 0) > 0:
-                        ordered_events.append({
-                            'type': 'read',
-                            'pid': pid,
-                            'bytes': io_data.get('read_bytes', 0)
-                        })
-
-                    if io_data.get('write_bytes', 0) > 0:
-                        ordered_events.append({
-                            'type': 'write',
-                            'pid': pid,
-                            'bytes': io_data.get('write_bytes', 0)
-                        })
-        except (IOError, PermissionError):
-            pass
-
-        # Event: connect/accept (from /proc/[pid]/net/tcp)
-        try:
-            tcp_path = f'/proc/{pid}/net/tcp'
-            if os.path.exists(tcp_path):
-                with open(tcp_path, 'r') as f:
-                    lines = f.readlines()
-                    if len(lines) > 1:
-                        for line in lines[1:]:
-                            parts = line.split()
-                            if len(parts) >= 4:
-                                state = parts[3]
-                                if state == '01':
-                                    ordered_events.append({'type': 'connect', 'pid': pid})
-                                elif state == '0A':
-                                    ordered_events.append({'type': 'accept', 'pid': pid})
-        except (IOError, PermissionError):
-            pass
-
-        step = 0.35
-        timeline = []
-        for i, ev in enumerate(ordered_events):
-            ev = dict(ev)
-            ev['timestamp'] = datetime.fromtimestamp(base_ts + i * step).isoformat()
-            timeline.append(ev)
-        
-        return jsonify({
-            'timeline': timeline,
-            'pid': pid,
-            'name': proc_info.get('name', 'unknown'),
-            'timestamp': datetime.now().isoformat(),
-            'timeline_time_basis': 'Events are ordered from process start; 0.35s steps separate rows for the helix (kernel does not expose per-event wall times for these signals).',
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    return api_json(
+        _payload,
+        exception_statuses=[(ValueError, 400), (ProcessLookupError, 404)],
+    )
 
 def get_execution_context():
     """Get execution context data for Ring-1 visualization."""
