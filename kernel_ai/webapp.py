@@ -5,7 +5,6 @@ Organized version with proper project structure
 """
 
 import os
-import sys
 import json
 import time
 import random
@@ -25,6 +24,7 @@ from kernel_ai.collectors import proc_fs as _proc_fs
 from kernel_ai.services import execution as _execution_service
 from kernel_ai.services import network as _network_service
 from kernel_ai.services import crypto_security as _crypto_security_service
+from kernel_ai.services import core_observability as _core_observability_service
 from kernel_ai.services import process_inspect as _process_inspect_service
 from kernel_ai.services import processes as _processes_service
 from kernel_ai.services import system_view as _system_view_service
@@ -109,14 +109,8 @@ def resolve_binary(cmd_name):
 
 
 def get_system_info():
-    """Get system information"""
-    return {
-        'platform': platform.system(),
-        'kernel': platform.release(),
-        'python_version': platform.python_version(),
-        'cpu_count': psutil.cpu_count(),
-        'memory_total': psutil.virtual_memory().total
-    }
+    """Get system information."""
+    return _core_observability_service.get_system_info()
 
 # System call number to name mapping (common Linux syscalls)
 SYSCALL_NAMES = {
@@ -404,261 +398,27 @@ def get_real_system_calls():
         return [] if platform.system() == 'Linux' else get_mock_system_calls()
 
 def get_mock_system_calls():
-    """Mock data for system calls"""
-    return [
-        {'name': 'read', 'count': '166 643218'},
-        {'name': 'write', 'count': '964 016161'},
-        {'name': 'open', 'count': '972 983879'},
-        {'name': 'close', 'count': '989 612075'},
-        {'name': 'mmap', 'count': '819 540732'},
-        {'name': 'fork', 'count': '512 826219'},
-        {'name': 'execve', 'count': '025 461491'},
-        {'name': 'socket', 'count': '838 475394'},
-        {'name': 'connect', 'count': '632 094939'},
-        {'name': 'accept', 'count': '417 205788'}
-    ]
+    """Mock data for system calls."""
+    return _core_observability_service.get_mock_system_calls()
 
 def get_kernel_subsystem_status():
-    """Get real kernel subsystem status from /proc filesystem"""
-    try:
-        if platform.system() != 'Linux':
-            return get_mock_kernel_subsystems()
-        
-        subsystems = {}
-        
-        # 1. Memory Management - from /proc/meminfo
-        try:
-            with open('/proc/meminfo', 'r') as f:
-                meminfo = {}
-                for line in f:
-                    if ':' in line:
-                        key, value = line.split(':', 1)
-                        meminfo[key.strip()] = value.strip()
-                
-                # Calculate memory usage percentage
-                mem_total_kb = int(meminfo.get('MemTotal', '0').replace(' kB', ''))
-                mem_available_kb = int(meminfo.get('MemAvailable', '0').replace(' kB', ''))
-                mem_free_kb = int(meminfo.get('MemFree', '0').replace(' kB', ''))
-                
-                if mem_total_kb > 0:
-                    mem_used_kb = mem_total_kb - mem_available_kb
-                    memory_usage = int((mem_used_kb / mem_total_kb) * 100)
-                else:
-                    memory_usage = 0
-                
-                # Count processes using memory (rough estimate from active pages)
-                active_kb = int(meminfo.get('Active', '0').replace(' kB', ''))
-                processes_estimate = max(10, min(100, active_kb // 50000))  # Rough estimate
-                
-                subsystems['memory_management'] = {
-                    'status': 'active',
-                    'usage': memory_usage,
-                    'processes': processes_estimate
-                }
-        except (IOError, ValueError, KeyError) as e:
-            print(f"Error reading meminfo: {e}")
-            subsystems['memory_management'] = {
-                'status': 'active',
-                'usage': 75,
-                'processes': 25
-            }
-        
-        # 2. Process Scheduler - from /proc/stat
-        try:
-            with open('/proc/stat', 'r') as f:
-                stat_data = {}
-                for line in f:
-                    if line.startswith('cpu '):
-                        parts = line.split()
-                        # CPU stats: user, nice, system, idle, iowait, irq, softirq, steal, guest, guest_nice
-                        if len(parts) >= 5:
-                            user_time = int(parts[1])
-                            system_time = int(parts[3])
-                            idle_time = int(parts[4])
-                            total_time = user_time + system_time + idle_time
-                            
-                            if total_time > 0:
-                                cpu_usage = int(((user_time + system_time) / total_time) * 100)
-                            else:
-                                cpu_usage = 0
-                    elif line.startswith('processes '):
-                        total_processes = int(line.split()[1])
-                    elif line.startswith('ctxt '):
-                        context_switches = int(line.split()[1])
-                
-                # Estimate scheduler activity from context switches
-                # More context switches = more scheduler activity
-                scheduler_usage = min(100, max(50, cpu_usage))
-                
-                # Get current running processes
-                try:
-                    with open('/proc/loadavg', 'r') as f:
-                        loadavg = f.read().strip().split()
-                        running_processes = int(float(loadavg[3].split('/')[0]))
-                except:
-                    running_processes = len(psutil.pids()) if 'psutil' in sys.modules else 50
-                
-                subsystems['process_scheduler'] = {
-                    'status': 'active',
-                    'usage': scheduler_usage,
-                    'processes': running_processes
-                }
-        except (IOError, ValueError, KeyError) as e:
-            print(f"Error reading /proc/stat: {e}")
-            subsystems['process_scheduler'] = {
-                'status': 'active',
-                'usage': 85,
-                'processes': 45
-            }
-        
-        # 3. File System - from /proc/mounts and /proc/filesystems
-        try:
-            # Count mounted filesystems
-            with open('/proc/mounts', 'r') as f:
-                mount_count = len([line for line in f if line.strip() and not line.startswith('#')])
-            
-            # Count filesystem types
-            with open('/proc/filesystems', 'r') as f:
-                fs_types = len([line for line in f if line.strip() and not line.startswith('#')])
-            
-            # Estimate filesystem activity from I/O wait
-            try:
-                with open('/proc/stat', 'r') as f:
-                    for line in f:
-                        if line.startswith('cpu '):
-                            parts = line.split()
-                            if len(parts) >= 6:
-                                iowait = int(parts[5])
-                                # Use iowait as indicator of filesystem activity
-                                fs_usage = min(100, max(20, iowait // 100))
-                            else:
-                                fs_usage = 60
-                            break
-            except:
-                fs_usage = 60
-            
-            # Estimate processes using filesystem
-            fs_processes = max(5, min(50, mount_count * 2))
-            
-            subsystems['file_system'] = {
-                'status': 'active',
-                'usage': fs_usage,
-                'processes': fs_processes
-            }
-        except (IOError, ValueError) as e:
-            print(f"Error reading filesystem info: {e}")
-            subsystems['file_system'] = {
-                'status': 'active',
-                'usage': 60,
-                'processes': 15
-            }
-        
-        # 4. Network Stack - from /proc/net/sockstat and /proc/net/tcp
-        try:
-            network_usage = 30
-            network_processes = 8
-            
-            # Try to read socket statistics
-            try:
-                with open('/proc/net/sockstat', 'r') as f:
-                    for line in f:
-                        if line.startswith('TCP:'):
-                            # Format: TCP: inuse 26 orphan 0 tw 44 alloc 28 mem 3
-                            parts = line.split()
-                            # Find indices of key values
-                            try:
-                                inuse_idx = parts.index('inuse') + 1 if 'inuse' in parts else -1
-                                alloc_idx = parts.index('alloc') + 1 if 'alloc' in parts else -1
-                                
-                                if inuse_idx > 0 and inuse_idx < len(parts):
-                                    tcp_inuse = int(parts[inuse_idx])
-                                else:
-                                    tcp_inuse = 0
-                                
-                                if alloc_idx > 0 and alloc_idx < len(parts):
-                                    tcp_alloc = int(parts[alloc_idx])
-                                else:
-                                    tcp_alloc = tcp_inuse + 10  # Fallback
-                                
-                                if tcp_alloc > 0:
-                                    network_usage = min(100, max(20, int((tcp_inuse / tcp_alloc) * 100)))
-                                else:
-                                    network_usage = 30
-                                
-                                network_processes = max(8, min(50, tcp_inuse // 2))
-                            except (ValueError, IndexError):
-                                # Fallback parsing
-                                network_usage = 30
-                                network_processes = 12
-                            break
-            except FileNotFoundError:
-                # Fallback: count TCP connections from /proc/net/tcp
-                try:
-                    with open('/proc/net/tcp', 'r') as f:
-                        tcp_connections = len([line for line in f if line.strip() and not line.startswith('sl')])
-                    network_usage = min(100, max(20, tcp_connections // 10))
-                    network_processes = max(8, min(50, tcp_connections // 5))
-                except:
-                    pass
-            
-            subsystems['network_stack'] = {
-                'status': 'active',
-                'usage': network_usage,
-                'processes': network_processes
-            }
-        except (IOError, ValueError) as e:
-            print(f"Error reading network info: {e}")
-            subsystems['network_stack'] = {
-                'status': 'active',
-                'usage': 50,
-                'processes': 12
-            }
-        
-        return subsystems
-        
-    except Exception as e:
-        print(f"Error getting subsystem status: {e}")
-        import traceback
-        traceback.print_exc()
-        return get_mock_kernel_subsystems()
+    """Get real kernel subsystem status from /proc filesystem."""
+    return _core_observability_service.get_kernel_subsystem_status()
 
 def get_mock_kernel_subsystems():
-    """Mock data for kernel subsystems"""
-    return {
-        'memory_management': {'status': 'active', 'usage': 75, 'processes': 25},
-        'process_scheduler': {'status': 'active', 'usage': 85, 'processes': 45},
-        'file_system': {'status': 'active', 'usage': 60, 'processes': 15},
-        'network_stack': {'status': 'active', 'usage': 50, 'processes': 12}
-    }
+    """Mock data for kernel subsystems."""
+    return _core_observability_service.get_mock_kernel_subsystems()
 
 def get_process_kernel_map():
-    """Get process to kernel subsystem mapping"""
-    try:
-        if not OPENAI_AVAILABLE:
-            return get_mock_process_kernel_map()
-        
-        # Try to use OpenAI API
-        if not hasattr(openai, 'api_key') or not openai.api_key:
-            return get_mock_process_kernel_map()
-        
-        # Here would be OpenAI API logic
-        # For now return mock data
-        return get_mock_process_kernel_map()
-        
-    except Exception as e:
-        print(f"Error getting process map: {e}")
-        return get_mock_process_kernel_map()
+    """Get process to kernel subsystem mapping."""
+    return _core_observability_service.get_process_kernel_map(
+        openai_available=OPENAI_AVAILABLE,
+        openai_module=openai if OPENAI_AVAILABLE else None,
+    )
 
 def get_mock_process_kernel_map():
-    """Mock data for process mapping"""
-    return {
-        "systemd": ["kernel/sched/core.c", "kernel/time/timekeeping.c"],
-        "sshd": ["kernel/security/security.c", "kernel/audit/audit.c"],
-        "nginx": ["kernel/net/socket.c", "kernel/net/core/sock.c"],
-        "python3": ["kernel/fs/read_write.c", "kernel/mm/memory.c"],
-        "bash": ["kernel/exec.c", "kernel/fork.c"],
-        "cron": ["kernel/time/timer.c", "kernel/sched/clock.c"]
-    }
+    """Mock data for process mapping."""
+    return _core_observability_service.get_mock_process_kernel_map()
 
 def get_proc_matrix_data():
     """Build Matrix view data - processes and their resource usage"""
@@ -801,53 +561,12 @@ def static_files(filename):
 # Active connections functions
 # Nginx files functions
 def get_nginx_open_files():
-    """Get open files for Nginx process"""
-    try:
-        import psutil
-        nginx_processes = []
-        for proc in psutil.process_iter(["pid", "name", "open_files"]):
-            try:
-                if proc.info["name"] and "nginx" in proc.info["name"].lower():
-                    nginx_processes.append(proc.info["pid"])
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-        
-        if nginx_processes:
-            # Get open files for first nginx process
-            proc = psutil.Process(nginx_processes[0])
-            open_files = proc.open_files()
-            
-            # Filter and format file paths
-            files = []
-            for file in open_files:
-                if file.path:
-                    # Extract relative path from full path
-                    if "/etc/nginx/" in file.path:
-                        rel_path = file.path.split("/etc/nginx/")[-1]
-                        files.append({"path": f"nginx/{rel_path}", "type": "config"})
-                    elif "/var/log/nginx/" in file.path:
-                        rel_path = file.path.split("/var/log/nginx/")[-1]
-                        files.append({"path": f"nginx/logs/{rel_path}", "type": "log"})
-                    else:
-                        files.append({"path": file.path, "type": "other"})
-            
-            return files[:10]  # Limit to 10 files
-        else:
-            return get_mock_nginx_files()
-            
-    except Exception as e:
-        print(f"Error getting nginx files: {e}")
-        return get_mock_nginx_files()
+    """Get open files for Nginx process."""
+    return _core_observability_service.get_nginx_open_files()
 
 def get_mock_nginx_files():
-    """Mock data for nginx files"""
-    return [
-        {"path": "nginx/nginx.conf", "type": "config"},
-        {"path": "nginx/sites-enabled/default", "type": "config"},
-        {"path": "nginx/conf.d/default.conf", "type": "config"},
-        {"path": "nginx/logs/access.log", "type": "log"},
-        {"path": "nginx/logs/error.log", "type": "log"}
-    ]
+    """Mock data for nginx files."""
+    return _core_observability_service.get_mock_nginx_files()
 
 def nginx_files():
     """API for nginx open files"""
