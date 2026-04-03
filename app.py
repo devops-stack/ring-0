@@ -1,9 +1,3 @@
-
-
-
-
-
-
 #!/usr/bin/env python3
 """
 WSGI entry point for Linux Kernel Visualization Backend.
