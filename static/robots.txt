@@ -1,8 +1,0 @@
-User-agent: *
-Allow: /
-
-# Sitemap location
-Sitemap: https://ring-0.sh/sitemap.xml
-
-# Allow indexing of all pages
-Disallow:
