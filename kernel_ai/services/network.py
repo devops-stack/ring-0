@@ -199,7 +199,8 @@ def _get_ss_tcp_metrics():
     return {}
 
 
-def get_network_stack_realtime():
+def get_network_stack_realtime(network_stack_prev=None):
+    network_stack_prev = NETWORK_STACK_PREV if network_stack_prev is None else network_stack_prev
     now = time.time()
     iface = _get_default_iface()
     pernic = psutil.net_io_counters(pernic=True)
@@ -236,7 +237,7 @@ def get_network_stack_realtime():
     except OSError:
         established = 0
 
-    prev_ts = NETWORK_STACK_PREV["timestamp"]
+    prev_ts = network_stack_prev["timestamp"]
     dt = max(0.001, now - prev_ts) if prev_ts else 1.0
 
     def rate(curr, prev):
@@ -244,10 +245,10 @@ def get_network_stack_realtime():
             return 0.0
         return max(0.0, (curr - prev) / dt)
 
-    retrans_per_sec = rate(retrans_total, NETWORK_STACK_PREV["tcpext_retrans"])
-    ip_in_per_sec = rate(ip_in_total, NETWORK_STACK_PREV["ip_in"])
-    ip_out_per_sec = rate(ip_out_total, NETWORK_STACK_PREV["ip_out"])
-    ip_drop_per_sec = rate(ip_discards_total, NETWORK_STACK_PREV["ip_discards"])
+    retrans_per_sec = rate(retrans_total, network_stack_prev["tcpext_retrans"])
+    ip_in_per_sec = rate(ip_in_total, network_stack_prev["ip_in"])
+    ip_out_per_sec = rate(ip_out_total, network_stack_prev["ip_out"])
+    ip_drop_per_sec = rate(ip_discards_total, network_stack_prev["ip_discards"])
 
     rx_per_sec = 0.0
     tx_per_sec = 0.0
@@ -255,21 +256,21 @@ def get_network_stack_realtime():
     rx_bytes = iface_stats.bytes_recv if iface_stats else 0
     tx_bytes = iface_stats.bytes_sent if iface_stats else 0
     iface_drops = (iface_stats.dropin + iface_stats.dropout) if iface_stats else 0
-    if NETWORK_STACK_PREV["iface_rx"] is not None:
-        rx_per_sec = max(0.0, (rx_bytes - NETWORK_STACK_PREV["iface_rx"]) / dt)
-    if NETWORK_STACK_PREV["iface_tx"] is not None:
-        tx_per_sec = max(0.0, (tx_bytes - NETWORK_STACK_PREV["iface_tx"]) / dt)
-    if NETWORK_STACK_PREV["iface_drops"] is not None:
-        iface_drop_per_sec = max(0.0, (iface_drops - NETWORK_STACK_PREV["iface_drops"]) / dt)
+    if network_stack_prev["iface_rx"] is not None:
+        rx_per_sec = max(0.0, (rx_bytes - network_stack_prev["iface_rx"]) / dt)
+    if network_stack_prev["iface_tx"] is not None:
+        tx_per_sec = max(0.0, (tx_bytes - network_stack_prev["iface_tx"]) / dt)
+    if network_stack_prev["iface_drops"] is not None:
+        iface_drop_per_sec = max(0.0, (iface_drops - network_stack_prev["iface_drops"]) / dt)
 
-    NETWORK_STACK_PREV["timestamp"] = now
-    NETWORK_STACK_PREV["tcpext_retrans"] = retrans_total
-    NETWORK_STACK_PREV["ip_in"] = ip_in_total
-    NETWORK_STACK_PREV["ip_out"] = ip_out_total
-    NETWORK_STACK_PREV["ip_discards"] = ip_discards_total
-    NETWORK_STACK_PREV["iface_rx"] = rx_bytes
-    NETWORK_STACK_PREV["iface_tx"] = tx_bytes
-    NETWORK_STACK_PREV["iface_drops"] = iface_drops
+    network_stack_prev["timestamp"] = now
+    network_stack_prev["tcpext_retrans"] = retrans_total
+    network_stack_prev["ip_in"] = ip_in_total
+    network_stack_prev["ip_out"] = ip_out_total
+    network_stack_prev["ip_discards"] = ip_discards_total
+    network_stack_prev["iface_rx"] = rx_bytes
+    network_stack_prev["iface_tx"] = tx_bytes
+    network_stack_prev["iface_drops"] = iface_drops
 
     packets_per_sec = ip_in_per_sec + ip_out_per_sec
     drop_ratio = (ip_drop_per_sec / packets_per_sec) if packets_per_sec > 0 else 0.0
@@ -375,7 +376,9 @@ def get_route_hint(remote_ip):
         return {"remote_ip": remote_ip, "tool": "ip-route", "reached": False, "hop_count": 0, "hops": [], "note": "Route hint lookup timed out"}
 
 
-def get_traceroute_info(remote_ip, max_hops=8):
+def get_traceroute_info(remote_ip, max_hops=8, traceroute_cache=None, cache_ttl_seconds=None):
+    traceroute_cache = TRACEROUTE_CACHE if traceroute_cache is None else traceroute_cache
+    cache_ttl_seconds = TRACEROUTE_CACHE_TTL_SECONDS if cache_ttl_seconds is None else cache_ttl_seconds
     try:
         target_ip = ipaddress.ip_address(remote_ip)
         if target_ip.is_loopback or target_ip.is_unspecified:
@@ -384,8 +387,8 @@ def get_traceroute_info(remote_ip, max_hops=8):
         raise ValueError("Invalid IP address")
 
     now = time.time()
-    cached = TRACEROUTE_CACHE.get(remote_ip)
-    if cached and (now - cached["timestamp"]) < TRACEROUTE_CACHE_TTL_SECONDS:
+    cached = traceroute_cache.get(remote_ip)
+    if cached and (now - cached["timestamp"]) < cache_ttl_seconds:
         return cached["data"]
 
     traceroute_cmd = resolve_binary("traceroute")
@@ -400,7 +403,7 @@ def get_traceroute_info(remote_ip, max_hops=8):
         tool = "tracepath"
     else:
         data = get_route_hint(remote_ip)
-        TRACEROUTE_CACHE[remote_ip] = {"timestamp": now, "data": data}
+        traceroute_cache[remote_ip] = {"timestamp": now, "data": data}
         return data
 
     try:
@@ -433,5 +436,5 @@ def get_traceroute_info(remote_ip, max_hops=8):
 
     reached = any(h.get("target") == remote_ip for h in hops)
     data = {"remote_ip": remote_ip, "tool": tool, "reached": reached, "hop_count": len(hops), "hops": hops[:max_hops], "note": None}
-    TRACEROUTE_CACHE[remote_ip] = {"timestamp": now, "data": data}
+    traceroute_cache[remote_ip] = {"timestamp": now, "data": data}
     return data
