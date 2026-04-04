@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+from datetime import datetime
 
 
 def _kernel_dna_read_proc_vmstat():
@@ -140,3 +141,33 @@ def get_real_system_calls(syscall_names, map_syscall_to_subsystem_fn, kernel_dna
         return []
     except Exception:
         return [] if platform.system() == "Linux" else fallback_mock_calls_fn()
+
+
+def get_softirq_nucleotides(map_interrupt_to_subsystem_fn, limit=8):
+    """Per-vector softirq totals from /proc/softirqs."""
+    out = []
+    try:
+        with open("/proc/softirqs", "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+        if len(lines) < 2:
+            return out
+        for line in lines[1 : 1 + limit]:
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            vec = parts[0].rstrip(":")
+            total = sum(int(x) for x in parts[1:] if x.isdigit())
+            if total > 0:
+                out.append(
+                    {
+                        "type": "interrupt",
+                        "code": "T",
+                        "name": f"softirq:{vec}",
+                        "count": total,
+                        "subsystem": map_interrupt_to_subsystem_fn(vec),
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                )
+    except (OSError, ValueError):
+        pass
+    return out
