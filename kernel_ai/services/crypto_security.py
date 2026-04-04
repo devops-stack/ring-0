@@ -11,6 +11,7 @@ from datetime import datetime
 
 import psutil
 
+from kernel_ai.services.crypto import crypto_pipeline as _crypto_pipeline
 from kernel_ai.services.crypto import entropy as _entropy_service
 from kernel_ai.services.crypto import security_pipeline as _security_pipeline
 
@@ -307,7 +308,7 @@ def build_crypto_decision_pipelines(algorithm_competitions, kernel_clients, hw_o
     return pipelines
 
 
-def collect_crypto_realtime(crypto_prev, entropy_prev=None, callbacks=None):
+def _collect_crypto_realtime_legacy(crypto_prev, entropy_prev=None, callbacks=None):
     """
     Build a near-realtime list of processes likely interacting with kernel crypto.
     This is heuristic-based and derived from active network/process context.
@@ -531,6 +532,39 @@ def collect_crypto_realtime(crypto_prev, entropy_prev=None, callbacks=None):
             "timestamp": datetime.utcnow().isoformat() + "Z",
         },
     }
+
+
+def collect_crypto_realtime(crypto_prev, entropy_prev=None, callbacks=None):
+    entropy_prev_local = entropy_prev or {
+        "timestamp": None,
+        "disk_read_bytes": 0,
+        "disk_write_bytes": 0,
+        "net_sent_bytes": 0,
+        "net_recv_bytes": 0,
+        "interrupt_total": 0,
+    }
+    defaults = {
+        "infer_crypto_protocol": infer_crypto_protocol,
+        "is_likely_crypto_actor": is_likely_crypto_actor,
+        "infer_tls_terminator": infer_tls_terminator,
+        "collect_algorithm_competition": collect_algorithm_competition,
+        "parse_proc_crypto_entries": parse_proc_crypto_entries,
+        "collect_kernel_crypto_clients": collect_kernel_crypto_clients,
+        "collect_hw_offload_status": collect_hw_offload_status,
+        "collect_sync_async_queue": collect_sync_async_queue,
+        "collect_algorithm_requesters": collect_algorithm_requesters,
+        "build_crypto_decision_pipelines": build_crypto_decision_pipelines,
+        "collect_entropy_cloud_status": lambda: collect_entropy_cloud_status(entropy_prev_local),
+    }
+    merged_callbacks = dict(defaults)
+    if callbacks:
+        merged_callbacks.update(callbacks)
+    return _crypto_pipeline.collect_crypto_realtime(
+        crypto_prev=crypto_prev,
+        callbacks=merged_callbacks,
+        psutil_module=psutil,
+        logger=logger,
+    )
 
 
 def _collect_security_realtime_legacy(security_prev):
