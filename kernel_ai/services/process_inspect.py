@@ -86,7 +86,7 @@ def get_ipc_links_summary(max_pairs=120, max_nodes=24):
             continue
 
         for ns_name in namespace_keys:
-            ns_inode = _system_view_service._read_namespace_inode(pid, ns_name)
+            ns_inode = _system_view_service.read_namespace_inode(pid, ns_name)
             if not ns_inode:
                 continue
             ns_key = f"{ns_name}:{ns_inode}"
