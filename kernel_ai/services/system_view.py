@@ -190,7 +190,7 @@ def _parse_cgroup_path(pid):
     return chosen
 
 
-def _read_namespace_inode(pid, ns_name):
+def read_namespace_inode(pid, ns_name):
     ns_link = f"/proc/{pid}/ns/{ns_name}"
     try:
         target = os.readlink(ns_link)
@@ -198,6 +198,10 @@ def _read_namespace_inode(pid, ns_name):
         return None
     match = re.search(r"\[(\d+)\]", target)
     return match.group(1) if match else target
+
+
+# Backward-compatible alias for existing imports/tests during refactor.
+_read_namespace_inode = read_namespace_inode
 
 
 def _read_cgroup_v2_stats(cgroup_path):
@@ -285,7 +289,7 @@ def get_isolation_context():
                 agg["sample_processes"].append(process_name)
 
             for ns_name in namespace_keys:
-                inode = _read_namespace_inode(pid, ns_name)
+                inode = read_namespace_inode(pid, ns_name)
                 if inode:
                     ns_map = namespace_counts[ns_name]
                     ns_map[inode] = ns_map.get(inode, 0) + 1
