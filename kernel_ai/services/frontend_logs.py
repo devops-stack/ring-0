@@ -40,3 +40,27 @@ def write_frontend_event(event_payload, frontend_log_file, write_lock):
     with write_lock:
         with open(frontend_log_file, "a", encoding="utf-8") as f:
             f.write(line + "\n")
+
+
+def ingest_frontend_logs_payload(payload, write_event_fn, max_batch=100):
+    """Validate frontend log payload and persist accepted events.
+
+    Returns ``(response_payload, status_code)`` for HTTP layer serialization.
+    """
+    if payload is None:
+        return {"error": "Invalid JSON payload"}, 400
+
+    events = payload.get("events", payload if isinstance(payload, list) else [payload])
+    if not isinstance(events, list):
+        return {"error": "Expected event object or list of events"}, 400
+    if len(events) > max_batch:
+        return {"error": "Batch too large"}, 413
+
+    accepted = 0
+    for raw in events:
+        if not isinstance(raw, dict):
+            continue
+        write_event_fn(raw)
+        accepted += 1
+
+    return {"status": "ok", "accepted": accepted}, 200
