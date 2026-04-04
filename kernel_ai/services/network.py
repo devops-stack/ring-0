@@ -3,27 +3,15 @@
 from __future__ import annotations
 
 import ipaddress
-import os
 import re
-import shutil
 import subprocess
 import time
 from datetime import datetime
 
 import psutil
 
+from kernel_ai.services.infra_utils import resolve_binary
 from kernel_ai.state import NETWORK_STACK_PREV, TRACEROUTE_CACHE, TRACEROUTE_CACHE_TTL_SECONDS
-
-
-def resolve_binary(cmd_name):
-    found = shutil.which(cmd_name)
-    if found:
-        return found
-    for base in ("/usr/sbin", "/usr/bin", "/sbin", "/bin"):
-        candidate = os.path.join(base, cmd_name)
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
-    return None
 
 
 def get_active_connections():
