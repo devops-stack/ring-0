@@ -1,142 +1,38 @@
-"""
-REST API under ``/api``. Implementations are in ``kernel_ai.webapp`` (lazy import).
-"""
+"""REST API under ``/api``."""
 from flask import Blueprint
+from kernel_ai.http import api as h
 
 bp = Blueprint("api", __name__, url_prefix="/api")
 
+_API_ROUTES = [
+    ("/syscalls-realtime", "syscalls_realtime", h.syscalls_realtime, None),
+    ("/kernel-data", "kernel_data", h.kernel_data, None),
+    ("/process-kernel-map", "process_kernel_map", h.process_kernel_map, None),
+    ("/processes", "get_processes", h.get_processes, None),
+    ("/nginx-files", "nginx_files", h.nginx_files, None),
+    ("/active-connections", "active_connections", h.active_connections, None),
+    ("/traceroute", "traceroute_info", h.traceroute_info, None),
+    ("/network-stack-realtime", "network_stack_realtime", h.network_stack_realtime, None),
+    ("/devices-realtime", "devices_realtime", h.devices_realtime, None),
+    ("/filesystem-blocks", "filesystem_blocks", h.filesystem_blocks, None),
+    ("/isolation-context", "isolation_context", h.isolation_context, None),
+    ("/process/<int:pid>/threads", "get_process_threads", h.get_process_threads, None),
+    ("/process/<int:pid>/cpu", "get_process_cpu", h.get_process_cpu, None),
+    ("/process/<int:pid>/fds", "get_process_fds", h.get_process_fds, None),
+    ("/processes-detailed", "get_processes_detailed", h.get_processes_detailed, None),
+    ("/ipc-links", "get_ipc_links", h.get_ipc_links, None),
+    ("/proc-matrix", "get_proc_matrix", h.get_proc_matrix, None),
+    ("/proc-timeline", "get_proc_timeline", h.get_proc_timeline, None),
+    ("/execution-context", "get_execution_context", h.get_execution_context, None),
+    ("/kernel-dna", "kernel_dna", h.kernel_dna, None),
+    ("/crypto-realtime", "crypto_realtime", h.crypto_realtime, None),
+    ("/security-realtime", "security_realtime", h.security_realtime, None),
+    ("/processes-realtime", "processes_realtime", h.processes_realtime, None),
+    ("/frontend-logs", "ingest_frontend_logs", h.ingest_frontend_logs, ["POST", "OPTIONS"]),
+    ("/proc-graph", "proc_graph", h.get_proc_graph, None),
+    ("/process-files", "process_files", h.get_process_files, None),
+]
 
-def _core():
-    from kernel_ai import webapp as core
-
-    return core
-
-
-@bp.route("/syscalls-realtime")
-def syscalls_realtime():
-    return _core().syscalls_realtime()
-
-
-@bp.route("/kernel-data")
-def kernel_data():
-    return _core().kernel_data()
-
-
-@bp.route("/process-kernel-map")
-def process_kernel_map():
-    return _core().process_kernel_map()
-
-
-@bp.route("/processes")
-def get_processes():
-    return _core().get_processes()
-
-
-@bp.route("/nginx-files")
-def nginx_files():
-    return _core().nginx_files()
-
-
-@bp.route("/active-connections")
-def active_connections():
-    return _core().active_connections()
-
-
-@bp.route("/traceroute")
-def traceroute_info():
-    return _core().traceroute_info()
-
-
-@bp.route("/network-stack-realtime")
-def network_stack_realtime():
-    return _core().network_stack_realtime()
-
-
-@bp.route("/devices-realtime")
-def devices_realtime():
-    return _core().devices_realtime()
-
-
-@bp.route("/filesystem-blocks")
-def filesystem_blocks():
-    return _core().filesystem_blocks()
-
-
-@bp.route("/isolation-context")
-def isolation_context():
-    return _core().isolation_context()
-
-
-@bp.route("/process/<int:pid>/threads")
-def get_process_threads(pid):
-    return _core().get_process_threads(pid)
-
-
-@bp.route("/process/<int:pid>/cpu")
-def get_process_cpu(pid):
-    return _core().get_process_cpu(pid)
-
-
-@bp.route("/process/<int:pid>/fds")
-def get_process_fds(pid):
-    return _core().get_process_fds(pid)
-
-
-@bp.route("/processes-detailed")
-def get_processes_detailed():
-    return _core().get_processes_detailed()
-
-
-@bp.route("/ipc-links")
-def get_ipc_links():
-    return _core().get_ipc_links()
-
-
-@bp.route("/proc-matrix")
-def get_proc_matrix():
-    return _core().get_proc_matrix()
-
-
-@bp.route("/proc-timeline")
-def get_proc_timeline():
-    return _core().get_proc_timeline()
-
-
-@bp.route("/execution-context")
-def get_execution_context():
-    return _core().get_execution_context()
-
-
-@bp.route("/kernel-dna")
-def kernel_dna():
-    return _core().kernel_dna()
-
-
-@bp.route("/crypto-realtime")
-def crypto_realtime():
-    return _core().crypto_realtime()
-
-
-@bp.route("/security-realtime")
-def security_realtime():
-    return _core().security_realtime()
-
-
-@bp.route("/processes-realtime")
-def processes_realtime():
-    return _core().processes_realtime()
-
-
-@bp.route("/frontend-logs", methods=["POST", "OPTIONS"])
-def ingest_frontend_logs():
-    return _core().ingest_frontend_logs()
-
-
-@bp.route("/proc-graph")
-def proc_graph():
-    return _core().get_proc_graph()
-
-
-@bp.route("/process-files")
-def process_files():
-    return _core().get_process_files()
+for rule, endpoint, view_func, methods in _API_ROUTES:
+    kwargs = {"methods": methods} if methods else {}
+    bp.add_url_rule(rule, endpoint=endpoint, view_func=view_func, **kwargs)
