@@ -13,14 +13,13 @@ Production:   gunicorn -w 1 -b 0.0.0.0:8000 "kernel_ai.webapp:app"
               or: gunicorn ... "app:app"
 """
 from kernel_ai.config import Config
+from kernel_ai.services.core_observability import get_system_info
 from kernel_ai.webapp import app, create_app
 
 __all__ = ["app", "create_app"]
 
 
 if __name__ == "__main__":
-    from kernel_ai.webapp import get_system_info
-
     system_info = get_system_info()
     print("🚀 Linux Kernel Visualization Backend")
     print(f"📍 Platform: {system_info['platform']}")

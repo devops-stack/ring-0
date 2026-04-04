@@ -1,9 +1,12 @@
-"""Register Flask blueprints (called after all view implementations are defined in webapp)."""
+"""Register Flask blueprints for pages and API modules."""
 
 
 def register_http_routes(app):
-    from kernel_ai.api.rest import bp as api_bp
-    from kernel_ai.views.pages import bp as pages_bp
+    # Keep import-callables lazy to avoid import cycles at app bootstrap.
+    blueprint_loaders = [
+        lambda: __import__("kernel_ai.views.pages", fromlist=["bp"]).bp,
+        lambda: __import__("kernel_ai.api.rest", fromlist=["bp"]).bp,
+    ]
 
-    app.register_blueprint(pages_bp)
-    app.register_blueprint(api_bp)
+    for load_bp in blueprint_loaders:
+        app.register_blueprint(load_bp())
