@@ -12,9 +12,21 @@ from datetime import datetime
 import psutil
 
 from kernel_ai.services.infra_utils import resolve_binary
-from kernel_ai.state import NETWORK_STACK_PREV, TRACEROUTE_CACHE, TRACEROUTE_CACHE_TTL_SECONDS
 
 logger = logging.getLogger(__name__)
+
+_NETWORK_STACK_PREV_DEFAULT = {
+    "timestamp": None,
+    "tcpext_retrans": None,
+    "ip_in": None,
+    "ip_out": None,
+    "ip_discards": None,
+    "iface_rx": None,
+    "iface_tx": None,
+    "iface_drops": None,
+}
+_TRACEROUTE_CACHE_DEFAULT = {}
+_TRACEROUTE_CACHE_TTL_SECONDS_DEFAULT = 60
 
 
 def get_active_connections():
@@ -200,7 +212,7 @@ def _get_ss_tcp_metrics():
 
 
 def get_network_stack_realtime(network_stack_prev=None):
-    network_stack_prev = NETWORK_STACK_PREV if network_stack_prev is None else network_stack_prev
+    network_stack_prev = _NETWORK_STACK_PREV_DEFAULT if network_stack_prev is None else network_stack_prev
     now = time.time()
     iface = _get_default_iface()
     pernic = psutil.net_io_counters(pernic=True)
@@ -377,8 +389,8 @@ def get_route_hint(remote_ip):
 
 
 def get_traceroute_info(remote_ip, max_hops=8, traceroute_cache=None, cache_ttl_seconds=None):
-    traceroute_cache = TRACEROUTE_CACHE if traceroute_cache is None else traceroute_cache
-    cache_ttl_seconds = TRACEROUTE_CACHE_TTL_SECONDS if cache_ttl_seconds is None else cache_ttl_seconds
+    traceroute_cache = _TRACEROUTE_CACHE_DEFAULT if traceroute_cache is None else traceroute_cache
+    cache_ttl_seconds = _TRACEROUTE_CACHE_TTL_SECONDS_DEFAULT if cache_ttl_seconds is None else cache_ttl_seconds
     try:
         target_ip = ipaddress.ip_address(remote_ip)
         if target_ip.is_loopback or target_ip.is_unspecified:
