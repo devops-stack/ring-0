@@ -5,11 +5,9 @@ Organized version with proper project structure
 """
 
 import os
-import json
 import time
 import random
 import subprocess
-import shutil
 from datetime import datetime
 from flask import Flask, jsonify, render_template, send_from_directory, request, redirect
 import psutil
@@ -29,6 +27,8 @@ from kernel_ai.services import process_timeline as _process_timeline_service
 from kernel_ai.services import processes as _processes_service
 from kernel_ai.services import syscalls as _syscalls_service
 from kernel_ai.services import system_view as _system_view_service
+from kernel_ai.services import frontend_logs as _frontend_logs_service
+from kernel_ai.services import kernel_maps as _kernel_maps_service
 from kernel_ai.state import (
     CRYPTO_PREV,
     DEVICES_PREV,
@@ -64,163 +64,18 @@ init_prometheus(app)
 register_hooks(app)
 
 
-def safe_trim(value, limit=2048):
-    """Trim large strings to keep log payload size bounded."""
-    if value is None:
-        return ""
-    text = str(value)
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "...[truncated]"
-
 def write_frontend_event(event_payload):
-    """Write one frontend event as JSON line for Elastic Agent tail input."""
-    event = {
-        "@timestamp": datetime.utcnow().isoformat() + "Z",
-        "service.name": "kernel-ai-frontend",
-        "event.dataset": "kernel_ai.frontend",
-        "event.kind": "event",
-        "log.level": safe_trim(event_payload.get("level", "info"), 16).lower(),
-        "message": safe_trim(event_payload.get("message", "")),
-        "url.path": safe_trim(event_payload.get("path", ""), 512),
-        "url.full": safe_trim(event_payload.get("url", ""), 2048),
-        "user_agent.original": safe_trim(event_payload.get("userAgent", ""), 1024),
-        "session.id": safe_trim(event_payload.get("sessionId", ""), 128),
-        "error.stack_trace": safe_trim(event_payload.get("stack", ""), 12000),
-        "event.module": safe_trim(event_payload.get("module", "frontend"), 128),
-        "tags": event_payload.get("tags", []),
-        "meta": event_payload.get("meta", {})
-    }
-    os.makedirs(os.path.dirname(FRONTEND_LOG_FILE), exist_ok=True)
-    line = json.dumps(event, ensure_ascii=False)
-    with FRONTEND_LOG_WRITE_LOCK:
-        with open(FRONTEND_LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-
-def resolve_binary(cmd_name):
-    """Resolve executable path even when service PATH misses sbin directories."""
-    found = shutil.which(cmd_name)
-    if found:
-        return found
-    for base in ("/usr/sbin", "/usr/bin", "/sbin", "/bin"):
-        candidate = os.path.join(base, cmd_name)
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
-    return None
-
+    _frontend_logs_service.write_frontend_event(
+        event_payload=event_payload,
+        frontend_log_file=FRONTEND_LOG_FILE,
+        write_lock=FRONTEND_LOG_WRITE_LOCK,
+    )
 
 def get_system_info():
     """Get system information."""
     return _core_observability_service.get_system_info()
 
-# System call number to name mapping (common Linux syscalls)
-SYSCALL_NAMES = {
-    0: 'read', 1: 'write', 2: 'open', 3: 'close', 4: 'stat', 5: 'fstat',
-    6: 'lstat', 7: 'poll', 8: 'lseek', 9: 'mmap', 10: 'mprotect',
-    11: 'munmap', 12: 'brk', 13: 'rt_sigaction', 14: 'rt_sigprocmask',
-    15: 'rt_sigreturn', 16: 'ioctl', 17: 'pread64', 18: 'pwrite64',
-    19: 'readv', 20: 'writev', 21: 'access', 22: 'pipe', 23: 'select',
-    24: 'sched_yield', 25: 'mremap', 26: 'msync', 27: 'mincore',
-    28: 'madvise', 29: 'shmget', 30: 'shmat', 31: 'shmctl', 32: 'dup',
-    33: 'dup2', 34: 'pause', 35: 'nanosleep', 36: 'getitimer',
-    37: 'alarm', 38: 'setitimer', 39: 'getpid', 40: 'sendfile',
-    41: 'socket', 42: 'connect', 43: 'accept', 44: 'sendto', 45: 'recvfrom',
-    46: 'sendmsg', 47: 'recvmsg', 48: 'shutdown', 49: 'bind', 50: 'listen',
-    51: 'getsockname', 52: 'getpeername', 53: 'socketpair', 54: 'setsockopt',
-    55: 'getsockopt', 56: 'clone', 57: 'fork', 58: 'vfork', 59: 'execve',
-    60: 'exit', 61: 'wait4', 62: 'kill', 63: 'uname', 64: 'semget',
-    65: 'semop', 66: 'semctl', 67: 'shmdt', 68: 'msgget', 69: 'msgsnd',
-    70: 'msgrcv', 71: 'msgctl', 72: 'fcntl', 73: 'flock', 74: 'fsync',
-    75: 'fdatasync', 76: 'truncate', 77: 'ftruncate', 78: 'getdents',
-    79: 'getcwd', 80: 'chdir', 81: 'fchdir', 82: 'rename', 83: 'mkdir',
-    84: 'rmdir', 85: 'creat', 86: 'link', 87: 'unlink', 88: 'symlink',
-    89: 'readlink', 90: 'chmod', 91: 'fchmod', 92: 'chown', 93: 'fchown',
-    94: 'lchown', 95: 'umask', 96: 'gettimeofday', 97: 'getrlimit',
-    98: 'getrusage', 99: 'sysinfo', 100: 'times', 101: 'ptrace',
-    102: 'getuid', 103: 'syslog', 104: 'getgid', 105: 'setuid', 106: 'setgid',
-    107: 'geteuid', 108: 'getegid', 109: 'setpgid', 110: 'getppid',
-    111: 'getpgrp', 112: 'setsid', 113: 'setreuid', 114: 'setregid',
-    115: 'getgroups', 116: 'setgroups', 117: 'setresuid', 118: 'getresuid',
-    119: 'setresgid', 120: 'getresgid', 121: 'getpgid', 122: 'setfsuid',
-    123: 'setfsgid', 124: 'getsid', 125: 'capget', 126: 'capset',
-    127: 'rt_sigpending', 128: 'rt_sigtimedwait', 129: 'rt_sigqueueinfo',
-    130: 'rt_sigsuspend', 131: 'sigaltstack', 132: 'utime', 133: 'mknod',
-    134: 'uselib', 135: 'personality', 136: 'ustat', 137: 'statfs',
-    138: 'fstatfs', 139: 'sysfs', 140: 'getpriority', 141: 'setpriority',
-    142: 'sched_setparam', 143: 'sched_getparam', 144: 'sched_setscheduler',
-    145: 'sched_getscheduler', 146: 'sched_get_priority_max',
-    147: 'sched_get_priority_min', 148: 'sched_rr_get_interval',
-    149: 'mlock', 150: 'munlock', 151: 'mlockall', 152: 'munlockall',
-    153: 'vhangup', 154: 'modify_ldt', 155: 'pivot_root', 156: 'prctl',
-    157: 'arch_prctl', 158: 'adjtimex', 159: 'setrlimit', 160: 'chroot',
-    161: 'sync', 162: 'acct', 163: 'settimeofday', 164: 'mount',
-    165: 'umount2', 166: 'swapon', 167: 'swapoff', 168: 'reboot',
-    169: 'sethostname', 170: 'setdomainname', 171: 'iopl', 172: 'ioperm',
-    173: 'create_module', 174: 'init_module', 175: 'delete_module',
-    176: 'get_kernel_syms', 177: 'query_module', 178: 'quotactl',
-    179: 'nfsservctl', 180: 'getpmsg', 181: 'putpmsg', 182: 'afs_syscall',
-    183: 'tuxcall', 184: 'security', 185: 'gettid', 186: 'readahead',
-    187: 'setxattr', 188: 'lsetxattr', 189: 'fsetxattr', 190: 'getxattr',
-    191: 'lgetxattr', 192: 'fgetxattr', 193: 'listxattr', 194: 'llistxattr',
-    195: 'flistxattr', 196: 'removexattr', 197: 'lremovexattr',
-    198: 'fremovexattr', 199: 'tkill', 200: 'time', 201: 'futex',
-    202: 'sched_setaffinity', 203: 'sched_getaffinity', 204: 'set_thread_area',
-    205: 'io_setup', 206: 'io_destroy', 207: 'io_getevents', 208: 'io_submit',
-    209: 'io_cancel', 210: 'get_thread_area', 211: 'lookup_dcookie',
-    212: 'epoll_create', 213: 'epoll_ctl_old', 214: 'epoll_wait_old',
-    215: 'remap_file_pages', 216: 'getdents64', 217: 'set_tid_address',
-    218: 'restart_syscall', 219: 'semtimedop', 220: 'fadvise64',
-    221: 'timer_create', 222: 'timer_settime', 223: 'timer_gettime',
-    224: 'timer_getoverrun', 225: 'timer_delete', 226: 'clock_settime',
-    227: 'clock_gettime', 228: 'clock_getres', 229: 'clock_nanosleep',
-    230: 'exit_group', 231: 'epoll_wait', 232: 'epoll_ctl', 233: 'tgkill',
-    234: 'utimes', 235: 'vserver', 236: 'mbind', 237: 'set_mempolicy',
-    238: 'get_mempolicy', 239: 'mq_open', 240: 'mq_unlink', 241: 'mq_timedsend',
-    242: 'mq_timedreceive', 243: 'mq_notify', 244: 'mq_getsetattr',
-    245: 'kexec_load', 246: 'waitid', 247: 'add_key', 248: 'request_key',
-    249: 'keyctl', 250: 'ioprio_set', 251: 'ioprio_get', 252: 'inotify_init',
-    253: 'inotify_add_watch', 254: 'inotify_rm_watch', 255: 'migrate_pages',
-    256: 'openat', 257: 'mkdirat', 258: 'mknodat', 259: 'fchownat',
-    260: 'futimesat', 261: 'newfstatat', 262: 'unlinkat', 263: 'renameat',
-    264: 'linkat', 265: 'symlinkat', 266: 'readlinkat', 267: 'fchmodat',
-    268: 'faccessat', 269: 'pselect6', 270: 'ppoll', 271: 'unshare',
-    272: 'set_robust_list', 273: 'get_robust_list', 274: 'splice',
-    275: 'tee', 276: 'sync_file_range', 277: 'vmsplice', 278: 'move_pages',
-    279: 'utimensat', 280: 'epoll_pwait', 281: 'signalfd', 282: 'timerfd_create',
-    283: 'eventfd', 284: 'fallocate', 285: 'timerfd_settime',
-    286: 'timerfd_gettime', 287: 'accept4', 288: 'signalfd4', 289: 'eventfd2',
-    290: 'epoll_create1', 291: 'dup3', 292: 'pipe2', 293: 'inotify_init1',
-    294: 'preadv', 295: 'pwritev', 296: 'rt_tgsigqueueinfo', 297: 'perf_event_open',
-    298: 'recvmmsg', 299: 'fanotify_init', 300: 'fanotify_mark',
-    301: 'prlimit64', 302: 'name_to_handle_at', 303: 'open_by_handle_at',
-    304: 'clock_adjtime', 305: 'syncfs', 306: 'sendmmsg', 307: 'setns',
-    308: 'getcpu', 309: 'process_vm_readv', 310: 'process_vm_writev',
-    311: 'kcmp', 312: 'finit_module', 313: 'sched_setattr', 314: 'sched_getattr',
-    315: 'renameat2', 316: 'seccomp', 317: 'getrandom', 318: 'memfd_create',
-    319: 'kexec_file_load', 320: 'bpf', 321: 'execveat', 322: 'userfaultfd',
-    323: 'membarrier', 324: 'mlock2', 325: 'copy_file_range', 326: 'preadv2',
-    327: 'pwritev2', 328: 'pkey_mprotect', 329: 'pkey_alloc', 330: 'pkey_free',
-    331: 'statx', 332: 'io_pgetevents', 333: 'rseq', 334: 'pidfd_send_signal',
-    335: 'io_uring_setup', 336: 'io_uring_enter', 337: 'io_uring_register',
-    338: 'open_tree', 339: 'move_mount', 340: 'fsopen', 341: 'fsconfig',
-    342: 'fsmount', 343: 'fspick', 344: 'pidfd_open', 345: 'clone3',
-    346: 'close_range', 347: 'openat2', 348: 'pidfd_getfd', 349: 'faccessat2',
-    350: 'process_madvise', 351: 'epoll_pwait2', 352: 'mount_setattr',
-    353: 'quotactl_fd', 354: 'landlock_create_ruleset', 355: 'landlock_add_rule',
-    356: 'landlock_restrict_self', 357: 'memfd_secret', 358: 'process_mrelease',
-    359: 'futex_waitv', 360: 'set_mempolicy_home_node', 361: 'cachestat',
-    362: 'fchmodat2', 363: 'map_shadow_stack', 364: 'futex_wake', 365: 'futex_wait',
-    366: 'futex_requeue', 367: 'futex_wake_op', 368: 'futex_lock_pi',
-    369: 'futex_unlock_pi', 370: 'futex_trylock_pi', 371: 'futex_wait_requeue_pi',
-    372: 'futex_cmp_requeue_pi', 373: 'futex_wake_requeue_pi', 374: 'futex_waitv',
-    375: 'futex_wake', 376: 'futex_wait', 377: 'futex_requeue', 378: 'futex_wake_op',
-    379: 'futex_lock_pi', 380: 'futex_unlock_pi', 381: 'futex_trylock_pi',
-    382: 'futex_wait_requeue_pi', 383: 'futex_cmp_requeue_pi', 384: 'futex_wake_requeue_pi',
-    385: 'futex_waitv', 386: 'futex_wake', 387: 'futex_wait', 388: 'futex_requeue',
-    389: 'futex_wake_op', 390: 'futex_lock_pi', 391: 'futex_unlock_pi',
-    392: 'futex_trylock_pi', 393: 'futex_wait_requeue_pi', 394: 'futex_cmp_requeue_pi',
-    395: 'futex_wake_requeue_pi'
-}
+SYSCALL_NAMES = _kernel_maps_service.SYSCALL_NAMES
 
 # Max PIDs to scan for /proc/[pid]/syscall (tasks currently blocked in a syscall).
 KERNEL_DNA_MAX_PROCS = int(os.environ.get('KERNEL_DNA_MAX_PROCS', '1200'))
@@ -614,38 +469,12 @@ def get_kernel_dna_data():
     )
 
 def map_syscall_to_subsystem(syscall_name):
-    """Map syscall name to kernel subsystem"""
-    if not syscall_name:
-        return 'kernel'
-    if syscall_name.startswith('vm:'):
-        return 'mm'
-    if syscall_name.startswith('disk:'):
-        return 'fs'
-    if syscall_name.startswith('net:'):
-        return 'net'
-    syscall_lower = syscall_name.lower()
-    if any(x in syscall_lower for x in ['read', 'write', 'open', 'close', 'stat', 'fsync']):
-        return 'fs'
-    elif any(x in syscall_lower for x in ['socket', 'connect', 'send', 'recv', 'bind']):
-        return 'net'
-    elif any(x in syscall_lower for x in ['mmap', 'munmap', 'brk', 'mprotect']):
-        return 'mm'
-    elif any(x in syscall_lower for x in ['clone', 'fork', 'exec', 'wait', 'exit']):
-        return 'sched'
-    else:
-        return 'kernel'
+    """Map syscall name to kernel subsystem."""
+    return _kernel_maps_service.map_syscall_to_subsystem(syscall_name)
 
 def map_interrupt_to_subsystem(interrupt_name):
-    """Map interrupt name to kernel subsystem"""
-    irq_lower = interrupt_name.lower()
-    if 'timer' in irq_lower:
-        return 'sched'
-    elif any(x in irq_lower for x in ['eth', 'network', 'wifi']):
-        return 'net'
-    elif any(x in irq_lower for x in ['keyboard', 'mouse', 'usb']):
-        return 'drivers'
-    else:
-        return 'kernel'
+    """Map interrupt name to kernel subsystem."""
+    return _kernel_maps_service.map_interrupt_to_subsystem(interrupt_name)
 
 def collect_crypto_realtime():
     return _crypto_security_service.collect_crypto_realtime(crypto_prev=CRYPTO_PREV, entropy_prev=ENTROPY_PREV)
