@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import platform
 import sys
 
 import psutil
+
+logger = logging.getLogger(__name__)
 
 
 def get_system_info():
@@ -87,7 +90,7 @@ def get_kernel_subsystem_status():
                     with open("/proc/loadavg", "r", encoding="utf-8", errors="ignore") as f:
                         loadavg = f.read().strip().split()
                         running_processes = int(float(loadavg[3].split("/")[0]))
-                except Exception:
+                except (OSError, ValueError, IndexError, psutil.Error):
                     running_processes = len(psutil.pids()) if "psutil" in sys.modules else 50
                 subsystems["process_scheduler"] = {"status": "active", "usage": scheduler_usage, "processes": running_processes}
         except (IOError, ValueError, KeyError):
@@ -104,7 +107,7 @@ def get_kernel_subsystem_status():
                             parts = line.split()
                             fs_usage = min(100, max(20, int(parts[5]) // 100)) if len(parts) >= 6 else 60
                             break
-            except Exception:
+            except (OSError, ValueError, IndexError):
                 fs_usage = 60
             fs_processes = max(5, min(50, mount_count * 2))
             subsystems["file_system"] = {"status": "active", "usage": fs_usage, "processes": fs_processes}
@@ -136,14 +139,15 @@ def get_kernel_subsystem_status():
                         tcp_connections = len([line for line in f if line.strip() and not line.startswith("sl")])
                     network_usage = min(100, max(20, tcp_connections // 10))
                     network_processes = max(8, min(50, tcp_connections // 5))
-                except Exception:
+                except (OSError, ValueError, IndexError):
                     pass
             subsystems["network_stack"] = {"status": "active", "usage": network_usage, "processes": network_processes}
         except (IOError, ValueError):
             subsystems["network_stack"] = {"status": "active", "usage": 50, "processes": 12}
 
         return subsystems
-    except Exception:
+    except (OSError, ValueError, KeyError, psutil.Error) as exc:
+        logger.debug("Failed to build kernel subsystem status, using mock: %s", exc)
         return get_mock_kernel_subsystems()
 
 
@@ -167,7 +171,7 @@ def get_process_kernel_map(openai_available=False, openai_module=None):
         if openai_module is None or not hasattr(openai_module, "api_key") or not openai_module.api_key:
             return get_mock_process_kernel_map()
         return get_mock_process_kernel_map()
-    except Exception:
+    except (AttributeError, OSError, ValueError):
         return get_mock_process_kernel_map()
 
 
@@ -210,5 +214,6 @@ def get_nginx_open_files():
             else:
                 files.append({"path": file.path, "type": "other"})
         return files[:10]
-    except Exception:
+    except (psutil.Error, OSError, ValueError) as exc:
+        logger.debug("Failed to read nginx open files, using mock: %s", exc)
         return get_mock_nginx_files()

@@ -1,5 +1,6 @@
 """Prometheus metrics registration (optional dependency)."""
 import os
+import threading
 import time
 
 from flask import Response, g, jsonify, request
@@ -19,6 +20,31 @@ except ImportError:
     _PROMETHEUS_AVAILABLE = False
     CONTENT_TYPE_LATEST = "text/plain; version=0.0.4; charset=utf-8"
 
+_REQUEST_COUNT = None
+_REQUEST_LATENCY = None
+_METRICS_LOCK = threading.Lock()
+
+
+def _get_or_create_http_metrics():
+    """Create Prometheus metric objects once per process."""
+    global _REQUEST_COUNT, _REQUEST_LATENCY
+    if _REQUEST_COUNT is not None and _REQUEST_LATENCY is not None:
+        return _REQUEST_COUNT, _REQUEST_LATENCY
+    with _METRICS_LOCK:
+        if _REQUEST_COUNT is None:
+            _REQUEST_COUNT = Counter(
+                "http_requests_total",
+                "Total HTTP requests",
+                ["method", "endpoint", "status"],
+            )
+        if _REQUEST_LATENCY is None:
+            _REQUEST_LATENCY = Histogram(
+                "http_request_duration_seconds",
+                "HTTP request latency in seconds",
+                buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, float("inf")),
+            )
+    return _REQUEST_COUNT, _REQUEST_LATENCY
+
 
 def init_prometheus(app):
     """Register before/after request hooks and /metrics on the given Flask app."""
@@ -32,16 +58,7 @@ def init_prometheus(app):
 
         return
 
-    request_count = Counter(
-        "http_requests_total",
-        "Total HTTP requests",
-        ["method", "endpoint", "status"],
-    )
-    request_latency = Histogram(
-        "http_request_duration_seconds",
-        "HTTP request latency in seconds",
-        buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, float("inf")),
-    )
+    request_count, request_latency = _get_or_create_http_metrics()
 
     @app.before_request
     def _prometheus_before_request():

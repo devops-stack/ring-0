@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import time
@@ -12,12 +13,15 @@ import psutil
 from kernel_ai.collectors import proc_fs as _proc_fs
 from kernel_ai.state import FILESYSTEM_PREV
 
+logger = logging.getLogger(__name__)
 
-def get_filesystem_blocks():
+
+def get_filesystem_blocks(filesystem_prev=None):
+    filesystem_prev = FILESYSTEM_PREV if filesystem_prev is None else filesystem_prev
     now = time.time()
     try:
         usage = psutil.disk_usage("/")
-    except Exception:
+    except psutil.Error:
         usage = None
 
     used_percent = float(usage.percent) if usage else 0.0
@@ -27,8 +31,8 @@ def get_filesystem_blocks():
 
     io = psutil.disk_io_counters()
     write_bytes = int(io.write_bytes) if io else 0
-    prev_ts = FILESYSTEM_PREV["timestamp"]
-    prev_write = FILESYSTEM_PREV["write_bytes"]
+    prev_ts = filesystem_prev["timestamp"]
+    prev_write = filesystem_prev["write_bytes"]
     dt = max(0.001, now - prev_ts) if prev_ts else 1.0
     write_bps = 0.0 if prev_write is None else max(0.0, (write_bytes - prev_write) / dt)
 
@@ -68,8 +72,8 @@ def get_filesystem_blocks():
                         break
                 else:
                     activity_counts["root"] += 1
-    except Exception:
-        pass
+    except (psutil.Error, OSError) as exc:
+        logger.debug("Failed to sample process open files for filesystem heatmap: %s", exc)
 
     weighted = []
     for z in zone_defs:
@@ -147,8 +151,8 @@ def get_filesystem_blocks():
         )
 
     writing_blocks = sum(1 for b in blocks if b["state"] == "writing")
-    FILESYSTEM_PREV["timestamp"] = now
-    FILESYSTEM_PREV["write_bytes"] = write_bytes
+    filesystem_prev["timestamp"] = now
+    filesystem_prev["write_bytes"] = write_bytes
 
     inode_pressure_global = 0
     if zones:
