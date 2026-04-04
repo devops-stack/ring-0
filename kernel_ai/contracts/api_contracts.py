@@ -73,6 +73,27 @@ class KernelDNAResponse(TypedDict):
     timestamp: str
 
 
+class ProcGraphResponse(TypedDict):
+    nodes: list
+    edges: list
+    timestamp: str
+
+
+class ProcTimelineResponse(TypedDict):
+    timeline: list
+    pid: int
+    name: str
+    timestamp: str
+    timeline_time_basis: str
+
+
+class IsolationContextResponse(TypedDict):
+    timestamp: str
+    processes_scanned: int
+    namespaces: list
+    top_cgroups: list
+
+
 def _expect_dict(payload: Any, name: str) -> dict:
     if not isinstance(payload, dict):
         raise ValueError(f"{name} must be a JSON object")
@@ -161,3 +182,27 @@ def validate_kernel_dna_response(payload: Any) -> None:
     _expect_key(data, "genes", list, "kernel_dna")
     _expect_key(data, "mutations", list, "kernel_dna")
     _expect_key(data, "timestamp", str, "kernel_dna")
+
+
+def validate_proc_graph_response(payload: Any) -> None:
+    data = _expect_dict(payload, "proc_graph")
+    _expect_key(data, "nodes", list, "proc_graph")
+    _expect_key(data, "edges", list, "proc_graph")
+    _expect_key(data, "timestamp", str, "proc_graph")
+
+
+def validate_proc_timeline_response(payload: Any) -> None:
+    data = _expect_dict(payload, "proc_timeline")
+    _expect_key(data, "timeline", list, "proc_timeline")
+    _expect_key(data, "pid", int, "proc_timeline")
+    _expect_key(data, "name", str, "proc_timeline")
+    _expect_key(data, "timestamp", str, "proc_timeline")
+    _expect_key(data, "timeline_time_basis", str, "proc_timeline")
+
+
+def validate_isolation_context_response(payload: Any) -> None:
+    data = _expect_dict(payload, "isolation_context")
+    _expect_key(data, "timestamp", str, "isolation_context")
+    _expect_key(data, "processes_scanned", int, "isolation_context")
+    _expect_key(data, "namespaces", list, "isolation_context")
+    _expect_key(data, "top_cgroups", list, "isolation_context")
