@@ -15,6 +15,26 @@ import psutil
 from kernel_ai.services import processes_runtime as _runtime
 
 
+def get_processes_basic_data() -> list[dict]:
+    """Collect lightweight process list for generic process table endpoint."""
+    processes = []
+    for proc in psutil.process_iter(["pid", "name", "status", "memory_info"]):
+        try:
+            memory_info = proc.info.get("memory_info")
+            memory_mb = (memory_info.rss / 1024 / 1024) if memory_info else 0.0
+            processes.append(
+                {
+                    "pid": proc.info["pid"],
+                    "name": proc.info.get("name"),
+                    "status": proc.info.get("status"),
+                    "memory_mb": round(memory_mb, 1),
+                }
+            )
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return processes
+
+
 def get_proc_matrix_data() -> list[dict]:
     """Build Matrix view data (processes and resource usage)."""
     processes = []

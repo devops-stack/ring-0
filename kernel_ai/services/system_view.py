@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import time
@@ -12,12 +13,14 @@ import psutil
 from kernel_ai.collectors import proc_fs as _proc_fs
 from kernel_ai.state import FILESYSTEM_PREV
 
+logger = logging.getLogger(__name__)
+
 
 def get_filesystem_blocks():
     now = time.time()
     try:
         usage = psutil.disk_usage("/")
-    except Exception:
+    except psutil.Error:
         usage = None
 
     used_percent = float(usage.percent) if usage else 0.0
@@ -68,8 +71,8 @@ def get_filesystem_blocks():
                         break
                 else:
                     activity_counts["root"] += 1
-    except Exception:
-        pass
+    except (psutil.Error, OSError) as exc:
+        logger.debug("Failed to sample process open files for filesystem heatmap: %s", exc)
 
     weighted = []
     for z in zone_defs:

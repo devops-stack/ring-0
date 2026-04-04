@@ -7,9 +7,12 @@ focused on lightweight matrix/graph APIs.
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 import os
 
 import psutil
+
+logger = logging.getLogger(__name__)
 
 
 def get_processes_detailed_data() -> list[dict]:
@@ -68,7 +71,8 @@ def get_processes_detailed_data() -> list[dict]:
             )
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
-        except Exception:
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            logger.debug("Skipping process in detailed scan due to unexpected data: %s", exc)
             continue
     return processes
 
@@ -81,8 +85,8 @@ def _parse_meminfo_kb():
                 parts = line.split()
                 if len(parts) >= 2 and parts[1].isdigit():
                     out[parts[0].rstrip(":")] = int(parts[1])
-    except Exception:
-        pass
+    except OSError as exc:
+        logger.debug("Failed to read /proc/meminfo: %s", exc)
     return out
 
 
@@ -109,7 +113,7 @@ def _build_memory_visual_rows(meminfo_kb, syscall_nodes, vm, swap):
     if mt <= 1:
         try:
             mt = max(1, int(getattr(vm, "total", 0) / 1024))
-        except Exception:
+        except (TypeError, ValueError):
             mt = 1
 
     seed_base = (mt % 100000) + int(mi.get("Active", 0) or 0) % 50000
@@ -220,7 +224,7 @@ def collect_processes_realtime():
     try:
         with open("/sys/kernel/security/lsm", "r", encoding="utf-8", errors="ignore") as f:
             lsm_raw = str(f.read().strip())
-    except Exception:
+    except OSError:
         lsm_raw = ""
     active_lsms = [x.strip() for x in lsm_raw.split(",") if x.strip()]
 
@@ -228,7 +232,7 @@ def collect_processes_realtime():
     try:
         with open("/proc/sys/kernel/yama/ptrace_scope", "r", encoding="utf-8", errors="ignore") as f:
             yama_scope = str(f.read().strip())
-    except Exception:
+    except OSError:
         yama_scope = ""
 
     syscall_nodes = []
@@ -246,11 +250,11 @@ def collect_processes_realtime():
             threads = int(proc.info.get("num_threads") or 0)
             try:
                 rss = int(getattr(proc.memory_info(), "rss", 0) or 0)
-            except Exception:
+            except (psutil.Error, OSError, TypeError, ValueError):
                 rss = 0
             try:
                 fd_count = int(proc.num_fds() or 0)
-            except Exception:
+            except (psutil.Error, OSError, TypeError, ValueError):
                 fd_count = 0
             seccomp_mode = "unknown"
             with open(f"/proc/{pid}/status", "r", encoding="utf-8", errors="ignore") as f:
@@ -281,7 +285,8 @@ def collect_processes_realtime():
                     "rss_bytes": rss,
                 }
             )
-        except Exception:
+        except (psutil.Error, OSError, ValueError, TypeError, KeyError) as exc:
+            logger.debug("Skipping process in realtime collection: %s", exc)
             continue
     syscall_nodes.sort(key=lambda x: x.get("syscall_pressure", 0), reverse=True)
     syscall_nodes = syscall_nodes[:14]
@@ -297,7 +302,7 @@ def collect_processes_realtime():
                 raddr = getattr(conn, "raddr", None)
                 if raddr and len(raddr) >= 1:
                     remote_ip = str(raddr[0])
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
                 remote_ip = ""
             status = str(getattr(conn, "status", "") or "").upper()
             bucket = network_nodes.get(pid)
@@ -305,7 +310,7 @@ def collect_processes_realtime():
                 proc_name = "unknown"
                 try:
                     proc_name = psutil.Process(pid).name()
-                except Exception:
+                except psutil.Error:
                     proc_name = "unknown"
                 bucket = {"pid": pid, "name": proc_name, "connections": 0, "remote_ips": set(), "states": {}}
                 network_nodes[pid] = bucket
@@ -314,8 +319,8 @@ def collect_processes_realtime():
                 bucket["remote_ips"].add(remote_ip)
             if status:
                 bucket["states"][status] = bucket["states"].get(status, 0) + 1
-    except Exception:
-        pass
+    except (psutil.Error, OSError) as exc:
+        logger.debug("Failed to sample net connections in processes realtime: %s", exc)
 
     network_tracing = []
     for _, row in network_nodes.items():
@@ -444,7 +449,8 @@ def collect_processes_realtime():
         meminfo_kb = _parse_meminfo_kb()
         strip_rows, mem_summary = _build_memory_visual_rows(meminfo_kb, syscall_nodes, vm, swap)
         memory_visual = {"layout": "strips", "rows": strip_rows, "summary": mem_summary}
-    except Exception:
+    except (psutil.Error, OSError, ValueError, TypeError) as exc:
+        logger.debug("Failed to build memory visual payload: %s", exc)
         memory_visual = {
             "layout": "strips",
             "rows": [],

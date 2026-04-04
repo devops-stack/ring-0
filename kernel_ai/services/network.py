@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 import re
 import subprocess
 import time
@@ -12,6 +13,8 @@ import psutil
 
 from kernel_ai.services.infra_utils import resolve_binary
 from kernel_ai.state import NETWORK_STACK_PREV, TRACEROUTE_CACHE, TRACEROUTE_CACHE_TTL_SECONDS
+
+logger = logging.getLogger(__name__)
 
 
 def get_active_connections():
@@ -48,7 +51,7 @@ def get_active_connections():
                         }
                     )
         return connections[:20]
-    except Exception:
+    except (OSError, ValueError, IndexError):
         return get_mock_active_connections()
 
 
@@ -99,7 +102,7 @@ def _get_default_iface():
         for iface in pernic.keys():
             if iface != "lo":
                 return iface
-    except Exception:
+    except (psutil.Error, OSError):
         pass
     return "lo"
 

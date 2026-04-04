@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import random
 import subprocess
@@ -9,6 +10,8 @@ import time
 from datetime import datetime
 
 import psutil
+
+logger = logging.getLogger(__name__)
 
 
 def infer_crypto_protocol(local_port, remote_port, process_name):
@@ -77,7 +80,7 @@ def parse_proc_crypto_entries():
     try:
         with open("/proc/crypto", "r", encoding="utf-8", errors="ignore") as f:
             raw = f.read()
-    except Exception:
+    except OSError:
         return entries
 
     blocks = [block.strip() for block in raw.split("\n\n") if block.strip()]
@@ -214,7 +217,7 @@ def read_sysctl_int(path, default=0):
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             raw = f.read().strip()
         return int(raw or default)
-    except Exception:
+    except (OSError, ValueError, TypeError):
         return int(default)
 
 
@@ -226,7 +229,7 @@ def read_proc_interrupt_total():
                     parts = line.strip().split()
                     if len(parts) >= 2:
                         return int(parts[1])
-    except Exception:
+    except (OSError, ValueError):
         return 0
     return 0
 
@@ -240,11 +243,11 @@ def collect_entropy_cloud_status(entropy_prev):
     write_threshold = read_sysctl_int("/proc/sys/kernel/random/write_wakeup_threshold", 64)
     try:
         disk = psutil.disk_io_counters()
-    except Exception:
+    except psutil.Error:
         disk = None
     try:
         net = psutil.net_io_counters()
-    except Exception:
+    except psutil.Error:
         net = None
     intr_total = read_proc_interrupt_total()
     prev_ts = entropy_prev.get("timestamp")
@@ -419,7 +422,8 @@ def collect_crypto_realtime(crypto_prev, entropy_prev=None, callbacks=None):
 
     try:
         connections = psutil.net_connections(kind="inet")
-    except Exception:
+    except psutil.Error as exc:
+        logger.debug("Failed to read net connections for crypto realtime: %s", exc)
         connections = []
 
     tls_ports = {443, 8443, 9443, 6443}
@@ -437,7 +441,7 @@ def collect_crypto_realtime(crypto_prev, entropy_prev=None, callbacks=None):
         if pid_i:
             try:
                 process_name = psutil.Process(pid_i).name().lower()
-            except Exception:
+            except psutil.Error:
                 process_name = f"pid-{pid_i}"
         tls_listener_by_port[int(local_port)] = {"pid": pid_i, "process": process_name}
         tls_listener_names.add(process_name)
@@ -475,7 +479,7 @@ def collect_crypto_realtime(crypto_prev, entropy_prev=None, callbacks=None):
             try:
                 proc = psutil.Process(pid_i)
                 process_name = proc.name()
-            except Exception:
+            except psutil.Error:
                 process_name = f"pid-{pid_i}"
         else:
             unknown_pid_flows += 1
@@ -509,7 +513,7 @@ def collect_crypto_realtime(crypto_prev, entropy_prev=None, callbacks=None):
         for proc in psutil.process_iter(attrs=["pid", "name"]):
             try:
                 name = str(proc.info.get("name", "")).lower()
-            except Exception:
+            except (psutil.Error, KeyError, TypeError):
                 continue
             if any(token in name for token in ["nginx", "sshd", "curl", "openssl", "kube", "vpn", "python"]):
                 protocol, algorithm = infer_crypto_protocol_fn(0, 0, name)
@@ -685,7 +689,7 @@ def collect_security_realtime(security_prev):
             )
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
-        except Exception:
+        except (psutil.Error, KeyError, TypeError, ValueError):
             continue
 
     process_rows.sort(key=lambda p: (p["risk_score"], p["mem_percent"], p["threads"]), reverse=True)
@@ -718,13 +722,13 @@ def collect_security_realtime(security_prev):
 
     try:
         listen_ports = len([c for c in psutil.net_connections(kind="inet") if str(getattr(c, "status", "") or "") == "LISTEN"])
-    except Exception:
+    except psutil.Error:
         listen_ports = 0
 
     try:
         with open("/proc/modules", "r", encoding="utf-8", errors="ignore") as f:
             loaded_modules = sum(1 for _ in f)
-    except Exception:
+    except OSError:
         loaded_modules = 0
 
     ptrace_processes = sum(1 for p in process_rows if any(tok in p.get("name", "") for tok in ptrace_like))
@@ -740,7 +744,7 @@ def collect_security_realtime(security_prev):
             timeout=1.8,
         ).strip()
         setuid_bins = int(out or 0)
-    except Exception:
+    except (subprocess.SubprocessError, OSError, ValueError):
         setuid_bins = 0
 
     attack_surface = [
@@ -756,7 +760,7 @@ def collect_security_realtime(security_prev):
         try:
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
                 return str(f.read().strip())
-        except Exception:
+        except OSError:
             return ""
 
     apparmor_raw = _read_text("/sys/module/apparmor/parameters/enabled")
@@ -771,7 +775,7 @@ def collect_security_realtime(security_prev):
         lsm_list_raw = _read_text("/sys/kernel/security/lsm")
         active_lsms = [x.strip() for x in lsm_list_raw.split(",")] if lsm_list_raw else []
         stacking_enabled = len([x for x in active_lsms if x in {"selinux", "apparmor", "bpf"}]) > 1
-    except Exception:
+    except (OSError, AttributeError, TypeError):
         active_lsms = []
         stacking_enabled = False
 
@@ -910,7 +914,7 @@ def collect_security_realtime(security_prev):
                             seccomp_mode = "filter"
                         else:
                             seccomp_mode = "unknown"
-        except Exception:
+        except OSError:
             pass
 
         seccomp_counts[seccomp_mode] = seccomp_counts.get(seccomp_mode, 0) + 1
@@ -945,7 +949,7 @@ def collect_security_realtime(security_prev):
             continue
         try:
             cap_eff_val = int(cap_eff_hex, 16)
-        except Exception:
+        except ValueError:
             continue
 
         all_caps = [all_capabilities_map.get(bit, f"CAP_{bit}") for bit in range(41) if (cap_eff_val & (1 << bit))]
