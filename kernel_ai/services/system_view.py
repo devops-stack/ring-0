@@ -11,13 +11,17 @@ from datetime import datetime
 import psutil
 
 from kernel_ai.collectors import proc_fs as _proc_fs
-from kernel_ai.state import FILESYSTEM_PREV
 
 logger = logging.getLogger(__name__)
 
+_FILESYSTEM_PREV_DEFAULT = {
+    "timestamp": None,
+    "write_bytes": None,
+}
+
 
 def get_filesystem_blocks(filesystem_prev=None):
-    filesystem_prev = FILESYSTEM_PREV if filesystem_prev is None else filesystem_prev
+    filesystem_prev = _FILESYSTEM_PREV_DEFAULT if filesystem_prev is None else filesystem_prev
     now = time.time()
     try:
         usage = psutil.disk_usage("/")

@@ -11,6 +11,7 @@ from kernel_ai.config import Config
 from kernel_ai.hooks import register_hooks
 from kernel_ai.http.register import register_http_routes
 from kernel_ai.prometheus_setup import init_prometheus
+from kernel_ai.state import attach_state_container
 
 def _ensure_prometheus_mpdir():
     # Gunicorn -w N: set PROMETHEUS_MULTIPROC_DIR before workers import this module.
@@ -39,6 +40,7 @@ def create_app():
         template_folder=os.path.join(root, "templates"),
     )
     app.config.from_object(Config)
+    attach_state_container(app)
     init_prometheus(app)
     register_hooks(app)
     register_http_routes(app)
