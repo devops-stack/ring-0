@@ -47,6 +47,32 @@ class FilesystemBlocksResponse(TypedDict):
     meta: dict
 
 
+class ProcessesRealtimeResponse(TypedDict):
+    timestamp: str
+    syscalls_interception: list
+    network_tracing: list
+    security_hooks: list
+    neural_graph: dict
+    memory_visual: dict
+    meta: dict
+
+
+class ExecutionContextResponse(TypedDict):
+    mode: str
+    cpu_state: str
+    syscall_active: bool
+    interrupts: list
+    irq_stack: dict
+    timestamp: str
+
+
+class KernelDNAResponse(TypedDict):
+    nucleotides: list
+    genes: list
+    mutations: list
+    timestamp: str
+
+
 def _expect_dict(payload: Any, name: str) -> dict:
     if not isinstance(payload, dict):
         raise ValueError(f"{name} must be a JSON object")
@@ -106,3 +132,32 @@ def validate_filesystem_blocks_response(payload: Any) -> None:
     _expect_key(data, "zones", list, "filesystem_blocks")
     _expect_key(data, "blocks", list, "filesystem_blocks")
     _expect_key(data, "meta", dict, "filesystem_blocks")
+
+
+def validate_processes_realtime_response(payload: Any) -> None:
+    data = _expect_dict(payload, "processes_realtime")
+    _expect_key(data, "timestamp", str, "processes_realtime")
+    _expect_key(data, "syscalls_interception", list, "processes_realtime")
+    _expect_key(data, "network_tracing", list, "processes_realtime")
+    _expect_key(data, "security_hooks", list, "processes_realtime")
+    _expect_key(data, "neural_graph", dict, "processes_realtime")
+    _expect_key(data, "memory_visual", dict, "processes_realtime")
+    _expect_key(data, "meta", dict, "processes_realtime")
+
+
+def validate_execution_context_response(payload: Any) -> None:
+    data = _expect_dict(payload, "execution_context")
+    _expect_key(data, "mode", str, "execution_context")
+    _expect_key(data, "cpu_state", str, "execution_context")
+    _expect_key(data, "syscall_active", bool, "execution_context")
+    _expect_key(data, "interrupts", list, "execution_context")
+    _expect_key(data, "irq_stack", dict, "execution_context")
+    _expect_key(data, "timestamp", str, "execution_context")
+
+
+def validate_kernel_dna_response(payload: Any) -> None:
+    data = _expect_dict(payload, "kernel_dna")
+    _expect_key(data, "nucleotides", list, "kernel_dna")
+    _expect_key(data, "genes", list, "kernel_dna")
+    _expect_key(data, "mutations", list, "kernel_dna")
+    _expect_key(data, "timestamp", str, "kernel_dna")
