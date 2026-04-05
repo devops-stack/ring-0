@@ -26,17 +26,28 @@ def register_hooks(app):
 
         started_ns = getattr(g, "request_started_ns", None)
         duration_ns = (time.time_ns() - started_ns) if started_ns else None
+        source_ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+        if source_ip and "," in source_ip:
+            source_ip = source_ip.split(",")[0].strip()
         _http_access_logger.info(
             "http_request",
             extra={
                 "event_data": {
+                    "@timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "event.category": "web",
+                    "event.type": "access",
                     "event.dataset": "kernel_ai.http",
                     "request.id": request_id,
+                    "source.ip": source_ip,
                     "http.request.method": request.method,
+                    "http.version": request.environ.get("SERVER_PROTOCOL", ""),
+                    "host.name": request.host,
                     "url.path": request.path,
+                    "url.query": (request.query_string or b"").decode("utf-8", errors="ignore"),
+                    "user_agent.original": request.headers.get("User-Agent"),
                     "http.response.status_code": response.status_code,
+                    "service.environment": current_app.config.get("ENV", "production"),
                     "event.duration": duration_ns,
-                    "network.client.ip": request.headers.get("X-Forwarded-For", request.remote_addr),
                 }
             },
         )

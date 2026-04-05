@@ -12,6 +12,8 @@ import os
 
 import psutil
 
+from kernel_ai.logging_helpers import log_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -72,7 +74,15 @@ def get_processes_detailed_data() -> list[dict]:
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
         except (OSError, ValueError, TypeError, KeyError) as exc:
-            logger.debug("Skipping process in detailed scan due to unexpected data: %s", exc)
+            log_event(
+                logger,
+                "DEBUG",
+                "Skipping process in detailed scan due to unexpected data",
+                event_dataset="kernel_ai.app",
+                component="services.processes_runtime",
+                operation="get_processes_detailed_data",
+                event_data={"error": str(exc)},
+            )
             continue
     return processes
 
@@ -86,7 +96,15 @@ def _parse_meminfo_kb():
                 if len(parts) >= 2 and parts[1].isdigit():
                     out[parts[0].rstrip(":")] = int(parts[1])
     except OSError as exc:
-        logger.debug("Failed to read /proc/meminfo: %s", exc)
+        log_event(
+            logger,
+            "DEBUG",
+            "Failed to read /proc/meminfo",
+            event_dataset="kernel_ai.app",
+            component="services.processes_runtime",
+            operation="_parse_meminfo_kb",
+            event_data={"error": str(exc)},
+        )
     return out
 
 
@@ -286,7 +304,15 @@ def collect_processes_realtime():
                 }
             )
         except (psutil.Error, OSError, ValueError, TypeError, KeyError) as exc:
-            logger.debug("Skipping process in realtime collection: %s", exc)
+            log_event(
+                logger,
+                "DEBUG",
+                "Skipping process in realtime collection",
+                event_dataset="kernel_ai.app",
+                component="services.processes_runtime",
+                operation="collect_processes_realtime",
+                event_data={"error": str(exc)},
+            )
             continue
     syscall_nodes.sort(key=lambda x: x.get("syscall_pressure", 0), reverse=True)
     syscall_nodes = syscall_nodes[:14]
@@ -320,7 +346,15 @@ def collect_processes_realtime():
             if status:
                 bucket["states"][status] = bucket["states"].get(status, 0) + 1
     except (psutil.Error, OSError) as exc:
-        logger.debug("Failed to sample net connections in processes realtime: %s", exc)
+        log_event(
+            logger,
+            "DEBUG",
+            "Failed to sample net connections in processes realtime",
+            event_dataset="kernel_ai.app",
+            component="services.processes_runtime",
+            operation="collect_processes_realtime",
+            event_data={"error": str(exc)},
+        )
 
     network_tracing = []
     for _, row in network_nodes.items():
@@ -450,7 +484,15 @@ def collect_processes_realtime():
         strip_rows, mem_summary = _build_memory_visual_rows(meminfo_kb, syscall_nodes, vm, swap)
         memory_visual = {"layout": "strips", "rows": strip_rows, "summary": mem_summary}
     except (psutil.Error, OSError, ValueError, TypeError) as exc:
-        logger.debug("Failed to build memory visual payload: %s", exc)
+        log_event(
+            logger,
+            "DEBUG",
+            "Failed to build memory visual payload",
+            event_dataset="kernel_ai.app",
+            component="services.processes_runtime",
+            operation="collect_processes_realtime",
+            event_data={"error": str(exc)},
+        )
         memory_visual = {
             "layout": "strips",
             "rows": [],

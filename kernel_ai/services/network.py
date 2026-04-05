@@ -11,6 +11,7 @@ from datetime import datetime
 
 import psutil
 
+from kernel_ai.logging_helpers import log_event
 from kernel_ai.services.infra_utils import resolve_binary
 
 logger = logging.getLogger(__name__)
@@ -63,7 +64,16 @@ def get_active_connections():
                         }
                     )
         return connections[:20]
-    except (OSError, ValueError, IndexError):
+    except (OSError, ValueError, IndexError) as exc:
+        log_event(
+            logger,
+            "DEBUG",
+            "Failed to parse /proc/net/tcp, using mock active connections",
+            event_dataset="kernel_ai.app",
+            component="services.network",
+            operation="get_active_connections",
+            event_data={"error": str(exc)},
+        )
         return get_mock_active_connections()
 
 
@@ -396,6 +406,15 @@ def get_traceroute_info(remote_ip, max_hops=8, traceroute_cache=None, cache_ttl_
         if target_ip.is_loopback or target_ip.is_unspecified:
             return {"remote_ip": remote_ip, "tool": None, "reached": False, "hop_count": 0, "hops": [], "note": "Local address, traceroute skipped"}
     except ValueError:
+        log_event(
+            logger,
+            "DEBUG",
+            "Invalid IP passed to traceroute info",
+            event_dataset="kernel_ai.app",
+            component="services.network",
+            operation="get_traceroute_info",
+            event_data={"remote_ip": remote_ip},
+        )
         raise ValueError("Invalid IP address")
 
     now = time.time()
