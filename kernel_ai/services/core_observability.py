@@ -8,6 +8,8 @@ import sys
 
 import psutil
 
+from kernel_ai.logging_helpers import log_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -147,7 +149,15 @@ def get_kernel_subsystem_status():
 
         return subsystems
     except (OSError, ValueError, KeyError, psutil.Error) as exc:
-        logger.debug("Failed to build kernel subsystem status, using mock: %s", exc)
+        log_event(
+            logger,
+            "DEBUG",
+            "Failed to build kernel subsystem status, using mock",
+            event_dataset="kernel_ai.app",
+            component="services.core_observability",
+            operation="get_kernel_subsystem_status",
+            event_data={"error": str(exc)},
+        )
         return get_mock_kernel_subsystems()
 
 
@@ -215,5 +225,13 @@ def get_nginx_open_files():
                 files.append({"path": file.path, "type": "other"})
         return files[:10]
     except (psutil.Error, OSError, ValueError) as exc:
-        logger.debug("Failed to read nginx open files, using mock: %s", exc)
+        log_event(
+            logger,
+            "DEBUG",
+            "Failed to read nginx open files, using mock",
+            event_dataset="kernel_ai.app",
+            component="services.core_observability",
+            operation="get_nginx_open_files",
+            event_data={"error": str(exc)},
+        )
         return get_mock_nginx_files()
