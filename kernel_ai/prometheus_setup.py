@@ -22,14 +22,15 @@ except ImportError:
 
 _REQUEST_COUNT = None
 _REQUEST_LATENCY = None
+_REQUEST_ERRORS = None
 _METRICS_LOCK = threading.Lock()
 
 
 def _get_or_create_http_metrics():
     """Create Prometheus metric objects once per process."""
-    global _REQUEST_COUNT, _REQUEST_LATENCY
-    if _REQUEST_COUNT is not None and _REQUEST_LATENCY is not None:
-        return _REQUEST_COUNT, _REQUEST_LATENCY
+    global _REQUEST_COUNT, _REQUEST_LATENCY, _REQUEST_ERRORS
+    if _REQUEST_COUNT is not None and _REQUEST_LATENCY is not None and _REQUEST_ERRORS is not None:
+        return _REQUEST_COUNT, _REQUEST_LATENCY, _REQUEST_ERRORS
     with _METRICS_LOCK:
         if _REQUEST_COUNT is None:
             _REQUEST_COUNT = Counter(
@@ -43,7 +44,13 @@ def _get_or_create_http_metrics():
                 "HTTP request latency in seconds",
                 buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, float("inf")),
             )
-    return _REQUEST_COUNT, _REQUEST_LATENCY
+        if _REQUEST_ERRORS is None:
+            _REQUEST_ERRORS = Counter(
+                "http_errors_total",
+                "Total HTTP error responses",
+                ["method", "endpoint", "status"],
+            )
+    return _REQUEST_COUNT, _REQUEST_LATENCY, _REQUEST_ERRORS
 
 
 def init_prometheus(app):
@@ -58,7 +65,7 @@ def init_prometheus(app):
 
         return
 
-    request_count, request_latency = _get_or_create_http_metrics()
+    request_count, request_latency, request_errors = _get_or_create_http_metrics()
 
     @app.before_request
     def _prometheus_before_request():
@@ -78,6 +85,12 @@ def init_prometheus(app):
                 endpoint=endpoint_label,
                 status=str(response.status_code),
             ).inc()
+            if response.status_code >= 400:
+                request_errors.labels(
+                    method=request.method,
+                    endpoint=endpoint_label,
+                    status=str(response.status_code),
+                ).inc()
         except Exception:
             pass
         return response
