@@ -11,6 +11,7 @@ from datetime import datetime
 import psutil
 
 from kernel_ai.collectors import proc_fs as _proc_fs
+from kernel_ai.logging_helpers import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,15 @@ def get_filesystem_blocks(filesystem_prev=None):
                 else:
                     activity_counts["root"] += 1
     except (psutil.Error, OSError) as exc:
-        logger.debug("Failed to sample process open files for filesystem heatmap: %s", exc)
+        log_event(
+            logger,
+            "DEBUG",
+            "Failed to sample process open files for filesystem heatmap",
+            event_dataset="kernel_ai.app",
+            component="services.system_view",
+            operation="get_filesystem_blocks",
+            event_data={"error": str(exc)},
+        )
 
     weighted = []
     for z in zone_defs:
