@@ -545,8 +545,11 @@ class NetworkStackVisualization {
     }
 
     fetchTelemetry() {
-        return fetch('/api/network-stack-realtime')
-            .then(res => res.json())
+        return window.fetchJson('/api/network-stack-realtime', { cache: 'no-store' }, {
+            timeoutMs: 6000,
+            suppressToast: true,
+            context: 'network-stack-realtime'
+        })
             .then(data => {
                 if (!data || data.error) {
                     throw new Error(data?.error || 'No telemetry data');
