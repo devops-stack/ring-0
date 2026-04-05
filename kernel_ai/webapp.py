@@ -9,7 +9,9 @@ from flask import Flask, jsonify
 
 from kernel_ai.config import Config
 from kernel_ai.hooks import register_hooks
+from kernel_ai.http.common import build_error_payload
 from kernel_ai.http.register import register_http_routes
+from kernel_ai.logging_setup import configure_logging
 from kernel_ai.prometheus_setup import init_prometheus
 from kernel_ai.state import attach_state_container
 
@@ -23,11 +25,11 @@ def _ensure_prometheus_mpdir():
 def _register_error_handlers(app):
     @app.errorhandler(404)
     def not_found(error):
-        return jsonify({"error": "Not found"}), 404
+        return jsonify(build_error_payload("Not found", "not_found")), 404
 
     @app.errorhandler(500)
     def internal_error(error):
-        return jsonify({"error": "Internal server error"}), 500
+        return jsonify(build_error_payload("Internal server error", "internal_error")), 500
 
 
 def create_app():
@@ -40,6 +42,7 @@ def create_app():
         template_folder=os.path.join(root, "templates"),
     )
     app.config.from_object(Config)
+    configure_logging(app)
     attach_state_container(app)
     init_prometheus(app)
     register_hooks(app)
