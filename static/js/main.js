@@ -421,8 +421,17 @@ function drawRing1(centerX, centerY) {
 // Update Ring-1 with execution context data
 function updateRing1(centerX, centerY, baseRadius) {
     // Use relative path like other API calls
-    fetch('/api/execution-context')
-        .then(res => res.json())
+    window.fetchJson('/api/execution-context', { cache: 'no-store' }, {
+        timeoutMs: 4500,
+        suppressToast: true,
+        context: 'execution-context'
+    })
+        .then(data => {
+            if (!data || data.error) {
+                throw new Error(data?.error || 'No execution context');
+            }
+            return data;
+        })
         .then(data => {
             // Debug logging
             debugLog('🔄 Ring-1 Update:', {
@@ -587,7 +596,7 @@ function updateRing1(centerX, centerY, baseRadius) {
             renderIrqStackPanel(data);
         })
         .catch(error => {
-            console.error('Error fetching execution context:', error);
+            debugLog('Error fetching execution context:', error && error.message ? error.message : error);
         });
 }
 
@@ -756,13 +765,24 @@ function drawPanels(width, height) {
 
 // Load processes and kernel subsystems
 function loadProcessKernelMap(centerX, centerY) {
-    fetch('/api/process-kernel-map')
-        .then(res => res.json())
+    window.fetchJson('/api/process-kernel-map', { cache: 'no-store' }, {
+        timeoutMs: 6500,
+        retries: 1,
+        context: 'process-kernel-map',
+        toastMessage: 'Process graph is temporarily unavailable'
+    })
+        .then(data => {
+            if (!data || data.error) {
+                throw new Error(data?.error || 'No process map data');
+            }
+            return data;
+        })
         .then(data => {
             drawProcessKernelMap(data, centerX, centerY);
         })
         .catch(error => {
             console.error('Error fetching process-kernel-map:', error);
+            drawProcessKernelMap({}, centerX, centerY);
         });
 }
 
@@ -864,8 +884,18 @@ function drawProcessKernelMap(data, centerX, centerY) {
 // Draw additional process lines (without circles and names)
 function drawProcessKernelMap2(centerX, centerY) {
     // Fetch all Linux processes with detailed information
-    fetch('/api/processes-detailed')
-        .then(res => res.json())
+    window.fetchJson('/api/processes-detailed', { cache: 'no-store' }, {
+        timeoutMs: 6500,
+        retries: 1,
+        context: 'processes-detailed',
+        toastMessage: 'Process details are temporarily unavailable'
+    })
+        .then(data => {
+            if (!data || data.error) {
+                throw new Error(data?.error || 'No detailed processes data');
+            }
+            return data;
+        })
         .then(data => {
             const processes = data.processes || [];
             const numProcesses = processes.length;

@@ -229,8 +229,11 @@ class SecuritySubsystemVisualization {
     }
 
     fetchTelemetry() {
-        return fetch('/api/security-realtime')
-            .then((res) => res.json())
+        return window.fetchJson('/api/security-realtime', { cache: 'no-store' }, {
+            timeoutMs: 6000,
+            suppressToast: true,
+            context: 'security-realtime'
+        })
             .then((data) => {
                 if (!data || data.error) {
                     throw new Error(data?.error || 'No security data');

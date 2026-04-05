@@ -1942,11 +1942,11 @@ class CryptoSubsystemVisualization {
     }
 
     fetchTelemetry() {
-        return fetch('/api/crypto-realtime', { cache: 'no-store' })
-            .then((res) => {
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                return res.json();
-            })
+        return window.fetchJson('/api/crypto-realtime', { cache: 'no-store' }, {
+            timeoutMs: 6000,
+            suppressToast: true,
+            context: 'crypto-realtime'
+        })
             .then((data) => {
                 if (!data || data.error) throw new Error(data?.error || 'No crypto telemetry');
                 const normalized = this.normalizeTelemetry(data);

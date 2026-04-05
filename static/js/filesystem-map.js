@@ -193,8 +193,11 @@ class FilesystemMapVisualization {
     }
 
     fetchTelemetry() {
-        return fetch('/api/filesystem-blocks')
-            .then((res) => res.json())
+        return window.fetchJson('/api/filesystem-blocks', { cache: 'no-store' }, {
+            timeoutMs: 6000,
+            suppressToast: true,
+            context: 'filesystem-blocks'
+        })
             .then((data) => {
                 if (!data || data.error) {
                     throw new Error(data?.error || 'No filesystem data');
