@@ -15,6 +15,22 @@ import psutil
 from kernel_ai.logging_helpers import log_event
 
 logger = logging.getLogger(__name__)
+_DEGRADATION_COUNTS = {}
+
+
+def _record_degradation(name: str, reason: str):
+    count = int(_DEGRADATION_COUNTS.get(name, 0)) + 1
+    _DEGRADATION_COUNTS[name] = count
+    if count in (1, 10, 100, 1000):
+        log_event(
+            logger,
+            "WARNING",
+            "service_degradation",
+            event_dataset="kernel_ai.app",
+            component="services.processes_runtime",
+            operation=name,
+            event_data={"count": count, "reason": reason},
+        )
 
 
 def get_processes_detailed_data() -> list[dict]:
@@ -493,6 +509,7 @@ def collect_processes_realtime():
             operation="collect_processes_realtime",
             event_data={"error": str(exc)},
         )
+        _record_degradation("memory_visual_fallback", str(exc))
         memory_visual = {
             "layout": "strips",
             "rows": [],

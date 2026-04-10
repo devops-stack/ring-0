@@ -28,6 +28,23 @@ _NETWORK_STACK_PREV_DEFAULT = {
 }
 _TRACEROUTE_CACHE_DEFAULT = {}
 _TRACEROUTE_CACHE_TTL_SECONDS_DEFAULT = 60
+_FALLBACK_COUNTS = {}
+
+
+def _record_fallback(fallback_name: str, reason: str):
+    count = int(_FALLBACK_COUNTS.get(fallback_name, 0)) + 1
+    _FALLBACK_COUNTS[fallback_name] = count
+    # Log first occurrence and then sparse checkpoints to avoid noisy logs.
+    if count in (1, 10, 100, 1000):
+        log_event(
+            logger,
+            "INFO",
+            "service_fallback_activated",
+            event_dataset="kernel_ai.app",
+            component="services.network",
+            operation=fallback_name,
+            event_data={"count": count, "reason": reason},
+        )
 
 
 def get_active_connections():
@@ -74,6 +91,7 @@ def get_active_connections():
             operation="get_active_connections",
             event_data={"error": str(exc)},
         )
+        _record_fallback("get_active_connections", str(exc))
         return get_mock_active_connections()
 
 
