@@ -6,6 +6,8 @@ import os
 import platform
 from datetime import datetime
 
+from kernel_ai.sentry_helpers import capture_exception
+
 
 def _kernel_dna_read_proc_vmstat():
     """Parse /proc/vmstat into a dict of int counters."""
@@ -139,7 +141,8 @@ def get_real_system_calls(syscall_names, map_syscall_to_subsystem_fn, kernel_dna
             merged.sort(key=lambda x: x["count"], reverse=True)
             return merged[:20]
         return []
-    except Exception:
+    except Exception as exc:
+        capture_exception(exc, where="services.syscalls.get_real_system_calls")
         return [] if platform.system() == "Linux" else fallback_mock_calls_fn()
 
 

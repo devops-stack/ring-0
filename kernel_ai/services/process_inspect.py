@@ -8,6 +8,7 @@ import re
 import psutil
 
 from kernel_ai.services import system_view as _system_view_service
+from kernel_ai.sentry_helpers import capture_exception
 
 
 def get_ipc_links_summary(max_pairs=120, max_nodes=24):
@@ -215,6 +216,7 @@ def get_process_threads_info(pid):
     except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
         return {"error": str(e)}
     except Exception as e:
+        capture_exception(e, where="services.process_inspect.get_process_threads_info")
         return {"error": str(e)}
 
 
@@ -249,6 +251,7 @@ def get_process_cpu_info(pid):
     except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
         return {"error": str(e)}
     except Exception as e:
+        capture_exception(e, where="services.process_inspect.get_process_cpu_info")
         return {"error": str(e)}
 
 
@@ -314,4 +317,5 @@ def get_process_fds_info(pid):
     except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
         return {"error": f"Access denied or process not found: {str(e)}"}
     except Exception as e:
+        capture_exception(e, where="services.process_inspect.get_process_fds_info")
         return {"error": f"Error getting FDs: {str(e)}"}

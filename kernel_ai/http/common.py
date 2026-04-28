@@ -1,6 +1,7 @@
 """Common HTTP helpers."""
 
 from flask import g, has_request_context, jsonify
+from kernel_ai.sentry_helpers import capture_exception
 
 
 def build_error_payload(message, code, details=None):
@@ -36,6 +37,13 @@ def api_json(producer, error_status=500, error_extra=None, exception_statuses=No
             error_code = "not_found"
         elif status == 503:
             error_code = "service_unavailable"
+        # Capture only server-side failures; 4xx branches can be expected.
+        if status >= 500:
+            capture_exception(
+                e,
+                where="http.common.api_json",
+                extra={"status": status, "error_code": error_code},
+            )
         payload = build_error_payload(str(e), error_code)
         if error_extra:
             payload.update(error_extra)
