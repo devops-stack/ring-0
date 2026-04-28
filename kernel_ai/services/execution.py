@@ -9,6 +9,8 @@ from datetime import datetime
 
 import psutil
 
+from kernel_ai.sentry_helpers import capture_exception
+
 
 def get_execution_context_data(syscall_names, map_interrupt_to_subsystem_fn, exec_context_prev):
     """Collect execution context payload used by Ring-1 visualization."""
@@ -284,8 +286,8 @@ def get_kernel_dna_data(get_real_system_calls_fn, map_syscall_to_subsystem_fn, m
                     "timestamp": datetime.now().isoformat(),
                 }
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        capture_exception(exc, where="services.execution.get_kernel_dna_data.syscalls")
 
     try:
         with open("/proc/interrupts", "r", encoding="utf-8", errors="ignore") as f:
@@ -357,8 +359,8 @@ def get_kernel_dna_data(get_real_system_calls_fn, map_syscall_to_subsystem_fn, m
                     "timestamp": datetime.now().isoformat(),
                 }
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            capture_exception(exc, where="services.execution.get_kernel_dna_data.locks_fallback")
 
     dna_data["genes"] = [
         {"name": "sched", "start": 0, "end": 0.2, "color": "#58b6d8"},

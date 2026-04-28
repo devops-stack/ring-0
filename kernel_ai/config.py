@@ -19,3 +19,8 @@ class Config:
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
     LOG_FORMAT = os.getenv("LOG_FORMAT", "json")
     LOG_SERVICE_NAME = os.getenv("LOG_SERVICE_NAME", "kernel-ai-backend")
+    SENTRY_DSN = os.getenv("SENTRY_DSN", "").strip()
+    SENTRY_ENVIRONMENT = os.getenv("SENTRY_ENVIRONMENT", ENV)
+    SENTRY_RELEASE = os.getenv("SENTRY_RELEASE", "").strip() or None
+    SENTRY_SEND_DEFAULT_PII = os.getenv("SENTRY_SEND_DEFAULT_PII", "false").lower() == "true"
+    SENTRY_TRACES_SAMPLE_RATE = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0"))
