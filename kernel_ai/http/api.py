@@ -6,6 +6,7 @@ from kernel_ai.http.api_handlers.kernel import (
     kernel_dna,
     nginx_files,
     process_kernel_map,
+    sentry_test,
     syscalls_realtime,
 )
 from kernel_ai.http.api_handlers.network_system import (
@@ -21,6 +22,7 @@ from kernel_ai.http.api_handlers.processes import (
     get_proc_graph,
     get_proc_matrix,
     get_proc_timeline,
+    get_proc_timeline_branches,
     get_process_cpu,
     get_process_fds,
     get_process_files,
@@ -45,6 +47,7 @@ __all__ = [
     "get_proc_graph",
     "get_proc_matrix",
     "get_proc_timeline",
+    "get_proc_timeline_branches",
     "get_process_cpu",
     "get_process_fds",
     "get_process_files",
@@ -61,6 +64,7 @@ __all__ = [
     "process_kernel_map",
     "processes_realtime",
     "security_realtime",
+    "sentry_test",
     "syscalls_realtime",
     "traceroute_info",
 ]
