@@ -23,6 +23,7 @@ _API_ROUTES = [
     ("/ipc-links", "get_ipc_links", h.get_ipc_links, None),
     ("/proc-matrix", "get_proc_matrix", h.get_proc_matrix, None),
     ("/proc-timeline", "get_proc_timeline", h.get_proc_timeline, None),
+    ("/proc-timeline-branches", "get_proc_timeline_branches", h.get_proc_timeline_branches, None),
     ("/execution-context", "get_execution_context", h.get_execution_context, None),
     ("/kernel-dna", "kernel_dna", h.kernel_dna, None),
     ("/crypto-realtime", "crypto_realtime", h.crypto_realtime, None),
@@ -31,6 +32,7 @@ _API_ROUTES = [
     ("/frontend-logs", "ingest_frontend_logs", h.ingest_frontend_logs, ["POST", "OPTIONS"]),
     ("/proc-graph", "proc_graph", h.get_proc_graph, None),
     ("/process-files", "process_files", h.get_process_files, None),
+    ("/sentry-test", "sentry_test", h.sentry_test, ["POST"]),
 ]
 
 for rule, endpoint, view_func, methods in _API_ROUTES:

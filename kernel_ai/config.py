@@ -24,3 +24,5 @@ class Config:
     SENTRY_RELEASE = os.getenv("SENTRY_RELEASE", "").strip() or None
     SENTRY_SEND_DEFAULT_PII = os.getenv("SENTRY_SEND_DEFAULT_PII", "false").lower() == "true"
     SENTRY_TRACES_SAMPLE_RATE = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0"))
+    SENTRY_TEST_ENDPOINT_ENABLED = os.getenv("SENTRY_TEST_ENDPOINT_ENABLED", "false").lower() == "true"
+    SENTRY_TEST_ENDPOINT_TOKEN = os.getenv("SENTRY_TEST_ENDPOINT_TOKEN", "").strip()
