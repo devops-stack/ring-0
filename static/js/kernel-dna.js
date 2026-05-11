@@ -24,8 +24,12 @@ class KernelDNAVisualization {
         this.mutationAnimations = []; // Track mutation animations to stop them
         this.isAnimating = false; // Prevent multiple animation loops
         this.timelineMode = false; // Timeline mode: growing helix over time
+        this.timelineBranchMode = false; // Multi-process branch timeline mode
         this.timelineData = []; // Process timeline events
+        this.timelineBranches = []; // Multi-branch process timelines
         this.selectedPid = null; // Selected process PID for timeline
+        this.timelineWindowS = 30; // Timeline zoom window in seconds
+        this.timelineWindowOptions = [5, 30, 120];
         this.timeStart = null; // Start time for timeline
         this.maxTimelineHeight = 30; // Maximum height for timeline helix
         this.raycaster = null;
@@ -39,6 +43,8 @@ class KernelDNAVisualization {
         this.exitButton = null; // Store exit button reference
         this._loadingOverlay = null;
         this._uxStylesInjected = false;
+        this.pinnedTimelineLabels = [];
+        this.pinnedLabelLayer = null;
         
         // Color palette - New design system
         this.colors = {
@@ -702,15 +708,30 @@ class KernelDNAVisualization {
 
     async renderTimeline() {
         if (!this.selectedPid) {
-            this._showLoadingOverlay('Loading processes');
-            this.clear();
+            this._showLoadingOverlay('Loading process branches');
             try {
-                await this.addTimelineLabels(null);
+                const response = await fetch(`/api/proc-timeline-branches?limit=6&events=10&window_s=${this.timelineWindowS}`);
+                const data = await response.json();
+                if (data.error) {
+                    console.error('❌ Branch timeline error:', data.error);
+                    this.clear();
+                    await this.addTimelineLabels(null);
+                    return;
+                }
+                this.timelineBranches = data.branches || [];
+                this.clear();
+                this.renderTimelineBranches(this.timelineBranches);
+                await this.addTimelineBranchLabels(data);
+                if (!this.isAnimating) {
+                    this.isAnimating = true;
+                    this.animate();
+                }
             } finally {
                 await this._hideLoadingOverlay();
             }
             return;
         }
+        this.timelineBranchMode = false;
 
         // Save current rotation state to prevent jitter during update
         let savedLeftRotation = 0;
@@ -725,7 +746,7 @@ class KernelDNAVisualization {
         this._showLoadingOverlay('Loading timeline');
         // Load timeline data
         try {
-            const response = await fetch(`/api/proc-timeline?pid=${this.selectedPid}`);
+            const response = await fetch(`/api/proc-timeline?pid=${this.selectedPid}&window_s=${this.timelineWindowS}`);
             const data = await response.json();
             
             if (data.error) {
@@ -734,16 +755,10 @@ class KernelDNAVisualization {
             }
 
             this.timelineData = data.timeline || [];
+            this.timelineWindowS = Number(data.window_s || this.timelineWindowS || 30);
             
-            // Set start time from first event
-            if (this.timelineData.length > 0 && !this.timeStart) {
-                this.timeStart = new Date(this.timelineData[0].timestamp).getTime();
-            }
-
-            // Calculate current timeline height based on time elapsed
-            const now = Date.now();
-            const elapsed = this.timeStart ? (now - this.timeStart) / 1000 : 0; // seconds
-            this.currentTimelineHeight = Math.min(elapsed * 0.5, this.maxTimelineHeight); // Grow 0.5 units per second
+            // In focused timeline mode we render full selected window.
+            this.currentTimelineHeight = this.maxTimelineHeight;
 
             // Clear previous visualization
             this.clear();
@@ -762,27 +777,18 @@ class KernelDNAVisualization {
             this.scene.add(this.helixRight);
 
             // Map timeline events to nucleotides
-            const eventToNucleotide = {
-                'exec': { code: 'A', type: 'syscall' },
-                'fork': { code: 'A', type: 'syscall' },
-                'mmap': { code: 'A', type: 'syscall' },
-                'read': { code: 'A', type: 'syscall' },
-                'write': { code: 'A', type: 'syscall' },
-                'connect': { code: 'A', type: 'syscall' },
-                'accept': { code: 'A', type: 'syscall' },
-                'exit': { code: 'C', type: 'context_switch' }
-            };
-
             // Position events on helix based on timestamp
             this.timelineEvents = [];
             this.timelineData.forEach((event, i) => {
-                const eventTime = new Date(event.timestamp).getTime();
-                const timeProgress = this.timeStart ? (eventTime - this.timeStart) / (now - this.timeStart) : i / this.timelineData.length;
-                const t = Math.min(timeProgress, 1.0); // Clamp to 0-1
+                const rel = Number(event.relative_s);
+                let t = Number.isFinite(rel)
+                    ? (rel / Math.max(1, Number(this.timelineWindowS)))
+                    : (i / Math.max(1, this.timelineData.length - 1));
+                t = Math.max(0, Math.min(1, t));
 
                 // Only show events that have occurred (within current timeline height)
                 if (t <= this.currentTimelineHeight / this.maxTimelineHeight) {
-                    const nucleotideData = eventToNucleotide[event.type] || { code: 'A', type: 'syscall' };
+                    const nucleotideData = this.getTimelineNucleotideForEvent(event.type);
                     
                     // Position on left helix (userspace)
                     const leftPos = leftHelix.curve.getPoint(t);
@@ -799,6 +805,7 @@ class KernelDNAVisualization {
                         this.helixLeft.add(leftNuc);
                         this.nucleotides.push(leftNuc);
                         this.timelineEvents.push(leftNuc);
+                        this.addPinnedTimelineLabel(leftNuc);
                     }
 
                     // Position on right helix (kernel space)
@@ -846,6 +853,13 @@ class KernelDNAVisualization {
 
     mapEventToSubsystem(eventType) {
         const subsystemMap = {
+            'syscall': 'sched',
+            'context switch': 'sched',
+            'interrupt': 'kernel',
+            'scheduler tick': 'sched',
+            'i/o': 'fs',
+            'network packet': 'net',
+            'lock/unlock': 'kernel',
             'exec': 'sched',
             'fork': 'sched',
             'mmap': 'mm',
@@ -856,6 +870,177 @@ class KernelDNAVisualization {
             'exit': 'sched'
         };
         return subsystemMap[eventType] || 'kernel';
+    }
+
+    getTimelineNucleotideForEvent(eventType) {
+        const eventToNucleotide = {
+            'syscall': { code: 'A', type: 'syscall' },
+            'context switch': { code: 'C', type: 'context_switch' },
+            'interrupt': { code: 'T', type: 'interrupt' },
+            'scheduler tick': { code: 'C', type: 'context_switch' },
+            'i/o': { code: 'G', type: 'lock' },
+            'network packet': { code: 'T', type: 'interrupt' },
+            'lock/unlock': { code: 'G', type: 'lock' },
+            // Backward compatibility with older timeline event naming.
+            'exec': { code: 'A', type: 'syscall' },
+            'fork': { code: 'A', type: 'syscall' },
+            'mmap': { code: 'A', type: 'syscall' },
+            'read': { code: 'A', type: 'syscall' },
+            'write': { code: 'A', type: 'syscall' },
+            'connect': { code: 'A', type: 'syscall' },
+            'accept': { code: 'A', type: 'syscall' },
+            'exit': { code: 'C', type: 'context_switch' }
+        };
+        return eventToNucleotide[eventType] || { code: 'A', type: 'syscall' };
+    }
+
+    buildEventTooltipHtml(userData) {
+        const subsystem = userData?.subsystem || 'kernel';
+        const eventType = userData?.event?.type || userData?.type || 'event';
+        const processLabel = userData?.process_name
+            ? `${userData.process_name}${userData.pid ? ` (PID: ${userData.pid})` : ''}`
+            : '';
+        return `
+            <div style="font-weight: bold; color: #E6C15A; margin-bottom: 4px;">
+                ${String(eventType).toUpperCase()}
+            </div>
+            <div style="margin-bottom: 2px; color: #D0D3D6;">${userData?.event?.name || userData?.name || 'Event'}</div>
+            ${processLabel ? `<div style="color: #8A8F95; font-size: 10px;">Process: ${processLabel}</div>` : ''}
+            <div style="color: #6B7076; font-size: 10px;">Subsystem: ${subsystem}</div>
+            <div style="color: #8A8F95; font-size: 10px; margin-top: 4px;">
+                Time: ${userData?.timestamp ? new Date(userData.timestamp).toLocaleTimeString() : 'n/a'}
+            </div>
+        `;
+    }
+
+    ensurePinnedLabelLayer() {
+        if (this.pinnedLabelLayer && this.pinnedLabelLayer.parentNode) return this.pinnedLabelLayer;
+        const layer = document.createElement('div');
+        layer.className = 'dna-pinned-label-layer';
+        layer.style.cssText = `
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            z-index: 1001;
+        `;
+        this.container.appendChild(layer);
+        this.pinnedLabelLayer = layer;
+        return layer;
+    }
+
+    clearPinnedTimelineLabels() {
+        this.pinnedTimelineLabels.forEach((item) => {
+            if (item.node && item.node.parentNode) {
+                item.node.parentNode.removeChild(item.node);
+            }
+        });
+        this.pinnedTimelineLabels = [];
+    }
+
+    addPinnedTimelineLabel(targetObject) {
+        if (!targetObject || !targetObject.userData || !targetObject.userData.event) return;
+        const layer = this.ensurePinnedLabelLayer();
+        const node = document.createElement('div');
+        node.style.cssText = `
+            position: absolute;
+            background: #13171B;
+            border: 1px solid #8A8F95;
+            color: #D0D3D6;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 10px;
+            padding: 6px 8px;
+            border-radius: 4px;
+            white-space: nowrap;
+            transform: translate(-9999px, -9999px);
+            opacity: 0.92;
+        `;
+        window.setSafeHtml(node, this.buildEventTooltipHtml(targetObject.userData));
+        layer.appendChild(node);
+        this.pinnedTimelineLabels.push({ object: targetObject, node });
+    }
+
+    updatePinnedTimelineLabels() {
+        if (!this.isActive || !this.camera || !this.renderer || !this.pinnedTimelineLabels.length) return;
+        const rect = this.renderer.domElement.getBoundingClientRect();
+        this.pinnedTimelineLabels.forEach((entry) => {
+            const obj = entry.object;
+            const node = entry.node;
+            if (!obj || !node) return;
+            const worldPos = new THREE.Vector3();
+            obj.getWorldPosition(worldPos);
+            const screenPos = worldPos.clone().project(this.camera);
+            if (screenPos.z < -1 || screenPos.z > 1) {
+                node.style.display = 'none';
+                return;
+            }
+            node.style.display = 'block';
+            const x = (screenPos.x * 0.5 + 0.5) * rect.width;
+            const y = (-screenPos.y * 0.5 + 0.5) * rect.height;
+            node.style.transform = `translate(${Math.round(x + 12)}px, ${Math.round(y - 10)}px)`;
+        });
+    }
+
+    renderTimelineBranches(branches) {
+        if (!Array.isArray(branches) || branches.length === 0) {
+            return;
+        }
+        this.timelineBranchMode = true;
+        this.helixLeft = null;
+        this.helixRight = null;
+
+        const group = new THREE.Group();
+        const branchCount = branches.length;
+        const xStart = -7;
+        const xEnd = 7;
+        const yTop = 4;
+        const yBottom = -4;
+        const yStep = branchCount > 1 ? (yTop - yBottom) / (branchCount - 1) : 0;
+
+        branches.forEach((branch, idx) => {
+            const y = yTop - (idx * yStep);
+            const start = new THREE.Vector3(xStart, y, 0);
+            const end = new THREE.Vector3(xEnd, y, 0);
+            const lineGeom = new THREE.BufferGeometry().setFromPoints([start, end]);
+            const lineMat = new THREE.LineBasicMaterial({
+                color: this.colors.lineSecondary,
+                transparent: true,
+                opacity: 0.5
+            });
+            const branchLine = new THREE.Line(lineGeom, lineMat);
+            group.add(branchLine);
+
+            const events = Array.isArray(branch.timeline) ? branch.timeline : [];
+            const evCount = Math.max(events.length, 1);
+            events.forEach((ev, evIdx) => {
+                const rel = Number(ev.relative_s);
+                let t = Number.isFinite(rel)
+                    ? (rel / Math.max(1, Number(this.timelineWindowS)))
+                    : (evCount === 1 ? 0.5 : (evIdx / (evCount - 1)));
+                t = Math.max(0, Math.min(1, t));
+                const x = xStart + (xEnd - xStart) * t;
+                const z = ((evIdx % 2 === 0) ? 1 : -1) * 0.12; // tiny depth jitter for readability
+                const nuc = this.getTimelineNucleotideForEvent(ev.type);
+                const point = this.createNucleotide(
+                    {
+                        ...nuc,
+                        name: ev.name || ev.type || 'event',
+                        count: ev.count || ev.bytes || 0,
+                        subsystem: this.mapEventToSubsystem(ev.type || '')
+                    },
+                    new THREE.Vector3(x, y, z),
+                    true
+                );
+                if (!point) return;
+                point.userData.event = ev;
+                point.userData.timestamp = ev.timestamp;
+                point.userData.pid = branch.pid;
+                point.userData.process_name = branch.name;
+                this.nucleotides.push(point);
+                group.add(point);
+            });
+        });
+
+        this.scene.add(group);
     }
 
     addTimelineMarkers(curve) {
@@ -886,7 +1071,7 @@ class KernelDNAVisualization {
 
     async addTimelineLabels(data) {
         // Remove old labels
-        const oldLabels = this.container.querySelectorAll('.dna-title, .dna-timeline-subtitle, .dna-legend, .dna-dev-label, .dna-timeline-info, .dna-process-selector');
+        const oldLabels = this.container.querySelectorAll('.dna-title, .dna-timeline-subtitle, .dna-legend, .dna-dev-label, .dna-timeline-info, .dna-process-selector, .dna-window-selector');
         oldLabels.forEach(label => label.remove());
 
         // Add title
@@ -906,7 +1091,7 @@ class KernelDNAVisualization {
         this.container.appendChild(titleDiv);
         const sub = document.createElement('div');
         sub.className = 'dna-timeline-subtitle';
-        sub.textContent = 'single-process timeline';
+        sub.textContent = 'process branch timeline';
         sub.style.cssText = `
             position: absolute;
             top: 72px;
@@ -921,10 +1106,6 @@ class KernelDNAVisualization {
         this.container.appendChild(sub);
         const devLabel = this.appendInDevelopmentLabel(52);
 
-        // Add process selector
-        await this.addProcessSelector();
-        const selectorEl = this.container.querySelector('.dna-process-selector');
-
         // Add timeline info
         const infoDiv = document.createElement('div');
         infoDiv.className = 'dna-timeline-info';
@@ -935,9 +1116,11 @@ class KernelDNAVisualization {
             <div style="color: #c8ccd4; font-family: 'Share Tech Mono', monospace; font-size: 11px;">
                 <div style="margin-bottom: 5px; color: #58b6d8;">Process: ${processName} ${this.selectedPid ? `(PID: ${this.selectedPid})` : ''}</div>
                 <div style="margin-bottom: 5px;">Events: ${eventCount}</div>
+                <div style="margin-bottom: 5px;">Window: ${this.timelineWindowS}s</div>
                 <div style="margin-bottom: 5px;">Timeline: ${heightPercent}%</div>
                 <div style="margin-top: 10px; font-size: 10px; color: #888;">
-                    <div>Time → Y axis (growing upward)</div>
+                    <div>1 branch = selected process</div>
+                    <div>points = kernel/runtime events</div>
                 </div>
             </div>
         `);
@@ -949,7 +1132,179 @@ class KernelDNAVisualization {
         `;
         this.container.appendChild(infoDiv);
 
-        this._applyStaggeredReveal([titleDiv, sub, devLabel, selectorEl, infoDiv]);
+        const legendDiv = document.createElement('div');
+        legendDiv.className = 'dna-legend';
+        window.setSafeHtml(legendDiv, `
+            <div style="color: #c8ccd4; font-family: 'Share Tech Mono', monospace; font-size: 11px; margin-top: 160px; opacity: 0.8;">
+                <div style="margin-bottom: 5px;">A = syscall</div>
+                <div style="margin-bottom: 5px;">C = context switch / scheduler tick</div>
+                <div style="margin-bottom: 5px;">T = interrupt / network packet</div>
+                <div style="margin-bottom: 5px;">G = I/O / lock-unlock</div>
+            </div>
+        `);
+        legendDiv.style.cssText = `
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 1001;
+        `;
+        this.container.appendChild(legendDiv);
+
+        this.addTimelineWindowSelector([sub, infoDiv]);
+        await this.addProcessSelector();
+        const selectorEl = this.container.querySelector('.dna-process-selector');
+        const windowEl = this.container.querySelector('.dna-window-selector');
+
+        this._applyStaggeredReveal([titleDiv, sub, devLabel, selectorEl, windowEl, infoDiv, legendDiv]);
+    }
+
+    async addTimelineBranchLabels(data) {
+        const oldLabels = this.container.querySelectorAll('.dna-title, .dna-timeline-subtitle, .dna-legend, .dna-dev-label, .dna-timeline-info, .dna-process-selector, .dna-window-selector');
+        oldLabels.forEach(label => label.remove());
+
+        const titleDiv = document.createElement('div');
+        titleDiv.className = 'dna-title';
+        titleDiv.textContent = 'KERNEL DNA';
+        titleDiv.style.cssText = `
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #c8ccd4;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 24px;
+            z-index: 1001;
+        `;
+        this.container.appendChild(titleDiv);
+
+        const sub = document.createElement('div');
+        sub.className = 'dna-timeline-subtitle';
+        sub.textContent = 'process branches timeline';
+        sub.style.cssText = `
+            position: absolute;
+            top: 72px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(88, 182, 216, 0.85);
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 11px;
+            letter-spacing: 0.4px;
+            z-index: 1001;
+        `;
+        this.container.appendChild(sub);
+        const devLabel = this.appendInDevelopmentLabel(52);
+
+        const branchCount = Number(data?.meta?.branch_count || (this.timelineBranches || []).length || 0);
+        const totalEvents = (this.timelineBranches || []).reduce((acc, row) => acc + Number(row?.event_count || 0), 0);
+
+        const infoDiv = document.createElement('div');
+        infoDiv.className = 'dna-timeline-info';
+        window.setSafeHtml(infoDiv, `
+            <div style="color: #c8ccd4; font-family: 'Share Tech Mono', monospace; font-size: 11px;">
+                <div style="margin-bottom: 5px; color: #58b6d8;">Branches: ${branchCount}</div>
+                <div style="margin-bottom: 5px;">Events: ${totalEvents}</div>
+                <div style="margin-bottom: 5px;">Window: ${this.timelineWindowS}s</div>
+                <div style="margin-top: 10px; font-size: 10px; color: #888;">
+                    <div>1 branch = process timeline</div>
+                    <div>X axis = relative time within window</div>
+                    <div>click process on right to focus helix view</div>
+                </div>
+            </div>
+        `);
+        infoDiv.style.cssText = `
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 1001;
+        `;
+        this.container.appendChild(infoDiv);
+
+        const legendDiv = document.createElement('div');
+        legendDiv.className = 'dna-legend';
+        window.setSafeHtml(legendDiv, `
+            <div style="color: #c8ccd4; font-family: 'Share Tech Mono', monospace; font-size: 11px; margin-top: 160px; opacity: 0.8;">
+                <div style="margin-bottom: 5px;">A = syscall</div>
+                <div style="margin-bottom: 5px;">C = context switch / scheduler tick</div>
+                <div style="margin-bottom: 5px;">T = interrupt / network packet</div>
+                <div style="margin-bottom: 5px;">G = I/O / lock-unlock</div>
+            </div>
+        `);
+        legendDiv.style.cssText = `
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 1001;
+        `;
+        this.container.appendChild(legendDiv);
+
+        this.addTimelineWindowSelector([sub, infoDiv]);
+        await this.addProcessSelector();
+        const selectorEl = this.container.querySelector('.dna-process-selector');
+        const windowEl = this.container.querySelector('.dna-window-selector');
+        this._applyStaggeredReveal([titleDiv, sub, devLabel, infoDiv, legendDiv, windowEl, selectorEl]);
+    }
+
+    addTimelineWindowSelector(anchorNodes = []) {
+        const existing = this.container.querySelectorAll('.dna-window-selector');
+        existing.forEach((node) => node.remove());
+
+        const containerRect = this.container ? this.container.getBoundingClientRect() : { top: 0 };
+        let topPx = 124;
+        anchorNodes.forEach((node) => {
+            if (!node || typeof node.getBoundingClientRect !== 'function') return;
+            const rect = node.getBoundingClientRect();
+            if (!rect || !Number.isFinite(rect.bottom)) return;
+            const candidate = Math.round(rect.bottom - containerRect.top + 10);
+            topPx = Math.max(topPx, candidate);
+        });
+
+        const panel = document.createElement('div');
+        panel.className = 'dna-window-selector';
+        panel.style.cssText = `
+            position: absolute;
+            top: ${topPx}px;
+            left: 20px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            z-index: 1001;
+            font-family: 'Share Tech Mono', monospace;
+        `;
+
+        const label = document.createElement('span');
+        label.textContent = 'window';
+        label.style.cssText = `
+            color: #9aa2aa;
+            font-size: 10px;
+            letter-spacing: 0.3px;
+            margin-right: 4px;
+        `;
+        panel.appendChild(label);
+
+        this.timelineWindowOptions.forEach((sec) => {
+            const active = Number(sec) === Number(this.timelineWindowS);
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.textContent = `${sec}s`;
+            btn.style.cssText = `
+                padding: 3px 8px;
+                background: ${active ? 'rgba(37, 58, 92, 0.72)' : 'rgba(12, 18, 28, 0.88)'};
+                border: 1px solid ${active ? 'rgba(120, 170, 245, 0.72)' : 'rgba(150, 164, 188, 0.35)'};
+                color: ${active ? '#e1eeff' : '#bcc8db'};
+                border-radius: 3px;
+                font-family: 'Share Tech Mono', monospace;
+                font-size: 10px;
+                cursor: pointer;
+            `;
+            btn.onclick = async () => {
+                if (Number(this.timelineWindowS) === Number(sec)) return;
+                this.timelineWindowS = Number(sec);
+                await this.renderTimeline();
+            };
+            panel.appendChild(btn);
+        });
+
+        this.container.appendChild(panel);
     }
 
     async addProcessSelector() {
@@ -1136,7 +1491,7 @@ class KernelDNAVisualization {
 
     async addLabels(data) {
         // Remove old labels first
-        const oldLabels = this.container.querySelectorAll('.dna-title, .dna-legend, .dna-dev-label, .dna-process-selector');
+        const oldLabels = this.container.querySelectorAll('.dna-title, .dna-legend, .dna-dev-label, .dna-process-selector, .dna-window-selector');
         oldLabels.forEach(label => label.remove());
         
         // Add title
@@ -1224,11 +1579,13 @@ class KernelDNAVisualization {
         
         // Rotate helix - smooth, frame-rate independent rotation
         const rotationSpeed = 0.5; // radians per second
-        if (this.helixLeft) {
-            this.helixLeft.rotation.y += rotationSpeed * deltaTime;
-        }
-        if (this.helixRight) {
-            this.helixRight.rotation.y -= rotationSpeed * deltaTime;
+        if (!this.timelineBranchMode) {
+            if (this.helixLeft) {
+                this.helixLeft.rotation.y += rotationSpeed * deltaTime;
+            }
+            if (this.helixRight) {
+                this.helixRight.rotation.y -= rotationSpeed * deltaTime;
+            }
         }
         
         // Animate mutations (pulsing effect) - smooth animation
@@ -1244,7 +1601,10 @@ class KernelDNAVisualization {
         
         // Rotate camera around helix - smooth camera movement
         // In timeline mode, camera looks from side to see growth
-        if (this.timelineMode) {
+        if (this.timelineBranchMode) {
+            this.camera.position.set(0, 0.5, 16);
+            this.camera.lookAt(0, 0, 0);
+        } else if (this.timelineMode) {
             // Side view for timeline (better to see growth along Y axis)
             this.camera.position.set(10, 5, 0);
             this.camera.lookAt(0, 0, 0);
@@ -1257,11 +1617,14 @@ class KernelDNAVisualization {
             this.camera.position.y = 5;
             this.camera.lookAt(0, 0, 0);
         }
-        
+
+        this.updatePinnedTimelineLabels();
         this.renderer.render(this.scene, this.camera);
     }
 
     clear() {
+        this.clearPinnedTimelineLabels();
+
         // Properly dispose of geometries and materials to prevent memory leaks
         const disposeObject = (obj) => {
             if (obj.geometry) {
@@ -1303,7 +1666,7 @@ class KernelDNAVisualization {
         }
         
         // Remove labels (but keep exit button)
-        const labels = this.container.querySelectorAll('.dna-title, .dna-timeline-subtitle, .dna-legend, .dna-dev-label, .dna-timeline-info, .dna-process-selector');
+        const labels = this.container.querySelectorAll('.dna-title, .dna-timeline-subtitle, .dna-legend, .dna-dev-label, .dna-timeline-info, .dna-process-selector, .dna-window-selector');
         labels.forEach(label => label.remove());
     }
 
@@ -1381,6 +1744,7 @@ class KernelDNAVisualization {
         this.isActive = false;
         this.isAnimating = false; // Stop animation loop
         this.timelineMode = false; // Reset timeline mode
+        this.timelineBranchMode = false;
         this.selectedPid = null;
         this.timeStart = null;
         this.currentTimelineHeight = 0;
@@ -1560,18 +1924,7 @@ class KernelDNAVisualization {
                 
                 // Check if this is a timeline event
                 if (userData.event && userData.timestamp) {
-                    const subsystem = userData.subsystem || 'kernel';
-                    const eventType = userData.event.type || 'event';
-                    tooltipContent = `
-                        <div style="font-weight: bold; color: #E6C15A; margin-bottom: 4px;">
-                            ${eventType.toUpperCase()}
-                        </div>
-                        <div style="margin-bottom: 2px; color: #D0D3D6;">${userData.event.name || 'Event'}</div>
-                        <div style="color: #6B7076; font-size: 10px;">Subsystem: ${subsystem}</div>
-                        <div style="color: #8A8F95; font-size: 10px; margin-top: 4px;">
-                            Time: ${new Date(userData.timestamp).toLocaleTimeString()}
-                        </div>
-                    `;
+                    tooltipContent = this.buildEventTooltipHtml(userData);
                 } else if (userData.code && userData.type) {
                     // Regular nucleotide - yellow accent on hover
                     const subsystem = userData.subsystem || 'kernel';

@@ -44,6 +44,101 @@ class NetworkStackVisualization {
         this.lineParticles = [];
         this.microPackets = [];
         this.metricChips = {};
+        this.kpiNodes = {};
+        this.layersPanelNode = null;
+        this.chipLayerNode = null;
+        this.viewModeButton = null;
+        this.puzzleModeButton = null;
+        this.viewDensityMode = 'detailed';
+        this.puzzleDetailMode = 'overview';
+        this.galaxyPanelNode = null;
+        this.galaxyNodes = {};
+        this.galaxyExplainNode = null;
+        this.selectedGalaxy = 'state';
+        this.galaxyStateData = null;
+        this.lifecyclePanelNode = null;
+        this.packetLifecycleStages = [
+            'NIC RX',
+            'IRQ',
+            'NAPI',
+            'SKB',
+            'XDP/TC',
+            'PREROUTING',
+            'CONNTRACK',
+            'ROUTING',
+            'TCP/UDP',
+            'SOCKET',
+            'PROCESS'
+        ];
+        this.txLifecycleStages = [
+            'PROCESS',
+            'SOCKET',
+            'TCP/UDP',
+            'ROUTING',
+            'CONNTRACK',
+            'POSTROUTING',
+            'TC EGRESS',
+            'NIC TX'
+        ];
+        this.puzzleCoreNodes = [
+            { id: 'hardware', label: 'Hardware', tags: 'NIC/RXTX/DMA/PHY' },
+            { id: 'interrupt', label: 'Interrupt', tags: 'hardirq/softirq' },
+            { id: 'napi', label: 'NAPI', tags: 'net_rx_action/poll' },
+            { id: 'skb', label: 'sk_buff', tags: 'packet+metadata' },
+            { id: 'xdp', label: 'XDP', tags: 'AF_XDP/eBPF fast path' },
+            { id: 'tc', label: 'TC', tags: 'qdisc/classifier' },
+            { id: 'netfilter', label: 'Netfilter', tags: 'PREROUTING..POSTROUTING' },
+            { id: 'conntrack', label: 'nf_conntrack', tags: 'NEW/ESTABLISHED' },
+            { id: 'routing', label: 'Routing', tags: 'FIB/policy/ECMP' },
+            { id: 'ip', label: 'IP', tags: 'IPv4/IPv6/ICMP' },
+            { id: 'transport', label: 'TCP/UDP', tags: 'cwnd/rtt/retrans' },
+            { id: 'socket', label: 'Socket', tags: 'sock/socket lookup' },
+            { id: 'process', label: 'Process', tags: 'epoll/fd/wakeup' }
+        ];
+        this.puzzleSideNodes = [
+            { id: 'l2', label: 'Bridge/VLAN/Neighbor', tags: 'bridge/FDB/ARP/NDP' },
+            { id: 'tunnel', label: 'Tunnel', tags: 'VXLAN/GRE/GENEVE/WG' },
+            { id: 'namespace', label: 'Namespace', tags: 'netns/veth/CNI' },
+            { id: 'cgroup', label: 'cgroups net', tags: 'limits/accounting' },
+            { id: 'ebpf', label: 'eBPF', tags: 'XDP/TC/socket/tracing' },
+            { id: 'security', label: 'Security', tags: 'SELinux/AppArmor/seccomp' },
+            { id: 'crypto', label: 'Crypto', tags: 'TLS/IPsec/WireGuard' },
+            { id: 'observability', label: 'Observability', tags: 'tracepoints/perf/netlink' },
+            { id: 'userspace', label: 'Userspace Interfaces', tags: 'netlink/sysctl/procfs/sysfs' }
+        ];
+        this.lifecycleStageToNode = {
+            'NIC RX': 'hardware',
+            'IRQ': 'interrupt',
+            'NAPI': 'napi',
+            'SKB': 'skb',
+            'XDP/TC': 'xdp',
+            'PREROUTING': 'netfilter',
+            'CONNTRACK': 'conntrack',
+            'ROUTING': 'routing',
+            'TCP/UDP': 'transport',
+            'SOCKET': 'socket',
+            'PROCESS': 'process'
+        };
+        this.coreToSideLinks = {
+            hardware: ['l2', 'observability'],
+            interrupt: ['ebpf', 'observability'],
+            napi: ['ebpf', 'observability'],
+            skb: ['l2', 'tunnel', 'namespace'],
+            xdp: ['ebpf', 'security'],
+            tc: ['ebpf', 'cgroup', 'security'],
+            netfilter: ['security', 'crypto', 'userspace'],
+            conntrack: ['security', 'userspace', 'observability'],
+            routing: ['namespace', 'tunnel', 'userspace'],
+            ip: ['l2', 'tunnel', 'crypto'],
+            transport: ['cgroup', 'security', 'observability'],
+            socket: ['namespace', 'cgroup', 'userspace'],
+            process: ['userspace', 'security', 'observability']
+        };
+        this.sideClusters = [
+            { id: 'data', label: 'Data plane', nodes: ['l2', 'tunnel', 'namespace', 'cgroup'] },
+            { id: 'policy', label: 'Policy plane', nodes: ['security', 'crypto', 'ebpf'] },
+            { id: 'control', label: 'Control/Insight', nodes: ['observability', 'userspace'] }
+        ];
         this.raycaster = null;
         this.mouse = new THREE.Vector2();
         this.mouseMoveHandler = null;
@@ -254,13 +349,14 @@ class NetworkStackVisualization {
         const title = document.createElement('div');
         title.style.cssText = `
             position: absolute;
-            top: 20px;
+            top: 18px;
             left: 50%;
             transform: translateX(-50%);
-            color: #c8ccd4;
+            color: #d3d9e0;
             font-family: 'Share Tech Mono', monospace;
-            font-size: 24px;
-            letter-spacing: 1px;
+            font-size: 22px;
+            letter-spacing: 1.2px;
+            text-shadow: 0 0 10px rgba(88, 182, 216, 0.22);
             z-index: 1001;
         `;
         title.textContent = 'NETWORK STACK';
@@ -270,12 +366,17 @@ class NetworkStackVisualization {
         const flow = document.createElement('div');
         flow.style.cssText = `
             position: absolute;
-            top: 68px;
+            top: 58px;
             left: 50%;
             transform: translateX(-50%);
-            color: #9aa2aa;
+            color: #a7b3be;
             font-family: 'Share Tech Mono', monospace;
             font-size: 11px;
+            letter-spacing: 0.45px;
+            background: rgba(11, 16, 24, 0.62);
+            border: 1px solid rgba(90, 104, 120, 0.32);
+            border-radius: 14px;
+            padding: 4px 12px;
             z-index: 1001;
         `;
         flow.textContent = 'process -> syscall -> socket -> TCP -> IP -> NIC -> wire -> remote';
@@ -283,32 +384,91 @@ class NetworkStackVisualization {
         this.overlayNodes.push(flow);
         this.flowNode = flow;
 
+        const kpiBar = document.createElement('div');
+        kpiBar.style.cssText = `
+            position: absolute;
+            top: 90px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1001;
+            display: flex;
+            gap: 8px;
+            align-items: stretch;
+            pointer-events: none;
+        `;
+        this.container.appendChild(kpiBar);
+        this.overlayNodes.push(kpiBar);
+
+        const kpiSpec = [
+            { id: 'flow', label: 'FLOW' },
+            { id: 'rtt', label: 'RTT' },
+            { id: 'drop', label: 'DROPS' },
+            { id: 'retrans', label: 'RETRANS' }
+        ];
+        kpiSpec.forEach((spec) => {
+            const card = document.createElement('div');
+            card.style.cssText = `
+                min-width: 116px;
+                background: rgba(13, 18, 28, 0.88);
+                border: 1px solid rgba(108, 122, 142, 0.32);
+                border-radius: 6px;
+                padding: 6px 9px 7px;
+                color: #c8d0da;
+                box-shadow: 0 3px 10px rgba(0, 0, 0, 0.22);
+            `;
+            const label = document.createElement('div');
+            label.style.cssText = `
+                font-family: 'Share Tech Mono', monospace;
+                font-size: 9px;
+                letter-spacing: 0.7px;
+                color: #8391a1;
+                margin-bottom: 3px;
+            `;
+            label.textContent = spec.label;
+            const value = document.createElement('div');
+            value.style.cssText = `
+                font-family: 'Share Tech Mono', monospace;
+                font-size: 12px;
+                color: #d8e0ea;
+                line-height: 1.2;
+            `;
+            value.textContent = '--';
+            card.appendChild(label);
+            card.appendChild(value);
+            kpiBar.appendChild(card);
+            this.kpiNodes[spec.id] = { card, label, value };
+        });
+
         const layersPanel = document.createElement('div');
         layersPanel.style.cssText = `
             position: absolute;
-            top: 110px;
+            top: 148px;
             left: 24px;
             z-index: 1001;
-            color: #c8ccd4;
+            color: #d1d8e0;
             font-family: 'Share Tech Mono', monospace;
-            font-size: 11px;
+            font-size: 12px;
             line-height: 1.5;
-            background: rgba(12, 18, 28, 0.82);
-            border: 1px solid rgba(160, 170, 190, 0.25);
+            background: rgba(10, 15, 24, 0.84);
+            border: 1px solid rgba(129, 145, 168, 0.32);
             border-radius: 6px;
-            padding: 10px 12px;
+            padding: 11px 13px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.24);
+            backdrop-filter: blur(1px);
         `;
         window.setSafeHtml(layersPanel, [
+            '<span style="font-size:10px;color:#7f8fa2;letter-spacing:0.55px">LAYERS</span>',
             'Userspace',
-            '-> Socket API',
-            '-> TCP/UDP',
-            '-> IP',
-            '-> Netfilter',
-            '-> Driver',
-            '-> NIC'
+            '&rarr; Socket API',
+            '&rarr; TCP/UDP',
+            '&rarr; IP',
+            '&rarr; Netfilter',
+            '&rarr; Driver',
+            '&rarr; NIC'
         ].join('<br>'));
         this.container.appendChild(layersPanel);
         this.overlayNodes.push(layersPanel);
+        this.layersPanelNode = layersPanel;
 
         // Layer metrics as subtle chips aligned with layers (not a table).
         const chipLayer = document.createElement('div');
@@ -320,14 +480,15 @@ class NetworkStackVisualization {
         `;
         this.container.appendChild(chipLayer);
         this.overlayNodes.push(chipLayer);
+        this.chipLayerNode = chipLayer;
         const chipSpec = [
-            { id: 'userspace', top: '24%' },
-            { id: 'socket', top: '34%' },
-            { id: 'tcp', top: '44%' },
-            { id: 'ip', top: '54%' },
-            { id: 'netfilter', top: '64%' },
-            { id: 'driver', top: '74%' },
-            { id: 'nic', top: '84%' }
+            { id: 'userspace', top: '22%' },
+            { id: 'socket', top: '30%' },
+            { id: 'tcp', top: '38%' },
+            { id: 'ip', top: '46%' },
+            { id: 'netfilter', top: '54%' },
+            { id: 'driver', top: '62%' },
+            { id: 'nic', top: '70%' }
         ];
         chipSpec.forEach(spec => {
             const chip = document.createElement('div');
@@ -336,15 +497,18 @@ class NetworkStackVisualization {
                 right: 2.4%;
                 top: ${spec.top};
                 transform: translateY(-50%);
-                color: #aeb4bc;
+                color: #bac4cf;
                 font-family: 'Share Tech Mono', monospace;
-                font-size: 10px;
-                letter-spacing: 0.4px;
-                background: rgba(20, 26, 36, 0.38);
-                border: 1px solid rgba(120, 130, 145, 0.18);
+                font-size: 11px;
+                letter-spacing: 0.42px;
+                background: rgba(16, 22, 32, 0.68);
+                border: 1px solid rgba(115, 128, 145, 0.32);
                 border-radius: 4px;
-                padding: 2px 7px;
+                padding: 4px 9px;
                 white-space: nowrap;
+                min-width: 196px;
+                text-align: left;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
             `;
             chip.textContent = '';
             chipLayer.appendChild(chip);
@@ -367,6 +531,114 @@ class NetworkStackVisualization {
         this.overlayNodes.push(err);
         this.telemetryErrorNode = err;
 
+        const galaxyPanel = document.createElement('div');
+        galaxyPanel.style.cssText = `
+            position: absolute;
+            left: 24px;
+            bottom: 18px;
+            z-index: 1001;
+            width: 360px;
+            max-width: 30vw;
+            background: rgba(10, 15, 24, 0.84);
+            border: 1px solid rgba(129, 145, 168, 0.32);
+            border-radius: 6px;
+            padding: 10px 12px;
+            color: #c7d0da;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 10px;
+            line-height: 1.45;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.24);
+            overflow: hidden;
+        `;
+        this.container.appendChild(galaxyPanel);
+        this.overlayNodes.push(galaxyPanel);
+        this.galaxyPanelNode = galaxyPanel;
+        const galaxyTitle = document.createElement('div');
+        galaxyTitle.style.cssText = `
+            font-size: 10px;
+            color: #7f8fa2;
+            letter-spacing: 0.6px;
+            margin-bottom: 6px;
+        `;
+        galaxyTitle.textContent = 'NETWORK GALAXIES (METABOLISM VIEW)';
+        galaxyPanel.appendChild(galaxyTitle);
+
+        const galaxyButtonRow = document.createElement('div');
+        galaxyButtonRow.style.cssText = `
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 7px;
+        `;
+        galaxyPanel.appendChild(galaxyButtonRow);
+
+        const galaxyDefs = [
+            { id: 'physical', label: 'Physical' },
+            { id: 'packet', label: 'Packet' },
+            { id: 'state', label: 'State' },
+            { id: 'security', label: 'Security' },
+            { id: 'observability', label: 'Observability' }
+        ];
+        galaxyDefs.forEach((def) => {
+            const chip = document.createElement('button');
+            chip.style.cssText = `
+                border-radius: 4px;
+                border: 1px solid rgba(115, 128, 145, 0.32);
+                background: rgba(16, 22, 32, 0.68);
+                color: #bac4cf;
+                font-family: 'Share Tech Mono', monospace;
+                font-size: 10px;
+                padding: 3px 8px;
+                cursor: pointer;
+                transition: all 0.2s ease;
+            `;
+            chip.textContent = `${def.label}: --`;
+            chip.onclick = () => this.selectGalaxy(def.id);
+            galaxyButtonRow.appendChild(chip);
+            this.galaxyNodes[def.id] = chip;
+        });
+
+        const galaxyExplain = document.createElement('div');
+        galaxyExplain.style.cssText = `
+            color: #aeb8c3;
+            font-size: 10px;
+            line-height: 1.45;
+            min-height: 34px;
+            border-top: 1px solid rgba(115, 128, 145, 0.24);
+            padding-top: 6px;
+        `;
+        galaxyExplain.textContent = 'Select a galaxy to inspect subsystem health.';
+        galaxyPanel.appendChild(galaxyExplain);
+        this.galaxyExplainNode = galaxyExplain;
+
+        const lifecyclePanel = document.createElement('div');
+        lifecyclePanel.style.cssText = `
+            position: absolute;
+            right: 20px;
+            bottom: 18px;
+            left: auto;
+            transform: none;
+            z-index: 1001;
+            width: 760px;
+            max-width: calc(100vw - 430px);
+            min-width: 520px;
+            max-height: 36vh;
+            background: rgba(10, 15, 24, 0.84);
+            border: 1px solid rgba(129, 145, 168, 0.32);
+            border-radius: 6px;
+            padding: 10px 12px;
+            color: #c7d0da;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 9px;
+            line-height: 1.5;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.24);
+            pointer-events: auto;
+            overflow: auto;
+        `;
+        this.container.appendChild(lifecyclePanel);
+        this.overlayNodes.push(lifecyclePanel);
+        this.lifecyclePanelNode = lifecyclePanel;
+
         const layerTip = document.createElement('div');
         layerTip.style.cssText = `
             position: absolute;
@@ -387,6 +659,413 @@ class NetworkStackVisualization {
         this.container.appendChild(layerTip);
         this.overlayNodes.push(layerTip);
         this.layerTooltipNode = layerTip;
+
+        const viewModeBtn = document.createElement('button');
+        viewModeBtn.textContent = 'MODE: DETAILED';
+        viewModeBtn.style.cssText = `
+            position: absolute;
+            top: 58px;
+            right: 20px;
+            padding: 7px 10px;
+            background: rgba(12, 18, 28, 0.88);
+            border: 1px solid rgba(125, 138, 156, 0.34);
+            color: #c6d0db;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 10px;
+            letter-spacing: 0.5px;
+            cursor: pointer;
+            z-index: 1002;
+            transition: all 0.2s ease;
+        `;
+        viewModeBtn.onmouseenter = () => {
+            viewModeBtn.style.background = 'rgba(19, 28, 40, 0.95)';
+            viewModeBtn.style.color = '#edf2f8';
+        };
+        viewModeBtn.onmouseleave = () => {
+            viewModeBtn.style.background = 'rgba(12, 18, 28, 0.88)';
+            viewModeBtn.style.color = '#c6d0db';
+        };
+        viewModeBtn.onclick = () => {
+            this.toggleViewDensityMode();
+        };
+        this.container.appendChild(viewModeBtn);
+        this.overlayNodes.push(viewModeBtn);
+        this.viewModeButton = viewModeBtn;
+
+        const puzzleModeBtn = document.createElement('button');
+        puzzleModeBtn.textContent = 'PUZZLE: OVERVIEW';
+        puzzleModeBtn.style.cssText = `
+            position: absolute;
+            top: 94px;
+            right: 20px;
+            padding: 7px 10px;
+            background: rgba(12, 18, 28, 0.88);
+            border: 1px solid rgba(125, 138, 156, 0.34);
+            color: #c6d0db;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 10px;
+            letter-spacing: 0.45px;
+            cursor: pointer;
+            z-index: 1002;
+            transition: all 0.2s ease;
+        `;
+        puzzleModeBtn.onmouseenter = () => {
+            puzzleModeBtn.style.background = 'rgba(19, 28, 40, 0.95)';
+            puzzleModeBtn.style.color = '#edf2f8';
+        };
+        puzzleModeBtn.onmouseleave = () => {
+            puzzleModeBtn.style.background = 'rgba(12, 18, 28, 0.88)';
+            puzzleModeBtn.style.color = '#c6d0db';
+        };
+        puzzleModeBtn.onclick = () => {
+            this.togglePuzzleDetailMode();
+        };
+        this.container.appendChild(puzzleModeBtn);
+        this.overlayNodes.push(puzzleModeBtn);
+        this.puzzleModeButton = puzzleModeBtn;
+        this.updateBottomPanelsLayout();
+        this.updatePacketLifecycleUI();
+        this.applyViewDensityMode();
+    }
+
+    updateBottomPanelsLayout() {
+        const w = window.innerWidth || 1280;
+        if (this.galaxyPanelNode) {
+            if (w <= 1180) {
+                this.galaxyPanelNode.style.width = '300px';
+                this.galaxyPanelNode.style.maxWidth = '34vw';
+            } else if (w <= 1440) {
+                this.galaxyPanelNode.style.width = '330px';
+                this.galaxyPanelNode.style.maxWidth = '31vw';
+            } else {
+                this.galaxyPanelNode.style.width = '360px';
+                this.galaxyPanelNode.style.maxWidth = '30vw';
+            }
+        }
+        if (this.lifecyclePanelNode) {
+            if (w <= 1180) {
+                this.lifecyclePanelNode.style.minWidth = '420px';
+                this.lifecyclePanelNode.style.width = 'calc(100vw - 360px)';
+                this.lifecyclePanelNode.style.maxWidth = 'calc(100vw - 340px)';
+                this.lifecyclePanelNode.style.maxHeight = '30vh';
+            } else if (w <= 1440) {
+                this.lifecyclePanelNode.style.minWidth = '520px';
+                this.lifecyclePanelNode.style.width = 'calc(100vw - 430px)';
+                this.lifecyclePanelNode.style.maxWidth = 'calc(100vw - 410px)';
+                this.lifecyclePanelNode.style.maxHeight = '31vh';
+            } else {
+                this.lifecyclePanelNode.style.minWidth = '620px';
+                this.lifecyclePanelNode.style.width = '760px';
+                this.lifecyclePanelNode.style.maxWidth = 'calc(100vw - 430px)';
+                this.lifecyclePanelNode.style.maxHeight = '32vh';
+            }
+        }
+    }
+
+    applyViewDensityMode() {
+        const minimal = this.viewDensityMode === 'minimal';
+        if (this.layersPanelNode) {
+            this.layersPanelNode.style.display = minimal ? 'none' : 'block';
+        }
+        if (this.chipLayerNode) {
+            this.chipLayerNode.style.display = minimal ? 'none' : 'block';
+        }
+        if (this.galaxyPanelNode) {
+            this.galaxyPanelNode.style.display = minimal ? 'none' : 'block';
+        }
+        if (this.lifecyclePanelNode) {
+            this.lifecyclePanelNode.style.display = minimal ? 'none' : 'block';
+        }
+        if (this.layerTooltipNode) {
+            this.layerTooltipNode.style.display = 'none';
+        }
+        if (this.viewModeButton) {
+            this.viewModeButton.textContent = minimal ? 'MODE: MINIMAL' : 'MODE: DETAILED';
+            this.viewModeButton.style.borderColor = minimal
+                ? 'rgba(230, 193, 90, 0.58)'
+                : 'rgba(125, 138, 156, 0.34)';
+            this.viewModeButton.style.color = minimal ? '#f0dca2' : '#c6d0db';
+        }
+        if (this.puzzleModeButton) {
+            this.puzzleModeButton.style.display = minimal ? 'none' : 'block';
+        }
+    }
+
+    toggleViewDensityMode() {
+        this.viewDensityMode = this.viewDensityMode === 'minimal' ? 'detailed' : 'minimal';
+        this.applyViewDensityMode();
+    }
+
+    togglePuzzleDetailMode() {
+        this.puzzleDetailMode = this.puzzleDetailMode === 'overview' ? 'deep-dive' : 'overview';
+        if (this.puzzleModeButton) {
+            const isOverview = this.puzzleDetailMode === 'overview';
+            this.puzzleModeButton.textContent = isOverview ? 'PUZZLE: OVERVIEW' : 'PUZZLE: DEEP DIVE';
+            this.puzzleModeButton.style.borderColor = isOverview
+                ? 'rgba(125, 138, 156, 0.34)'
+                : 'rgba(230, 193, 90, 0.58)';
+            this.puzzleModeButton.style.color = isOverview ? '#c6d0db' : '#f0dca2';
+        }
+        this.updatePacketLifecycleUI();
+    }
+
+    selectGalaxy(id) {
+        if (!id || !this.galaxyNodes[id]) return;
+        this.selectedGalaxy = id;
+        this.refreshGalaxySelectionUI();
+    }
+
+    refreshGalaxySelectionUI() {
+        const data = this.galaxyStateData || {};
+        Object.entries(this.galaxyNodes).forEach(([id, node]) => {
+            const item = data[id];
+            if (!item) return;
+            const tone = this.getHealthTone(item.level || 'normal');
+            const selected = this.selectedGalaxy === id;
+            node.style.background = selected ? tone.bg.replace('0.68', '0.9') : tone.bg;
+            node.style.borderColor = selected ? '#d9e4f0' : tone.border;
+            node.style.color = tone.text;
+            node.style.boxShadow = selected ? '0 0 0 1px rgba(170, 188, 206, 0.45)' : 'none';
+            node.textContent = `${item.label}: ${item.value}`;
+        });
+
+        if (this.galaxyExplainNode) {
+            const active = data[this.selectedGalaxy];
+            if (active) {
+                window.setSafeHtml(this.galaxyExplainNode, `
+                    <span style="color:#d4dde7">${active.label}</span>:
+                    <span style="color:#aeb8c3">${active.explain}</span>
+                `);
+            } else {
+                this.galaxyExplainNode.textContent = 'Select a galaxy to inspect subsystem health.';
+            }
+        }
+    }
+
+    getPacketLifecycleIndex() {
+        if (!this.packet || !this.layerMap || !Number.isFinite(this.packet.position.y)) return 0;
+        const yTop = Number(this.layerMap.userspace ?? 3.5) + 0.5;
+        const yBottom = Number(this.layerMap.nic ?? -3.4) - 0.75;
+        const range = Math.max(0.001, yTop - yBottom);
+        const progress = (yTop - this.packet.position.y) / range;
+        const clamped = Math.max(0, Math.min(0.999, progress));
+        return Math.floor(clamped * this.packetLifecycleStages.length);
+    }
+
+    updatePacketLifecycleUI() {
+        if (!this.lifecyclePanelNode) return;
+        const idx = this.getPacketLifecycleIndex();
+        const stage = this.packetLifecycleStages[Math.max(0, Math.min(this.packetLifecycleStages.length - 1, idx))] || 'NIC RX';
+        const activeCoreNode = this.lifecycleStageToNode[stage] || 'skb';
+        const focusByGalaxy = {
+            physical: new Set(['hardware', 'interrupt', 'napi']),
+            packet: new Set(['skb', 'xdp', 'tc', 'netfilter']),
+            state: new Set(['conntrack', 'routing', 'transport', 'socket']),
+            security: new Set(['netfilter', 'conntrack', 'security', 'crypto']),
+            observability: new Set(['observability', 'ebpf', 'userspace'])
+        };
+        const focused = focusByGalaxy[this.selectedGalaxy] || new Set(['conntrack', 'routing', 'transport']);
+        const activeLinkedSide = new Set(this.coreToSideLinks[activeCoreNode] || []);
+        const sideNodeById = this.puzzleSideNodes.reduce((acc, node) => {
+            acc[node.id] = node;
+            return acc;
+        }, {});
+        const coreNodeById = this.puzzleCoreNodes.reduce((acc, node) => {
+            acc[node.id] = node;
+            return acc;
+        }, {});
+
+        const renderPuzzleNode = (node, active = false, softActive = false, emphasized = false) => {
+            const bg = active
+                ? 'rgba(88, 182, 216, 0.34)'
+                : (softActive ? 'rgba(230, 193, 90, 0.14)' : 'rgba(16, 22, 32, 0.72)');
+            const border = active
+                ? 'rgba(159, 233, 255, 0.88)'
+                : (softActive ? 'rgba(230, 193, 90, 0.5)' : 'rgba(115, 128, 145, 0.34)');
+            const text = active ? '#ecfbff' : (softActive ? '#f2e2b5' : '#bac4cf');
+            return `
+                <span style="
+                    display:inline-block;
+                    margin:2px 3px 3px 0;
+                    padding:4px 8px;
+                    border-radius:6px;
+                    border:${active ? '2px' : '1px'} solid ${border};
+                    background:${bg};
+                    color:${text};
+                    font-size:9px;
+                    line-height:1.25;
+                    white-space:nowrap;
+                    box-shadow:${emphasized ? '0 0 0 1px rgba(230,193,90,0.35), 0 0 14px rgba(126,220,246,0.3)' : 'none'};
+                ">
+                    <span style="color:${text};font-size:9px">${node.label}</span>
+                    <span style="display:block;color:#7f8fa2;font-size:8px">${node.tags}</span>
+                </span>
+            `;
+        };
+
+        const rxPath = this.packetLifecycleStages.map((item, i) => (
+            i === idx ? `<span style="color:#f0dca2">${item}</span>` : `<span style="color:#8d99a7">${item}</span>`
+        )).join(' &rarr; ');
+        const txPath = this.txLifecycleStages.map((item) => `<span style="color:#8d99a7">${item}</span>`).join(' &rarr; ');
+        const renderCoreRow = (nodes) => nodes.map((node, i) => {
+            const next = i < nodes.length - 1 ? '<span style="color:#556273">→</span>' : '';
+            const isActive = node.id === activeCoreNode;
+            const soft = focused.has(node.id) && !isActive;
+            return `${renderPuzzleNode(node, isActive, soft, isActive)}${next}`;
+        }).join('');
+        const coreTop = renderCoreRow(this.puzzleCoreNodes.slice(0, 7));
+        const coreBottom = renderCoreRow(this.puzzleCoreNodes.slice(7));
+
+        const renderCluster = (cluster) => {
+            const items = cluster.nodes.map((id) => {
+                const node = sideNodeById[id];
+                if (!node) return '';
+                const linked = activeLinkedSide.has(id);
+                const soft = focused.has(id) || linked;
+                return renderPuzzleNode(node, false, soft, linked);
+            }).join('');
+            return `
+                <div style="margin-bottom:4px;">
+                    <span style="color:#6f7f92;margin-right:6px;">${cluster.label}</span>${items}
+                </div>
+            `;
+        };
+        const clusteredSidePuzzle = this.sideClusters.map((cluster) => renderCluster(cluster)).join('');
+
+        const interactionLinks = (this.coreToSideLinks[activeCoreNode] || [])
+            .map((sideId) => {
+                const side = sideNodeById[sideId];
+                const core = coreNodeById[activeCoreNode];
+                if (!side || !core) return '';
+                return `<span style="color:#aeb8c3">${core.label}</span> <span style="color:#5f6f82">↔</span> <span style="color:#f0dca2">${side.label}</span>`;
+            })
+            .filter(Boolean)
+            .join(' <span style="color:#5f6f82">|</span> ');
+        const selectedLinks = [...focused]
+            .map((id) => sideNodeById[id] || coreNodeById[id])
+            .filter(Boolean)
+            .map((node) => `<span style="color:#8d99a7">${node.label}</span>`)
+            .join(', ');
+
+        const isOverview = this.puzzleDetailMode === 'overview';
+        const summarySide = (this.coreToSideLinks[activeCoreNode] || [])
+            .map((id) => sideNodeById[id]?.label || '')
+            .filter(Boolean)
+            .join(', ');
+
+        if (isOverview) {
+            window.setSafeHtml(this.lifecyclePanelNode, `
+                <div style="font-size:10px;color:#7f8fa2;letter-spacing:0.6px;margin-bottom:5px;">
+                    LINUX NETWORKING PUZZLE ARCHITECTURE
+                </div>
+                <div style="margin-bottom:5px;line-height:1.4;">
+                    ${coreTop}
+                </div>
+                <div style="margin-bottom:6px;line-height:1.4;">
+                    ${coreBottom}
+                </div>
+                <div style="margin-bottom:5px;color:#7f8fa2;">
+                    Active interactions: ${interactionLinks || '<span style="color:#8d99a7">none</span>'}
+                </div>
+                <div style="margin-bottom:4px;color:#7f8fa2;">
+                    Linked subsystems: <span style="color:#aeb8c3">${summarySide || 'none'}</span>
+                </div>
+                <div style="margin-bottom:3px;">RX: ${rxPath}</div>
+                <div style="margin-bottom:3px;">TX: ${txPath}</div>
+                <div style="color:#aeb8c3;font-size:10px;">
+                    Active puzzle: <span style="color:#f0dca2">${stage}</span>
+                </div>
+            `);
+            return;
+        }
+
+        window.setSafeHtml(this.lifecyclePanelNode, `
+            <div style="font-size:10px;color:#7f8fa2;letter-spacing:0.6px;margin-bottom:5px;">
+                LINUX NETWORKING PUZZLE ARCHITECTURE
+            </div>
+            <div style="margin-bottom:5px;line-height:1.4;">
+                ${coreTop}
+            </div>
+            <div style="margin-bottom:6px;line-height:1.4;">
+                ${coreBottom}
+            </div>
+            <div style="margin-bottom:6px;line-height:1.4;">
+                ${clusteredSidePuzzle}
+            </div>
+            <div style="margin-bottom:5px;color:#7f8fa2;">
+                Active interactions: ${interactionLinks || '<span style="color:#8d99a7">none</span>'}
+            </div>
+            <div style="margin-bottom:4px;color:#7f8fa2;">
+                Galaxy focus: ${selectedLinks || '<span style="color:#8d99a7">none</span>'}
+            </div>
+            <div style="margin-bottom:3px;">RX flow: ${rxPath}</div>
+            <div style="margin-bottom:3px;">TX flow: ${txPath}</div>
+            <div style="color:#aeb8c3;font-size:10px;">
+                Current active puzzle: <span style="color:#f0dca2">${stage}</span>
+            </div>
+        `);
+    }
+
+    updateGalaxyPanel(m, flow) {
+        if (!this.galaxyPanelNode) return;
+        const safeNum = (value) => {
+            const n = Number(value);
+            return Number.isFinite(n) ? n : 0;
+        };
+        const nicErr = safeNum(m.nic?.rx_errors) + safeNum(m.nic?.tx_errors);
+        const txq = safeNum(m.driver?.tx_queue);
+        const drops = safeNum(m.netfilter?.drop_per_sec);
+        const dropRatio = safeNum(m.netfilter?.drop_ratio);
+        const rtt = safeNum(m.tcp_udp?.rtt_ms);
+        const retrans = safeNum(m.tcp_udp?.retrans_per_sec ?? m.socket_api?.retransmits_per_sec);
+        const established = safeNum(m.socket_api?.established);
+        const flowType = String(flow?.type || 'TCP').toUpperCase();
+        const flowState = String(flow?.state_name || 'NO_FLOW');
+
+        const health = (warn, crit, value) => (value >= crit ? 'critical' : (value >= warn ? 'warn' : 'normal'));
+
+        const physicalLevel = health(120, 300, txq + nicErr * 8);
+        const packetLevel = (dropRatio > 0.2 || drops > 20) ? 'critical' : ((dropRatio > 0.05 || drops > 7) ? 'warn' : 'normal');
+        const stateLevel = health(8, 25, retrans + rtt / 20);
+        const securityLevel = packetLevel;
+        const observabilityLevel = flow ? 'normal' : 'warn';
+        this.galaxyStateData = {
+            physical: {
+                label: 'Physical',
+                value: `txq ${txq} err ${nicErr}`,
+                level: physicalLevel,
+                explain: `NIC/driver pressure. High txq or NIC errors means hardware queues are saturated or unstable.`
+            },
+            packet: {
+                label: 'Packet',
+                value: `drop ${drops.toFixed(1)}/s`,
+                level: packetLevel,
+                explain: `Packet metabolism quality. Drop rate shows where the flow is being lost before delivery.`
+            },
+            state: {
+                label: 'State',
+                value: `rtt ${rtt.toFixed(1)}ms rt ${retrans.toFixed(1)}/s`,
+                level: stateLevel,
+                explain: `Transport/conntrack dynamics. RTT and retransmits indicate congestion and connection stress.`
+            },
+            security: {
+                label: 'Security',
+                value: `ratio ${(dropRatio * 100).toFixed(1)}%`,
+                level: securityLevel,
+                explain: `Netfilter behavior. Higher drop ratio may be policy enforcement, attack filtering, or misconfiguration.`
+            },
+            observability: {
+                label: 'Observability',
+                value: `${flowType} ${flowState} est ${established}`,
+                level: observabilityLevel,
+                explain: `Current flow visibility. Shows active connection state and whether telemetry sees stable sessions.`
+            }
+        };
+
+        if (!this.galaxyStateData[this.selectedGalaxy]) {
+            this.selectedGalaxy = 'state';
+        }
+        this.refreshGalaxySelectionUI();
     }
 
     addExitButton() {
@@ -505,33 +1184,123 @@ class NetworkStackVisualization {
         }
     }
 
+    getHealthTone(level) {
+        if (level === 'critical') {
+            return { bg: 'rgba(65, 20, 24, 0.74)', border: 'rgba(226, 106, 118, 0.65)', text: '#ffb8c0' };
+        }
+        if (level === 'warn') {
+            return { bg: 'rgba(64, 52, 22, 0.72)', border: 'rgba(226, 193, 102, 0.64)', text: '#f2d89b' };
+        }
+        return { bg: 'rgba(16, 22, 32, 0.68)', border: 'rgba(115, 128, 145, 0.32)', text: '#bac4cf' };
+    }
+
+    updateKpiCard(id, value, level = 'normal') {
+        const node = this.kpiNodes[id];
+        if (!node) return;
+        const tone = this.getHealthTone(level);
+        node.value.textContent = String(value ?? '--');
+        node.card.style.background = tone.bg;
+        node.card.style.borderColor = tone.border;
+        node.value.style.color = tone.text;
+    }
+
+    setMetricChip(id, label, value, level = 'normal') {
+        const chip = this.metricChips[id];
+        if (!chip) return;
+        const tone = this.getHealthTone(level);
+        chip.textContent = `${label} ${value}`;
+        chip.style.background = tone.bg;
+        chip.style.borderColor = tone.border;
+        chip.style.color = tone.text;
+    }
+
     updateTelemetryUI() {
         if (!this.telemetryData) return;
         const m = this.telemetryData.layer_metrics || {};
-        const sig = this.telemetryData.signals || {};
         const a = this.telemetryData.layer_activity || {};
         const flow = this.telemetryData.flow;
+        const flowType = String(flow?.type || 'TCP').toUpperCase();
+        const flowState = String(flow?.state_name || '');
+        const safeNum = (value) => {
+            const n = Number(value);
+            return Number.isFinite(n) ? n : 0;
+        };
+
+        const rttMs = safeNum(m.tcp_udp?.rtt_ms ?? 0);
+        const retransPerSec = safeNum(m.tcp_udp?.retrans_per_sec ?? m.socket_api?.retransmits_per_sec ?? 0);
+        const dropPerSec = safeNum(m.netfilter?.drop_per_sec ?? 0);
+        const dropRatio = safeNum(m.netfilter?.drop_ratio ?? 0);
+        const driverTxQ = safeNum(m.driver?.tx_queue ?? 0);
+        const nicErrRx = safeNum(m.nic?.rx_errors ?? 0);
+        const nicErrTx = safeNum(m.nic?.tx_errors ?? 0);
+        const nicErrTotal = nicErrRx + nicErrTx;
+
+        const classify = (value, warnThreshold, critThreshold) => {
+            if (value >= critThreshold) return 'critical';
+            if (value >= warnThreshold) return 'warn';
+            return 'normal';
+        };
+        const dropLevel = (dropRatio >= 0.2 || dropPerSec >= 25)
+            ? 'critical'
+            : ((dropRatio >= 0.05 || dropPerSec >= 8) ? 'warn' : 'normal');
+        const retransLevel = classify(retransPerSec, 8, 25);
+        const rttLevel = classify(rttMs, 90, 200);
+        const driverLevel = classify(driverTxQ, 120, 300);
+        const nicLevel = classify(nicErrTotal, 5, 20);
 
         if (this.flowNode) {
             if (flow) {
-                this.flowNode.textContent = `process -> syscall -> socket -> ${flow.type || 'TCP'} ${flow.state_name || ''} -> IP -> NIC -> wire -> ${flow.remote || 'remote'}`;
+                this.flowNode.textContent = `process -> syscall -> socket -> ${flowType} ${flowState} -> IP -> NIC -> wire -> ${flow.remote || 'remote'}`;
             } else {
                 this.flowNode.textContent = 'process -> syscall -> socket -> TCP -> IP -> NIC -> wire -> remote (no active flow)';
             }
         }
 
-        const set = (key, text) => {
-            if (this.metricChips[key]) {
-                this.metricChips[key].textContent = text;
-            }
-        };
-        set('userspace', `Userspace procs ${m.userspace?.active_processes ?? 0}`);
-        set('socket', `Socket est ${m.socket_api?.established ?? 0} retrans ${m.socket_api?.retransmits_per_sec ?? 0}/s`);
-        set('tcp', `TCP cwnd ${m.tcp_udp?.cwnd ?? 0} rtt ${m.tcp_udp?.rtt_ms ?? 0}ms retrans ${m.tcp_udp?.retrans_per_sec ?? 0}/s`);
-        set('ip', `IP in ${m.ip?.in_packets_per_sec ?? 0}/s out ${m.ip?.out_packets_per_sec ?? 0}/s`);
-        set('netfilter', `Netfilter drop ${(m.netfilter?.drop_per_sec ?? 0)}/s`);
-        set('driver', `Driver txq ${m.driver?.tx_queue ?? 0} drops ${(m.driver?.drops_per_sec ?? 0)}/s`);
-        set('nic', `NIC ${m.nic?.iface ?? 'n/a'} err ${m.nic?.rx_errors ?? 0}/${m.nic?.tx_errors ?? 0}`);
+        this.updateKpiCard('flow', `${flowType}${flowState ? ` ${flowState}` : ''}`, flow ? 'normal' : 'warn');
+        this.updateKpiCard('rtt', `${rttMs.toFixed(1)} ms`, rttLevel);
+        this.updateKpiCard('drop', `${dropPerSec.toFixed(1)}/s`, dropLevel);
+        this.updateKpiCard('retrans', `${retransPerSec.toFixed(1)}/s`, retransLevel);
+
+        this.setMetricChip('userspace', 'USERSPACE', `procs ${m.userspace?.active_processes ?? 0}`);
+        this.setMetricChip(
+            'socket',
+            'SOCKET',
+            `est ${m.socket_api?.established ?? 0} retrans ${safeNum(m.socket_api?.retransmits_per_sec ?? 0).toFixed(1)}/s`,
+            retransLevel
+        );
+        this.setMetricChip(
+            'tcp',
+            'TCP',
+            `cwnd ${m.tcp_udp?.cwnd ?? 0} rtt ${rttMs.toFixed(1)}ms retrans ${retransPerSec.toFixed(1)}/s`,
+            rttLevel === 'critical' || retransLevel === 'critical'
+                ? 'critical'
+                : (rttLevel === 'warn' || retransLevel === 'warn' ? 'warn' : 'normal')
+        );
+        this.setMetricChip(
+            'ip',
+            'IP',
+            `in ${safeNum(m.ip?.in_packets_per_sec ?? 0).toFixed(1)}/s out ${safeNum(m.ip?.out_packets_per_sec ?? 0).toFixed(1)}/s`
+        );
+        this.setMetricChip(
+            'netfilter',
+            'NETFILTER',
+            `drop ${dropPerSec.toFixed(1)}/s ratio ${(dropRatio * 100).toFixed(1)}%`,
+            dropLevel
+        );
+        this.setMetricChip(
+            'driver',
+            'DRIVER',
+            `txq ${driverTxQ} drops ${safeNum(m.driver?.drops_per_sec ?? 0).toFixed(1)}/s`,
+            driverLevel
+        );
+        this.setMetricChip(
+            'nic',
+            'NIC',
+            `${m.nic?.iface ?? 'n/a'} err ${nicErrRx}/${nicErrTx}`,
+            nicLevel
+        );
+
+        this.updateGalaxyPanel(m, flow);
 
         this.layerActivityTarget = {
             userspace: Number(a.userspace ?? this.layerActivityTarget.userspace),
@@ -671,6 +1440,12 @@ class NetworkStackVisualization {
 
     onMouseMove(event) {
         if (!this.isActive || !this.raycaster || !this.camera || !this.renderer) return;
+        if (this.viewDensityMode === 'minimal') {
+            if (this.layerTooltipNode) {
+                this.layerTooltipNode.style.display = 'none';
+            }
+            return;
+        }
         const rect = this.renderer.domElement.getBoundingClientRect();
         this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
         this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
@@ -712,6 +1487,7 @@ class NetworkStackVisualization {
         this.updateEffects(dt);
         this.updateFlowParticles(dt);
         this.updateLayerStrips(dt);
+        this.updatePacketLifecycleUI();
 
         // Gentle camera drift for cinematic depth.
         const t = now * 0.00025;
@@ -777,6 +1553,7 @@ class NetworkStackVisualization {
         this.camera.aspect = window.innerWidth / window.innerHeight;
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(window.innerWidth, window.innerHeight);
+        this.updateBottomPanelsLayout();
     }
 }
 
