@@ -1,5 +1,3 @@
-"""Global Flask hooks (CORS, cache headers, request id)."""
-
 import logging
 import time
 from uuid import uuid4
