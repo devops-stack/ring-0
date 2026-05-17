@@ -41,6 +41,40 @@ class NetworkStackVisualization {
             nic: 0.2
         };
         this.layerActivityTarget = { ...this.layerActivity };
+        this.layerSemanticNoiseTarget = {
+            userspace: { stress: 0.2, jitter: 0.2, branch: 0.2 },
+            socket: { stress: 0.2, jitter: 0.2, branch: 0.2 },
+            tcp: { stress: 0.2, jitter: 0.2, branch: 0.2 },
+            ip: { stress: 0.2, jitter: 0.2, branch: 0.2 },
+            netfilter: { stress: 0.2, jitter: 0.2, branch: 0.2 },
+            driver: { stress: 0.2, jitter: 0.2, branch: 0.2 },
+            nic: { stress: 0.2, jitter: 0.2, branch: 0.2 }
+        };
+        this.layerSemanticNoise = {
+            userspace: { stress: 0.2, jitter: 0.2, branch: 0.2 },
+            socket: { stress: 0.2, jitter: 0.2, branch: 0.2 },
+            tcp: { stress: 0.2, jitter: 0.2, branch: 0.2 },
+            ip: { stress: 0.2, jitter: 0.2, branch: 0.2 },
+            netfilter: { stress: 0.2, jitter: 0.2, branch: 0.2 },
+            driver: { stress: 0.2, jitter: 0.2, branch: 0.2 },
+            nic: { stress: 0.2, jitter: 0.2, branch: 0.2 }
+        };
+        this.layerBranchSignalTarget = {};
+        this.layerBranchSignalCurrent = {};
+        this.layerBranchMetricTarget = {};
+        this.layerBranchMetricCurrent = {};
+        this.layerBranchMetricDelta = {};
+        this.layerBranchMetricHistory = {};
+        this.branchDeltaWindowMs = 6000;
+        this.layerSignalLabels = {
+            userspace: ['proc', 'wakeup', 'syscall'],
+            socket: ['accept', 'queue', 'retrans'],
+            tcp: ['cwnd', 'rtt', 'retrans'],
+            ip: ['in/out', 'route', 'ttl'],
+            netfilter: ['preroute', 'drop', 'conntrack'],
+            driver: ['txq', 'drops', 'irq'],
+            nic: ['rx err', 'tx err', 'dma']
+        };
         this.lineParticles = [];
         this.microPackets = [];
         this.metricChips = {};
@@ -49,14 +83,20 @@ class NetworkStackVisualization {
         this.chipLayerNode = null;
         this.viewModeButton = null;
         this.puzzleModeButton = null;
+        this.noiseModeButton = null;
+        this.readModeButton = null;
         this.viewDensityMode = 'detailed';
         this.puzzleDetailMode = 'overview';
+        this.noiseDetailMode = 'dense';
+        this.readMode = 'forensics';
         this.galaxyPanelNode = null;
         this.galaxyNodes = {};
         this.galaxyExplainNode = null;
         this.selectedGalaxy = 'state';
         this.galaxyStateData = null;
         this.lifecyclePanelNode = null;
+        this.hideOsiTiles = true;
+        this.hideVerticalOrbs = true;
         this.packetLifecycleStages = [
             'NIC RX',
             'IRQ',
@@ -234,7 +274,7 @@ class NetworkStackVisualization {
             const material = new THREE.MeshPhongMaterial({
                 color: def.color,
                 transparent: true,
-                opacity: 0.28,
+                opacity: 0.06,
                 shininess: 60,
                 emissive: new THREE.Color(0x58b6d8),
                 emissiveIntensity: 0.02
@@ -245,7 +285,7 @@ class NetworkStackVisualization {
 
             const edge = new THREE.LineSegments(
                 new THREE.EdgesGeometry(new THREE.BoxGeometry(layerWidth, layerHeight, layerDepth)),
-                new THREE.LineBasicMaterial({ color: 0x9aa2aa, transparent: true, opacity: 0.35 })
+                new THREE.LineBasicMaterial({ color: 0x9aa2aa, transparent: true, opacity: 0.22 })
             );
             edge.position.copy(mesh.position);
             this.scene.add(edge);
@@ -262,10 +302,18 @@ class NetworkStackVisualization {
             strip.position.set(0, def.y, layerDepth * 0.34);
             this.scene.add(strip);
 
+            const noiseRig = this.createLayerNoiseRig(def, layerDepth);
+
             mesh.userData.layerId = def.id;
             this.layerMeshes.push(mesh);
-            this.layers.push({ ...def, mesh, edge, strip });
+            this.layers.push({ ...def, mesh, edge, strip, noiseRig });
             this.layerMap[def.id] = def.y;
+
+            if (this.hideOsiTiles) {
+                mesh.visible = false;
+                edge.visible = false;
+                strip.visible = false;
+            }
         });
 
         const flowLine = new THREE.Line(
@@ -276,6 +324,324 @@ class NetworkStackVisualization {
             new THREE.LineBasicMaterial({ color: 0x58b6d8, transparent: true, opacity: 0.35 })
         );
         this.scene.add(flowLine);
+    }
+
+    createRodBetween(start, end, radius = 0.018, color = 0x8d97a3, opacity = 0.32) {
+        const dir = new THREE.Vector3().subVectors(end, start);
+        const len = dir.length();
+        if (len <= 0.001) return null;
+        const midpoint = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
+        const geom = new THREE.CylinderGeometry(radius, radius, len, 8, 1, false);
+        const mat = new THREE.MeshBasicMaterial({
+            color,
+            transparent: true,
+            opacity
+        });
+        const rod = new THREE.Mesh(geom, mat);
+        rod.position.copy(midpoint);
+        rod.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+        this.scene.add(rod);
+        return rod;
+    }
+
+    createSignalTagSprite(initialText = 'sig --') {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+        canvas.width = 292;
+        canvas.height = 76;
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.needsUpdate = true;
+        const material = new THREE.SpriteMaterial({
+            map: texture,
+            transparent: true,
+            depthTest: false,
+            depthWrite: false
+        });
+        const sprite = new THREE.Sprite(material);
+        sprite.scale.set(1.2, 0.29, 1);
+        sprite.renderOrder = 2;
+        const tag = { sprite, canvas, ctx, texture, lastText: '', lastIntensity: -1 };
+        this.updateSignalTagSprite(tag, initialText, 0.2, 0.0);
+        this.scene.add(sprite);
+        return tag;
+    }
+
+    updateSignalTagSprite(tag, text, intensity = 0.2, jitter = 0) {
+        if (!tag || !tag.ctx || !tag.canvas) return;
+        const safeText = String(text || 'sig --');
+        const safeIntensity = Math.max(0, Math.min(1, Number(intensity) || 0));
+        const safeJitter = Math.max(0, Math.min(1, Number(jitter) || 0));
+        const changed = Math.abs(safeIntensity - (tag.lastIntensity ?? -1)) > 0.04 || safeText !== tag.lastText;
+        if (!changed) return;
+
+        const ctx = tag.ctx;
+        const w = tag.canvas.width;
+        const h = tag.canvas.height;
+        ctx.clearRect(0, 0, w, h);
+
+        const bgAlpha = 0.46 + safeIntensity * 0.34;
+        const strokeAlpha = 0.5 + safeIntensity * 0.44;
+        ctx.fillStyle = `rgba(8, 13, 20, ${bgAlpha})`;
+        ctx.strokeStyle = `rgba(176, 228, 255, ${strokeAlpha})`;
+        ctx.lineWidth = 1.35;
+        if (typeof ctx.roundRect === 'function') {
+            ctx.beginPath();
+            ctx.roundRect(0.5, 0.5, w - 1, h - 1, 6);
+            ctx.fill();
+            ctx.stroke();
+        } else {
+            ctx.fillRect(0, 0, w, h);
+            ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
+        }
+
+        const lines = safeText.split('\n').slice(0, 2);
+        ctx.font = '14px "Share Tech Mono", monospace';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = `rgba(228, 246, 255, ${0.9 + safeIntensity * 0.1})`;
+        ctx.strokeStyle = `rgba(12, 18, 26, ${0.75 + safeIntensity * 0.2})`;
+        ctx.lineWidth = 2.6;
+        ctx.shadowColor = `rgba(120, 210, 255, ${0.2 + safeIntensity * 0.4})`;
+        ctx.shadowBlur = 6;
+        if (lines.length === 1) {
+            ctx.strokeText(lines[0], 14, h / 2);
+            ctx.fillText(lines[0], 14, h / 2);
+        } else {
+            ctx.strokeText(lines[0], 14, h * 0.35);
+            ctx.fillText(lines[0], 14, h * 0.35);
+            ctx.strokeText(lines[1], 14, h * 0.74);
+            ctx.fillText(lines[1], 14, h * 0.74);
+        }
+        ctx.shadowBlur = 0;
+
+        if (safeJitter > 0.02) {
+            const speckCount = Math.floor(4 + safeJitter * 11);
+            for (let i = 0; i < speckCount; i++) {
+                const x = Math.random() * w;
+                const y = Math.random() * h;
+                const a = 0.05 + Math.random() * 0.14 * safeJitter;
+                ctx.fillStyle = `rgba(230, 193, 90, ${a})`;
+                ctx.fillRect(x, y, 1, 1);
+            }
+        }
+
+        tag.texture.needsUpdate = true;
+        tag.lastText = safeText;
+        tag.lastIntensity = safeIntensity;
+    }
+
+    formatBranchMetric(layerId, signalIdx, value, deltaValue = null, withDelta = false) {
+        const v = Number(value);
+        const safe = Number.isFinite(v) ? v : 0;
+        const dRaw = Number(deltaValue);
+        const hasDelta = Number.isFinite(dRaw);
+        const d = hasDelta ? dRaw : 0;
+        const dSign = d > 0 ? '+' : '';
+        if (layerId === 'userspace') {
+            if (signalIdx === 0) return withDelta && hasDelta ? `proc ${Math.round(safe)}\nΔ ${dSign}${Math.round(d)}` : `proc ${Math.round(safe)}`;
+            if (signalIdx === 1) return withDelta && hasDelta ? `wake ${Math.round(safe)}%\nΔ ${dSign}${Math.round(d)}%` : `wake ${Math.round(safe)}%`;
+            return withDelta && hasDelta ? `sys ${Math.round(safe)}/s\nΔ ${dSign}${Math.round(d)}/s` : `sys ${Math.round(safe)}/s`;
+        }
+        if (layerId === 'socket') {
+            if (signalIdx === 0) return withDelta && hasDelta ? `est ${Math.round(safe)}\nΔ ${dSign}${Math.round(d)}` : `est ${Math.round(safe)}`;
+            if (signalIdx === 1) return withDelta && hasDelta ? `q ${Math.round(safe)}\nΔ ${dSign}${Math.round(d)}` : `q ${Math.round(safe)}`;
+            return withDelta && hasDelta ? `rtx ${safe.toFixed(1)}/s\nΔ ${dSign}${d.toFixed(1)}/s` : `rtx ${safe.toFixed(1)}/s`;
+        }
+        if (layerId === 'tcp') {
+            if (signalIdx === 0) return withDelta && hasDelta ? `cwnd ${Math.round(safe)}\nΔ ${dSign}${Math.round(d)}` : `cwnd ${Math.round(safe)}`;
+            if (signalIdx === 1) return withDelta && hasDelta ? `rtt ${safe.toFixed(1)}ms\nΔ ${dSign}${d.toFixed(1)}ms` : `rtt ${safe.toFixed(1)}ms`;
+            return withDelta && hasDelta ? `rtx ${safe.toFixed(1)}/s\nΔ ${dSign}${d.toFixed(1)}/s` : `rtx ${safe.toFixed(1)}/s`;
+        }
+        if (layerId === 'ip') {
+            if (signalIdx === 0) return withDelta && hasDelta ? `in ${safe.toFixed(1)}/s\nΔ ${dSign}${d.toFixed(1)}/s` : `in ${safe.toFixed(1)}/s`;
+            if (signalIdx === 1) return withDelta && hasDelta ? `out ${safe.toFixed(1)}/s\nΔ ${dSign}${d.toFixed(1)}/s` : `out ${safe.toFixed(1)}/s`;
+            return withDelta && hasDelta ? `asym ${(safe * 100).toFixed(0)}%\nΔ ${dSign}${(d * 100).toFixed(0)}%` : `asym ${(safe * 100).toFixed(0)}%`;
+        }
+        if (layerId === 'netfilter') {
+            if (signalIdx === 0) return withDelta && hasDelta ? `drop ${(safe * 100).toFixed(1)}%\nΔ ${dSign}${(d * 100).toFixed(1)}%` : `drop ${(safe * 100).toFixed(1)}%`;
+            if (signalIdx === 1) return withDelta && hasDelta ? `drop ${safe.toFixed(1)}/s\nΔ ${dSign}${d.toFixed(1)}/s` : `drop ${safe.toFixed(1)}/s`;
+            return withDelta && hasDelta ? `ct ${Math.round(safe)}%\nΔ ${dSign}${Math.round(d)}%` : `ct ${Math.round(safe)}%`;
+        }
+        if (layerId === 'driver') {
+            if (signalIdx === 0) return withDelta && hasDelta ? `txq ${Math.round(safe)}\nΔ ${dSign}${Math.round(d)}` : `txq ${Math.round(safe)}`;
+            if (signalIdx === 1) return withDelta && hasDelta ? `drop ${safe.toFixed(1)}/s\nΔ ${dSign}${d.toFixed(1)}/s` : `drop ${safe.toFixed(1)}/s`;
+            return withDelta && hasDelta ? `irq ${Math.round(safe)}\nΔ ${dSign}${Math.round(d)}` : `irq ${Math.round(safe)}`;
+        }
+        if (layerId === 'nic') {
+            if (signalIdx === 0) return withDelta && hasDelta ? `rx err ${Math.round(safe)}\nΔ ${dSign}${Math.round(d)}` : `rx err ${Math.round(safe)}`;
+            if (signalIdx === 1) return withDelta && hasDelta ? `tx err ${Math.round(safe)}\nΔ ${dSign}${Math.round(d)}` : `tx err ${Math.round(safe)}`;
+            return withDelta && hasDelta ? `dma ${Math.round(safe)}%\nΔ ${dSign}${Math.round(d)}%` : `dma ${Math.round(safe)}%`;
+        }
+        return `${Math.round(safe)}`;
+    }
+
+    updateBranchMetricHistory(tsMs) {
+        const now = Number(tsMs) || Date.now();
+        const windowMs = Math.max(1000, Number(this.branchDeltaWindowMs) || 6000);
+        const cutoff = now - windowMs;
+        const nextDelta = {};
+        Object.entries(this.layerBranchMetricTarget || {}).forEach(([layerId, values]) => {
+            if (!Array.isArray(values)) return;
+            const history = this.layerBranchMetricHistory[layerId] || [];
+            history.push({ ts: now, values: values.slice() });
+            while (history.length > 0 && history[0].ts < cutoff) {
+                history.shift();
+            }
+            this.layerBranchMetricHistory[layerId] = history;
+            const baseline = history[0]?.values || values;
+            const delta = values.map((v, idx) => (Number(v) || 0) - (Number(baseline[idx]) || 0));
+            nextDelta[layerId] = delta;
+        });
+        this.layerBranchMetricDelta = nextDelta;
+    }
+
+    createLayerNoiseRig(def, layerDepth) {
+        const controlHeavy = new Set(['userspace', 'socket', 'tcp', 'ip']);
+        const hardwareHeavy = new Set(['driver', 'nic']);
+        const isControl = controlHeavy.has(def.id);
+        const isHardware = hardwareHeavy.has(def.id);
+        const profile = {
+            type: isControl ? 'control' : (isHardware ? 'hardware' : 'mixed'),
+            hubRadius: isControl ? 0.088 : (isHardware ? 0.122 : 0.104),
+            ringRadius: isControl ? 0.21 : (isHardware ? 0.17 : 0.19),
+            armCount: isControl ? 6 : (isHardware ? 3 : 4),
+            armRadius: isControl ? 0.013 : (isHardware ? 0.022 : 0.017),
+            armOpacity: isControl ? 0.24 : (isHardware ? 0.38 : 0.3),
+            branchMin: isControl ? 2 : (isHardware ? 1 : 2),
+            branchMax: isControl ? 4 : (isHardware ? 2 : 3),
+            branchRadius: isControl ? 0.009 : (isHardware ? 0.015 : 0.011),
+            ringRotateSpeed: isControl ? 0.25 : (isHardware ? 0.07 : 0.14),
+            pulseAmp: isControl ? 0.11 : (isHardware ? 0.06 : 0.08),
+            xSpread: isControl ? 2.7 : (isHardware ? 1.95 : 2.3)
+        };
+
+        const hubXOffset = isControl
+            ? ((def.id === 'userspace' || def.id === 'tcp') ? -0.16 : 0.16)
+            : (isHardware ? ((def.id === 'nic') ? 0.2 : -0.2) : 0);
+        const hubPos = new THREE.Vector3(hubXOffset, def.y, -0.08);
+        const hub = new THREE.Mesh(
+            new THREE.SphereGeometry(profile.hubRadius, 14, 14),
+            new THREE.MeshBasicMaterial({
+                color: 0xa8b2bd,
+                transparent: true,
+                opacity: isHardware ? 0.48 : 0.4
+            })
+        );
+        hub.position.copy(hubPos);
+        this.scene.add(hub);
+
+        const ring = new THREE.Mesh(
+            new THREE.TorusGeometry(profile.ringRadius, isHardware ? 0.014 : 0.012, 8, 22),
+            new THREE.MeshBasicMaterial({
+                color: 0x657383,
+                transparent: true,
+                opacity: isControl ? 0.22 : 0.3
+            })
+        );
+        ring.position.copy(hubPos);
+        ring.rotation.x = Math.PI / 2;
+        this.scene.add(ring);
+
+        const arms = [];
+        const supportRods = [];
+        const satellites = [];
+        const armCount = profile.armCount;
+        for (let i = 0; i < armCount; i++) {
+            const side = i % 2 === 0 ? -1 : 1;
+            const lane = Math.floor(i / 2);
+            const x = hubXOffset + side * (1.1 + lane * (isControl ? 0.64 : 0.82) + Math.random() * profile.xSpread * 0.16);
+            const z = (Math.random() - 0.5) * (layerDepth * 0.72);
+            const end = new THREE.Vector3(x, def.y + (Math.random() - 0.5) * (isControl ? 0.14 : 0.06), z);
+            const armRod = this.createRodBetween(hubPos, end, profile.armRadius, 0x7d8a97, profile.armOpacity);
+            const armEntry = {
+                rod: armRod,
+                start: hubPos.clone(),
+                end: end.clone(),
+                phase: Math.random(),
+                signal: 0.2,
+                beads: [],
+                signalIdx: i,
+                signalLabel: '',
+                signalTag: null,
+                signalTagOffset: new THREE.Vector3(
+                    (Math.random() - 0.5) * 0.16,
+                    0.08 + Math.random() * 0.07,
+                    (Math.random() - 0.5) * 0.16
+                )
+            };
+
+            const satellite = new THREE.Mesh(
+                new THREE.SphereGeometry(
+                    (isControl ? 0.058 : 0.078) + Math.random() * (isControl ? 0.016 : 0.024),
+                    10,
+                    10
+                ),
+                new THREE.MeshBasicMaterial({
+                    color: 0xb5bdc6,
+                    transparent: true,
+                    opacity: isControl ? 0.3 : 0.4
+                })
+            );
+            satellite.position.copy(end);
+            this.scene.add(satellite);
+            satellites.push(satellite);
+
+            const beadCount = isControl ? 4 : 3;
+            for (let b = 0; b < beadCount; b++) {
+                const bead = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.016 + Math.random() * 0.008, 8, 8),
+                    new THREE.MeshBasicMaterial({
+                        color: 0x95b8cf,
+                        transparent: true,
+                        opacity: 0.26
+                    })
+                );
+                bead.position.copy(hubPos.clone().lerp(end, (b + 1) / (beadCount + 1)));
+                this.scene.add(bead);
+                armEntry.beads.push(bead);
+            }
+            const labels = this.layerSignalLabels[def.id] || ['sig'];
+            armEntry.signalIdx = i % Math.max(1, labels.length);
+            armEntry.signalLabel = labels[armEntry.signalIdx] || `sig${armEntry.signalIdx}`;
+            armEntry.signalTag = this.createSignalTagSprite(`${armEntry.signalLabel} --`);
+            if (armEntry.signalTag?.sprite) {
+                const tagPos = hubPos.clone().lerp(end, 0.56).add(armEntry.signalTagOffset);
+                armEntry.signalTag.sprite.position.copy(tagPos);
+            }
+            arms.push(armEntry);
+
+            const miniCount = profile.branchMin + Math.floor(Math.random() * (profile.branchMax - profile.branchMin + 1));
+            for (let j = 0; j < miniCount; j++) {
+                const miniEnd = end.clone().add(new THREE.Vector3(
+                    side * (0.24 + Math.random() * (isControl ? 0.56 : 0.38)),
+                    (Math.random() - 0.5) * (isControl ? 0.18 : 0.08),
+                    (Math.random() - 0.5) * (isControl ? 0.72 : 0.42)
+                ));
+                const miniRod = this.createRodBetween(
+                    end,
+                    miniEnd,
+                    profile.branchRadius,
+                    0x74808d,
+                    isControl ? 0.2 : 0.26
+                );
+                if (miniRod) {
+                    supportRods.push(miniRod);
+                }
+                const miniDot = new THREE.Mesh(
+                    new THREE.SphereGeometry((isControl ? 0.022 : 0.03) + Math.random() * 0.01, 8, 8),
+                    new THREE.MeshBasicMaterial({
+                        color: 0x90a0b0,
+                        transparent: true,
+                        opacity: isControl ? 0.2 : 0.28
+                    })
+                );
+                miniDot.position.copy(miniEnd);
+                this.scene.add(miniDot);
+                satellites.push(miniDot);
+            }
+        }
+
+        return { hub, ring, arms, supportRods, satellites, profile };
     }
 
     createFlowParticles() {
@@ -297,6 +663,9 @@ class NetworkStackVisualization {
             };
             this.scene.add(p);
             this.lineParticles.push(p);
+            if (this.hideVerticalOrbs) {
+                p.visible = false;
+            }
         }
 
         // Micro-packets falling through layers (plus occasional upward control packets).
@@ -318,6 +687,9 @@ class NetworkStackVisualization {
             };
             this.scene.add(m);
             this.microPackets.push(m);
+            if (this.hideVerticalOrbs) {
+                m.visible = false;
+            }
         }
     }
 
@@ -342,6 +714,13 @@ class NetworkStackVisualization {
             trail.position.copy(this.packet.position);
             this.scene.add(trail);
             this.packetTrail.push(trail);
+        }
+        if (this.hideVerticalOrbs) {
+            this.packet.visible = false;
+            this.packetGlow.visible = false;
+            this.packetTrail.forEach((trail) => {
+                if (trail) trail.visible = false;
+            });
         }
     }
 
@@ -723,6 +1102,72 @@ class NetworkStackVisualization {
         this.container.appendChild(puzzleModeBtn);
         this.overlayNodes.push(puzzleModeBtn);
         this.puzzleModeButton = puzzleModeBtn;
+
+        const noiseModeBtn = document.createElement('button');
+        noiseModeBtn.textContent = 'NOISE: DENSE';
+        noiseModeBtn.style.cssText = `
+            position: absolute;
+            top: 130px;
+            right: 20px;
+            padding: 7px 10px;
+            background: rgba(12, 18, 28, 0.88);
+            border: 1px solid rgba(230, 193, 90, 0.58);
+            color: #f0dca2;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 10px;
+            letter-spacing: 0.45px;
+            cursor: pointer;
+            z-index: 1002;
+            transition: all 0.2s ease;
+        `;
+        noiseModeBtn.onmouseenter = () => {
+            noiseModeBtn.style.background = 'rgba(19, 28, 40, 0.95)';
+            noiseModeBtn.style.color = '#edf2f8';
+        };
+        noiseModeBtn.onmouseleave = () => {
+            noiseModeBtn.style.background = 'rgba(12, 18, 28, 0.88)';
+            noiseModeBtn.style.color = this.noiseDetailMode === 'dense' ? '#f0dca2' : '#c6d0db';
+        };
+        noiseModeBtn.onclick = () => {
+            this.toggleNoiseDetailMode();
+        };
+        this.container.appendChild(noiseModeBtn);
+        this.overlayNodes.push(noiseModeBtn);
+        this.noiseModeButton = noiseModeBtn;
+
+        const readModeBtn = document.createElement('button');
+        readModeBtn.textContent = 'READ: FORENSICS';
+        readModeBtn.style.cssText = `
+            position: absolute;
+            top: 166px;
+            right: 20px;
+            padding: 7px 10px;
+            background: rgba(12, 18, 28, 0.88);
+            border: 1px solid rgba(125, 138, 156, 0.34);
+            color: #c6d0db;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 10px;
+            letter-spacing: 0.45px;
+            cursor: pointer;
+            z-index: 1002;
+            transition: all 0.2s ease;
+        `;
+        readModeBtn.onmouseenter = () => {
+            readModeBtn.style.background = 'rgba(19, 28, 40, 0.95)';
+            readModeBtn.style.color = '#edf2f8';
+        };
+        readModeBtn.onmouseleave = () => {
+            readModeBtn.style.background = 'rgba(12, 18, 28, 0.88)';
+            if (this.readMode === 'scene') readModeBtn.style.color = '#9bd4f2';
+            else if (this.readMode === 'ops') readModeBtn.style.color = '#f0dca2';
+            else readModeBtn.style.color = '#c6d0db';
+        };
+        readModeBtn.onclick = () => {
+            this.toggleReadMode();
+        };
+        this.container.appendChild(readModeBtn);
+        this.overlayNodes.push(readModeBtn);
+        this.readModeButton = readModeBtn;
         this.updateBottomPanelsLayout();
         this.updatePacketLifecycleUI();
         this.applyViewDensityMode();
@@ -789,6 +1234,13 @@ class NetworkStackVisualization {
         if (this.puzzleModeButton) {
             this.puzzleModeButton.style.display = minimal ? 'none' : 'block';
         }
+        if (this.noiseModeButton) {
+            this.noiseModeButton.style.display = minimal ? 'none' : 'block';
+        }
+        if (this.readModeButton) {
+            this.readModeButton.style.display = minimal ? 'none' : 'block';
+        }
+        this.applyReadModeVisibility();
     }
 
     toggleViewDensityMode() {
@@ -806,6 +1258,64 @@ class NetworkStackVisualization {
                 : 'rgba(230, 193, 90, 0.58)';
             this.puzzleModeButton.style.color = isOverview ? '#c6d0db' : '#f0dca2';
         }
+        this.updatePacketLifecycleUI();
+    }
+
+    toggleNoiseDetailMode() {
+        this.noiseDetailMode = this.noiseDetailMode === 'dense' ? 'normal' : 'dense';
+        if (this.noiseModeButton) {
+            const dense = this.noiseDetailMode === 'dense';
+            this.noiseModeButton.textContent = dense ? 'NOISE: DENSE' : 'NOISE: NORMAL';
+            this.noiseModeButton.style.borderColor = dense
+                ? 'rgba(230, 193, 90, 0.58)'
+                : 'rgba(125, 138, 156, 0.34)';
+            this.noiseModeButton.style.color = dense ? '#f0dca2' : '#c6d0db';
+        }
+        Object.keys(this.layerBranchMetricDelta || {}).forEach((layerId) => {
+            const deltas = this.layerBranchMetricDelta[layerId];
+            if (Array.isArray(deltas)) {
+                this.layerBranchMetricDelta[layerId] = deltas.map((v) => Number(v) || 0);
+            }
+        });
+    }
+
+    applyReadModeVisibility() {
+        if (this.viewDensityMode === 'minimal') return;
+        const mode = this.readMode;
+        const showLayers = mode !== 'scene';
+        const showChips = mode !== 'scene';
+        const showGalaxy = mode !== 'scene';
+        const showLifecycle = mode === 'forensics';
+
+        if (this.layersPanelNode) this.layersPanelNode.style.display = showLayers ? 'block' : 'none';
+        if (this.chipLayerNode) this.chipLayerNode.style.display = showChips ? 'block' : 'none';
+        if (this.galaxyPanelNode) this.galaxyPanelNode.style.display = showGalaxy ? 'block' : 'none';
+        if (this.lifecyclePanelNode) this.lifecyclePanelNode.style.display = showLifecycle ? 'block' : 'none';
+
+        if (this.noiseModeButton) this.noiseModeButton.style.display = mode === 'forensics' ? 'block' : 'none';
+        if (this.puzzleModeButton) this.puzzleModeButton.style.display = mode === 'forensics' ? 'block' : 'none';
+    }
+
+    toggleReadMode() {
+        const order = ['scene', 'ops', 'forensics'];
+        const idx = order.indexOf(this.readMode);
+        this.readMode = order[(idx + 1) % order.length];
+        if (this.readModeButton) {
+            if (this.readMode === 'scene') {
+                this.readModeButton.textContent = 'READ: SCENE';
+                this.readModeButton.style.borderColor = 'rgba(130, 204, 240, 0.58)';
+                this.readModeButton.style.color = '#9bd4f2';
+            } else if (this.readMode === 'ops') {
+                this.readModeButton.textContent = 'READ: OPS';
+                this.readModeButton.style.borderColor = 'rgba(230, 193, 90, 0.58)';
+                this.readModeButton.style.color = '#f0dca2';
+            } else {
+                this.readModeButton.textContent = 'READ: FORENSICS';
+                this.readModeButton.style.borderColor = 'rgba(125, 138, 156, 0.34)';
+                this.readModeButton.style.color = '#c6d0db';
+            }
+        }
+        this.applyReadModeVisibility();
         this.updatePacketLifecycleUI();
     }
 
@@ -1311,6 +1821,130 @@ class NetworkStackVisualization {
             driver: Number(a.driver ?? this.layerActivityTarget.driver),
             nic: Number(a.nic ?? this.layerActivityTarget.nic)
         };
+
+        const clamp01 = (value) => Math.max(0, Math.min(1, Number(value) || 0));
+        const userspaceProcs = safeNum(m.userspace?.active_processes ?? 0);
+        const socketEst = safeNum(m.socket_api?.established ?? 0);
+        const ipIn = safeNum(m.ip?.in_packets_per_sec ?? 0);
+        const ipOut = safeNum(m.ip?.out_packets_per_sec ?? 0);
+        const driverDrops = safeNum(m.driver?.drops_per_sec ?? 0);
+        const flowIntensity = safeNum(this.packetSpeed || 0) / 5.2;
+        const ipAsym = Math.abs(ipIn - ipOut) / Math.max(1, ipIn + ipOut);
+
+        this.layerSemanticNoiseTarget = {
+            userspace: {
+                stress: clamp01(userspaceProcs / 320),
+                jitter: clamp01(flowIntensity * 0.55 + userspaceProcs / 540),
+                branch: clamp01(0.2 + userspaceProcs / 500)
+            },
+            socket: {
+                stress: clamp01(socketEst / 180 + retransPerSec / 44),
+                jitter: clamp01(retransPerSec / 34 + flowIntensity * 0.25),
+                branch: clamp01(0.24 + socketEst / 260)
+            },
+            tcp: {
+                stress: clamp01(rttMs / 260 + retransPerSec / 34),
+                jitter: clamp01(retransPerSec / 24 + rttMs / 420),
+                branch: clamp01(0.25 + retransPerSec / 30)
+            },
+            ip: {
+                stress: clamp01((ipIn + ipOut) / 9000 + ipAsym * 0.7),
+                jitter: clamp01(ipAsym + flowIntensity * 0.2),
+                branch: clamp01(0.2 + (ipIn + ipOut) / 13000)
+            },
+            netfilter: {
+                stress: clamp01(dropRatio * 2.6 + dropPerSec / 24),
+                jitter: clamp01(dropPerSec / 16 + dropRatio * 1.6),
+                branch: clamp01(0.22 + dropRatio * 2.1)
+            },
+            driver: {
+                stress: clamp01(driverTxQ / 360 + driverDrops / 22),
+                jitter: clamp01(driverTxQ / 470 + driverDrops / 15),
+                branch: clamp01(0.22 + driverTxQ / 500)
+            },
+            nic: {
+                stress: clamp01(nicErrTotal / 30 + driverTxQ / 650),
+                jitter: clamp01(nicErrTotal / 18 + flowIntensity * 0.2),
+                branch: clamp01(0.2 + nicErrTotal / 28)
+            }
+        };
+
+        this.layerBranchSignalTarget = {
+            userspace: [
+                clamp01(userspaceProcs / 320),
+                clamp01(flowIntensity),
+                clamp01((userspaceProcs * 0.08 + socketEst * 0.25) / 120)
+            ],
+            socket: [
+                clamp01(socketEst / 180),
+                clamp01((socketEst * 0.18 + retransPerSec * 4) / 60),
+                clamp01(retransPerSec / 26)
+            ],
+            tcp: [
+                clamp01(safeNum(m.tcp_udp?.cwnd ?? 0) / 240),
+                clamp01(rttMs / 260),
+                clamp01(retransPerSec / 20)
+            ],
+            ip: [
+                clamp01(ipIn / 5500),
+                clamp01(ipOut / 5500),
+                clamp01(ipAsym)
+            ],
+            netfilter: [
+                clamp01(dropRatio * 2.4),
+                clamp01(dropPerSec / 20),
+                clamp01((dropRatio * 120 + dropPerSec) / 30)
+            ],
+            driver: [
+                clamp01(driverTxQ / 360),
+                clamp01(driverDrops / 18),
+                clamp01((driverTxQ + driverDrops * 8) / 520)
+            ],
+            nic: [
+                clamp01(nicErrRx / 14),
+                clamp01(nicErrTx / 14),
+                clamp01(nicErrTotal / 22 + flowIntensity * 0.25)
+            ]
+        };
+
+        this.layerBranchMetricTarget = {
+            userspace: [
+                userspaceProcs,
+                flowIntensity * 100,
+                userspaceProcs * 0.08 + socketEst * 0.25
+            ],
+            socket: [
+                socketEst,
+                socketEst * 0.18 + retransPerSec * 4,
+                retransPerSec
+            ],
+            tcp: [
+                safeNum(m.tcp_udp?.cwnd ?? 0),
+                rttMs,
+                retransPerSec
+            ],
+            ip: [
+                ipIn,
+                ipOut,
+                ipAsym
+            ],
+            netfilter: [
+                dropRatio,
+                dropPerSec,
+                dropRatio * 100 + dropPerSec
+            ],
+            driver: [
+                driverTxQ,
+                driverDrops,
+                driverTxQ * 0.6 + driverDrops * 3.5
+            ],
+            nic: [
+                nicErrRx,
+                nicErrTx,
+                nicErrTotal * 4 + flowIntensity * 40
+            ]
+        };
+        this.updateBranchMetricHistory(Date.now());
     }
 
     fetchTelemetry() {
@@ -1401,41 +2035,197 @@ class NetworkStackVisualization {
             this.layerActivity[id] = blended;
             const actRaw = blended;
             const act = Math.max(0, Math.min(1, actRaw));
+            const currentSemantic = this.layerSemanticNoise[id] || { stress: 0.2, jitter: 0.2, branch: 0.2 };
+            const targetSemantic = this.layerSemanticNoiseTarget[id] || currentSemantic;
+            const semanticBlend = Math.min(1, dt * 3.1);
+            currentSemantic.stress += (targetSemantic.stress - currentSemantic.stress) * semanticBlend;
+            currentSemantic.jitter += (targetSemantic.jitter - currentSemantic.jitter) * semanticBlend;
+            currentSemantic.branch += (targetSemantic.branch - currentSemantic.branch) * semanticBlend;
+            this.layerSemanticNoise[id] = currentSemantic;
+            const semanticStress = Math.max(0, Math.min(1, currentSemantic.stress));
+            const semanticJitter = Math.max(0, Math.min(1, currentSemantic.jitter));
+            const semanticBranch = Math.max(0, Math.min(1, currentSemantic.branch));
+            const targetSignals = this.layerBranchSignalTarget[id] || [];
+            if (!this.layerBranchSignalCurrent[id]) {
+                this.layerBranchSignalCurrent[id] = targetSignals.slice();
+            } else {
+                const currentSignals = this.layerBranchSignalCurrent[id];
+                const signalCount = Math.max(currentSignals.length, targetSignals.length);
+                for (let i = 0; i < signalCount; i++) {
+                    const cur = Number(currentSignals[i] ?? 0.2);
+                    const tgt = Number(targetSignals[i] ?? targetSignals[targetSignals.length - 1] ?? 0.2);
+                    currentSignals[i] = cur + (tgt - cur) * Math.min(1, dt * 3.6);
+                }
+            }
+            const targetMetrics = this.layerBranchMetricTarget[id] || [];
+            if (!this.layerBranchMetricCurrent[id]) {
+                this.layerBranchMetricCurrent[id] = targetMetrics.slice();
+            } else {
+                const currentMetrics = this.layerBranchMetricCurrent[id];
+                const metricCount = Math.max(currentMetrics.length, targetMetrics.length);
+                for (let i = 0; i < metricCount; i++) {
+                    const cur = Number(currentMetrics[i] ?? 0);
+                    const tgt = Number(targetMetrics[i] ?? targetMetrics[targetMetrics.length - 1] ?? 0);
+                    currentMetrics[i] = cur + (tgt - cur) * Math.min(1, dt * 3.4);
+                }
+            }
+
             if (layer.mesh?.material) {
-                layer.mesh.material.opacity = 0.2 + act * 0.28;
+                layer.mesh.material.opacity = 0.03 + act * 0.09;
                 layer.mesh.material.emissiveIntensity = 0.02 + act * 0.18;
             }
             if (layer.strip?.material) {
-                layer.strip.scale.x = 0.14 + act * 0.86;
-                layer.strip.material.opacity = 0.12 + act * 0.78;
+                layer.strip.scale.x = 0.14 + act * 0.86 + semanticStress * 0.14;
+                layer.strip.material.opacity = 0.12 + act * 0.78 + semanticBranch * 0.06;
+            }
+            if (this.hideOsiTiles) {
+                if (layer.mesh) layer.mesh.visible = false;
+                if (layer.edge) layer.edge.visible = false;
+                if (layer.strip) layer.strip.visible = false;
+            }
+            if (layer.noiseRig) {
+                const rig = layer.noiseRig;
+                const profile = rig.profile || {};
+                const ringSpeed = Number(profile.ringRotateSpeed || 0.14);
+                const pulseAmp = Number(profile.pulseAmp || 0.08);
+                if (rig.hub?.material) {
+                    rig.hub.material.opacity = 0.2 + act * 0.42 + semanticStress * 0.22;
+                }
+                if (rig.hub?.scale) {
+                    const hubPulse = 1 + (0.02 + semanticJitter * 0.08) * Math.sin((performance.now() * 0.0032) + (layer.id.length * 0.7));
+                    rig.hub.scale.setScalar(hubPulse);
+                }
+                if (rig.ring?.material) {
+                    rig.ring.material.opacity = 0.12 + act * 0.26 + semanticBranch * 0.24;
+                    rig.ring.rotation.z += (ringSpeed + act * 0.15 + semanticJitter * 0.38) * dt;
+                }
+                if (Array.isArray(rig.supportRods)) {
+                    rig.supportRods.forEach((rod, idx) => {
+                        if (rod?.material) {
+                            const pulse = 0.5 + 0.5 * Math.sin((performance.now() * 0.0018) + idx * 0.37);
+                            rod.material.opacity = 0.06 + act * 0.12 + semanticBranch * 0.1 + pulse * 0.05;
+                        }
+                    });
+                }
+                if (Array.isArray(rig.arms)) {
+                    const signals = this.layerBranchSignalCurrent[id] || [];
+                    const metricValues = this.layerBranchMetricCurrent[id] || [];
+                    const metricDeltas = this.layerBranchMetricDelta[id] || [];
+                    rig.arms.forEach((armEntry, idx) => {
+                        const arm = armEntry?.rod;
+                        const signal = Number(signals[armEntry.signalIdx % Math.max(1, signals.length)] ?? semanticBranch);
+                        armEntry.signal += (signal - armEntry.signal) * Math.min(1, dt * 4.5);
+                        const armSignal = Math.max(0, Math.min(1, armEntry.signal));
+                        if (arm?.material) {
+                            const idxPulse = 0.5 + 0.5 * Math.sin((performance.now() * 0.0015) + idx * 0.42);
+                            arm.material.opacity = 0.08
+                                + act * (0.12 + (idx % 3) * 0.025)
+                                + semanticBranch * 0.16
+                                + armSignal * 0.22
+                                + semanticJitter * idxPulse * 0.09;
+                            const hue = 0.56 - armSignal * 0.34;
+                            arm.material.color.setHSL(hue, 0.55, 0.54);
+                        }
+                        if (armEntry.signalTag?.sprite) {
+                            const posPulse = Math.sin((performance.now() * 0.0021) + idx * 0.7) * (0.02 + semanticJitter * 0.04);
+                            const tagPos = armEntry.start
+                                .clone()
+                                .lerp(armEntry.end, 0.56 + posPulse)
+                                .add(armEntry.signalTagOffset);
+                            armEntry.signalTag.sprite.position.copy(tagPos);
+                            const metricValue = Number(metricValues[armEntry.signalIdx % Math.max(1, metricValues.length)] ?? armSignal * 100);
+                            const metricDelta = Number(metricDeltas[armEntry.signalIdx % Math.max(1, metricDeltas.length)] ?? 0);
+                            const denseTags = this.noiseDetailMode === 'dense' && this.readMode === 'forensics';
+                            const signalText = this.formatBranchMetric(
+                                id,
+                                armEntry.signalIdx,
+                                metricValue,
+                                metricDelta,
+                                denseTags
+                            );
+                            this.updateSignalTagSprite(armEntry.signalTag, signalText, armSignal, semanticJitter);
+                            const modeOpacity = this.readMode === 'scene' ? 0.35 : (this.readMode === 'ops' ? 0.65 : 1);
+                            armEntry.signalTag.sprite.material.opacity = (0.25 + armSignal * 0.7) * modeOpacity;
+                            armEntry.signalTag.sprite.scale.set(
+                                (1.2 + armSignal * 0.2) * (this.readMode === 'scene' ? 0.78 : 1),
+                                (0.29 + armSignal * 0.05) * (this.readMode === 'scene' ? 0.78 : 1),
+                                1
+                            );
+                        }
+                        if (Array.isArray(armEntry?.beads)) {
+                            armEntry.phase += dt * (0.22 + armSignal * 1.45 + semanticJitter * 0.55);
+                            armEntry.beads.forEach((bead, bIdx) => {
+                                if (!bead) return;
+                                const t = (armEntry.phase + bIdx * 0.27) % 1;
+                                const pos = armEntry.start.clone().lerp(armEntry.end, t);
+                                bead.position.copy(pos);
+                                if (bead.material) {
+                                    bead.material.opacity = 0.14 + armSignal * 0.45 + semanticBranch * 0.16;
+                                    const beadHue = 0.58 - armSignal * 0.4;
+                                    bead.material.color.setHSL(beadHue, 0.62, 0.6);
+                                }
+                                const scale = 0.85 + armSignal * 0.9;
+                                bead.scale.setScalar(scale);
+                            });
+                        }
+                    });
+                }
+                if (Array.isArray(rig.satellites)) {
+                    rig.satellites.forEach((dot, idx) => {
+                        if (dot?.material) {
+                            const pulse = 0.5 + 0.5 * Math.sin((performance.now() * 0.0025) + idx * 0.65);
+                            dot.material.opacity = 0.1 + act * 0.2 + semanticBranch * 0.2 + pulse * (pulseAmp + semanticJitter * 0.12);
+                        }
+                    });
+                }
             }
         });
     }
 
     getLayerTooltipContent(layerId) {
         const m = this.telemetryData?.layer_metrics || {};
+        const safeNum = (value) => {
+            const n = Number(value);
+            return Number.isFinite(n) ? n : 0;
+        };
+        const labels = this.layerSignalLabels[layerId] || [];
+        const metrics = this.layerBranchMetricCurrent[layerId] || [];
+        const deltas = this.layerBranchMetricDelta[layerId] || [];
+        const signalLine = labels.length
+            ? labels.map((_, idx) => this.formatBranchMetric(
+                layerId,
+                idx,
+                safeNum(metrics[idx] ?? 0),
+                safeNum(deltas[idx] ?? 0),
+                this.noiseDetailMode === 'dense' && this.readMode === 'forensics'
+            ).replace('\n', ' ')).join(' | ')
+            : '';
+        const appendSignals = (body) => (
+            `${body}${signalLine ? `<br><span style="color:#90a8bc">branches: ${signalLine}</span>` : ''}`
+        );
+
         if (layerId === 'userspace') {
-            return `<strong>Userspace</strong><br>active processes: ${m.userspace?.active_processes ?? 0}`;
+            return appendSignals(`<strong>Userspace</strong><br>active processes: ${m.userspace?.active_processes ?? 0}`);
         }
         if (layerId === 'socket') {
-            return `<strong>Socket API</strong><br>established: ${m.socket_api?.established ?? 0}<br>retransmits/s: ${m.socket_api?.retransmits_per_sec ?? 0}`;
+            return appendSignals(`<strong>Socket API</strong><br>established: ${m.socket_api?.established ?? 0}<br>retransmits/s: ${m.socket_api?.retransmits_per_sec ?? 0}`);
         }
         if (layerId === 'tcp') {
-            return `<strong>TCP/UDP</strong><br>cwnd: ${m.tcp_udp?.cwnd ?? 0}<br>rtt: ${m.tcp_udp?.rtt_ms ?? 0} ms<br>retrans/s: ${m.tcp_udp?.retrans_per_sec ?? 0}`;
+            return appendSignals(`<strong>TCP/UDP</strong><br>cwnd: ${m.tcp_udp?.cwnd ?? 0}<br>rtt: ${m.tcp_udp?.rtt_ms ?? 0} ms<br>retrans/s: ${m.tcp_udp?.retrans_per_sec ?? 0}`);
         }
         if (layerId === 'ip') {
-            return `<strong>IP</strong><br>packets in: ${m.ip?.in_packets_per_sec ?? 0}/s<br>packets out: ${m.ip?.out_packets_per_sec ?? 0}/s`;
+            return appendSignals(`<strong>IP</strong><br>packets in: ${m.ip?.in_packets_per_sec ?? 0}/s<br>packets out: ${m.ip?.out_packets_per_sec ?? 0}/s`);
         }
         if (layerId === 'netfilter') {
-            return `<strong>Netfilter</strong><br>drop/s: ${m.netfilter?.drop_per_sec ?? 0}<br>drop ratio: ${((m.netfilter?.drop_ratio ?? 0) * 100).toFixed(2)}%`;
+            return appendSignals(`<strong>Netfilter</strong><br>drop/s: ${m.netfilter?.drop_per_sec ?? 0}<br>drop ratio: ${((m.netfilter?.drop_ratio ?? 0) * 100).toFixed(2)}%`);
         }
         if (layerId === 'driver') {
-            return `<strong>Driver</strong><br>tx queue: ${m.driver?.tx_queue ?? 0}<br>drops/s: ${m.driver?.drops_per_sec ?? 0}`;
+            return appendSignals(`<strong>Driver</strong><br>tx queue: ${m.driver?.tx_queue ?? 0}<br>drops/s: ${m.driver?.drops_per_sec ?? 0}`);
         }
         if (layerId === 'nic') {
-            return `<strong>NIC</strong><br>iface: ${m.nic?.iface ?? 'n/a'}<br>errors rx/tx: ${m.nic?.rx_errors ?? 0}/${m.nic?.tx_errors ?? 0}`;
+            return appendSignals(`<strong>NIC</strong><br>iface: ${m.nic?.iface ?? 'n/a'}<br>errors rx/tx: ${m.nic?.rx_errors ?? 0}/${m.nic?.tx_errors ?? 0}`);
         }
-        return `<strong>${layerId}</strong>`;
+        return appendSignals(`<strong>${layerId}</strong>`);
     }
 
     onMouseMove(event) {
@@ -1483,9 +2273,13 @@ class NetworkStackVisualization {
         const dt = Math.min(0.04, (now - this.lastFrameTime) / 1000);
         this.lastFrameTime = now;
 
-        this.updatePacket(dt);
+        if (!this.hideVerticalOrbs) {
+            this.updatePacket(dt);
+        }
         this.updateEffects(dt);
-        this.updateFlowParticles(dt);
+        if (!this.hideVerticalOrbs) {
+            this.updateFlowParticles(dt);
+        }
         this.updateLayerStrips(dt);
         this.updatePacketLifecycleUI();
 
