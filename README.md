@@ -1,15 +1,21 @@
-# Ring 0 - Linux Kernel AI
+<p align="center">
+  <img src="templates/ghost-in-the-shell-anime.jpg" width="900">
+</p>
 
-<p>
-  <strong>Real-time Linux Kernel Visualization</strong>
-  <span style="float:right;">
-    <a href="https://ring-0.sh" target="_blank"> ring-0.sh</a>
-  </span>
+<h1 align="center">Ring 0 — Linux Kernel AI</h1>
+
+<p align="center">
+  <i>
+    企業のネットが星を被い<br>
+    電子や光が駆け巡っても<br>
+    国家や民族が消えてなくなるほど
+  </i>
 </p>
 
 <p align="center">
-  <img src="templates/ghost-in-the-shell-anime.jpg" alt="Ring-0 Linux Kernel Visualization" width="900">
+  Real-time Linux Kernel Visualization • eBPF • AI Mapping • Networking
 </p>
-<p align="right" style="margin-top:0; margin-right:12px;">
-  <sub>(ghost in the shell)</sub>
+
+<p align="center">
+  <a href="https://ring-0.sh">ring-0.sh</a>
 </p>
