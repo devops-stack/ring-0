@@ -23,8 +23,28 @@ class SecuritySubsystemVisualization {
         this.hoveredProcessPid = null;
         this.trustNodeHitAreas = [];
         this.capabilityRowHitAreas = [];
+        this.ringHitAreas = [];
+        this.focusedRingKey = null;
+        this.hoveredRingKey = null;
+        this.ringFocusPinned = false;
+        this.panelRects = {};
+        this.panelSpotlight = null;
         this.canvasClickHandler = null;
         this.canvasMouseMoveHandler = null;
+        this.canvasDoubleClickHandler = null;
+        this.showSecurityCorePanel = false;
+        this.corePanelToggleButton = null;
+        this.ringDerivedVerdictFilter = null;
+        this.focusStatusNode = null;
+        this.unpinButton = null;
+        this.trustGraphMode = 'topology';
+        this.trustModeButton = null;
+        this.trustForensicsLayout = new Map();
+        this.trustForensicsFreezeUntil = 0;
+        this.trustForensicsFreezeWindowMs = 8000;
+        this.selectedIncidentTrail = [];
+        this.incidentTrailWindowMs = 22000;
+        this.incidentTrailMaxPoints = 36;
     }
 
     init(containerId = 'security-belt-container') {
@@ -60,8 +80,10 @@ class SecuritySubsystemVisualization {
         this.ctx = this.canvas.getContext('2d');
         this.canvasClickHandler = (event) => this.onCanvasClick(event);
         this.canvasMouseMoveHandler = (event) => this.onCanvasMouseMove(event);
+        this.canvasDoubleClickHandler = (event) => this.onCanvasDoubleClick(event);
         this.canvas.addEventListener('click', this.canvasClickHandler);
         this.canvas.addEventListener('mousemove', this.canvasMouseMoveHandler);
+        this.canvas.addEventListener('dblclick', this.canvasDoubleClickHandler);
 
         this.createOverlayUI();
         this.addExitButton();
@@ -101,9 +123,52 @@ class SecuritySubsystemVisualization {
             font-size: 11px;
             z-index: 1001;
         `;
-        legend.textContent = 'pipeline + trust + attack surface + lsm/capabilities/seccomp tools';
+        legend.textContent = 'ring-first security model: policy / sandbox / threat pressure';
         this.container.appendChild(legend);
         this.overlayNodes.push(legend);
+
+        const focusStatus = document.createElement('div');
+        focusStatus.style.cssText = `
+            position: absolute;
+            top: 92px;
+            left: 24px;
+            color: rgba(170, 188, 214, 0.88);
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 10px;
+            letter-spacing: 0.3px;
+            z-index: 1001;
+        `;
+        focusStatus.textContent = 'FOCUS: NONE';
+        this.container.appendChild(focusStatus);
+        this.overlayNodes.push(focusStatus);
+        this.focusStatusNode = focusStatus;
+
+        const unpinBtn = document.createElement('button');
+        unpinBtn.textContent = 'UNPIN';
+        unpinBtn.style.cssText = `
+            position: absolute;
+            top: 88px;
+            left: 218px;
+            padding: 3px 8px;
+            background: rgba(8, 12, 18, 0.56);
+            border: 1px solid rgba(150, 164, 188, 0.22);
+            color: rgba(188, 200, 219, 0.55);
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 9px;
+            letter-spacing: 0.25px;
+            cursor: not-allowed;
+            z-index: 1001;
+        `;
+        unpinBtn.onclick = () => {
+            if (!this.ringFocusPinned) return;
+            this.ringFocusPinned = false;
+            this.focusedRingKey = null;
+            this.applyRingFocusVerdictFilter();
+            this.updateFocusStatusUi();
+        };
+        this.container.appendChild(unpinBtn);
+        this.overlayNodes.push(unpinBtn);
+        this.unpinButton = unpinBtn;
 
         const filterPanel = document.createElement('div');
         filterPanel.style.cssText = `
@@ -156,13 +221,239 @@ class SecuritySubsystemVisualization {
         clearBtn.onclick = () => {
             if (!this.selectedProcessFilter) return;
             this.selectedProcessFilter = null;
+            this.selectedIncidentTrail = [];
             this.updateClearProcessButtonState();
         };
         filterPanel.appendChild(clearBtn);
         this.clearProcessButton = clearBtn;
         this.overlayNodes.push(clearBtn);
+
+        const coreToggleBtn = document.createElement('button');
+        coreToggleBtn.textContent = 'CORE PANEL: OFF';
+        coreToggleBtn.style.cssText = `
+            padding: 4px 8px;
+            background: rgba(8, 12, 18, 0.56);
+            border: 1px solid rgba(150, 164, 188, 0.22);
+            color: rgba(188, 200, 219, 0.8);
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 9px;
+            letter-spacing: 0.3px;
+            cursor: pointer;
+        `;
+        coreToggleBtn.onclick = () => {
+            this.showSecurityCorePanel = !this.showSecurityCorePanel;
+            this.updateCorePanelToggleButtonState();
+        };
+        filterPanel.appendChild(coreToggleBtn);
+        this.corePanelToggleButton = coreToggleBtn;
+        this.overlayNodes.push(coreToggleBtn);
+
+        const trustModeBtn = document.createElement('button');
+        trustModeBtn.textContent = 'TRUST MODE: TOPOLOGY';
+        trustModeBtn.style.cssText = `
+            padding: 4px 8px;
+            background: rgba(8, 12, 18, 0.56);
+            border: 1px solid rgba(150, 164, 188, 0.22);
+            color: rgba(188, 200, 219, 0.8);
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 9px;
+            letter-spacing: 0.3px;
+            cursor: pointer;
+        `;
+        trustModeBtn.onclick = () => this.toggleTrustGraphMode();
+        filterPanel.appendChild(trustModeBtn);
+        this.trustModeButton = trustModeBtn;
+        this.overlayNodes.push(trustModeBtn);
+
         this.setVerdictFilter(this.verdictFilter);
         this.updateClearProcessButtonState();
+        this.updateCorePanelToggleButtonState();
+        this.updateTrustGraphModeButtonState();
+        this.updateFocusStatusUi();
+    }
+
+    updateCorePanelToggleButtonState() {
+        if (!this.corePanelToggleButton) return;
+        const on = this.showSecurityCorePanel;
+        this.corePanelToggleButton.textContent = on ? 'CORE PANEL: ON' : 'CORE PANEL: OFF';
+        this.corePanelToggleButton.style.background = on ? 'rgba(32, 52, 81, 0.92)' : 'rgba(8, 12, 18, 0.56)';
+        this.corePanelToggleButton.style.borderColor = on ? 'rgba(124, 178, 255, 0.9)' : 'rgba(150, 164, 188, 0.22)';
+        this.corePanelToggleButton.style.color = on ? '#d9ecff' : 'rgba(188, 200, 219, 0.8)';
+    }
+
+    toggleTrustGraphMode() {
+        const order = ['topology', 'risk', 'forensics'];
+        const currentIdx = order.indexOf(this.trustGraphMode);
+        const nextIdx = currentIdx >= 0 ? ((currentIdx + 1) % order.length) : 0;
+        this.trustGraphMode = order[nextIdx];
+        this.updateTrustGraphModeButtonState();
+    }
+
+    updateTrustGraphModeButtonState() {
+        if (!this.trustModeButton) return;
+        const labels = {
+            topology: 'TOPOLOGY',
+            risk: 'RISK HEAT',
+            forensics: 'FORENSICS'
+        };
+        const modeLabel = labels[this.trustGraphMode] || 'TOPOLOGY';
+        const isRisk = this.trustGraphMode === 'risk';
+        const isForensics = this.trustGraphMode === 'forensics';
+        this.trustModeButton.textContent = `TRUST MODE: ${modeLabel}`;
+        this.trustModeButton.style.background = isRisk
+            ? 'rgba(70, 35, 32, 0.92)'
+            : (isForensics ? 'rgba(28, 45, 64, 0.92)' : 'rgba(8, 12, 18, 0.56)');
+        this.trustModeButton.style.borderColor = isRisk
+            ? 'rgba(255, 156, 126, 0.9)'
+            : (isForensics ? 'rgba(132, 190, 255, 0.88)' : 'rgba(150, 164, 188, 0.22)');
+        this.trustModeButton.style.color = isRisk
+            ? '#ffd8cb'
+            : (isForensics ? '#e3f2ff' : 'rgba(188, 200, 219, 0.8)');
+    }
+
+    buildForensicsLayout(rows, cx, cy, innerRadius, maxRadius) {
+        const layout = new Map();
+        const ordered = rows.slice().sort((a, b) => Number(a?.pid || 0) - Number(b?.pid || 0));
+        ordered.forEach((row, idx) => {
+            const pid = Number(row?.pid || 0);
+            const risk = Number(row?.risk_score || 0);
+            const riskNorm = Math.max(0, Math.min(1, risk / 100));
+            const seed = ((pid % 37) + 37) % 37;
+            const offset = (seed / 37 - 0.5) * 0.34;
+            const angle = ((Math.PI * 2) / Math.max(ordered.length, 1)) * idx - Math.PI / 2 + offset;
+            const orbit = innerRadius + (maxRadius - innerRadius) * (0.24 + riskNorm * 0.76);
+            layout.set(pid, {
+                angle,
+                orbit,
+                nx: cx + Math.cos(angle) * orbit,
+                ny: cy + Math.sin(angle) * orbit
+            });
+        });
+        return layout;
+    }
+
+    findSelectedTrustRow(rows) {
+        if (!this.selectedProcessFilter || !Array.isArray(rows) || !rows.length) return null;
+        const selectedPid = Number(this.selectedProcessFilter.pid || 0);
+        const selectedName = this.normalizeName(this.selectedProcessFilter.name || '');
+        return rows.find((row) => {
+            const rowPid = Number(row?.pid || 0);
+            const rowName = this.normalizeName(row?.name || '');
+            return rowPid === selectedPid || (selectedName && rowName === selectedName);
+        }) || null;
+    }
+
+    updateSelectedIncidentTrail(rows) {
+        if (!this.selectedProcessFilter) {
+            this.selectedIncidentTrail = [];
+            return;
+        }
+        const selectedRow = this.findSelectedTrustRow(rows);
+        if (!selectedRow) return;
+        const now = Date.now();
+        const risk = Number(selectedRow.risk_score || 0);
+        const trust = String(selectedRow.trust || 'trusted');
+        const prev = this.selectedIncidentTrail[this.selectedIncidentTrail.length - 1];
+        if (!prev || Math.abs(Number(prev.risk || 0) - risk) >= 0.5 || prev.trust !== trust || (now - Number(prev.ts || 0)) >= 1300) {
+            this.selectedIncidentTrail.push({ ts: now, risk, trust });
+        } else {
+            prev.ts = now;
+            prev.risk = risk;
+            prev.trust = trust;
+        }
+        const cutoff = now - this.incidentTrailWindowMs;
+        this.selectedIncidentTrail = this.selectedIncidentTrail
+            .filter((item) => Number(item.ts || 0) >= cutoff)
+            .slice(-this.incidentTrailMaxPoints);
+    }
+
+    drawIncidentTrail(x, y, w, h, selectedNode) {
+        if (!this.selectedProcessFilter || this.selectedIncidentTrail.length < 2) return;
+        const trail = this.selectedIncidentTrail;
+        const now = Date.now();
+        const chartX = x + 14;
+        const chartY = y + h - 58;
+        const chartW = Math.max(110, w - 28);
+        const chartH = 42;
+
+        this.drawRoundedRect(chartX, chartY, chartW, chartH, 5);
+        this.ctx.fillStyle = 'rgba(9, 13, 19, 0.56)';
+        this.ctx.fill();
+        this.ctx.strokeStyle = 'rgba(122, 141, 166, 0.28)';
+        this.ctx.lineWidth = 0.9;
+        this.ctx.stroke();
+
+        this.ctx.beginPath();
+        trail.forEach((entry, idx) => {
+            const age = Math.max(0, now - Number(entry.ts || now));
+            const progress = 1 - Math.min(1, age / this.incidentTrailWindowMs);
+            const px = chartX + 8 + progress * (chartW - 16);
+            const py = chartY + chartH - 8 - (Math.max(0, Math.min(100, Number(entry.risk || 0))) / 100) * (chartH - 14);
+            if (idx === 0) this.ctx.moveTo(px, py);
+            else this.ctx.lineTo(px, py);
+        });
+        this.ctx.strokeStyle = 'rgba(151, 210, 255, 0.88)';
+        this.ctx.lineWidth = 1.2;
+        this.ctx.stroke();
+
+        const latest = trail[trail.length - 1];
+        const latestAge = Math.max(0, now - Number(latest.ts || now));
+        const latestProgress = 1 - Math.min(1, latestAge / this.incidentTrailWindowMs);
+        const latestX = chartX + 8 + latestProgress * (chartW - 16);
+        const latestY = chartY + chartH - 8 - (Math.max(0, Math.min(100, Number(latest.risk || 0))) / 100) * (chartH - 14);
+        this.ctx.beginPath();
+        this.ctx.arc(latestX, latestY, 2.6, 0, Math.PI * 2);
+        this.ctx.fillStyle = 'rgba(175, 228, 255, 0.95)';
+        this.ctx.fill();
+
+        this.ctx.fillStyle = 'rgba(154, 176, 206, 0.85)';
+        this.ctx.font = '8px "Share Tech Mono", monospace';
+        this.ctx.fillText(`incident trail ${Math.min(this.incidentTrailWindowMs / 1000, (now - Number(trail[0].ts || now)) / 1000).toFixed(1)}s`, chartX + 8, chartY + 12);
+        this.ctx.fillText(`risk ${Number(latest.risk || 0).toFixed(1)} ${String(latest.trust || '').toUpperCase()}`, chartX + chartW - 154, chartY + 12);
+
+        // Thin halo markers from historical risk samples around the selected node.
+        if (selectedNode) {
+            const historyToDraw = trail.slice(-8);
+            const angle = Number(selectedNode.angle || -Math.PI / 2);
+            historyToDraw.forEach((entry, idx) => {
+                const riskNorm = Math.max(0, Math.min(1, Number(entry.risk || 0) / 100));
+                const rr = selectedNode.innerRadius + (selectedNode.maxRadius - selectedNode.innerRadius) * (0.2 + riskNorm * 0.8);
+                const hx = selectedNode.cx + Math.cos(angle) * rr;
+                const hy = selectedNode.cy + Math.sin(angle) * rr;
+                const alpha = 0.16 + (idx / Math.max(1, historyToDraw.length)) * 0.45;
+                this.ctx.beginPath();
+                this.ctx.arc(hx, hy, 1.1 + idx * 0.1, 0, Math.PI * 2);
+                this.ctx.fillStyle = `rgba(158, 219, 255, ${alpha.toFixed(3)})`;
+                this.ctx.fill();
+            });
+        }
+    }
+
+    updateFocusStatusUi() {
+        const ringTone = {
+            policy: '#8bd0ff',
+            sandbox: '#8ff0bf',
+            threat: '#ff9aa6'
+        };
+        if (this.focusStatusNode) {
+            if (!this.focusedRingKey) {
+                this.focusStatusNode.textContent = 'FOCUS: NONE';
+                this.focusStatusNode.style.color = 'rgba(170, 188, 214, 0.88)';
+            } else {
+                const ringLabel = String(this.focusedRingKey).toUpperCase();
+                this.focusStatusNode.textContent = this.ringFocusPinned
+                    ? `FOCUS: ${ringLabel} (PINNED)`
+                    : `FOCUS: ${ringLabel}`;
+                this.focusStatusNode.style.color = ringTone[this.focusedRingKey] || 'rgba(170, 188, 214, 0.88)';
+            }
+        }
+        if (this.unpinButton) {
+            const active = Boolean(this.ringFocusPinned && this.focusedRingKey);
+            this.unpinButton.style.background = active ? 'rgba(32, 52, 81, 0.92)' : 'rgba(8, 12, 18, 0.56)';
+            this.unpinButton.style.borderColor = active ? 'rgba(124, 178, 255, 0.9)' : 'rgba(150, 164, 188, 0.22)';
+            this.unpinButton.style.color = active ? '#d9ecff' : 'rgba(188, 200, 219, 0.55)';
+            this.unpinButton.style.cursor = active ? 'pointer' : 'not-allowed';
+        }
     }
 
     addExitButton() {
@@ -239,6 +530,8 @@ class SecuritySubsystemVisualization {
                     throw new Error(data?.error || 'No security data');
                 }
                 this.telemetry = data;
+                const trustRows = Array.isArray(data?.trust_graph) ? data.trust_graph : [];
+                this.updateSelectedIncidentTrail(trustRows);
             })
             .catch(() => {
                 this.telemetry = {
@@ -259,6 +552,14 @@ class SecuritySubsystemVisualization {
         const rect = this.canvas.getBoundingClientRect();
         const x = event.clientX - rect.left;
         const y = event.clientY - rect.top;
+        const ringHit = this.getRingHitAt(x, y);
+        if (ringHit) {
+            this.focusedRingKey = this.focusedRingKey === ringHit.key ? null : ringHit.key;
+            this.ringFocusPinned = false;
+            this.applyRingFocusVerdictFilter();
+            this.updateFocusStatusUi();
+            return;
+        }
         let matched = null;
         for (const node of this.trustNodeHitAreas) {
             const dx = x - node.x;
@@ -281,6 +582,7 @@ class SecuritySubsystemVisualization {
         const pid = Number(matched.pid || 0);
         if (this.selectedProcessFilter && Number(this.selectedProcessFilter.pid || 0) === pid) {
             this.selectedProcessFilter = null;
+            this.selectedIncidentTrail = [];
             this.updateClearProcessButtonState();
             return;
         }
@@ -288,7 +590,64 @@ class SecuritySubsystemVisualization {
             pid,
             name: this.normalizeName(matched.name || 'unknown')
         };
+        this.selectedIncidentTrail = [];
         this.updateClearProcessButtonState();
+    }
+
+    onCanvasDoubleClick(event) {
+        if (!this.canvas) return;
+        const rect = this.canvas.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        const ringHit = this.getRingHitAt(x, y);
+        if (!ringHit) return;
+        this.focusedRingKey = ringHit.key;
+        this.ringFocusPinned = true;
+        this.applyRingFocusVerdictFilter();
+        this.updateFocusStatusUi();
+        this.triggerPanelFocusFromRing(ringHit.key);
+    }
+
+    applyRingFocusVerdictFilter() {
+        if (!this.focusedRingKey) {
+            this.ringDerivedVerdictFilter = null;
+            this.ringFocusPinned = false;
+            this.updateFocusStatusUi();
+            return;
+        }
+        const map = {
+            policy: 'audit',
+            sandbox: 'allow',
+            threat: 'deny'
+        };
+        this.ringDerivedVerdictFilter = map[this.focusedRingKey] || null;
+        this.updateFocusStatusUi();
+    }
+
+    triggerPanelFocusFromRing(ringKey) {
+        const map = {
+            policy: 'lsm',
+            sandbox: 'seccomp',
+            threat: 'attack'
+        };
+        const panelKey = map[ringKey] || 'pipeline';
+        this.panelSpotlight = {
+            panelKey,
+            startedAt: performance.now(),
+            durationMs: 2100
+        };
+    }
+
+    getRingHitAt(x, y) {
+        for (const ring of this.ringHitAreas) {
+            const dx = x - ring.cx;
+            const dy = y - ring.cy;
+            const radiusNorm = Math.sqrt((dx * dx) / (ring.rx * ring.rx) + (dy * dy) / (ring.ry * ring.ry));
+            if (radiusNorm >= ring.hitMin && radiusNorm <= ring.hitMax) {
+                return ring;
+            }
+        }
+        return null;
     }
 
     onCanvasMouseMove(event) {
@@ -296,6 +655,8 @@ class SecuritySubsystemVisualization {
         const rect = this.canvas.getBoundingClientRect();
         const x = event.clientX - rect.left;
         const y = event.clientY - rect.top;
+        const ringHit = this.getRingHitAt(x, y);
+        this.hoveredRingKey = ringHit ? ringHit.key : null;
         let hovered = null;
         for (const node of this.trustNodeHitAreas) {
             const dx = x - node.x;
@@ -315,7 +676,7 @@ class SecuritySubsystemVisualization {
             }
         }
         this.hoveredProcessPid = hovered;
-        this.canvas.style.cursor = hovered ? 'pointer' : 'default';
+        this.canvas.style.cursor = (hovered || ringHit) ? 'pointer' : 'default';
     }
 
     drawRoundedRect(x, y, w, h, r) {
@@ -334,15 +695,28 @@ class SecuritySubsystemVisualization {
         ctx.closePath();
     }
 
-    drawPanel(x, y, w, h, title) {
+    isPanelInFocusedRing(panelKey) {
+        if (!this.focusedRingKey) return true;
+        const map = {
+            policy: new Set(['lsm', 'core', 'pipeline']),
+            sandbox: new Set(['seccomp', 'capabilities', 'core']),
+            threat: new Set(['attack', 'trust', 'pipeline', 'core'])
+        };
+        const set = map[this.focusedRingKey];
+        if (!set) return true;
+        return set.has(panelKey);
+    }
+
+    drawPanel(x, y, w, h, title, panelKey = 'generic') {
         this.drawRoundedRect(x, y, w, h, 8);
-        this.ctx.fillStyle = 'rgba(8, 11, 16, 0.88)';
+        const active = this.isPanelInFocusedRing(panelKey);
+        this.ctx.fillStyle = active ? 'rgba(8, 11, 16, 0.9)' : 'rgba(8, 11, 16, 0.5)';
         this.ctx.fill();
-        this.ctx.strokeStyle = 'rgba(165, 178, 200, 0.35)';
+        this.ctx.strokeStyle = active ? 'rgba(165, 178, 200, 0.4)' : 'rgba(110, 122, 140, 0.2)';
         this.ctx.lineWidth = 0.95;
         this.ctx.stroke();
 
-        this.ctx.fillStyle = '#d8e5f7';
+        this.ctx.fillStyle = active ? '#d8e5f7' : 'rgba(180, 196, 218, 0.52)';
         this.ctx.font = '13px "Share Tech Mono", monospace';
         this.ctx.fillText(title, x + 14, y + 20);
     }
@@ -362,18 +736,42 @@ class SecuritySubsystemVisualization {
     }
 
     drawDecisionPipeline(x, y, w, h, telemetry) {
-        this.drawPanel(x, y, w, h, 'THREAT DECISION PIPELINE');
+        this.drawPanel(x, y, w, h, 'THREAT DECISION PIPELINE', 'pipeline');
         const lanes = Array.isArray(telemetry?.pipeline?.lanes) ? telemetry.pipeline.lanes : [];
+        const effectiveVerdictFilter = this.ringDerivedVerdictFilter || this.verdictFilter;
         const selected = this.selectedProcessFilter;
         const filtered = lanes.filter((lane) => {
-            const verdictMatch = this.verdictFilter === 'all' || lane.verdict === this.verdictFilter;
+            const verdictMatch = effectiveVerdictFilter === 'all' || lane.verdict === effectiveVerdictFilter;
             if (!verdictMatch) return false;
             if (!selected) return true;
             const lanePid = Number(lane.pid || 0);
             const laneName = this.normalizeName(lane.process);
             return lanePid === Number(selected.pid || 0) || laneName === this.normalizeName(selected.name);
         });
-        const laneRows = filtered.slice(0, 7);
+        const priorityScore = (lane) => {
+            const verdict = String(lane.verdict || '').toLowerCase();
+            const hook = String(lane.hook || '').toLowerCase();
+            if (this.focusedRingKey === 'threat') {
+                let score = verdict === 'deny' ? 100 : (verdict === 'audit' ? 75 : 40);
+                if (hook.includes('netfilter') || hook.includes('lsm')) score += 10;
+                return score;
+            }
+            if (this.focusedRingKey === 'sandbox') {
+                let score = hook.includes('seccomp') ? 95 : (hook.includes('cap') ? 82 : 55);
+                if (verdict === 'allow') score += 8;
+                return score;
+            }
+            if (this.focusedRingKey === 'policy') {
+                let score = hook.includes('lsm') ? 95 : (hook.includes('policy') ? 80 : 56);
+                if (verdict === 'audit') score += 10;
+                return score;
+            }
+            return 0;
+        };
+        const laneRows = filtered
+            .slice()
+            .sort((a, b) => priorityScore(b) - priorityScore(a))
+            .slice(0, 7);
 
         const stageXs = [x + 18, x + Math.floor(w * 0.44), x + Math.floor(w * 0.78)];
         const stageW = 130;
@@ -421,60 +819,174 @@ class SecuritySubsystemVisualization {
             if (selected) {
                 this.ctx.fillText(`NO EVENTS FOR ${selected.name || 'PROCESS'} + FILTER`, x + 18, y + h - 16);
             } else {
-                this.ctx.fillText('NO EVENTS FOR CURRENT FILTER', x + 18, y + h - 16);
+                this.ctx.fillText(`NO EVENTS FOR CURRENT FILTER (${String(effectiveVerdictFilter).toUpperCase()})`, x + 18, y + h - 16);
             }
+        } else if (this.focusedRingKey) {
+            this.ctx.fillStyle = 'rgba(149, 189, 234, 0.82)';
+            this.ctx.font = '9px "Share Tech Mono", monospace';
+            this.ctx.fillText(`ring focus: ${this.focusedRingKey} / verdict ${String(effectiveVerdictFilter).toUpperCase()}`, x + 18, y + h - 16);
         }
     }
 
     drawTrustGraph(x, y, w, h, telemetry) {
-        this.drawPanel(x, y, w, h, 'PROCESS TRUST GRAPH');
+        this.drawPanel(x, y, w, h, 'PROCESS TRUST GRAPH', 'trust');
         this.trustNodeHitAreas = [];
-        const rows = Array.isArray(telemetry?.trust_graph) ? telemetry.trust_graph.slice(0, 10) : [];
+        const mode = this.trustGraphMode || 'topology';
+        const nodeLimit = mode === 'forensics' ? 12 : 10;
+        const rows = Array.isArray(telemetry?.trust_graph) ? telemetry.trust_graph.slice(0, nodeLimit) : [];
         const cx = x + Math.floor(w * 0.5);
-        const cy = y + Math.floor(h * 0.56);
-        const radius = Math.min(w, h) * 0.28;
+        const cy = y + Math.floor(h * 0.58);
+        const maxRadius = Math.min(w, h) * 0.31;
+        const innerRadius = Math.max(30, Math.floor(maxRadius * 0.24));
+        const now = performance.now();
+
+        const highRiskCount = rows.filter((row) => Number(row?.risk_score || 0) >= 70).length;
+        this.ctx.fillStyle = 'rgba(168, 186, 210, 0.82)';
+        this.ctx.font = '9px "Share Tech Mono", monospace';
+        this.ctx.fillText(`nodes ${rows.length}`, x + 14, y + 34);
+        this.ctx.fillStyle = highRiskCount > 0 ? 'rgba(255, 164, 170, 0.92)' : 'rgba(146, 226, 181, 0.86)';
+        this.ctx.fillText(`high risk ${highRiskCount}`, x + 92, y + 34);
+        if (this.selectedProcessFilter) {
+            this.ctx.fillStyle = 'rgba(141, 197, 255, 0.92)';
+            this.ctx.fillText(`selected pid ${Number(this.selectedProcessFilter.pid || 0)}`, x + 210, y + 34);
+        }
+        this.ctx.fillStyle = mode === 'risk'
+            ? 'rgba(255, 176, 155, 0.95)'
+            : (mode === 'forensics' ? 'rgba(168, 219, 255, 0.95)' : 'rgba(173, 194, 219, 0.86)');
+        this.ctx.fillText(`mode ${String(mode).toUpperCase()}`, x + w - 122, y + 34);
+        if (mode === 'forensics') {
+            const freezeLeftSec = Math.max(0, (this.trustForensicsFreezeUntil - now) / 1000);
+            this.ctx.fillStyle = 'rgba(148, 198, 255, 0.88)';
+            this.ctx.fillText(`freeze ${freezeLeftSec.toFixed(1)}s`, x + w - 208, y + 34);
+        }
+
+        // Risk zones: inner = stable, middle = caution, outer = critical.
+        const zones = [
+            {
+                r: maxRadius * 0.48,
+                color: mode === 'risk' ? 'rgba(142, 236, 181, 0.14)' : 'rgba(113, 222, 163, 0.12)'
+            },
+            {
+                r: maxRadius * 0.76,
+                color: mode === 'risk' ? 'rgba(255, 213, 128, 0.16)' : 'rgba(244, 201, 119, 0.11)'
+            },
+            {
+                r: maxRadius,
+                color: mode === 'risk' ? 'rgba(255, 136, 148, 0.15)' : 'rgba(255, 143, 152, 0.1)'
+            }
+        ];
+        zones.forEach((zone) => {
+            this.ctx.beginPath();
+            this.ctx.arc(cx, cy, zone.r, 0, Math.PI * 2);
+            this.ctx.fillStyle = zone.color;
+            this.ctx.fill();
+            this.ctx.strokeStyle = 'rgba(162, 176, 198, 0.18)';
+            this.ctx.lineWidth = 0.8;
+            this.ctx.stroke();
+        });
 
         this.ctx.beginPath();
-        this.ctx.arc(cx, cy, radius + 24, 0, Math.PI * 2);
-        this.ctx.strokeStyle = 'rgba(162, 176, 198, 0.18)';
-        this.ctx.stroke();
-        this.ctx.beginPath();
-        this.ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-        this.ctx.strokeStyle = 'rgba(162, 176, 198, 0.32)';
-        this.ctx.stroke();
-        this.ctx.beginPath();
-        this.ctx.arc(cx, cy, 26, 0, Math.PI * 2);
-        this.ctx.fillStyle = 'rgba(7, 10, 15, 0.9)';
+        this.ctx.arc(cx, cy, innerRadius, 0, Math.PI * 2);
+        this.ctx.fillStyle = 'rgba(7, 10, 15, 0.92)';
         this.ctx.fill();
-        this.ctx.strokeStyle = 'rgba(162, 176, 198, 0.32)';
+        this.ctx.strokeStyle = 'rgba(162, 176, 198, 0.34)';
+        this.ctx.lineWidth = 1.1;
         this.ctx.stroke();
         this.ctx.fillStyle = '#cde6ff';
         this.ctx.font = '10px "Share Tech Mono", monospace';
         this.ctx.fillText('LSM', cx - 10, cy + 3);
 
+        if (!rows.length) {
+            this.ctx.fillStyle = 'rgba(178, 195, 219, 0.75)';
+            this.ctx.font = '10px "Share Tech Mono", monospace';
+            this.ctx.fillText('no trust graph data', cx - 54, cy + maxRadius + 16);
+            this.trustForensicsLayout.clear();
+            return;
+        }
+
+        if (mode === 'forensics') {
+            const pidSet = new Set(rows.map((row) => Number(row?.pid || 0)));
+            let layoutMismatch = this.trustForensicsLayout.size !== pidSet.size;
+            if (!layoutMismatch) {
+                for (const pid of pidSet) {
+                    if (!this.trustForensicsLayout.has(pid)) {
+                        layoutMismatch = true;
+                        break;
+                    }
+                }
+            }
+            const shouldRebuild = now >= this.trustForensicsFreezeUntil || this.trustForensicsLayout.size === 0 || layoutMismatch;
+            if (shouldRebuild) {
+                this.trustForensicsLayout = this.buildForensicsLayout(rows, cx, cy, innerRadius, maxRadius);
+                this.trustForensicsFreezeUntil = now + this.trustForensicsFreezeWindowMs;
+            }
+        }
+
+        const riskBandColor = (risk) => {
+            if (risk >= 70) return '#ff8f97';
+            if (risk >= 45) return '#f4c977';
+            return '#71dfa8';
+        };
+        let selectedNode = null;
+
         rows.forEach((row, idx) => {
-            const a = ((Math.PI * 2) / Math.max(rows.length, 1)) * idx - Math.PI / 2;
-            const nx = cx + Math.cos(a) * radius;
-            const ny = cy + Math.sin(a) * radius;
-            const trust = String(row.trust || 'trusted');
-            const color = this.trustColor(trust);
-            const pulse = 0.78 + 0.22 * Math.sin(this.tick * 0.04 + idx * 0.5);
+            const risk = Number(row.risk_score || 0);
+            const riskNorm = Math.max(0, Math.min(1, risk / 100));
             const pid = Number(row.pid || 0);
-            const isSelected = this.selectedProcessFilter && Number(this.selectedProcessFilter.pid || 0) === pid;
+            const forensicsEntry = mode === 'forensics' ? this.trustForensicsLayout.get(pid) : null;
+            const a = forensicsEntry
+                ? Number(forensicsEntry.angle || 0)
+                : (((Math.PI * 2) / Math.max(rows.length, 1)) * idx - Math.PI / 2);
+            const baseOrbit = mode === 'risk'
+                ? innerRadius + (maxRadius - innerRadius) * (0.2 + riskNorm * 0.8)
+                : innerRadius + (maxRadius - innerRadius) * (0.35 + riskNorm * 0.65);
+            const orbit = forensicsEntry
+                ? Number(forensicsEntry.orbit || baseOrbit)
+                : Math.max(innerRadius + 8, baseOrbit);
+            const nx = forensicsEntry
+                ? Number(forensicsEntry.nx || (cx + Math.cos(a) * orbit))
+                : (cx + Math.cos(a) * orbit);
+            const ny = forensicsEntry
+                ? Number(forensicsEntry.ny || (cy + Math.sin(a) * orbit))
+                : (cy + Math.sin(a) * orbit);
+            const trust = String(row.trust || 'trusted');
+            const color = mode === 'risk' ? riskBandColor(risk) : this.trustColor(trust);
+            const pulse = 0.78 + 0.22 * Math.sin(this.tick * 0.04 + idx * 0.5);
+            const isSelected = Boolean(this.selectedProcessFilter) && (
+                Number(this.selectedProcessFilter.pid || 0) === pid
+                || this.normalizeName(this.selectedProcessFilter.name || '') === this.normalizeName(row.name || '')
+            );
             const isHovered = Number(this.hoveredProcessPid || 0) === pid;
-            const nodeR = isSelected ? 12 : (isHovered ? 11 : 10);
-            const glowR = isSelected ? 18 : (isHovered ? 15 : 0);
+            const isCritical = risk >= 70 || trust === 'blocked';
+            const nodeR = isSelected ? 12 : (isHovered ? 11 : (isCritical ? 10 : (mode === 'forensics' ? 9.5 : 9)));
+            const glowR = isSelected ? 20 : (isHovered ? 16 : (isCritical ? 11 : 0));
+            if (isSelected) {
+                selectedNode = {
+                    cx,
+                    cy,
+                    angle: a,
+                    innerRadius,
+                    maxRadius
+                };
+            }
 
             this.ctx.beginPath();
             this.ctx.moveTo(cx, cy);
             this.ctx.lineTo(nx, ny);
-            this.ctx.strokeStyle = `rgba(155, 168, 190, ${0.20 + 0.15 * pulse})`;
-            this.ctx.lineWidth = isSelected ? 1.15 : 0.9;
+            this.ctx.strokeStyle = isCritical
+                ? `rgba(255, 147, 156, ${0.24 + 0.22 * pulse})`
+                : `rgba(155, 168, 190, ${0.18 + 0.14 * pulse})`;
+            this.ctx.lineWidth = isSelected ? 1.2 : 0.9;
             this.ctx.stroke();
 
             if (glowR > 0) {
                 const glow = this.ctx.createRadialGradient(nx, ny, 0, nx, ny, glowR);
-                glow.addColorStop(0, isSelected ? 'rgba(124, 178, 255, 0.38)' : 'rgba(138, 156, 234, 0.24)');
+                glow.addColorStop(
+                    0,
+                    isSelected
+                        ? 'rgba(124, 178, 255, 0.4)'
+                        : (isCritical ? 'rgba(255, 137, 149, 0.26)' : 'rgba(138, 156, 234, 0.22)')
+                );
                 glow.addColorStop(1, 'rgba(124, 178, 255, 0)');
                 this.ctx.beginPath();
                 this.ctx.arc(nx, ny, glowR, 0, Math.PI * 2);
@@ -493,10 +1005,22 @@ class SecuritySubsystemVisualization {
             this.ctx.stroke();
             this.ctx.lineWidth = 1;
 
-            this.ctx.fillStyle = '#cfdced';
+            const rightSide = Math.cos(a) >= 0;
+            const labelX = rightSide ? (nx + 14) : (nx - (mode === 'forensics' ? 116 : 98));
+            const labelY = ny + 18;
+            this.ctx.fillStyle = isSelected ? '#dff0ff' : 'rgba(207, 220, 237, 0.9)';
             this.ctx.font = '9px "Share Tech Mono", monospace';
-            const label = `${String(row.name || 'proc').slice(0, 9)} (${row.risk_score || 0})`;
-            this.ctx.fillText(label, nx - 32, ny + 21);
+            const label = `${String(row.name || 'proc').slice(0, 10)} #${pid}`;
+            const shouldShowLabel = mode === 'forensics' || isSelected || isHovered || isCritical;
+            if (shouldShowLabel) {
+                this.ctx.fillText(label, labelX, labelY);
+                this.ctx.fillStyle = isCritical ? 'rgba(255, 166, 173, 0.95)' : 'rgba(164, 186, 212, 0.86)';
+                this.ctx.fillText(`risk ${risk.toFixed(0)} ${String(trust).toUpperCase()}`, labelX, labelY + 10);
+                if (mode === 'forensics') {
+                    this.ctx.fillStyle = 'rgba(151, 173, 202, 0.8)';
+                    this.ctx.fillText(`orbit ${Math.round(orbit)} freeze ${(Math.max(0, this.trustForensicsFreezeUntil - now) / 1000).toFixed(1)}s`, labelX, labelY + 20);
+                }
+            }
 
             this.trustNodeHitAreas.push({
                 x: nx,
@@ -506,10 +1030,12 @@ class SecuritySubsystemVisualization {
                 name: row.name || 'unknown'
             });
         });
+
+        this.drawIncidentTrail(x, y, w, h, selectedNode);
     }
 
     drawAttackSurface(x, y, w, h, telemetry) {
-        this.drawPanel(x, y, w, h, 'ATTACK SURFACE MAP');
+        this.drawPanel(x, y, w, h, 'ATTACK SURFACE MAP', 'attack');
         const rows = Array.isArray(telemetry?.attack_surface) ? telemetry.attack_surface.slice(0, 8) : [];
 
         rows.forEach((row, idx) => {
@@ -534,7 +1060,7 @@ class SecuritySubsystemVisualization {
     }
 
     drawLsmStatusCard(x, y, w, h, telemetry) {
-        this.drawPanel(x, y, w, h, 'LSM STATUS MATRIX');
+        this.drawPanel(x, y, w, h, 'LSM STATUS MATRIX', 'lsm');
         const rows = Array.isArray(telemetry?.security_tools?.lsm_status)
             ? telemetry.security_tools.lsm_status.slice(0, 6)
             : [];
@@ -558,7 +1084,7 @@ class SecuritySubsystemVisualization {
     }
 
     drawCapabilitiesCard(x, y, w, h, telemetry) {
-        this.drawPanel(x, y, w, h, 'CAPABILITIES DRIFT');
+        this.drawPanel(x, y, w, h, 'CAPABILITIES DRIFT', 'capabilities');
         this.capabilityRowHitAreas = [];
         const rows = Array.isArray(telemetry?.security_tools?.capabilities_drift)
             ? telemetry.security_tools.capabilities_drift.slice(0, 6)
@@ -601,7 +1127,7 @@ class SecuritySubsystemVisualization {
     }
 
     drawSeccompCoverageCard(x, y, w, h, telemetry) {
-        this.drawPanel(x, y, w, h, 'SECCOMP COVERAGE');
+        this.drawPanel(x, y, w, h, 'SECCOMP COVERAGE', 'seccomp');
         const cov = telemetry?.security_tools?.seccomp_coverage || {};
         const none = Number(cov.none || 0);
         const strict = Number(cov.strict || 0);
@@ -637,8 +1163,186 @@ class SecuritySubsystemVisualization {
         });
     }
 
+    drawGhostShellSecurityRings(x, y, w, h, telemetry) {
+        const ctx = this.ctx;
+        const clamp01 = (n) => Math.max(0, Math.min(1, Number(n) || 0));
+        const cx = x + Math.floor(w * 0.5);
+        const cy = y + Math.floor(h * 0.49);
+        const baseRx = Math.max(120, Math.floor(w * 0.2));
+        const baseRy = Math.max(42, Math.floor(h * 0.15));
+        const t = this.tick * 0.013;
+
+        const meta = telemetry?.meta || {};
+        const core = telemetry?.security_core || {};
+        const seccompCov = telemetry?.security_tools?.seccomp_coverage || {};
+        const attackRows = Array.isArray(telemetry?.attack_surface) ? telemetry.attack_surface : [];
+        const capRows = Array.isArray(telemetry?.security_tools?.capabilities_drift) ? telemetry.security_tools.capabilities_drift : [];
+        const lsmEngines = Array.isArray(core.lsm_engines) ? core.lsm_engines : [];
+
+        const decisionsPerSec = Number(meta.decisions_per_sec || 0);
+        const events = Math.max(1, Number(meta.events || 0));
+        const blocked = Number(meta.blocked || 0);
+        const suspicious = Number(meta.suspicious || 0);
+        const enforcingCount = lsmEngines.filter((item) => String(item.status || '').toLowerCase() === 'enforcing').length;
+        const lsmCount = Math.max(1, lsmEngines.length);
+        const seccompCoverage = Number(seccompCov.coverage_percent || 0);
+        const unsandboxedCount = Array.isArray(seccompCov.high_risk_unsandboxed) ? seccompCov.high_risk_unsandboxed.length : 0;
+        const dangerousCapsCount = capRows.reduce((acc, row) => acc + Number(row?.dangerous_count || 0), 0);
+        const avgAttackRisk = attackRows.length > 0
+            ? attackRows.reduce((acc, row) => acc + Number(row?.risk_score || 0), 0) / attackRows.length
+            : 0;
+
+        const policyScore = clamp01((decisionsPerSec / 2400) * 0.55 + (enforcingCount / lsmCount) * 0.45);
+        const sandboxStrength = clamp01((seccompCoverage / 100) * 0.72 + (1 - clamp01((unsandboxedCount + dangerousCapsCount * 0.3) / 18)) * 0.28);
+        const threatPressure = clamp01(((blocked + suspicious * 0.55) / events) * 1.9 + (avgAttackRisk / 100) * 0.65 + (unsandboxedCount / 12) * 0.4);
+
+        const verdict = threatPressure >= 0.72
+            ? 'UNDER ATTACK'
+            : (sandboxStrength < 0.42 || threatPressure >= 0.46 ? 'DEGRADED' : 'SAFE');
+        const verdictColor = verdict === 'UNDER ATTACK' ? '#ff8f98' : (verdict === 'DEGRADED' ? '#f4c977' : '#71dfa8');
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+
+        const rings = [
+            {
+                key: 'policy',
+                label: 'POLICY',
+                score: policyScore,
+                speed: 0.32,
+                color: '126,196,255',
+                rx: baseRx * 0.88,
+                ry: baseRy * 0.9,
+                metric: `lsm ${enforcingCount}/${lsmCount} dec ${decisionsPerSec.toFixed(1)}/s`
+            },
+            {
+                key: 'sandbox',
+                label: 'SANDBOX',
+                score: sandboxStrength,
+                speed: -0.26,
+                color: '120,230,174',
+                rx: baseRx * 1.16,
+                ry: baseRy * 1.3,
+                metric: `seccomp ${seccompCoverage.toFixed(1)}% unsbx ${unsandboxedCount}`
+            },
+            {
+                key: 'threat',
+                label: 'THREAT',
+                score: threatPressure,
+                speed: 0.18,
+                color: '255,148,156',
+                rx: baseRx * 1.42,
+                ry: baseRy * 1.62,
+                metric: `risk ${avgAttackRisk.toFixed(1)} block ${blocked}`
+            }
+        ];
+
+        this.ringHitAreas = [];
+        rings.forEach((ring, idx) => {
+            const phase = t * ring.speed + idx * 1.27;
+            const isFocused = this.focusedRingKey === ring.key;
+            const isHovered = this.hoveredRingKey === ring.key;
+            const dimmed = Boolean(this.focusedRingKey) && !isFocused;
+            const alphaBase = 0.12 + ring.score * 0.24;
+            const arcSpan = 0.52 + ring.score * 2.2;
+            const emphasis = isFocused ? 1.25 : (isHovered ? 1.12 : 1);
+            const alphaMul = dimmed ? 0.32 : (isFocused ? 1.2 : 1);
+
+            // Base orbit.
+            ctx.strokeStyle = `rgba(${ring.color}, ${Math.min(1, alphaBase * alphaMul).toFixed(3)})`;
+            ctx.lineWidth = (1 + ring.score * 1.6) * emphasis;
+            ctx.beginPath();
+            ctx.ellipse(cx, cy, ring.rx, ring.ry, -0.08, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // Informative arc indicating score magnitude.
+            ctx.strokeStyle = `rgba(${ring.color}, ${Math.min(1, (0.42 + ring.score * 0.5) * alphaMul).toFixed(3)})`;
+            ctx.lineWidth = (2 + ring.score * 2.4) * emphasis;
+            ctx.beginPath();
+            ctx.ellipse(cx, cy, ring.rx, ring.ry, -0.08, phase, phase + arcSpan);
+            ctx.stroke();
+
+            // Orbiting probes.
+            for (let i = 0; i < 3; i++) {
+                const a = phase + i * 2.09;
+                const px = cx + Math.cos(a) * ring.rx;
+                const py = cy + Math.sin(a) * ring.ry;
+                ctx.fillStyle = `rgba(${ring.color}, ${Math.min(1, (0.3 + i * 0.16) * alphaMul).toFixed(3)})`;
+                ctx.beginPath();
+                ctx.arc(px, py, (1.3 + i * 0.55) * emphasis, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Ring label + core metric near arc.
+            const lx = cx + Math.cos(phase + arcSpan + 0.16) * (ring.rx + 12);
+            const ly = cy + Math.sin(phase + arcSpan + 0.16) * (ring.ry + 12);
+            ctx.fillStyle = `rgba(${ring.color}, ${Math.min(1, 0.86 * alphaMul + (isFocused ? 0.12 : 0)).toFixed(3)})`;
+            ctx.font = '9px "Share Tech Mono", monospace';
+            ctx.fillText(`${ring.label} ${(ring.score * 100).toFixed(0)}%`, lx, ly);
+            ctx.fillStyle = `rgba(${ring.color}, ${Math.min(1, 0.54 * alphaMul).toFixed(3)})`;
+            ctx.font = '8px "Share Tech Mono", monospace';
+            ctx.fillText(ring.metric, lx, ly + 10);
+
+            this.ringHitAreas.push({
+                key: ring.key,
+                cx,
+                cy,
+                rx: ring.rx,
+                ry: ring.ry,
+                hitMin: 0.84,
+                hitMax: 1.18
+            });
+        });
+
+        // Center verdict core.
+        this.drawRoundedRect(cx - 118, cy - 40, 236, 74, 10);
+        ctx.fillStyle = 'rgba(8, 13, 20, 0.64)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(150, 178, 214, 0.42)';
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(164, 190, 223, 0.92)';
+        ctx.font = '9px "Share Tech Mono", monospace';
+        ctx.fillText('RING-FIRST SECURITY VERDICT', cx - 96, cy - 20);
+        ctx.fillStyle = verdictColor;
+        ctx.font = '15px "Share Tech Mono", monospace';
+        ctx.fillText(verdict, cx - 66, cy + 2);
+        ctx.fillStyle = 'rgba(176, 198, 228, 0.8)';
+        ctx.font = '8px "Share Tech Mono", monospace';
+        ctx.fillText(`threat ${(threatPressure * 100).toFixed(0)}%  sandbox ${(sandboxStrength * 100).toFixed(0)}%  policy ${(policyScore * 100).toFixed(0)}%`, cx - 108, cy + 18);
+
+        // Ambient data noise strings around outer ring.
+        const tokenPool = [
+            `deny:${blocked}`,
+            `sus:${suspicious}`,
+            `risk:${avgAttackRisk.toFixed(0)}`,
+            `sec:${seccompCoverage.toFixed(0)}%`,
+            `dec:${decisionsPerSec.toFixed(1)}/s`,
+            `unsbx:${unsandboxedCount}`,
+            'lsm',
+            'seccomp',
+            'cap',
+            'audit'
+        ];
+        ctx.font = '8px "Share Tech Mono", monospace';
+        ctx.fillStyle = 'rgba(150, 216, 255, 0.5)';
+        for (let i = 0; i < 12; i++) {
+            const token = tokenPool[(i + Math.floor(this.tick / 8)) % tokenPool.length];
+            const a = t * 0.29 + i * (Math.PI * 2 / 12);
+            const rx = baseRx * 1.62;
+            const ry = baseRy * 1.92;
+            const px = cx + Math.cos(a) * rx;
+            const py = cy + Math.sin(a) * ry;
+            ctx.fillText(token, px, py);
+        }
+        ctx.fillStyle = 'rgba(170, 194, 224, 0.68)';
+        ctx.fillText('click ring to focus related panels', cx - 90, cy + baseRy * 1.98);
+
+        ctx.restore();
+    }
+
     drawSecurityCore(x, y, w, h, telemetry) {
-        this.drawPanel(x, y, w, h, 'KERNEL SECURITY CORE');
+        this.drawPanel(x, y, w, h, 'KERNEL SECURITY CORE', 'core');
         const core = telemetry?.security_core || {};
         const lsmEngines = Array.isArray(core.lsm_engines) ? core.lsm_engines : [];
         const seccompProcs = Array.isArray(core.seccomp_processes) ? core.seccomp_processes : [];
@@ -793,6 +1497,35 @@ class SecuritySubsystemVisualization {
         }
     }
 
+    drawPanelSpotlight() {
+        if (!this.panelSpotlight || !this.ctx) return;
+        const rect = this.panelRects[this.panelSpotlight.panelKey];
+        if (!rect) return;
+        const now = performance.now();
+        const elapsed = now - Number(this.panelSpotlight.startedAt || now);
+        const duration = Math.max(800, Number(this.panelSpotlight.durationMs || 1800));
+        if (elapsed >= duration) {
+            this.panelSpotlight = null;
+            return;
+        }
+
+        const t = elapsed / duration;
+        const pulse = 0.5 + 0.5 * Math.sin(elapsed * 0.012);
+        const alpha = (1 - t) * (0.34 + pulse * 0.24);
+        const expand = 4 + pulse * 7;
+        const x = rect.x - expand;
+        const y = rect.y - expand;
+        const w = rect.w + expand * 2;
+        const h = rect.h + expand * 2;
+
+        this.ctx.save();
+        this.drawRoundedRect(x, y, w, h, 10);
+        this.ctx.strokeStyle = `rgba(154, 220, 255, ${alpha.toFixed(3)})`;
+        this.ctx.lineWidth = 2.1 + pulse * 1.3;
+        this.ctx.stroke();
+        this.ctx.restore();
+    }
+
     drawScene() {
         if (!this.ctx || !this.canvas) return;
         const w = window.innerWidth;
@@ -851,14 +1584,27 @@ class SecuritySubsystemVisualization {
         const tools2X = leftX + toolsW + gap;
         const tools3X = tools2X + toolsW + gap;
         const coreY = toolsY + toolsH + gap;
+        this.panelRects = {
+            pipeline: { x: leftX, y: panelTop, w: leftW, h: panelH },
+            trust: { x: centerX, y: panelTop, w: centerW, h: panelH },
+            attack: { x: rightX, y: panelTop, w: rightW, h: panelH },
+            lsm: { x: leftX, y: toolsY, w: toolsW, h: toolsH },
+            capabilities: { x: tools2X, y: toolsY, w: toolsW, h: toolsH },
+            seccomp: { x: tools3X, y: toolsY, w: toolsW, h: toolsH },
+            core: { x: leftX, y: coreY, w: w - gap * 2, h: coreH }
+        };
 
+        this.drawGhostShellSecurityRings(leftX, coreY, w - gap * 2, coreH, this.telemetry);
         this.drawDecisionPipeline(leftX, panelTop, leftW, panelH, this.telemetry);
         this.drawTrustGraph(centerX, panelTop, centerW, panelH, this.telemetry);
         this.drawAttackSurface(rightX, panelTop, rightW, panelH, this.telemetry);
         this.drawLsmStatusCard(leftX, toolsY, toolsW, toolsH, this.telemetry);
         this.drawCapabilitiesCard(tools2X, toolsY, toolsW, toolsH, this.telemetry);
         this.drawSeccompCoverageCard(tools3X, toolsY, toolsW, toolsH, this.telemetry);
-        this.drawSecurityCore(leftX, coreY, w - gap * 2, coreH, this.telemetry);
+        if (this.showSecurityCorePanel) {
+            this.drawSecurityCore(leftX, coreY, w - gap * 2, coreH, this.telemetry);
+        }
+        this.drawPanelSpotlight();
     }
 
     animate() {
