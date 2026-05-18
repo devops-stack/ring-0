@@ -21,9 +21,17 @@ class ProcessesSubsystemVisualization {
         this.filterButtons = new Map();
         this.overlayNodes = [];
         this.hoveredNodePid = null;
+        this.selectedNodePid = null;
+        this.lastMicroscopeFocusPid = null;
+        this.autoFocusEnabled = true;
+        this.autoFocusButton = null;
         this.nodeHitAreas = [];
         this.positionHistory = [];
+        this.processHistory = new Map();
+        this.processHistoryWindowMs = 60000;
+        this.processHistoryMaxPoints = 90;
         this.mouseMoveHandler = null;
+        this.clickHandler = null;
     }
 
     init(containerId = 'processes-belt-container') {
@@ -45,7 +53,9 @@ class ProcessesSubsystemVisualization {
         this.container.appendChild(this.canvas);
         this.ctx = this.canvas.getContext('2d');
         this.mouseMoveHandler = (event) => this.onMouseMove(event);
+        this.clickHandler = (event) => this.onCanvasClick(event);
         this.canvas.addEventListener('mousemove', this.mouseMoveHandler);
+        this.canvas.addEventListener('click', this.clickHandler);
         this.onResize();
         window.addEventListener('resize', () => this.onResize());
 
@@ -62,6 +72,7 @@ class ProcessesSubsystemVisualization {
         this.overlayNodes.push(this.exitButton);
 
         this.createModeToggle();
+        this.createAutoFocusToggle();
         this.createEdgeFilterToggle();
         return true;
     }
@@ -73,7 +84,8 @@ class ProcessesSubsystemVisualization {
         `;
         const modes = [
             { key: 'temporal', label: '3-LAYER GRAPH' },
-            { key: 'radial', label: 'RADIAL GRAPH' }
+            { key: 'radial', label: 'RADIAL GRAPH' },
+            { key: 'microscope', label: 'MICROSCOPE' }
         ];
         modes.forEach((m) => {
             const btn = document.createElement('button');
@@ -94,13 +106,63 @@ class ProcessesSubsystemVisualization {
     }
 
     setLayoutMode(modeKey) {
-        this.layoutMode = (modeKey === 'radial') ? 'radial' : 'temporal';
+        this.layoutMode = ['temporal', 'radial', 'microscope'].includes(modeKey) ? modeKey : 'temporal';
         this.modeButtons.forEach((btn, key) => {
             const active = key === this.layoutMode;
             btn.style.background = active ? 'rgba(32, 52, 81, 0.92)' : 'rgba(8,12,18,0.86)';
             btn.style.borderColor = active ? 'rgba(124, 178, 255, 0.9)' : 'rgba(150,164,188,0.35)';
             btn.style.color = active ? '#d9ecff' : '#bcc8db';
         });
+        this.updateAutoFocusButtonState();
+    }
+
+    createAutoFocusToggle() {
+        const btn = document.createElement('button');
+        btn.style.cssText = `
+            position:absolute;top:18px;left:392px;z-index:1001;
+            padding:8px 10px;background:rgba(8,12,18,0.86);
+            border:1px solid rgba(150,164,188,0.35);color:#bcc8db;
+            font-family:'Share Tech Mono', monospace;font-size:10px;cursor:pointer;
+        `;
+        btn.onclick = () => this.toggleAutoFocus();
+        this.container.appendChild(btn);
+        this.autoFocusButton = btn;
+        this.overlayNodes.push(btn);
+        this.updateAutoFocusButtonState();
+    }
+
+    toggleAutoFocus() {
+        this.autoFocusEnabled = !this.autoFocusEnabled;
+        this.updateAutoFocusButtonState();
+    }
+
+    updateAutoFocusButtonState() {
+        if (!this.autoFocusButton) return;
+        const active = this.autoFocusEnabled;
+        const visible = this.layoutMode === 'microscope';
+        this.autoFocusButton.textContent = active ? 'AUTO FOCUS: ON' : 'AUTO FOCUS: OFF';
+        this.autoFocusButton.style.background = active ? 'rgba(32, 52, 81, 0.92)' : 'rgba(8,12,18,0.86)';
+        this.autoFocusButton.style.borderColor = active ? 'rgba(124,178,255,0.9)' : 'rgba(150,164,188,0.35)';
+        this.autoFocusButton.style.color = active ? '#d9ecff' : '#bcc8db';
+        this.autoFocusButton.style.opacity = visible ? '1' : '0.35';
+        this.autoFocusButton.style.pointerEvents = visible ? 'auto' : 'none';
+    }
+
+    onCanvasClick(event) {
+        if (!this.canvas) return;
+        const rect = this.canvas.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        for (const hit of this.nodeHitAreas) {
+            const dx = x - hit.x;
+            const dy = y - hit.y;
+            if (Math.hypot(dx, dy) <= hit.r + 3) {
+                const pid = Number(hit.pid || 0);
+                if (pid <= 0) return;
+                this.selectedNodePid = this.selectedNodePid === pid ? null : pid;
+                return;
+            }
+        }
     }
 
     createEdgeFilterToggle() {
@@ -162,12 +224,76 @@ class ProcessesSubsystemVisualization {
         this.canvas.style.cursor = hovered ? 'pointer' : 'default';
     }
 
+    updateProcessHistory() {
+        const now = Date.now();
+        const cutoff = now - this.processHistoryWindowMs;
+        const nodes = Array.isArray(this.telemetry?.neural_graph?.nodes) ? this.telemetry.neural_graph.nodes : [];
+        const keepPids = new Set();
+        nodes.forEach((node) => {
+            const pid = Number(node?.pid || 0);
+            if (pid <= 0) return;
+            keepPids.add(pid);
+            const row = {
+                ts: now,
+                syscall_pressure: Number(node?.syscall_pressure || 0),
+                rss_mb: Number(node?.rss_bytes || 0) / (1024 * 1024),
+                fd_count: Number(node?.fd_count || 0),
+                connections: Number(node?.connections || 0),
+            };
+            const arr = this.processHistory.get(pid) || [];
+            arr.push(row);
+            this.processHistory.set(
+                pid,
+                arr.filter((entry) => Number(entry.ts || 0) >= cutoff).slice(-this.processHistoryMaxPoints)
+            );
+        });
+        for (const pid of this.processHistory.keys()) {
+            if (!keepPids.has(pid) && pid !== this.selectedNodePid) {
+                this.processHistory.delete(pid);
+            }
+        }
+    }
+
+    getFocusProcess(nodes) {
+        if (!Array.isArray(nodes) || !nodes.length) return null;
+        if (this.selectedNodePid) {
+            const selected = nodes.find((n) => Number(n?.pid || 0) === Number(this.selectedNodePid));
+            if (selected) {
+                this.lastMicroscopeFocusPid = Number(selected.pid || 0);
+                return selected;
+            }
+            this.selectedNodePid = null;
+        }
+        if (this.autoFocusEnabled) {
+            const top = nodes.slice().sort((a, b) => Number(b?.syscall_pressure || 0) - Number(a?.syscall_pressure || 0))[0];
+            if (top) {
+                this.lastMicroscopeFocusPid = Number(top.pid || 0);
+            }
+            return top || nodes[0] || null;
+        }
+        if (this.lastMicroscopeFocusPid) {
+            const prev = nodes.find((n) => Number(n?.pid || 0) === Number(this.lastMicroscopeFocusPid));
+            if (prev) return prev;
+        }
+        if (this.hoveredNodePid) {
+            const hovered = nodes.find((n) => Number(n?.pid || 0) === Number(this.hoveredNodePid));
+            if (hovered) {
+                this.lastMicroscopeFocusPid = Number(hovered.pid || 0);
+                return hovered;
+            }
+        }
+        const fallback = nodes[0] || null;
+        if (fallback) this.lastMicroscopeFocusPid = Number(fallback.pid || 0);
+        return fallback;
+    }
+
     fetchTelemetry() {
         return fetch('/api/processes-realtime', { cache: 'no-store' })
             .then((res) => res.json())
             .then((data) => {
                 if (!data || data.error) throw new Error(data?.error || 'No data');
                 this.telemetry = data;
+                this.updateProcessHistory();
             })
             .catch(() => {
                 this.telemetry = {
@@ -215,7 +341,7 @@ class ProcessesSubsystemVisualization {
             this.ctx.beginPath();
             this.ctx.moveTo(vpX - areaW * spread, yy);
             this.ctx.lineTo(vpX + areaW * spread, yy);
-            this.ctx.strokeStyle = `rgba(130, 185, 255, ${0.06 + t * 0.28})`;
+            this.ctx.strokeStyle = `rgba(142, 224, 255, ${0.04 + t * 0.2})`;
             this.ctx.lineWidth = 1;
             this.ctx.stroke();
         }
@@ -225,7 +351,7 @@ class ProcessesSubsystemVisualization {
             this.ctx.beginPath();
             this.ctx.moveTo(vpX, vpY);
             this.ctx.lineTo(xb, areaY + areaH);
-            this.ctx.strokeStyle = 'rgba(110, 165, 235, 0.14)';
+            this.ctx.strokeStyle = 'rgba(122, 205, 242, 0.11)';
             this.ctx.stroke();
         }
     }
@@ -287,6 +413,9 @@ class ProcessesSubsystemVisualization {
         this.ctx.fillStyle = 'rgba(232, 240, 252, 0.92)';
         this.ctx.font = '12px "Share Tech Mono", monospace';
         this.ctx.fillText('linux kernel · process management subsystem', w * 0.5, 26);
+        this.ctx.fillStyle = 'rgba(155, 200, 232, 0.78)';
+        this.ctx.font = '8px "Share Tech Mono", monospace';
+        this.ctx.fillText('SCANNING NODE', w * 0.5, 16);
         this.ctx.textAlign = 'start';
     }
 
@@ -366,11 +495,11 @@ class ProcessesSubsystemVisualization {
     }
 
     edgeColor(type) {
-        if (type === 'syscalls') return 'rgba(138,156,234,0.42)';
-        if (type === 'ipc') return 'rgba(96,214,157,0.42)';
-        if (type === 'network') return 'rgba(244,201,119,0.46)';
-        if (type === 'file_access') return 'rgba(235,126,126,0.44)';
-        return 'rgba(165,178,200,0.38)';
+        if (type === 'syscalls') return 'rgba(136,201,255,0.4)';
+        if (type === 'ipc') return 'rgba(126,242,210,0.38)';
+        if (type === 'network') return 'rgba(181,240,255,0.42)';
+        if (type === 'file_access') return 'rgba(255,184,168,0.4)';
+        return 'rgba(170,214,244,0.34)';
     }
 
     stableUnit(n) {
@@ -379,7 +508,7 @@ class ProcessesSubsystemVisualization {
     }
 
     drawNeuralGraph(x, y, w, h) {
-        this.drawPanel(x, y, w, 36, 'task graph · fork / wait / signals / IO', { alpha: 0.9 });
+        this.drawPanel(x, y, w, 36, 'process microscope · fork / wait / signals / io', { alpha: 0.9 });
         const innerY = y + 42;
         const innerH = h - 50;
         const graph = this.telemetry?.neural_graph || {};
@@ -403,6 +532,10 @@ class ProcessesSubsystemVisualization {
         if (this.layoutMode === 'radial') {
             const pos = new Map();
             this.drawRadialNeuralGraph(nodes, edges, pos, x, innerY, w, innerH);
+            return;
+        }
+        if (this.layoutMode === 'microscope') {
+            this.drawMicroscopeGraph(nodes, edges, x, innerY, w, innerH);
             return;
         }
 
@@ -692,6 +825,180 @@ class ProcessesSubsystemVisualization {
         this.ctx.fillText('radial: task ring · curved edges · hover neighborhood', x + 14, y + h - 14);
     }
 
+    drawMicroscopeTimeline(focusNode, x, y, w, h) {
+        const pid = Number(focusNode?.pid || 0);
+        if (!pid) return;
+        const points = this.processHistory.get(pid) || [];
+        this.drawPanel(x, y, w, h, '', { alpha: 0.84, showTitle: false });
+        this.ctx.fillStyle = 'rgba(198, 220, 248, 0.92)';
+        this.ctx.font = '9px "Share Tech Mono", monospace';
+        this.ctx.fillText(`timeline 60s · pid ${pid}`, x + 10, y + 14);
+        if (points.length < 2) return;
+        const now = Date.now();
+        const plotX = x + 10;
+        const plotY = y + 20;
+        const plotW = w - 20;
+        const plotH = h - 30;
+        const drawSeries = (getValue, color, alpha = 0.95) => {
+            this.ctx.beginPath();
+            points.forEach((pt, idx) => {
+                const age = Math.max(0, now - Number(pt.ts || now));
+                const px = plotX + (1 - Math.min(1, age / this.processHistoryWindowMs)) * plotW;
+                const v = Math.max(0, Math.min(100, Number(getValue(pt) || 0)));
+                const py = plotY + plotH - (v / 100) * plotH;
+                if (idx === 0) this.ctx.moveTo(px, py);
+                else this.ctx.lineTo(px, py);
+            });
+            this.ctx.strokeStyle = color;
+            this.ctx.globalAlpha = alpha;
+            this.ctx.lineWidth = 1.2;
+            this.ctx.stroke();
+            this.ctx.globalAlpha = 1;
+        };
+        drawSeries((pt) => pt.syscall_pressure, 'rgba(150, 214, 255, 0.95)');
+        drawSeries((pt) => Math.min(100, pt.rss_mb / 12), 'rgba(120, 230, 170, 0.85)', 0.86);
+        drawSeries((pt) => Math.min(100, pt.fd_count * 2), 'rgba(255, 205, 128, 0.82)', 0.8);
+    }
+
+    drawMicroscopeGraph(nodes, edges, x, y, w, h) {
+        this.drawPanel(x, y, w, 36, 'process microscope · parent/child · threads · interactions', { alpha: 0.9 });
+        const innerY = y + 42;
+        const innerH = h - 50;
+        this.nodeHitAreas = [];
+        if (!nodes.length) {
+            this.ctx.fillStyle = 'rgba(196,207,224,0.72)';
+            this.ctx.font = '12px "Share Tech Mono", monospace';
+            this.ctx.fillText('NO PROCESS GRAPH DATA', x + 20, innerY + 28);
+            return;
+        }
+        const byPid = new Map(nodes.map((n) => [Number(n.pid || 0), n]));
+        const focus = this.getFocusProcess(nodes);
+        if (!focus) return;
+        const focusPid = Number(focus.pid || 0);
+        const centerX = x + w * 0.5;
+        const centerY = innerY + innerH * 0.42;
+        const parent = byPid.get(Number(focus.ppid || 0)) || null;
+        const children = nodes.filter((n) => Number(n.ppid || 0) === focusPid).slice(0, 6);
+        const neighbors = [];
+        edges.forEach((edge) => {
+            const s = Number(edge.source || 0);
+            const t = Number(edge.target || 0);
+            if (s === focusPid && byPid.has(t)) neighbors.push({ node: byPid.get(t), type: String(edge.type || 'link') });
+            if (t === focusPid && byPid.has(s)) neighbors.push({ node: byPid.get(s), type: String(edge.type || 'link') });
+        });
+        const uniqNeighbors = [];
+        const seen = new Set();
+        neighbors.forEach((it) => {
+            const pid = Number(it?.node?.pid || 0);
+            if (pid <= 0 || seen.has(pid) || pid === focusPid) return;
+            seen.add(pid);
+            uniqNeighbors.push(it);
+        });
+        const threadsCount = Math.max(1, Number(focus.num_threads || 1));
+        const ringA = Math.min(w, innerH) * 0.18;
+        const ringB = Math.min(w, innerH) * 0.29;
+        const ringC = Math.min(w, innerH) * 0.4;
+
+        // semantic rings
+        [ringA, ringB, ringC].forEach((r, idx) => {
+            this.ctx.beginPath();
+            this.ctx.arc(centerX, centerY, r, 0, Math.PI * 2);
+            this.ctx.strokeStyle = idx === 2 ? 'rgba(120,170,230,0.18)' : 'rgba(120,170,230,0.24)';
+            this.ctx.lineWidth = idx === 0 ? 1.1 : 0.9;
+            this.ctx.stroke();
+        });
+
+        const nodePos = new Map();
+        const placeNode = (node, px, py, radius, fill, label) => {
+            this.ctx.beginPath();
+            this.ctx.arc(px, py, radius, 0, Math.PI * 2);
+            this.ctx.fillStyle = fill;
+            this.ctx.fill();
+            this.ctx.strokeStyle = 'rgba(228, 239, 255, 0.92)';
+            this.ctx.lineWidth = 1;
+            this.ctx.stroke();
+            this.ctx.fillStyle = '#eaf1fb';
+            this.ctx.font = '9px "Share Tech Mono", monospace';
+            this.ctx.fillText(label, px + radius + 6, py + 3);
+            const pid = Number(node?.pid || 0);
+            if (pid > 0) this.nodeHitAreas.push({ x: px, y: py, r: radius, pid });
+            if (pid > 0) nodePos.set(pid, { x: px, y: py });
+        };
+
+        // center focus
+        placeNode(
+            focus,
+            centerX,
+            centerY,
+            11,
+            'rgba(163, 220, 255, 0.9)',
+            `${String(focus.name || 'proc').slice(0, 14)}:${focusPid}`
+        );
+        this.selectedNodePid = focusPid;
+
+        // parent/children ring
+        if (parent) {
+            const px = centerX;
+            const py = centerY - ringA;
+            placeNode(parent, px, py, 7, 'rgba(192, 210, 238, 0.85)', `parent ${String(parent.name || '').slice(0, 10)}:${Number(parent.pid || 0)}`);
+        }
+        children.forEach((ch, idx) => {
+            const a = (Math.PI * 2 * idx / Math.max(1, children.length)) - Math.PI / 2;
+            const px = centerX + Math.cos(a) * ringA;
+            const py = centerY + Math.sin(a) * ringA;
+            placeNode(ch, px, py, 6.2, 'rgba(152, 204, 255, 0.82)', `child ${String(ch.name || '').slice(0, 8)}:${Number(ch.pid || 0)}`);
+        });
+
+        // threads ring (synthetic thread beads)
+        const threadsToDraw = Math.min(16, Math.max(3, threadsCount));
+        for (let i = 0; i < threadsToDraw; i++) {
+            const a = (Math.PI * 2 * i / threadsToDraw) + this.tick * 0.005;
+            const px = centerX + Math.cos(a) * ringB;
+            const py = centerY + Math.sin(a) * ringB;
+            this.ctx.beginPath();
+            this.ctx.arc(px, py, 2.1, 0, Math.PI * 2);
+            this.ctx.fillStyle = 'rgba(120, 230, 170, 0.85)';
+            this.ctx.fill();
+        }
+
+        // interactions ring
+        uniqNeighbors.slice(0, 10).forEach((item, idx) => {
+            const n = item.node;
+            const a = (Math.PI * 2 * idx / Math.max(1, Math.min(10, uniqNeighbors.length))) + Math.PI * 0.06;
+            const px = centerX + Math.cos(a) * ringC;
+            const py = centerY + Math.sin(a) * ringC;
+            const edgeType = String(item.type || '');
+            const color = edgeType === 'network' ? 'rgba(244,201,119,0.88)'
+                : (edgeType === 'ipc' ? 'rgba(96,214,157,0.88)'
+                    : (edgeType === 'file_access' ? 'rgba(235,126,126,0.88)' : 'rgba(160,180,210,0.85)'));
+            placeNode(n, px, py, 5.2, color, `${edgeType || 'link'} ${String(n.name || '').slice(0, 8)}:${Number(n.pid || 0)}`);
+        });
+
+        // links from focus to related
+        for (const [pid, p] of nodePos.entries()) {
+            if (pid === focusPid) continue;
+            this.drawCurvedStroke(centerX, centerY, p.x, p.y, 'rgba(204, 224, 248, 0.38)', 0.9, focusPid * 17 + pid, false);
+        }
+
+        const leftX = x + 16;
+        const detailY = innerY + innerH - 110;
+        this.drawPanel(leftX, detailY, Math.min(390, w * 0.42), 96, '', { alpha: 0.84, showTitle: false });
+        this.ctx.fillStyle = 'rgba(212, 232, 255, 0.95)';
+        this.ctx.font = '10px "Share Tech Mono", monospace';
+        this.ctx.fillText(`focus ${String(focus.name || 'proc').slice(0, 18)}:${focusPid}`, leftX + 10, detailY + 18);
+        this.ctx.fillStyle = 'rgba(166, 195, 226, 0.9)';
+        this.ctx.font = '9px "Share Tech Mono", monospace';
+        this.ctx.fillText(`pressure ${Number(focus.syscall_pressure || 0).toFixed(0)} · rss ${(Number(focus.rss_bytes || 0) / (1024 * 1024)).toFixed(1)}MB`, leftX + 10, detailY + 36);
+        this.ctx.fillText(`threads ${Number(focus.num_threads || 0)} · fd ${Number(focus.fd_count || 0)} · seccomp ${String(focus.seccomp_mode || 'unknown')}`, leftX + 10, detailY + 52);
+        this.ctx.fillText(`parent ${parent ? `${String(parent.name || '').slice(0, 10)}:${Number(parent.pid || 0)}` : 'none'} · children ${children.length}`, leftX + 10, detailY + 68);
+        this.ctx.fillText(`interactions ${uniqNeighbors.length} (ipc/network/file_access)`, leftX + 10, detailY + 84);
+
+        this.drawMicroscopeTimeline(focus, x + w * 0.56, innerY + innerH - 96, w * 0.4, 84);
+        this.ctx.fillStyle = 'rgba(140, 158, 188, 0.85)';
+        this.ctx.font = '9px "Share Tech Mono", monospace';
+        this.ctx.fillText('click node: pin focus · rings: parent/child, threads, interactions', x + 12, y + h - 10);
+    }
+
     drawTopStats(x, y, w, h) {
         this.drawPanel(x, y, w, h, 'runtime snapshot');
         const meta = this.telemetry?.meta || {};
@@ -705,6 +1012,41 @@ class ProcessesSubsystemVisualization {
         this.ctx.fillText(`seccomp filter ${Number(meta.seccomp_filter_percent || 0).toFixed(1)}%`, x + 238, y + 50);
         this.ctx.fillStyle = '#a7b6cb';
         this.ctx.fillText('vertices: processes · edges: syscalls · ipc · sockets · vfs', x + 16, y + 72);
+    }
+
+    drawHudChrome(x, y, w, h) {
+        const cx = x + w * 0.5;
+        const cy = y + h * 0.5;
+        this.ctx.strokeStyle = 'rgba(150, 222, 255, 0.2)';
+        this.ctx.lineWidth = 1;
+        this.ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+
+        // Side bracket arcs inspired by tactical HUD layouts.
+        const arcR = Math.min(w, h) * 0.34;
+        this.ctx.beginPath();
+        this.ctx.arc(cx - w * 0.22, cy, arcR, -0.7, 0.7);
+        this.ctx.arc(cx + w * 0.22, cy, arcR, Math.PI - 0.7, Math.PI + 0.7);
+        this.ctx.strokeStyle = 'rgba(140, 220, 255, 0.24)';
+        this.ctx.stroke();
+
+        // Thin horizontal targeting bars.
+        this.ctx.strokeStyle = 'rgba(150, 226, 255, 0.22)';
+        this.ctx.beginPath();
+        this.ctx.moveTo(x + 26, cy);
+        this.ctx.lineTo(cx - 80, cy);
+        this.ctx.moveTo(cx + 80, cy);
+        this.ctx.lineTo(x + w - 26, cy);
+        this.ctx.stroke();
+
+        // Small center reticle.
+        this.ctx.beginPath();
+        this.ctx.arc(cx, cy, 18, 0, Math.PI * 2);
+        this.ctx.strokeStyle = 'rgba(178, 236, 255, 0.42)';
+        this.ctx.stroke();
+        this.ctx.beginPath();
+        this.ctx.arc(cx, cy, 7, 0, Math.PI * 2);
+        this.ctx.strokeStyle = 'rgba(208, 247, 255, 0.9)';
+        this.ctx.stroke();
     }
 
     drawScene() {
@@ -721,11 +1063,29 @@ class ProcessesSubsystemVisualization {
         const graphH = Math.max(260, h - graphY - 36);
 
         const bg = this.ctx.createRadialGradient(w * 0.5, h * 0.38, 0, w * 0.5, h * 0.38, Math.max(w, h) * 0.78);
-        bg.addColorStop(0, '#0f1a2e');
-        bg.addColorStop(0.55, '#070d18');
-        bg.addColorStop(1, '#03060e');
+        bg.addColorStop(0, '#0e1722');
+        bg.addColorStop(0.55, '#060b13');
+        bg.addColorStop(1, '#02050b');
         this.ctx.fillStyle = bg;
         this.ctx.fillRect(0, 0, w, h);
+
+        // Global subtle matrix grid.
+        this.ctx.strokeStyle = 'rgba(120, 188, 235, 0.08)';
+        this.ctx.lineWidth = 1;
+        for (let gx = 0; gx < w; gx += 36) {
+            this.ctx.beginPath();
+            this.ctx.moveTo(gx + 0.5, 0);
+            this.ctx.lineTo(gx + 0.5, h);
+            this.ctx.stroke();
+        }
+        for (let gy = 0; gy < h; gy += 36) {
+            this.ctx.beginPath();
+            this.ctx.moveTo(0, gy + 0.5);
+            this.ctx.lineTo(w, gy + 0.5);
+            this.ctx.stroke();
+        }
+
+        this.drawHudChrome(gap, graphY, w - gap * 2, graphH);
 
         this.drawKernelHeader();
         this.drawTopStats(gap, top, w - gap * 2, statsH);
