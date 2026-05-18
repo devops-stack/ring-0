@@ -76,11 +76,6 @@
 
 <div id="app">
     <svg></svg>
-    <!-- 3D Proc Visualization Container -->
-    <!-- 3D /proc visualization - DISABLED -->
-    <!-- <div id="proc-3d-container" style="position: fixed; bottom: 20px; right: 20px; width: 400px; height: 400px; display: none; z-index: 100; background: #f2f2f2; border-radius: 4px;">
-        <div id="proc-3d-canvas" style="width: 100%; height: 100%;"></div>
-    </div> -->
 </div>
 
 <!-- ================= SCRIPTS ================= -->
@@ -104,23 +99,14 @@
     <script src="/static/js/security-belt.js?v=11"></script>
     <script src="/static/js/filesystem-map.js?v=10"></script>
     <script src="/static/js/kernel-context-menu.js?v=29"></script>
-    <!-- 3D visualization script - DISABLED -->
-    <!-- <script src="/static/js/proc-3d-visualization.js"></script> -->
     <script>
         // Debug: Check if classes are loaded
         debugLog('🔍 RightSemicircleMenuManager class loaded:', typeof RightSemicircleMenuManager);
-        // 3D visualization check - DISABLED
-        // console.log('🔍 Proc3DVisualization class loaded:', typeof Proc3DVisualization);
         if (typeof RightSemicircleMenuManager !== 'undefined') {
             debugLog('✅ RightSemicircleMenuManager class is available');
         } else {
             console.error('❌ RightSemicircleMenuManager class NOT loaded!');
         }
-        // if (typeof Proc3DVisualization !== 'undefined') {
-        //     console.log('✅ Proc3DVisualization class is available');
-        // } else {
-        //     console.error('❌ Proc3DVisualization class NOT loaded!');
-        // }
     </script>
     <script src="/static/js/main.js?v=172"></script>
 </body>

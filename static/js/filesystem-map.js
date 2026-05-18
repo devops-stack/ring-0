@@ -25,10 +25,12 @@ class FilesystemMapVisualization {
         this.zoneHitAreas = [];
         this.selectedZoneId = null;
         this.hoveredZoneId = null;
+        this.radialHitModel = null;
         this.zoneSortMode = 'risk';
         this.sortModeButton = null;
-        this.archMapMode = 'simple';
-        this.archModeButton = null;
+        this.archMapMode = 'detailed';
+        this.focusMode = 'soft';
+        this.focusModeButton = null;
     }
 
     init(containerId = 'filesystem-map-container') {
@@ -167,9 +169,9 @@ class FilesystemMapVisualization {
         this.sortModeButton = sortBtn;
         this.updateSortModeButtonState();
 
-        const archBtn = document.createElement('button');
-        archBtn.textContent = 'ARCH: SIMPLE';
-        archBtn.style.cssText = `
+        const focusBtn = document.createElement('button');
+        focusBtn.textContent = 'FOCUS: SOFT';
+        focusBtn.style.cssText = `
             position: absolute;
             top: 72px;
             left: 136px;
@@ -183,11 +185,11 @@ class FilesystemMapVisualization {
             cursor: pointer;
             z-index: 1001;
         `;
-        archBtn.onclick = () => this.cycleArchMapMode();
-        this.container.appendChild(archBtn);
-        this.overlayNodes.push(archBtn);
-        this.archModeButton = archBtn;
-        this.updateArchMapModeButtonState();
+        focusBtn.onclick = () => this.toggleFocusMode();
+        this.container.appendChild(focusBtn);
+        this.overlayNodes.push(focusBtn);
+        this.focusModeButton = focusBtn;
+        this.updateFocusModeButtonState();
 
         const info = document.createElement('div');
         info.style.cssText = `
@@ -290,31 +292,37 @@ class FilesystemMapVisualization {
         ctx.closePath();
     }
 
-    drawPackageStack(x, y, w, h, layers, accentColor, label, metaText, subMetaText, isSelected, isHovered) {
+    drawPackageStack(x, y, w, h, layers, accentColor, label, metaText, subMetaText, isSelected, isHovered, isMuted = false, focusMode = 'soft') {
         const ctx = this.ctx;
+        const hardFocus = focusMode === 'hard';
         const stackLayers = Math.max(2, Math.min(4, layers));
         for (let i = stackLayers - 1; i >= 0; i -= 1) {
             const dx = -i * 4;
             const dy = i * 3;
             this.drawRoundedRect(x + dx, y + dy, w, h, 5);
-            ctx.fillStyle = i === 0 ? 'rgba(14, 24, 36, 0.95)' : 'rgba(10, 16, 26, 0.85)';
+            ctx.fillStyle = i === 0
+                ? (isMuted ? (hardFocus ? 'rgba(12, 18, 28, 0.46)' : 'rgba(12, 18, 28, 0.64)') : 'rgba(14, 24, 36, 0.95)')
+                : (isMuted ? (hardFocus ? 'rgba(10, 16, 26, 0.3)' : 'rgba(10, 16, 26, 0.5)') : 'rgba(10, 16, 26, 0.85)');
             ctx.fill();
             const baseStroke = i === 0 ? accentColor : 'rgba(72, 94, 124, 0.35)';
-            ctx.strokeStyle = isSelected ? 'rgba(149, 207, 255, 0.95)' : (isHovered ? 'rgba(122, 182, 245, 0.82)' : baseStroke);
+            ctx.strokeStyle = isMuted
+                ? (hardFocus ? 'rgba(82, 104, 132, 0.22)' : 'rgba(82, 104, 132, 0.38)')
+                : (isSelected ? 'rgba(149, 207, 255, 0.95)' : (isHovered ? 'rgba(122, 182, 245, 0.82)' : baseStroke));
             ctx.lineWidth = isSelected ? 1.4 : (i === 0 ? 1.0 : 0.7);
             ctx.stroke();
         }
-        ctx.fillStyle = isSelected ? '#d9ecff' : '#9fc0e8';
+        ctx.fillStyle = isMuted ? (hardFocus ? 'rgba(132, 152, 178, 0.45)' : 'rgba(132, 152, 178, 0.62)') : (isSelected ? '#d9ecff' : '#9fc0e8');
+        ctx.font = '10px "Share Tech Mono", monospace';
+        ctx.fillText(label, x + 8, y + 14);
+        ctx.fillStyle = isMuted ? (hardFocus ? 'rgba(124, 140, 160, 0.4)' : 'rgba(124, 140, 160, 0.58)') : (isSelected ? 'rgba(198, 222, 250, 0.96)' : 'rgba(155, 176, 204, 0.9)');
         ctx.font = '9px "Share Tech Mono", monospace';
-        ctx.fillText(label, x + 8, y + 13);
-        ctx.fillStyle = isSelected ? 'rgba(190, 214, 241, 0.92)' : 'rgba(122, 141, 167, 0.85)';
-        ctx.font = '8px "Share Tech Mono", monospace';
-        ctx.fillText(metaText, x + 8, y + 24);
+        ctx.fillText(metaText, x + 8, y + 27);
         if (subMetaText) {
-            ctx.fillStyle = 'rgba(132, 156, 186, 0.76)';
-            ctx.fillText(subMetaText, x + 8, y + 34);
+            ctx.fillStyle = isMuted ? (hardFocus ? 'rgba(120, 138, 162, 0.3)' : 'rgba(120, 138, 162, 0.46)') : 'rgba(132, 156, 186, 0.76)';
+            ctx.font = '8px "Share Tech Mono", monospace';
+            ctx.fillText(subMetaText, x + 8, y + 38);
         }
-        ctx.fillStyle = accentColor;
+        ctx.fillStyle = isMuted ? (hardFocus ? 'rgba(88, 104, 128, 0.34)' : 'rgba(88, 104, 128, 0.54)') : accentColor;
         ctx.fillRect(x + 2, y + h - 3, Math.max(8, w - 4), 2);
     }
 
@@ -460,14 +468,15 @@ class FilesystemMapVisualization {
         }
     }
 
-    drawLiveBlockMatrix(x, y, w, h, blocks, zones, meta) {
+    drawLiveBlockMatrix(x, y, w, h, blocks, zones, meta, selectedZoneId = null, focusMode = 'soft') {
         const ctx = this.ctx;
+        const hardFocus = focusMode === 'hard';
         const zoneMap = new Map((Array.isArray(zones) ? zones : []).map((z) => [String(z.id || ''), z]));
         const data = Array.isArray(blocks) ? blocks : [];
         if (!data.length) return;
 
         this.drawRoundedRect(x, y, w, h, 7);
-        ctx.fillStyle = 'rgba(8, 13, 21, 0.72)';
+        ctx.fillStyle = 'rgba(8, 13, 21, 0.62)';
         ctx.fill();
         ctx.strokeStyle = 'rgba(122, 146, 178, 0.28)';
         ctx.lineWidth = 0.85;
@@ -486,6 +495,7 @@ class FilesystemMapVisualization {
 
         for (let i = 0; i < rows * cols; i += 1) {
             const b = data[i % data.length] || {};
+            const zoneId = String(b.zone_id || '');
             const zone = zoneMap.get(String(b.zone_id || '')) || {};
             const zx = i % cols;
             const zy = Math.floor(i / cols);
@@ -494,17 +504,19 @@ class FilesystemMapVisualization {
             const zoneAct = Math.max(0, Math.min(100, Number(zone.activity || 0)));
             const zInode = Math.max(0, Math.min(100, Number(zone.inode_pressure || 0)));
             const flicker = 0.75 + 0.25 * Math.sin(this.tick * 0.05 + zx * 0.17 + zy * 0.23);
+            const isFocused = !selectedZoneId || zoneId === String(selectedZoneId);
+            const focusAlphaMul = isFocused ? 1 : (hardFocus ? 0.26 : 0.5);
 
             if (b.state === 'writing') {
                 const alpha = 0.46 + Math.min(0.5, (zoneAct / 130) + (writeHot > 90 ? 0.18 : 0)) * flicker;
-                ctx.fillStyle = `rgba(163, 238, 255, ${Math.min(0.95, alpha).toFixed(3)})`;
+                ctx.fillStyle = `rgba(163, 238, 255, ${Math.min(0.95, alpha * focusAlphaMul).toFixed(3)})`;
             } else if (b.state === 'used') {
                 const alpha = 0.22 + Math.min(0.5, ((zoneAct + inodePressure * 0.35) / 220)) * flicker;
                 ctx.fillStyle = zInode >= 78
-                    ? `rgba(255, 184, 132, ${Math.min(0.8, alpha + 0.08).toFixed(3)})`
-                    : `rgba(96, 166, 220, ${Math.min(0.8, alpha).toFixed(3)})`;
+                    ? `rgba(255, 184, 132, ${Math.min(0.8, (alpha + 0.08) * focusAlphaMul).toFixed(3)})`
+                    : `rgba(96, 166, 220, ${Math.min(0.8, alpha * focusAlphaMul).toFixed(3)})`;
             } else {
-                ctx.fillStyle = `rgba(17, 30, 46, ${(0.24 + 0.08 * flicker).toFixed(3)})`;
+                ctx.fillStyle = `rgba(17, 30, 46, ${((0.24 + 0.08 * flicker) * focusAlphaMul).toFixed(3)})`;
             }
 
             const cw = Math.max(1.5, cellW - 1.15);
@@ -585,18 +597,18 @@ class FilesystemMapVisualization {
         }
     }
 
-    cycleArchMapMode() {
-        this.archMapMode = this.archMapMode === 'detailed' ? 'simple' : 'detailed';
-        this.updateArchMapModeButtonState();
+    toggleFocusMode() {
+        this.focusMode = this.focusMode === 'hard' ? 'soft' : 'hard';
+        this.updateFocusModeButtonState();
     }
 
-    updateArchMapModeButtonState() {
-        if (!this.archModeButton) return;
-        const detailed = this.archMapMode === 'detailed';
-        this.archModeButton.textContent = detailed ? 'ARCH: DETAILED' : 'ARCH: SIMPLE';
-        this.archModeButton.style.background = detailed ? 'rgba(28, 45, 64, 0.92)' : 'rgba(12, 18, 28, 0.9)';
-        this.archModeButton.style.borderColor = detailed ? 'rgba(127, 194, 255, 0.88)' : 'rgba(130, 148, 172, 0.35)';
-        this.archModeButton.style.color = detailed ? '#e0f1ff' : '#9fb0c8';
+    updateFocusModeButtonState() {
+        if (!this.focusModeButton) return;
+        const hard = this.focusMode === 'hard';
+        this.focusModeButton.textContent = hard ? 'FOCUS: HARD' : 'FOCUS: SOFT';
+        this.focusModeButton.style.background = hard ? 'rgba(68, 34, 44, 0.92)' : 'rgba(24, 42, 60, 0.9)';
+        this.focusModeButton.style.borderColor = hard ? 'rgba(255, 158, 172, 0.86)' : 'rgba(132, 194, 255, 0.78)';
+        this.focusModeButton.style.color = hard ? '#ffe3e7' : '#dff1ff';
     }
 
     getZoneHitAt(x, y) {
@@ -608,6 +620,24 @@ class FilesystemMapVisualization {
         return null;
     }
 
+    getRadialZoneAt(x, y) {
+        const model = this.radialHitModel;
+        if (!model) return null;
+        const dx = x - model.cx;
+        const dy = y - model.cy;
+        const dist = Math.hypot(dx, dy);
+        if (dist < model.innerR || dist > model.outerR) return null;
+        const rIdx = Math.floor((dist - model.innerR) / model.ringGap);
+        if (rIdx < 0 || rIdx >= model.rows) return null;
+        let a = Math.atan2(dy, dx);
+        if (a < 0) a += Math.PI * 2;
+        const cIdx = Math.floor(a / model.angleStep);
+        if (cIdx < 0 || cIdx >= model.cols) return null;
+        const zoneId = model.zoneByCell.get(`${rIdx}:${cIdx}`) || null;
+        if (!zoneId) return null;
+        return { zoneId };
+    }
+
     onCanvasClick(event) {
         if (!this.canvas) return;
         const rect = this.canvas.getBoundingClientRect();
@@ -616,6 +646,11 @@ class FilesystemMapVisualization {
         const zoneHit = this.getZoneHitAt(x, y);
         if (zoneHit) {
             this.selectedZoneId = this.selectedZoneId === zoneHit.zoneId ? null : zoneHit.zoneId;
+            return;
+        }
+        const radialHit = this.getRadialZoneAt(x, y);
+        if (radialHit) {
+            this.selectedZoneId = this.selectedZoneId === radialHit.zoneId ? null : radialHit.zoneId;
             return;
         }
         if (!this.orbHitArea) return;
@@ -633,9 +668,10 @@ class FilesystemMapVisualization {
         const x = event.clientX - rect.left;
         const y = event.clientY - rect.top;
         const zoneHit = this.getZoneHitAt(x, y);
-        this.hoveredZoneId = zoneHit ? zoneHit.zoneId : null;
+        const radialHit = zoneHit ? null : this.getRadialZoneAt(x, y);
+        this.hoveredZoneId = zoneHit ? zoneHit.zoneId : (radialHit ? radialHit.zoneId : null);
         const overOrb = this.orbHitArea && Math.hypot(x - this.orbHitArea.x, y - this.orbHitArea.y) <= this.orbHitArea.r * 1.25;
-        this.canvas.style.cursor = zoneHit || overOrb ? 'pointer' : 'default';
+        this.canvas.style.cursor = zoneHit || radialHit || overOrb ? 'pointer' : 'default';
     }
 
     drawScene() {
@@ -655,7 +691,11 @@ class FilesystemMapVisualization {
         const blocks = this.telemetry.blocks;
         const zones = Array.isArray(this.telemetry.zones) ? this.telemetry.zones : [];
         const zoneMap = new Map(zones.map((z) => [String(z.id || ''), z]));
+        const selectedZoneId = this.selectedZoneId ? String(this.selectedZoneId) : null;
+        const hasZoneFocus = Boolean(selectedZoneId);
+        const hardFocus = this.focusMode === 'hard';
         this.zoneHitAreas = [];
+        this.radialHitModel = null;
 
         const cx = Math.floor(w * 0.53);
         const cy = Math.floor(h * 0.63);
@@ -664,6 +704,7 @@ class FilesystemMapVisualization {
         const ringGap = (outerR - innerR) / Math.max(1, rows);
         const angleStep = (Math.PI * 2) / Math.max(1, cols);
         const m = this.telemetry.meta || {};
+        const zoneByCell = new Map();
 
         const kpis = [
             {
@@ -700,7 +741,9 @@ class FilesystemMapVisualization {
         });
 
         // Background circuit lines.
-        this.ctx.strokeStyle = 'rgba(150, 38, 64, 0.17)';
+        this.ctx.strokeStyle = hasZoneFocus
+            ? (hardFocus ? 'rgba(120, 52, 84, 0.1)' : 'rgba(120, 52, 84, 0.14)')
+            : 'rgba(150, 38, 64, 0.17)';
         this.ctx.lineWidth = 1;
         for (let i = 0; i < 9; i += 1) {
             const y = 120 + i * 44;
@@ -713,8 +756,8 @@ class FilesystemMapVisualization {
         const matrixW = Math.min(760, Math.max(520, Math.floor(w * 0.54)));
         const matrixH = Math.min(320, Math.max(220, Math.floor(h * 0.28)));
         const matrixX = Math.max(24, Math.min(w - matrixW - 24, cx - Math.floor(matrixW * 0.52)));
-        const matrixY = Math.max(118, cy - outerR - Math.floor(matrixH * 0.45));
-        this.drawLiveBlockMatrix(matrixX, matrixY, matrixW, matrixH, blocks, zones, m);
+        const matrixY = Math.max(126, cy - outerR - Math.floor(matrixH * 0.42));
+        this.drawLiveBlockMatrix(matrixX, matrixY, matrixW, matrixH, blocks, zones, m, selectedZoneId, this.focusMode);
 
         // Main rings.
         for (let i = 0; i <= 7; i += 1) {
@@ -730,25 +773,31 @@ class FilesystemMapVisualization {
         blocks.forEach((b) => {
             const rIdx = Number.isFinite(Number(b.r)) ? Number(b.r) : Math.floor(Number(b.i || 0) / cols);
             const cIdx = Number.isFinite(Number(b.c)) ? Number(b.c) : (Number(b.i || 0) % cols);
+            if (rIdx >= 0 && rIdx < rows && cIdx >= 0 && cIdx < cols) {
+                zoneByCell.set(`${rIdx}:${cIdx}`, String(b.zone_id || ''));
+            }
             const r0 = innerR + rIdx * ringGap;
             const r1 = r0 + Math.max(1.3, ringGap * 0.8);
             const a0 = cIdx * angleStep;
             const a1 = a0 + angleStep * 0.88;
+            const blockZoneId = String(b.zone_id || '');
+            const isFocused = !hasZoneFocus || blockZoneId === selectedZoneId;
+            const focusAlphaMul = isFocused ? 1 : (hardFocus ? 0.22 : 0.42);
 
             const z = zoneMap.get(String(b.zone_id || '')) || {};
             const zoneAct = Math.max(0, Math.min(100, Number(z.activity || 0)));
             const inodePressure = Math.max(0, Math.min(100, Number(z.inode_pressure || 0)));
             if (this.renderMode === 'write') {
-                if (b.state === 'writing') this.ctx.fillStyle = 'rgba(127, 232, 255, 0.92)';
-                else if (b.state === 'used') this.ctx.fillStyle = `rgba(44, 132, 184, ${0.32 + Math.min(0.5, zoneAct / 120)})`;
-                else this.ctx.fillStyle = 'rgba(14, 28, 44, 0.48)';
+                if (b.state === 'writing') this.ctx.fillStyle = `rgba(127, 232, 255, ${(0.92 * focusAlphaMul).toFixed(3)})`;
+                else if (b.state === 'used') this.ctx.fillStyle = `rgba(44, 132, 184, ${((0.32 + Math.min(0.5, zoneAct / 120)) * focusAlphaMul).toFixed(3)})`;
+                else this.ctx.fillStyle = `rgba(14, 28, 44, ${(0.48 * focusAlphaMul).toFixed(3)})`;
             } else if (this.renderMode === 'inode') {
-                if (b.state === 'free') this.ctx.fillStyle = 'rgba(12, 24, 38, 0.45)';
-                else this.ctx.fillStyle = `rgba(127, 232, 255, ${0.18 + Math.min(0.72, inodePressure / 110)})`;
+                if (b.state === 'free') this.ctx.fillStyle = `rgba(12, 24, 38, ${(0.45 * focusAlphaMul).toFixed(3)})`;
+                else this.ctx.fillStyle = `rgba(127, 232, 255, ${((0.18 + Math.min(0.72, inodePressure / 110)) * focusAlphaMul).toFixed(3)})`;
             } else {
-                if (b.state === 'writing') this.ctx.fillStyle = 'rgba(127, 232, 255, 0.9)';
-                else if (b.state === 'free') this.ctx.fillStyle = 'rgba(19, 38, 58, 0.55)';
-                else this.ctx.fillStyle = 'rgba(44, 132, 184, 0.72)';
+                if (b.state === 'writing') this.ctx.fillStyle = `rgba(127, 232, 255, ${(0.9 * focusAlphaMul).toFixed(3)})`;
+                else if (b.state === 'free') this.ctx.fillStyle = `rgba(19, 38, 58, ${(0.55 * focusAlphaMul).toFixed(3)})`;
+                else this.ctx.fillStyle = `rgba(44, 132, 184, ${(0.72 * focusAlphaMul).toFixed(3)})`;
             }
 
             this.ctx.beginPath();
@@ -757,6 +806,17 @@ class FilesystemMapVisualization {
             this.ctx.closePath();
             this.ctx.fill();
         });
+        this.radialHitModel = {
+            cx,
+            cy,
+            innerR,
+            outerR,
+            ringGap,
+            angleStep,
+            rows,
+            cols,
+            zoneByCell,
+        };
 
         // Central hole.
         this.ctx.beginPath();
@@ -790,14 +850,14 @@ class FilesystemMapVisualization {
         const leftItems = zoneItems.filter((_, i) => i % 2 === 0);
         const rightItems = zoneItems.filter((_, i) => i % 2 === 1);
         const cardW = 130;
-        const cardH = 42;
+        const cardH = 46;
         const leftX = Math.max(24, cx - outerR - 220);
         const rightX = Math.min(w - cardW - 24, cx + outerR + 110);
         const topY = Math.max(150, cy - outerR + 12);
 
         const drawZonePack = (list, xBase, isLeft) => {
             list.forEach((z, idx) => {
-                const y = topY + idx * 50;
+                const y = topY + idx * 54;
                 const usedPercent = Number(z.used_percent || 0);
                 const writingBlocks = Number(z.writing_blocks || 0);
                 const inodePressure = Number(z.inode_pressure || 0);
@@ -810,6 +870,7 @@ class FilesystemMapVisualization {
                 const zoneId = String(z.id || z.name || `zone-${idx}`);
                 const isSelected = this.selectedZoneId === zoneId;
                 const isHovered = this.hoveredZoneId === zoneId;
+                const isMuted = hasZoneFocus && !isSelected;
                 this.drawPackageStack(
                     xBase,
                     y,
@@ -821,29 +882,51 @@ class FilesystemMapVisualization {
                     `used ${usedPercent.toFixed(0)}% | inode ${inodePressure.toFixed(0)}%`,
                     `wr ${writingBlocks} | act ${Number(z.activity || 0).toFixed(0)}`,
                     isSelected,
-                    isHovered
+                    isHovered,
+                    isMuted,
+                    this.focusMode
                 );
                 this.zoneHitAreas.push({ x: xBase, y, w: cardW, h: cardH, zoneId });
 
-                // Connector to central disk.
+                // Connector to central disk with light bundling.
                 const sx = isLeft ? xBase + cardW : xBase;
                 const sy = y + cardH / 2;
                 const tx = cx + (isLeft ? -outerR * 0.85 : outerR * 0.85);
-                const ty = cy - outerR * 0.65 + idx * 10;
+                const ty = cy - outerR * 0.62 + idx * 9;
+                const bundleX = cx + (isLeft ? -outerR * 1.05 : outerR * 1.05);
+                const bundleY = cy - outerR * 0.5 + idx * 8;
                 this.ctx.beginPath();
                 this.ctx.moveTo(sx, sy);
                 this.ctx.bezierCurveTo(
                     sx + (isLeft ? 60 : -60),
                     sy,
-                    tx + (isLeft ? -40 : 40),
+                    bundleX + (isLeft ? -22 : 22),
+                    bundleY,
+                    bundleX,
+                    bundleY
+                );
+                this.ctx.strokeStyle = isMuted
+                    ? (hardFocus ? 'rgba(82, 104, 132, 0.2)' : 'rgba(102, 122, 148, 0.32)')
+                    : (isSelected
+                    ? 'rgba(146, 204, 255, 0.86)'
+                    : (riskScore >= 80 ? 'rgba(226, 92, 106, 0.44)' : 'rgba(169, 52, 80, 0.26)'));
+                this.ctx.lineWidth = isSelected ? 1.5 : (isMuted ? (hardFocus ? 0.8 : 0.95) : 1);
+                this.ctx.stroke();
+
+                this.ctx.beginPath();
+                this.ctx.moveTo(bundleX, bundleY);
+                this.ctx.bezierCurveTo(
+                    bundleX + (isLeft ? 24 : -24),
+                    bundleY,
+                    tx + (isLeft ? -34 : 34),
                     ty,
                     tx,
                     ty
                 );
-                this.ctx.strokeStyle = isSelected
-                    ? 'rgba(146, 204, 255, 0.86)'
-                    : (riskScore >= 80 ? 'rgba(226, 92, 106, 0.44)' : 'rgba(169, 52, 80, 0.26)');
-                this.ctx.lineWidth = isSelected ? 1.5 : 1;
+                this.ctx.strokeStyle = isMuted
+                    ? (hardFocus ? 'rgba(82, 104, 132, 0.22)' : 'rgba(102, 122, 148, 0.35)')
+                    : (isSelected ? 'rgba(146, 204, 255, 0.86)' : 'rgba(124, 156, 196, 0.34)');
+                this.ctx.lineWidth = isSelected ? 1.3 : (isMuted ? (hardFocus ? 0.85 : 1) : 0.95);
                 this.ctx.stroke();
             });
         };
@@ -869,7 +952,7 @@ class FilesystemMapVisualization {
         const archW = Math.min(620, Math.max(470, Math.floor(w * 0.44)));
         const archH = 228;
         const archX = Math.max(24, Math.min(w - archW - 24, rightX - 120));
-        const archY = 96;
+        const archY = 108;
         this.drawFsArchitectureMap(archX, archY, archW, archH, m, zones);
 
         const selectedZone = zones.find((z) => String(z.id || z.name || '') === String(this.selectedZoneId || ''));

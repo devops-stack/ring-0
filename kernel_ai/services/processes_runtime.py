@@ -124,6 +124,203 @@ def _parse_meminfo_kb():
     return out
 
 
+def _parse_vmstat_selected():
+    keys = {
+        "pgscan_kswapd",
+        "pgscan_direct",
+        "pgsteal_kswapd",
+        "pgsteal_direct",
+        "pgfault",
+        "pgmajfault",
+        "compact_stall",
+        "oom_kill",
+    }
+    out = {}
+    try:
+        with open("/proc/vmstat", "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) != 2:
+                    continue
+                key = parts[0].strip()
+                if key not in keys:
+                    continue
+                try:
+                    out[key] = int(parts[1])
+                except ValueError:
+                    continue
+    except OSError as exc:
+        log_event(
+            logger,
+            "DEBUG",
+            "Failed to read /proc/vmstat",
+            event_dataset="kernel_ai.app",
+            component="services.processes_runtime",
+            operation="_parse_vmstat_selected",
+            event_data={"error": str(exc)},
+        )
+    return out
+
+
+def _parse_memory_psi():
+    result = {
+        "some_avg10": 0.0,
+        "some_avg60": 0.0,
+        "some_avg300": 0.0,
+        "full_avg10": 0.0,
+        "full_avg60": 0.0,
+        "full_avg300": 0.0,
+    }
+    try:
+        with open("/proc/pressure/memory", "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split()
+                scope = parts[0]
+                vals = {}
+                for token in parts[1:]:
+                    if "=" not in token:
+                        continue
+                    k, v = token.split("=", 1)
+                    try:
+                        vals[k] = float(v)
+                    except ValueError:
+                        continue
+                if scope == "some":
+                    result["some_avg10"] = float(vals.get("avg10", 0.0))
+                    result["some_avg60"] = float(vals.get("avg60", 0.0))
+                    result["some_avg300"] = float(vals.get("avg300", 0.0))
+                elif scope == "full":
+                    result["full_avg10"] = float(vals.get("avg10", 0.0))
+                    result["full_avg60"] = float(vals.get("avg60", 0.0))
+                    result["full_avg300"] = float(vals.get("avg300", 0.0))
+    except OSError:
+        return result
+    return result
+
+
+def _read_proc_status_fields(pid: int):
+    out = {}
+    try:
+        with open(f"/proc/{int(pid)}/status", "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if ":" not in line:
+                    continue
+                key, raw = line.split(":", 1)
+                out[key.strip()] = raw.strip()
+    except OSError:
+        return out
+    return out
+
+
+def _status_kb(status_map: dict, key: str):
+    raw = str(status_map.get(key) or "").strip()
+    if not raw:
+        return 0
+    parts = raw.split()
+    if not parts:
+        return 0
+    try:
+        return int(parts[0])
+    except ValueError:
+        return 0
+
+
+def _read_proc_faults(pid: int):
+    try:
+        with open(f"/proc/{int(pid)}/stat", "r", encoding="utf-8", errors="ignore") as f:
+            raw = f.read().strip()
+    except OSError:
+        return {"minflt": 0, "majflt": 0}
+    if not raw:
+        return {"minflt": 0, "majflt": 0}
+    try:
+        tail = raw.split(") ", 1)[1]
+        fields = tail.split()
+        # In tail (after comm), minflt index=7, majflt index=9.
+        minflt = int(fields[7]) if len(fields) > 7 else 0
+        majflt = int(fields[9]) if len(fields) > 9 else 0
+        return {"minflt": minflt, "majflt": majflt}
+    except (IndexError, ValueError):
+        return {"minflt": 0, "majflt": 0}
+
+
+def _build_memory_process_pressure(syscall_nodes, meminfo_kb):
+    mt_kb = max(1, int((meminfo_kb or {}).get("MemTotal") or 0))
+    psi = _parse_memory_psi()
+    vmstat = _parse_vmstat_selected()
+    psi_factor = 1.0 + min(2.0, float(psi.get("some_avg10", 0.0)) / 20.0 + float(psi.get("full_avg10", 0.0)) / 12.0)
+    rows = []
+    workers = []
+
+    for node in syscall_nodes:
+        pid = int(node.get("pid") or 0)
+        if pid <= 0:
+            continue
+        name = str(node.get("name") or "unknown")
+        status_map = _read_proc_status_fields(pid)
+        rss_kb = _status_kb(status_map, "VmRSS")
+        if rss_kb <= 0:
+            rss_kb = max(0, int(int(node.get("rss_bytes") or 0) / 1024))
+        anon_kb = _status_kb(status_map, "RssAnon")
+        file_kb = _status_kb(status_map, "RssFile")
+        swap_kb = _status_kb(status_map, "VmSwap")
+        faults = _read_proc_faults(pid)
+        minflt = int(faults.get("minflt") or 0)
+        majflt = int(faults.get("majflt") or 0)
+        rss_share = rss_kb / float(mt_kb)
+        swap_share = swap_kb / float(mt_kb)
+        mem_percent = float(node.get("memory_percent") or 0.0)
+        syscall_pressure = float(node.get("syscall_pressure") or 0.0)
+        score = (
+            rss_share * 62.0
+            + swap_share * 160.0
+            + min(mem_percent, 100.0) * 0.33
+            + min(syscall_pressure, 100.0) * 0.22
+            + min(100.0, majflt * 0.0009)
+        ) * psi_factor
+        score = max(0.0, min(100.0, score))
+
+        role = "userspace"
+        low_name = name.lower()
+        if low_name.startswith("kswapd") or low_name.startswith("kcompactd") or low_name in {"oom_reaper", "ksmd"}:
+            role = "kernel_worker"
+        elif "systemd-oomd" in low_name:
+            role = "oomd"
+
+        row = {
+            "pid": pid,
+            "name": name,
+            "role": role,
+            "rss_mb": round(rss_kb / 1024.0, 2),
+            "anon_mb": round(anon_kb / 1024.0, 2),
+            "file_mb": round(file_kb / 1024.0, 2),
+            "swap_mb": round(swap_kb / 1024.0, 2),
+            "memory_percent": round(mem_percent, 2),
+            "syscall_pressure": round(syscall_pressure, 2),
+            "minflt": minflt,
+            "majflt": majflt,
+            "pressure_score": round(score, 2),
+        }
+        rows.append(row)
+        if role != "userspace":
+            workers.append(row)
+
+    rows.sort(key=lambda x: (float(x.get("pressure_score", 0.0)), float(x.get("rss_mb", 0.0))), reverse=True)
+    workers.sort(key=lambda x: float(x.get("pressure_score", 0.0)), reverse=True)
+    return (
+        rows[:18],
+        workers[:8],
+        {
+            "psi_memory": psi,
+            "vmstat": vmstat,
+            "psi_factor": round(psi_factor, 4),
+        },
+    )
+
+
 def _memory_strip_blocks(kind, kb_k, mem_total_kb, n_blocks, seed0):
     mem_total_kb = max(1, int(mem_total_kb))
     kb_k = max(0, int(kb_k))
@@ -313,6 +510,7 @@ def collect_processes_realtime():
                     "name": name,
                     "user": user,
                     "fd_count": fd_count,
+                    "num_threads": threads,
                     "syscall_pressure": syscall_pressure,
                     "seccomp_mode": seccomp_mode,
                     "memory_percent": round(mem, 2),
@@ -409,6 +607,7 @@ def collect_processes_realtime():
             "user": str(row.get("user") or ""),
             "syscall_pressure": int(row.get("syscall_pressure") or 0),
             "fd_count": int(row.get("fd_count") or 0),
+            "num_threads": int(row.get("num_threads") or 0),
             "seccomp_mode": str(row.get("seccomp_mode") or "unknown"),
             "connections": 0,
             "unique_peers": 0,
@@ -427,6 +626,7 @@ def collect_processes_realtime():
                 "user": "",
                 "syscall_pressure": 0,
                 "fd_count": 0,
+                "num_threads": 0,
                 "seccomp_mode": "unknown",
                 "connections": 0,
                 "unique_peers": 0,
@@ -498,7 +698,18 @@ def collect_processes_realtime():
         swap = psutil.swap_memory()
         meminfo_kb = _parse_meminfo_kb()
         strip_rows, mem_summary = _build_memory_visual_rows(meminfo_kb, syscall_nodes, vm, swap)
-        memory_visual = {"layout": "strips", "rows": strip_rows, "summary": mem_summary}
+        process_pressure, kernel_memory_workers, kernel_memory_state = _build_memory_process_pressure(
+            syscall_nodes,
+            meminfo_kb,
+        )
+        memory_visual = {
+            "layout": "strips",
+            "rows": strip_rows,
+            "summary": mem_summary,
+            "process_pressure": process_pressure,
+            "kernel_memory_workers": kernel_memory_workers,
+            "kernel_memory_state": kernel_memory_state,
+        }
     except (psutil.Error, OSError, ValueError, TypeError) as exc:
         log_event(
             logger,
@@ -514,6 +725,20 @@ def collect_processes_realtime():
             "layout": "strips",
             "rows": [],
             "summary": {"total_mb": 0, "used_percent": 0.0, "available_mb": 0, "swap_percent": 0.0, "source": "error"},
+            "process_pressure": [],
+            "kernel_memory_workers": [],
+            "kernel_memory_state": {
+                "psi_memory": {
+                    "some_avg10": 0.0,
+                    "some_avg60": 0.0,
+                    "some_avg300": 0.0,
+                    "full_avg10": 0.0,
+                    "full_avg60": 0.0,
+                    "full_avg300": 0.0,
+                },
+                "vmstat": {},
+                "psi_factor": 1.0,
+            },
         }
 
     return {
