@@ -1,7 +1,7 @@
 // Processes Subsystem Visualization
-// Version: 13
+// Version: 20
 
-debugLog('🧠 processes-belt.js v13: Script loading...');
+debugLog('🧠 processes-belt.js v20: Script loading...');
 
 class ProcessesSubsystemVisualization {
     constructor() {
@@ -15,7 +15,7 @@ class ProcessesSubsystemVisualization {
         this.telemetry = null;
         this.tick = 0;
         this.nodeLayout = new Map();
-        this.layoutMode = 'temporal';
+        this.layoutMode = 'microscope';
         this.modeButtons = new Map();
         this.edgeFilter = 'all';
         this.filterButtons = new Map();
@@ -83,9 +83,9 @@ class ProcessesSubsystemVisualization {
             position:absolute;top:18px;left:18px;display:flex;gap:8px;z-index:1001;
         `;
         const modes = [
+            { key: 'microscope', label: 'MICROSCOPE' },
             { key: 'temporal', label: '3-LAYER GRAPH' },
-            { key: 'radial', label: 'RADIAL GRAPH' },
-            { key: 'microscope', label: 'MICROSCOPE' }
+            { key: 'radial', label: 'RADIAL GRAPH' }
         ];
         modes.forEach((m) => {
             const btn = document.createElement('button');
@@ -728,19 +728,46 @@ class ProcessesSubsystemVisualization {
     drawRadialNeuralGraph(nodes, edges, pos, x, y, w, h) {
         const cx = x + w * 0.5;
         const cy = y + h * 0.52;
-        const ring = Math.min(w, h) * 0.38;
+        const outer = Math.min(w, h) * 0.34;
+        const inner = outer * 0.46;
         this.nodeHitAreas = [];
+
+        [outer, outer * 0.78, outer * 0.58, inner].forEach((r, idx) => {
+            this.ctx.beginPath();
+            this.ctx.arc(cx, cy, r, 0, Math.PI * 2);
+            this.ctx.strokeStyle = idx === 0 ? 'rgba(140,212,255,0.22)' : 'rgba(118,190,232,0.16)';
+            this.ctx.lineWidth = idx === 0 ? 1.2 : 1;
+            this.ctx.stroke();
+        });
+
+        this.ctx.strokeStyle = 'rgba(120,195,235,0.14)';
+        this.ctx.lineWidth = 1;
+        for (let i = 0; i < 8; i += 1) {
+            const a = (Math.PI * 2 * i) / 8;
+            this.ctx.beginPath();
+            this.ctx.moveTo(cx + Math.cos(a) * inner, cy + Math.sin(a) * inner);
+            this.ctx.lineTo(cx + Math.cos(a) * outer, cy + Math.sin(a) * outer);
+            this.ctx.stroke();
+        }
+
+        const sweep = (this.tick * 0.0025) % (Math.PI * 2);
+        this.ctx.beginPath();
+        this.ctx.moveTo(cx, cy);
+        this.ctx.arc(cx, cy, outer, sweep - 0.14, sweep + 0.14);
+        this.ctx.closePath();
+        this.ctx.fillStyle = 'rgba(120, 210, 245, 0.08)';
+        this.ctx.fill();
+
         nodes.forEach((node, idx) => {
             const pid = Number(node.pid || 0);
             const a = ((Math.PI * 2) / Math.max(1, nodes.length)) * idx - Math.PI / 2;
-            const drift = Math.sin(this.tick * 0.0035 + idx * 0.4) * 0.018;
-            const nx = cx + Math.cos(a + drift) * (ring * (0.75 + (idx % 4) * 0.07));
-            const ny = cy + Math.sin(a + drift) * (ring * (0.75 + (idx % 4) * 0.07));
-            pos.set(pid, { x: nx, y: ny });
+            const noise = Math.sin(this.tick * 0.004 + idx * 0.31) * 0.02;
+            const radius = outer * (0.62 + (idx % 4) * 0.08);
+            pos.set(pid, {
+                x: cx + Math.cos(a + noise) * radius,
+                y: cy + Math.sin(a + noise) * radius
+            });
         });
-
-        this.positionHistory.push(pos);
-        if (this.positionHistory.length > 3) this.positionHistory.shift();
 
         const neighborPids = new Set();
         if (this.hoveredNodePid) {
@@ -752,33 +779,18 @@ class ProcessesSubsystemVisualization {
             });
         }
 
-        // Core glow
-        const coreGrad = this.ctx.createRadialGradient(cx, cy, 8, cx, cy, 120);
-        coreGrad.addColorStop(0, 'rgba(124,178,255,0.45)');
-        coreGrad.addColorStop(1, 'rgba(124,178,255,0)');
-        this.ctx.beginPath();
-        this.ctx.arc(cx, cy, 120, 0, Math.PI * 2);
-        this.ctx.fillStyle = coreGrad;
-        this.ctx.fill();
-
         edges.forEach((edge, idx) => {
             const s = pos.get(Number(edge.source || 0));
             const t = pos.get(Number(edge.target || 0));
             if (!s || !t) return;
-            const wv = Number(edge.weight || 0.4);
+            const weight = Number(edge.weight || 0.4);
             const color = this.edgeColor(String(edge.type || ''));
             const isHoverEdge = this.hoveredNodePid && (Number(edge.source || 0) === this.hoveredNodePid || Number(edge.target || 0) === this.hoveredNodePid);
-            this.ctx.globalAlpha = isHoverEdge ? 0.95 : (0.2 + wv * 0.38);
+            this.ctx.globalAlpha = isHoverEdge ? 0.94 : (0.18 + weight * 0.34);
             const salt = idx * 97 + Number(edge.source || 0) + Number(edge.target || 0);
             const ctrl = this.radialCurveControl(s.x, s.y, t.x, t.y, cx, cy, salt);
-            this.drawCurvedStroke(s.x, s.y, t.x, t.y, color, 0.65 + wv, salt, true, ctrl);
+            this.drawCurvedStroke(s.x, s.y, t.x, t.y, color, isHoverEdge ? 1.2 : 0.8, salt, false, ctrl);
             this.ctx.globalAlpha = 1;
-            const tp = (this.tick * 0.006 + idx * 0.08) % 1;
-            const p = this.quadBezierPoint(s.x, s.y, ctrl.cx, ctrl.cy, t.x, t.y, tp);
-            this.ctx.beginPath();
-            this.ctx.arc(p.x, p.y, 1.7, 0, Math.PI * 2);
-            this.ctx.fillStyle = 'rgba(240, 248, 255, 0.95)';
-            this.ctx.fill();
         });
 
         nodes.forEach((node) => {
@@ -786,43 +798,29 @@ class ProcessesSubsystemVisualization {
             const p = pos.get(pid);
             if (!p) return;
             const pressure = Number(node.syscall_pressure || 0);
-            const nodeR = 7 + Math.min(8, pressure / 18);
-            const danger = pressure >= 70;
+            const nodeR = 4.2 + Math.min(4.8, pressure / 30);
             const mode = String(node.seccomp_mode || 'unknown');
-            const fill = danger ? '#eb7e7e' : (mode === 'filter' || mode === 'strict' ? '#60d69d' : '#8a9cea');
+            const danger = pressure >= 70;
+            const fill = danger ? '#ef8f8f' : (mode === 'filter' || mode === 'strict' ? '#75dfb4' : '#9cb8df');
             const isHovered = this.hoveredNodePid && pid === this.hoveredNodePid;
             const isNeighbor = this.hoveredNodePid && neighborPids.has(pid);
-
-            for (let hi = 0; hi < this.positionHistory.length - 1; hi++) {
-                const histPos = this.positionHistory[hi].get(pid);
-                if (!histPos) continue;
-                const ghostAlpha = 0.07 + hi * 0.08;
-                this.ctx.beginPath();
-                this.ctx.arc(histPos.x, histPos.y, Math.max(2, nodeR * 0.6), 0, Math.PI * 2);
-                this.ctx.fillStyle = fill;
-                this.ctx.globalAlpha = ghostAlpha;
-                this.ctx.fill();
-            }
-            this.ctx.globalAlpha = 1;
+            const alpha = isHovered ? 1 : (isNeighbor ? 0.94 : 0.82);
 
             this.ctx.beginPath();
             this.ctx.arc(p.x, p.y, nodeR, 0, Math.PI * 2);
             this.ctx.fillStyle = fill;
+            this.ctx.globalAlpha = alpha;
             this.ctx.fill();
-            this.ctx.strokeStyle = isHovered ? 'rgba(255,255,255,0.98)' : 'rgba(227,241,255,0.95)';
-            this.ctx.lineWidth = isHovered ? 2 : 1;
-            this.ctx.stroke();
-            this.ctx.fillStyle = '#d8e5f7';
-            this.ctx.globalAlpha = isHovered ? 1 : (isNeighbor ? 0.95 : 0.82);
-            this.ctx.font = '9px "Share Tech Mono", monospace';
-            this.ctx.fillText(`${String(node.name || 'proc').slice(0, 8)}`, p.x - 20, p.y + nodeR + 12);
             this.ctx.globalAlpha = 1;
-            this.nodeHitAreas.push({ x: p.x, y: p.y, r: nodeR, pid });
+            this.ctx.strokeStyle = isHovered ? 'rgba(255,255,255,0.98)' : 'rgba(227,241,255,0.82)';
+            this.ctx.lineWidth = isHovered ? 1.8 : 0.9;
+            this.ctx.stroke();
+            this.nodeHitAreas.push({ x: p.x, y: p.y, r: nodeR + 1, pid });
         });
 
         this.ctx.fillStyle = '#a7b6cb';
         this.ctx.font = '10px "Share Tech Mono", monospace';
-        this.ctx.fillText('radial: task ring · curved edges · hover neighborhood', x + 14, y + h - 14);
+        this.ctx.fillText('radial graph: process pressure and edge topology', x + 14, y + h - 14);
     }
 
     drawMicroscopeTimeline(focusNode, x, y, w, h) {
@@ -860,10 +858,9 @@ class ProcessesSubsystemVisualization {
         drawSeries((pt) => Math.min(100, pt.fd_count * 2), 'rgba(255, 205, 128, 0.82)', 0.8);
     }
 
-    drawMicroscopeGraph(nodes, edges, x, y, w, h) {
-        this.drawPanel(x, y, w, 36, 'process microscope · parent/child · threads · interactions', { alpha: 0.9 });
-        const innerY = y + 42;
-        const innerH = h - 50;
+    drawProcessControlRoom(nodes, edges, x, y, w, h) {
+        const innerY = y + 4;
+        const innerH = h - 8;
         this.nodeHitAreas = [];
         if (!nodes.length) {
             this.ctx.fillStyle = 'rgba(196,207,224,0.72)';
@@ -871,12 +868,19 @@ class ProcessesSubsystemVisualization {
             this.ctx.fillText('NO PROCESS GRAPH DATA', x + 20, innerY + 28);
             return;
         }
+
         const byPid = new Map(nodes.map((n) => [Number(n.pid || 0), n]));
         const focus = this.getFocusProcess(nodes);
         if (!focus) return;
         const focusPid = Number(focus.pid || 0);
-        const centerX = x + w * 0.5;
-        const centerY = innerY + innerH * 0.42;
+        const panelGap = 14;
+        const sideW = Math.max(210, Math.min(300, w * 0.24));
+        const leftX = x + 18;
+        const rightX = x + w - sideW - 18;
+        const centerX0 = leftX + sideW + panelGap;
+        const centerW = Math.max(360, rightX - centerX0 - panelGap);
+        const centerX = centerX0 + centerW * 0.5;
+        const centerY = innerY + innerH * 0.47;
         const parent = byPid.get(Number(focus.ppid || 0)) || null;
         const children = nodes.filter((n) => Number(n.ppid || 0) === focusPid).slice(0, 6);
         const neighbors = [];
@@ -894,18 +898,58 @@ class ProcessesSubsystemVisualization {
             seen.add(pid);
             uniqNeighbors.push(it);
         });
-        const threadsCount = Math.max(1, Number(focus.num_threads || 1));
-        const ringA = Math.min(w, innerH) * 0.18;
-        const ringB = Math.min(w, innerH) * 0.29;
-        const ringC = Math.min(w, innerH) * 0.4;
 
-        // semantic rings
-        [ringA, ringB, ringC].forEach((r, idx) => {
+        const syscalls = Array.isArray(this.telemetry?.syscalls_interception) ? this.telemetry.syscalls_interception : [];
+        const networkRows = Array.isArray(this.telemetry?.network_tracing) ? this.telemetry.network_tracing : [];
+        const securityHooks = Array.isArray(this.telemetry?.security_hooks) ? this.telemetry.security_hooks : [];
+        const threadsCount = Math.max(1, Number(focus.num_threads || 1));
+        const pressure = Math.max(0, Math.min(100, Number(focus.syscall_pressure || 0)));
+        const graphRadius = Math.min(centerW, innerH) * 0.34;
+        const familyR = graphRadius * 0.42;
+        const threadR = graphRadius * 0.66;
+        const ioR = graphRadius * 0.95;
+        const hotProcesses = nodes
+            .slice()
+            .sort((a, b) => Number(b.syscall_pressure || 0) - Number(a.syscall_pressure || 0))
+            .slice(0, 7);
+        const edgeCounts = edges.reduce((acc, edge) => {
+            const type = String(edge.type || 'link');
+            acc[type] = (acc[type] || 0) + 1;
+            return acc;
+        }, {});
+
+        this.drawPanel(leftX, innerY + 34, sideW, innerH - 54, '', { alpha: 0.72, showTitle: false });
+        this.drawPanel(centerX0, innerY + 34, centerW, innerH - 54, '', { alpha: 0.52, showTitle: false });
+        this.drawPanel(rightX, innerY + 34, sideW, innerH - 54, '', { alpha: 0.72, showTitle: false });
+
+        this.ctx.strokeStyle = 'rgba(140, 220, 255, 0.25)';
+        this.ctx.lineWidth = 1;
+        this.ctx.beginPath();
+        this.ctx.moveTo(x + 12, innerY + 18);
+        this.ctx.lineTo(x + w - 12, innerY + 18);
+        this.ctx.stroke();
+        this.ctx.fillStyle = 'rgba(198, 230, 255, 0.86)';
+        this.ctx.font = '9px "Share Tech Mono", monospace';
+        this.ctx.fillText('PROCESS CONTROL ROOM', x + 18, innerY + 13);
+        this.ctx.textAlign = 'center';
+        this.ctx.fillText(`${this.autoFocusEnabled ? 'AUTO' : 'PINNED'} FOCUS · PID ${focusPid}`, centerX, innerY + 13);
+        this.ctx.textAlign = 'start';
+
+        [familyR, threadR, ioR].forEach((r, idx) => {
             this.ctx.beginPath();
             this.ctx.arc(centerX, centerY, r, 0, Math.PI * 2);
-            this.ctx.strokeStyle = idx === 2 ? 'rgba(120,170,230,0.18)' : 'rgba(120,170,230,0.24)';
-            this.ctx.lineWidth = idx === 0 ? 1.1 : 0.9;
+            this.ctx.strokeStyle = idx === 0 ? 'rgba(130, 210, 255, 0.24)' : 'rgba(120,200,240,0.14)';
+            this.ctx.lineWidth = idx === 0 ? 1.2 : 0.9;
             this.ctx.stroke();
+        });
+        [
+            { label: 'FAMILY', r: familyR, color: 'rgba(170, 205, 255, 0.78)' },
+            { label: 'THREADS', r: threadR, color: 'rgba(118, 230, 170, 0.78)' },
+            { label: 'IO / IPC / NET', r: ioR, color: 'rgba(255, 204, 132, 0.78)' }
+        ].forEach((ring, idx) => {
+            this.ctx.fillStyle = ring.color;
+            this.ctx.font = '8px "Share Tech Mono", monospace';
+            this.ctx.fillText(ring.label, centerX + ring.r + 8, centerY - 6 + idx * 12);
         });
 
         const nodePos = new Map();
@@ -921,82 +965,937 @@ class ProcessesSubsystemVisualization {
             this.ctx.font = '9px "Share Tech Mono", monospace';
             this.ctx.fillText(label, px + radius + 6, py + 3);
             const pid = Number(node?.pid || 0);
-            if (pid > 0) this.nodeHitAreas.push({ x: px, y: py, r: radius, pid });
+            if (pid > 0) this.nodeHitAreas.push({ x: px, y: py, r: radius + 2, pid });
             if (pid > 0) nodePos.set(pid, { x: px, y: py });
         };
 
-        // center focus
-        placeNode(
-            focus,
-            centerX,
-            centerY,
-            11,
-            'rgba(163, 220, 255, 0.9)',
-            `${String(focus.name || 'proc').slice(0, 14)}:${focusPid}`
-        );
-        this.selectedNodePid = focusPid;
+        const focusGlow = this.ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, 62);
+        focusGlow.addColorStop(0, pressure >= 70 ? 'rgba(255, 120, 120, 0.34)' : 'rgba(126, 205, 255, 0.34)');
+        focusGlow.addColorStop(1, 'rgba(126, 205, 255, 0)');
+        this.ctx.beginPath();
+        this.ctx.arc(centerX, centerY, 62, 0, Math.PI * 2);
+        this.ctx.fillStyle = focusGlow;
+        this.ctx.fill();
+        placeNode(focus, centerX, centerY, 13, pressure >= 70 ? 'rgba(255, 138, 138, 0.92)' : 'rgba(163, 220, 255, 0.94)', `${String(focus.name || 'proc').slice(0, 14)}:${focusPid}`);
 
-        // parent/children ring
         if (parent) {
-            const px = centerX;
-            const py = centerY - ringA;
-            placeNode(parent, px, py, 7, 'rgba(192, 210, 238, 0.85)', `parent ${String(parent.name || '').slice(0, 10)}:${Number(parent.pid || 0)}`);
+            placeNode(parent, centerX, centerY - familyR, 7, 'rgba(192, 210, 238, 0.85)', `parent ${String(parent.name || '').slice(0, 10)}:${Number(parent.pid || 0)}`);
         }
         children.forEach((ch, idx) => {
             const a = (Math.PI * 2 * idx / Math.max(1, children.length)) - Math.PI / 2;
-            const px = centerX + Math.cos(a) * ringA;
-            const py = centerY + Math.sin(a) * ringA;
-            placeNode(ch, px, py, 6.2, 'rgba(152, 204, 255, 0.82)', `child ${String(ch.name || '').slice(0, 8)}:${Number(ch.pid || 0)}`);
+            placeNode(ch, centerX + Math.cos(a) * familyR, centerY + Math.sin(a) * familyR, 6.2, 'rgba(152, 204, 255, 0.82)', `child ${String(ch.name || '').slice(0, 8)}:${Number(ch.pid || 0)}`);
         });
-
-        // threads ring (synthetic thread beads)
         const threadsToDraw = Math.min(16, Math.max(3, threadsCount));
         for (let i = 0; i < threadsToDraw; i++) {
             const a = (Math.PI * 2 * i / threadsToDraw) + this.tick * 0.005;
-            const px = centerX + Math.cos(a) * ringB;
-            const py = centerY + Math.sin(a) * ringB;
             this.ctx.beginPath();
-            this.ctx.arc(px, py, 2.1, 0, Math.PI * 2);
+            this.ctx.arc(centerX + Math.cos(a) * threadR, centerY + Math.sin(a) * threadR, 2.1, 0, Math.PI * 2);
             this.ctx.fillStyle = 'rgba(120, 230, 170, 0.85)';
             this.ctx.fill();
         }
-
-        // interactions ring
         uniqNeighbors.slice(0, 10).forEach((item, idx) => {
             const n = item.node;
             const a = (Math.PI * 2 * idx / Math.max(1, Math.min(10, uniqNeighbors.length))) + Math.PI * 0.06;
-            const px = centerX + Math.cos(a) * ringC;
-            const py = centerY + Math.sin(a) * ringC;
             const edgeType = String(item.type || '');
             const color = edgeType === 'network' ? 'rgba(244,201,119,0.88)'
                 : (edgeType === 'ipc' ? 'rgba(96,214,157,0.88)'
                     : (edgeType === 'file_access' ? 'rgba(235,126,126,0.88)' : 'rgba(160,180,210,0.85)'));
-            placeNode(n, px, py, 5.2, color, `${edgeType || 'link'} ${String(n.name || '').slice(0, 8)}:${Number(n.pid || 0)}`);
+            placeNode(n, centerX + Math.cos(a) * ioR, centerY + Math.sin(a) * ioR, 5.2, color, `${edgeType || 'link'} ${String(n.name || '').slice(0, 8)}:${Number(n.pid || 0)}`);
         });
-
-        // links from focus to related
         for (const [pid, p] of nodePos.entries()) {
             if (pid === focusPid) continue;
             this.drawCurvedStroke(centerX, centerY, p.x, p.y, 'rgba(204, 224, 248, 0.38)', 0.9, focusPid * 17 + pid, false);
         }
 
-        const leftX = x + 16;
-        const detailY = innerY + innerH - 110;
-        this.drawPanel(leftX, detailY, Math.min(390, w * 0.42), 96, '', { alpha: 0.84, showTitle: false });
         this.ctx.fillStyle = 'rgba(212, 232, 255, 0.95)';
         this.ctx.font = '10px "Share Tech Mono", monospace';
-        this.ctx.fillText(`focus ${String(focus.name || 'proc').slice(0, 18)}:${focusPid}`, leftX + 10, detailY + 18);
+        this.ctx.fillText('HOT PROCESSES', leftX + 12, innerY + 56);
+        hotProcesses.forEach((node, idx) => {
+            const pid = Number(node.pid || 0);
+            const rowY = innerY + 78 + idx * 32;
+            const rowActive = pid === focusPid;
+            if (rowActive) {
+                this.ctx.fillStyle = 'rgba(124, 178, 255, 0.14)';
+                this.ctx.fillRect(leftX + 8, rowY - 15, sideW - 16, 26);
+            }
+            const rowPressure = Math.max(0, Math.min(100, Number(node.syscall_pressure || 0)));
+            this.ctx.fillStyle = rowActive ? '#eaf5ff' : 'rgba(205, 222, 245, 0.92)';
+            this.ctx.font = '9px "Share Tech Mono", monospace';
+            this.ctx.fillText(`${idx + 1}. ${String(node.name || 'proc').slice(0, 15)}:${pid}`, leftX + 12, rowY - 2);
+            this.ctx.fillStyle = 'rgba(80, 108, 140, 0.55)';
+            this.ctx.fillRect(leftX + 12, rowY + 6, sideW - 72, 4);
+            this.ctx.fillStyle = rowPressure >= 70 ? 'rgba(255, 130, 130, 0.88)' : 'rgba(116, 205, 255, 0.82)';
+            this.ctx.fillRect(leftX + 12, rowY + 6, (sideW - 72) * (rowPressure / 100), 4);
+            this.ctx.fillStyle = 'rgba(166, 195, 226, 0.88)';
+            this.ctx.fillText(`${rowPressure.toFixed(0)}%`, leftX + sideW - 44, rowY + 10);
+            this.nodeHitAreas.push({ x: leftX + sideW * 0.5, y: rowY - 4, r: sideW * 0.45, pid });
+        });
+
+        const detailY = innerY + innerH - 126;
+        this.ctx.fillStyle = 'rgba(212, 232, 255, 0.95)';
+        this.ctx.font = '10px "Share Tech Mono", monospace';
+        this.ctx.fillText('FOCUS DETAIL', leftX + 12, detailY);
         this.ctx.fillStyle = 'rgba(166, 195, 226, 0.9)';
         this.ctx.font = '9px "Share Tech Mono", monospace';
-        this.ctx.fillText(`pressure ${Number(focus.syscall_pressure || 0).toFixed(0)} · rss ${(Number(focus.rss_bytes || 0) / (1024 * 1024)).toFixed(1)}MB`, leftX + 10, detailY + 36);
-        this.ctx.fillText(`threads ${Number(focus.num_threads || 0)} · fd ${Number(focus.fd_count || 0)} · seccomp ${String(focus.seccomp_mode || 'unknown')}`, leftX + 10, detailY + 52);
-        this.ctx.fillText(`parent ${parent ? `${String(parent.name || '').slice(0, 10)}:${Number(parent.pid || 0)}` : 'none'} · children ${children.length}`, leftX + 10, detailY + 68);
-        this.ctx.fillText(`interactions ${uniqNeighbors.length} (ipc/network/file_access)`, leftX + 10, detailY + 84);
+        this.ctx.fillText(`${String(focus.name || 'proc').slice(0, 18)}:${focusPid}`, leftX + 12, detailY + 20);
+        this.ctx.fillText(`rss ${(Number(focus.rss_bytes || 0) / (1024 * 1024)).toFixed(1)}MB · fd ${Number(focus.fd_count || 0)}`, leftX + 12, detailY + 36);
+        this.ctx.fillText(`threads ${threadsCount} · seccomp ${String(focus.seccomp_mode || 'unknown')}`, leftX + 12, detailY + 52);
+        this.ctx.fillText(`parent ${parent ? `${String(parent.name || '').slice(0, 9)}:${Number(parent.pid || 0)}` : 'none'}`, leftX + 12, detailY + 68);
+        this.ctx.fillText(`children ${children.length} · links ${uniqNeighbors.length}`, leftX + 12, detailY + 84);
 
-        this.drawMicroscopeTimeline(focus, x + w * 0.56, innerY + innerH - 96, w * 0.4, 84);
+        const barRow = (label, value, max, y0, color) => {
+            const pct = Math.max(0, Math.min(1, Number(value || 0) / Math.max(1, max)));
+            this.ctx.fillStyle = 'rgba(205, 232, 255, 0.9)';
+            this.ctx.font = '9px "Share Tech Mono", monospace';
+            this.ctx.fillText(label, rightX + 12, y0);
+            this.ctx.fillStyle = 'rgba(72, 98, 128, 0.48)';
+            this.ctx.fillRect(rightX + 94, y0 - 8, sideW - 118, 5);
+            this.ctx.fillStyle = color;
+            this.ctx.fillRect(rightX + 94, y0 - 8, (sideW - 118) * pct, 5);
+            this.ctx.fillStyle = 'rgba(166, 195, 226, 0.9)';
+            this.ctx.fillText(String(value), rightX + sideW - 28, y0);
+        };
+
+        this.ctx.fillStyle = 'rgba(212, 232, 255, 0.95)';
+        this.ctx.font = '10px "Share Tech Mono", monospace';
+        this.ctx.fillText('LIVE CHANNELS', rightX + 12, innerY + 56);
+        barRow('syscalls', edgeCounts.syscalls || 0, Math.max(1, edges.length), innerY + 82, 'rgba(136,201,255,0.82)');
+        barRow('network', edgeCounts.network || 0, Math.max(1, edges.length), innerY + 106, 'rgba(181,240,255,0.82)');
+        barRow('ipc', edgeCounts.ipc || 0, Math.max(1, edges.length), innerY + 130, 'rgba(126,242,210,0.82)');
+        barRow('file', edgeCounts.file_access || 0, Math.max(1, edges.length), innerY + 154, 'rgba(255,184,168,0.82)');
+
+        this.ctx.fillStyle = 'rgba(212, 232, 255, 0.95)';
+        this.ctx.font = '10px "Share Tech Mono", monospace';
+        this.ctx.fillText('NETWORK TRACE', rightX + 12, innerY + 194);
+        networkRows.slice(0, 3).forEach((row, idx) => {
+            const y0 = innerY + 214 + idx * 18;
+            this.ctx.fillStyle = 'rgba(166, 195, 226, 0.9)';
+            this.ctx.font = '8px "Share Tech Mono", monospace';
+            this.ctx.fillText(`${String(row.name || 'proc').slice(0, 12)}:${Number(row.pid || 0)} c${Number(row.connections || 0)}`, rightX + 12, y0);
+            this.ctx.fillText(String(row.top_state || 'STATE').slice(0, 12), rightX + sideW - 76, y0);
+        });
+
+        this.ctx.fillStyle = 'rgba(212, 232, 255, 0.95)';
+        this.ctx.font = '10px "Share Tech Mono", monospace';
+        this.ctx.fillText('SECURITY HOOKS', rightX + 12, innerY + 286);
+        securityHooks.slice(0, 4).forEach((hook, idx) => {
+            const y0 = innerY + 306 + idx * 18;
+            const active = String(hook.status || '') === 'active';
+            this.ctx.fillStyle = active ? 'rgba(118, 230, 170, 0.9)' : 'rgba(255, 184, 128, 0.86)';
+            this.ctx.fillText(active ? 'o' : '-', rightX + 12, y0);
+            this.ctx.fillStyle = 'rgba(166, 195, 226, 0.9)';
+            this.ctx.font = '8px "Share Tech Mono", monospace';
+            this.ctx.fillText(`${String(hook.name || 'hook').slice(0, 22)}`, rightX + 26, y0);
+        });
+
+        const syscallFocus = syscalls.find((row) => Number(row.pid || 0) === focusPid) || syscalls[0];
+        if (syscallFocus) {
+            this.ctx.fillStyle = 'rgba(212, 232, 255, 0.95)';
+            this.ctx.font = '10px "Share Tech Mono", monospace';
+            this.ctx.fillText('SYSCALL SAMPLE', rightX + 12, innerY + innerH - 108);
+            this.ctx.fillStyle = 'rgba(166, 195, 226, 0.9)';
+            this.ctx.font = '8px "Share Tech Mono", monospace';
+            this.ctx.fillText(`${String(syscallFocus.name || 'proc').slice(0, 16)}:${Number(syscallFocus.pid || 0)}`, rightX + 12, innerY + innerH - 88);
+            this.ctx.fillText(`threads ${Number(syscallFocus.num_threads || 0)} · fd ${Number(syscallFocus.fd_count || 0)}`, rightX + 12, innerY + innerH - 72);
+            this.ctx.fillText(`pressure ${Number(syscallFocus.syscall_pressure || 0).toFixed(0)}%`, rightX + 12, innerY + innerH - 56);
+        }
+
+        this.drawMicroscopeTimeline(focus, centerX0 + 18, innerY + innerH - 106, centerW - 36, 86);
         this.ctx.fillStyle = 'rgba(140, 158, 188, 0.85)';
         this.ctx.font = '9px "Share Tech Mono", monospace';
-        this.ctx.fillText('click node: pin focus · rings: parent/child, threads, interactions', x + 12, y + h - 10);
+        this.ctx.fillText('click process: pin focus · center rings: family, threads, io/ipc/network · right panels: live telemetry', x + 12, y + h - 10);
+    }
+
+    drawProcessOrbitalMap(nodes, edges, x, y, w, h) {
+        const innerY = y + 4;
+        const innerH = h - 8;
+        this.nodeHitAreas = [];
+        if (!nodes.length) {
+            this.ctx.fillStyle = 'rgba(196,207,224,0.72)';
+            this.ctx.font = '12px "Share Tech Mono", monospace';
+            this.ctx.fillText('NO PROCESS ORBIT DATA', x + 20, innerY + 28);
+            return;
+        }
+
+        const focus = this.getFocusProcess(nodes);
+        const focusPid = Number(focus?.pid || 0);
+        const hotProcesses = nodes
+            .slice()
+            .sort((a, b) => Number(b.syscall_pressure || 0) - Number(a.syscall_pressure || 0))
+            .slice(0, 9);
+        const networkRows = Array.isArray(this.telemetry?.network_tracing) ? this.telemetry.network_tracing : [];
+        const securityHooks = Array.isArray(this.telemetry?.security_hooks) ? this.telemetry.security_hooks : [];
+        const edgeCounts = edges.reduce((acc, edge) => {
+            const type = String(edge.type || 'link');
+            acc[type] = (acc[type] || 0) + 1;
+            return acc;
+        }, {});
+        const totalEdges = Math.max(1, edges.length);
+        const kernelX = x + w * 0.18;
+        const kernelY = innerY + innerH * 0.52;
+        const kernelR = Math.min(w, innerH) * 0.19;
+
+        this.ctx.fillStyle = 'rgba(126, 190, 230, 0.08)';
+        for (let i = 0; i < 44; i += 1) {
+            const px = x + 36 + this.stableUnit(i * 137) * (w - 72);
+            const py = innerY + 44 + this.stableUnit(i * 271) * (innerH - 120);
+            const blink = 0.22 + 0.18 * Math.sin(this.tick * 0.018 + i);
+            this.ctx.globalAlpha = blink;
+            this.ctx.fillRect(px, py, 2, 2);
+        }
+        this.ctx.globalAlpha = 1;
+
+        this.ctx.strokeStyle = 'rgba(120, 215, 255, 0.26)';
+        this.ctx.lineWidth = 1;
+        this.ctx.strokeRect(x + 0.5, innerY + 0.5, w - 1, innerH - 1);
+        this.ctx.fillStyle = 'rgba(198, 230, 255, 0.86)';
+        this.ctx.font = '8px "Share Tech Mono", monospace';
+        const tabs = ['AUTONOMOUS', 'PROC CONTROL', 'IPC CHANNEL', 'VFS ROUTES', 'NET TRACE', 'SECURITY MAP', 'SCHEDULER', 'SETTINGS'];
+        tabs.forEach((tab, idx) => {
+            const tx = x + 52 + idx * Math.min(118, w / 9);
+            this.ctx.strokeStyle = 'rgba(70, 156, 200, 0.42)';
+            this.ctx.strokeRect(tx, innerY + 8, Math.min(104, w / 10), 12);
+            this.ctx.fillText(tab, tx + 5, innerY + 17);
+        });
+
+        const planetGradient = this.ctx.createRadialGradient(kernelX - kernelR * 0.32, kernelY - kernelR * 0.36, kernelR * 0.08, kernelX, kernelY, kernelR);
+        planetGradient.addColorStop(0, 'rgba(220, 255, 250, 0.98)');
+        planetGradient.addColorStop(0.36, 'rgba(116, 224, 224, 0.9)');
+        planetGradient.addColorStop(0.78, 'rgba(40, 118, 148, 0.72)');
+        planetGradient.addColorStop(1, 'rgba(16, 43, 66, 0.94)');
+        this.ctx.beginPath();
+        this.ctx.arc(kernelX, kernelY, kernelR, 0, Math.PI * 2);
+        this.ctx.fillStyle = planetGradient;
+        this.ctx.fill();
+        this.ctx.strokeStyle = 'rgba(196, 255, 244, 0.72)';
+        this.ctx.lineWidth = 1.2;
+        this.ctx.stroke();
+        for (let i = -4; i <= 4; i += 1) {
+            const yy = kernelY + i * kernelR * 0.18;
+            const half = Math.sqrt(Math.max(0, kernelR * kernelR - (yy - kernelY) * (yy - kernelY)));
+            this.ctx.beginPath();
+            this.ctx.moveTo(kernelX - half * 0.85, yy);
+            this.ctx.quadraticCurveTo(kernelX, yy + Math.sin(i + this.tick * 0.01) * 7, kernelX + half * 0.85, yy);
+            this.ctx.strokeStyle = 'rgba(220, 255, 248, 0.15)';
+            this.ctx.stroke();
+        }
+        this.ctx.beginPath();
+        this.ctx.arc(kernelX, kernelY, kernelR * 1.17, -0.28, Math.PI * 1.18);
+        this.ctx.strokeStyle = 'rgba(120, 230, 255, 0.28)';
+        this.ctx.stroke();
+
+        this.ctx.fillStyle = 'rgba(220, 255, 248, 0.96)';
+        this.ctx.font = '12px "Share Tech Mono", monospace';
+        this.ctx.fillText('KERNEL CORE', kernelX - kernelR * 0.18, kernelY - kernelR - 26);
+        this.ctx.fillStyle = 'rgba(166, 230, 244, 0.9)';
+        this.ctx.font = '9px "Share Tech Mono", monospace';
+        this.ctx.fillText(`STATUS: ONLINE`, kernelX - kernelR * 0.18, kernelY - kernelR - 12);
+        this.ctx.fillText(`TASKS ${nodes.length} · EDGES ${edges.length}`, kernelX - kernelR * 0.18, kernelY + kernelR + 22);
+
+        const stationLayout = [
+            [0.43, 0.26], [0.56, 0.18], [0.68, 0.35], [0.81, 0.22], [0.9, 0.42],
+            [0.47, 0.62], [0.62, 0.72], [0.76, 0.62], [0.9, 0.72]
+        ];
+        const stationPos = new Map();
+        hotProcesses.forEach((node, idx) => {
+            const [fx, fy] = stationLayout[idx] || [0.45 + idx * 0.05, 0.5];
+            const px = x + w * fx;
+            const py = innerY + innerH * fy;
+            const pid = Number(node.pid || 0);
+            const pressure = Math.max(0, Math.min(100, Number(node.syscall_pressure || 0)));
+            const active = pid === focusPid;
+            stationPos.set(pid, { x: px, y: py, node });
+
+            this.ctx.setLineDash([3, 4]);
+            this.ctx.beginPath();
+            this.ctx.moveTo(kernelX + kernelR * 0.72, kernelY - kernelR * 0.16 + idx * 5);
+            const mx = kernelX + (px - kernelX) * 0.52;
+            this.ctx.lineTo(mx, py);
+            this.ctx.lineTo(px - 34, py);
+            this.ctx.strokeStyle = active ? 'rgba(255, 225, 130, 0.72)' : 'rgba(120, 215, 255, 0.24)';
+            this.ctx.lineWidth = active ? 1.4 : 0.8;
+            this.ctx.stroke();
+            this.ctx.setLineDash([]);
+
+            const nodeR = active ? 10 : 7;
+            const nodeColor = pressure >= 70 ? 'rgba(255, 136, 118, 0.96)' : (pressure >= 38 ? 'rgba(255, 204, 118, 0.94)' : 'rgba(105, 232, 198, 0.94)');
+            const halo = this.ctx.createRadialGradient(px, py, 0, px, py, 42);
+            halo.addColorStop(0, active ? 'rgba(255, 230, 130, 0.26)' : 'rgba(120, 230, 255, 0.16)');
+            halo.addColorStop(1, 'rgba(120, 230, 255, 0)');
+            this.ctx.beginPath();
+            this.ctx.arc(px, py, 42, 0, Math.PI * 2);
+            this.ctx.fillStyle = halo;
+            this.ctx.fill();
+            this.ctx.beginPath();
+            this.ctx.arc(px, py, nodeR, 0, Math.PI * 2);
+            this.ctx.fillStyle = nodeColor;
+            this.ctx.fill();
+            this.ctx.strokeStyle = active ? 'rgba(255,255,230,0.98)' : 'rgba(220,246,255,0.82)';
+            this.ctx.stroke();
+            this.nodeHitAreas.push({ x: px, y: py, r: 16, pid });
+
+            this.drawPanel(px + 14, py - 28, 190, 54, '', { alpha: active ? 0.82 : 0.62, showTitle: false });
+            this.ctx.fillStyle = active ? '#fff7bf' : 'rgba(212, 238, 255, 0.94)';
+            this.ctx.font = '10px "Share Tech Mono", monospace';
+            this.ctx.fillText(`PROC: ${String(node.name || 'proc').slice(0, 14)}`, px + 24, py - 10);
+            this.ctx.fillStyle = 'rgba(150, 220, 238, 0.9)';
+            this.ctx.font = '8px "Share Tech Mono", monospace';
+            this.ctx.fillText(`PID ${pid} · STATUS: ${pressure >= 70 ? 'HOT' : 'ONLINE'}`, px + 24, py + 5);
+            this.ctx.fillText(`pressure ${pressure.toFixed(0)} · fd ${Number(node.fd_count || 0)} · th ${Number(node.num_threads || 0)}`, px + 24, py + 18);
+        });
+
+        edges.slice(0, 70).forEach((edge, idx) => {
+            const s = stationPos.get(Number(edge.source || 0));
+            const t = stationPos.get(Number(edge.target || 0));
+            if (!s || !t) return;
+            this.ctx.globalAlpha = 0.24 + Math.min(0.32, Number(edge.weight || 0) * 0.22);
+            this.drawCurvedStroke(s.x, s.y, t.x, t.y, this.edgeColor(String(edge.type || '')), 0.8, idx * 31, false);
+            this.ctx.globalAlpha = 1;
+        });
+
+        const legendX = x + w * 0.48;
+        const legendY = innerY + innerH - 54;
+        this.drawPanel(legendX, legendY, Math.min(420, w * 0.34), 36, '', { alpha: 0.66, showTitle: false });
+        [
+            ['SYSCALL', edgeCounts.syscalls || 0, 'rgba(136,201,255,0.9)'],
+            ['NETWORK', edgeCounts.network || 0, 'rgba(181,240,255,0.9)'],
+            ['IPC', edgeCounts.ipc || 0, 'rgba(126,242,210,0.9)'],
+            ['FILE', edgeCounts.file_access || 0, 'rgba(255,184,168,0.9)']
+        ].forEach((item, idx) => {
+            const lx = legendX + 14 + idx * 96;
+            this.ctx.fillStyle = item[2];
+            this.ctx.fillRect(lx, legendY + 13, 8, 8);
+            this.ctx.fillStyle = 'rgba(207, 229, 246, 0.92)';
+            this.ctx.font = '8px "Share Tech Mono", monospace';
+            this.ctx.fillText(`${item[0]} ${item[1]}`, lx + 14, legendY + 20);
+        });
+
+        const rightPanelX = x + w - 172;
+        this.drawPanel(rightPanelX, innerY + innerH - 202, 148, 136, '', { alpha: 0.62, showTitle: false });
+        this.ctx.fillStyle = 'rgba(212, 238, 255, 0.94)';
+        this.ctx.font = '9px "Share Tech Mono", monospace';
+        this.ctx.fillText('LIVE TELEMETRY', rightPanelX + 10, innerY + innerH - 184);
+        const net = networkRows[0];
+        this.ctx.fillStyle = 'rgba(160, 205, 228, 0.88)';
+        this.ctx.font = '8px "Share Tech Mono", monospace';
+        this.ctx.fillText(`routes ${totalEdges}`, rightPanelX + 10, innerY + innerH - 164);
+        this.ctx.fillText(`net ${net ? `${String(net.name || 'proc').slice(0, 9)} c${Number(net.connections || 0)}` : 'none'}`, rightPanelX + 10, innerY + innerH - 148);
+        securityHooks.slice(0, 3).forEach((hook, idx) => {
+            const active = String(hook.status || '') === 'active';
+            this.ctx.fillStyle = active ? 'rgba(105, 230, 170, 0.9)' : 'rgba(255, 190, 120, 0.86)';
+            this.ctx.fillText(`${active ? 'o' : '-'} ${String(hook.name || 'hook').slice(0, 15)}`, rightPanelX + 10, innerY + innerH - 126 + idx * 16);
+        });
+
+        this.ctx.fillStyle = 'rgba(140, 158, 188, 0.85)';
+        this.ctx.font = '9px "Share Tech Mono", monospace';
+        this.ctx.fillText('orbital process map: kernel core -> process stations -> ipc/network/file routes · click station to pin focus', x + 12, y + h - 10);
+    }
+
+    buildSemanticOpsForProcess(node, networkRows, securityHooks) {
+        const pid = Number(node?.pid || 0);
+        const semanticRows = Array.isArray(this.telemetry?.semantic_ops) ? this.telemetry.semantic_ops : [];
+        const backendRow = semanticRows.find((row) => Number(row?.pid || 0) === pid);
+        if (backendRow && Array.isArray(backendRow.ops) && backendRow.ops.length) {
+            return backendRow.ops.slice(0, 8).map((op) => ({
+                label: String(op?.label || 'kernel op'),
+                type: String(op?.type || 'task'),
+                active: op?.active !== false,
+                weight: Number(op?.weight || 1),
+                source: String(op?.source || backendRow.source || 'backend'),
+                evidence: op?.evidence || {}
+            }));
+        }
+        const name = String(node?.name || 'process').toLowerCase();
+        const fdCount = Number(node?.fd_count || 0);
+        const threads = Number(node?.num_threads || 0);
+        const pressure = Number(node?.syscall_pressure || 0);
+        const netRow = networkRows.find((row) => Number(row.pid || 0) === pid);
+        const connections = Number(netRow?.connections || node?.connections || 0);
+        const hasNetworkName = /nginx|node|python|gunicorn|curl|ssh|agent|chrome|firefox|http|tcp/.test(name);
+        const activeSecurity = securityHooks.some((hook) => String(hook.status || '') === 'active');
+        const ops = [
+            { label: 'sched_pick_next()', type: 'sched', active: true, weight: Math.max(threads, 1) },
+            { label: 'clone/fork lineage', type: 'task', active: Number(node?.ppid || 0) > 0, weight: 1 },
+            { label: 'seccomp/LSM check', type: 'security', active: activeSecurity || String(node?.seccomp_mode || '') !== 'unknown', weight: activeSecurity ? 2 : 1 },
+            { label: 'epoll_wait()', type: 'event', active: fdCount > 8 || connections > 0 || /nginx|node|gunicorn/.test(name), weight: fdCount },
+            { label: 'socket()', type: 'network', active: connections > 0 || hasNetworkName, weight: connections },
+            { label: 'connect()/accept()', type: 'network', active: connections > 0, weight: connections },
+            { label: 'nf_conntrack', type: 'netfilter', active: connections > 0, weight: Number(netRow?.unique_peers || 0) },
+            { label: 'tcp retransmission', type: 'tcp', active: connections > 0 && pressure >= 35, weight: pressure },
+            { label: 'TLS handshake', type: 'crypto', active: /nginx|curl|chrome|firefox|http|ssl|tls/.test(name), weight: pressure },
+            { label: 'sendfile()/splice()', type: 'vfs', active: fdCount >= 12 || /nginx|http/.test(name), weight: fdCount },
+        ];
+        return ops.filter((op) => op.active).slice(0, 8);
+    }
+
+    semanticOpColor(type, active = true) {
+        const alpha = active ? 0.94 : 0.42;
+        if (type === 'sched') return `rgba(132, 205, 255, ${alpha})`;
+        if (type === 'task') return `rgba(186, 210, 242, ${alpha})`;
+        if (type === 'security') return `rgba(125, 235, 174, ${alpha})`;
+        if (type === 'event') return `rgba(255, 216, 128, ${alpha})`;
+        if (type === 'network') return `rgba(124, 232, 255, ${alpha})`;
+        if (type === 'netfilter') return `rgba(168, 146, 255, ${alpha})`;
+        if (type === 'tcp') return `rgba(255, 146, 118, ${alpha})`;
+        if (type === 'crypto') return `rgba(238, 186, 255, ${alpha})`;
+        if (type === 'vfs') return `rgba(255, 188, 132, ${alpha})`;
+        return `rgba(190, 220, 245, ${alpha})`;
+    }
+
+    drawSemanticKernelGraphEngine(nodes, edges, x, y, w, h) {
+        const innerY = y + 4;
+        const innerH = h - 8;
+        this.nodeHitAreas = [];
+        if (!nodes.length) {
+            this.ctx.fillStyle = 'rgba(196,207,224,0.72)';
+            this.ctx.font = '12px "Share Tech Mono", monospace';
+            this.ctx.fillText('NO SEMANTIC KERNEL GRAPH DATA', x + 20, innerY + 28);
+            return;
+        }
+
+        const focus = this.getFocusProcess(nodes);
+        const focusPid = Number(focus?.pid || 0);
+        const networkRows = Array.isArray(this.telemetry?.network_tracing) ? this.telemetry.network_tracing : [];
+        const securityHooks = Array.isArray(this.telemetry?.security_hooks) ? this.telemetry.security_hooks : [];
+        const hotProcesses = nodes
+            .slice()
+            .sort((a, b) => Number(b.syscall_pressure || 0) - Number(a.syscall_pressure || 0))
+            .slice(0, 7);
+        const edgeCounts = edges.reduce((acc, edge) => {
+            const type = String(edge.type || 'link');
+            acc[type] = (acc[type] || 0) + 1;
+            return acc;
+        }, {});
+
+        const kernelX = x + w * 0.17;
+        const kernelY = innerY + innerH * 0.54;
+        const kernelR = Math.min(w, innerH) * 0.17;
+        const graphX0 = x + w * 0.36;
+        const graphW = w * 0.58;
+        const rowTop = innerY + 86;
+        const rowStep = Math.min(74, Math.max(56, (innerH - 178) / Math.max(1, hotProcesses.length)));
+
+        this.ctx.fillStyle = 'rgba(2, 6, 12, 0.72)';
+        this.ctx.fillRect(x, innerY, w, innerH);
+        this.ctx.strokeStyle = 'rgba(76, 164, 205, 0.16)';
+        this.ctx.lineWidth = 1;
+        for (let gx = x + 28; gx < x + w; gx += 44) {
+            this.ctx.beginPath();
+            this.ctx.moveTo(gx + 0.5, innerY);
+            this.ctx.lineTo(gx + 0.5, innerY + innerH);
+            this.ctx.stroke();
+        }
+        for (let gy = innerY + 28; gy < innerY + innerH; gy += 38) {
+            this.ctx.beginPath();
+            this.ctx.moveTo(x, gy + 0.5);
+            this.ctx.lineTo(x + w, gy + 0.5);
+            this.ctx.stroke();
+        }
+
+        this.ctx.strokeStyle = 'rgba(110, 220, 255, 0.32)';
+        this.ctx.strokeRect(x + 0.5, innerY + 0.5, w - 1, innerH - 1);
+        this.ctx.fillStyle = 'rgba(210, 242, 255, 0.96)';
+        this.ctx.font = '12px "Share Tech Mono", monospace';
+        this.ctx.fillText('SEMANTIC KERNEL GRAPH ENGINE', x + 18, innerY + 20);
+        this.ctx.fillStyle = 'rgba(126, 210, 235, 0.78)';
+        this.ctx.font = '8px "Share Tech Mono", monospace';
+        this.ctx.fillText(`REALTIME LINUX GRAPH: process -> syscall -> subsystem -> effect · focus pid ${focusPid || '-'}`, x + 18, innerY + 36);
+        ['PROCESS', 'SYSCALL', 'SECURITY', 'NETFILTER', 'TCP/TLS', 'EVENT LOOP', 'VFS'].forEach((label, idx) => {
+            const tx = graphX0 + idx * (graphW / 7);
+            this.ctx.strokeStyle = 'rgba(70, 156, 200, 0.42)';
+            this.ctx.strokeRect(tx, innerY + 14, Math.min(92, graphW / 8), 14);
+            this.ctx.fillStyle = 'rgba(165, 225, 245, 0.82)';
+            this.ctx.font = '8px "Share Tech Mono", monospace';
+            this.ctx.fillText(label, tx + 5, innerY + 24);
+        });
+
+        const coreGradient = this.ctx.createRadialGradient(kernelX - kernelR * 0.28, kernelY - kernelR * 0.32, kernelR * 0.05, kernelX, kernelY, kernelR);
+        coreGradient.addColorStop(0, 'rgba(230,255,250,0.98)');
+        coreGradient.addColorStop(0.34, 'rgba(112,231,222,0.9)');
+        coreGradient.addColorStop(0.72, 'rgba(36,118,148,0.72)');
+        coreGradient.addColorStop(1, 'rgba(10,30,55,0.96)');
+        this.ctx.beginPath();
+        this.ctx.arc(kernelX, kernelY, kernelR, 0, Math.PI * 2);
+        this.ctx.fillStyle = coreGradient;
+        this.ctx.fill();
+        this.ctx.strokeStyle = 'rgba(196, 255, 244, 0.72)';
+        this.ctx.lineWidth = 1.2;
+        this.ctx.stroke();
+        for (let i = -4; i <= 4; i += 1) {
+            const yy = kernelY + i * kernelR * 0.18;
+            const half = Math.sqrt(Math.max(0, kernelR * kernelR - (yy - kernelY) * (yy - kernelY)));
+            this.ctx.beginPath();
+            this.ctx.moveTo(kernelX - half * 0.85, yy);
+            this.ctx.quadraticCurveTo(kernelX, yy + Math.sin(i + this.tick * 0.01) * 7, kernelX + half * 0.85, yy);
+            this.ctx.strokeStyle = 'rgba(220, 255, 248, 0.15)';
+            this.ctx.stroke();
+        }
+        this.ctx.fillStyle = 'rgba(220, 255, 248, 0.96)';
+        this.ctx.font = '12px "Share Tech Mono", monospace';
+        this.ctx.fillText('LINUX KERNEL CORE', kernelX - kernelR * 0.34, kernelY - kernelR - 22);
+        this.ctx.fillStyle = 'rgba(166, 230, 244, 0.9)';
+        this.ctx.font = '9px "Share Tech Mono", monospace';
+        this.ctx.fillText(`TASKS ${nodes.length} · RELATIONS ${edges.length}`, kernelX - kernelR * 0.22, kernelY + kernelR + 22);
+
+        const opPositions = [];
+        hotProcesses.forEach((node, rowIdx) => {
+            const pid = Number(node.pid || 0);
+            const rowY = rowTop + rowIdx * rowStep;
+            const pressure = Math.max(0, Math.min(100, Number(node.syscall_pressure || 0)));
+            const active = pid === focusPid;
+            const ops = this.buildSemanticOpsForProcess(node, networkRows, securityHooks);
+            const processX = graphX0;
+            const processColor = pressure >= 70 ? 'rgba(255, 132, 112, 0.96)' : (active ? 'rgba(255, 230, 132, 0.96)' : 'rgba(112, 232, 204, 0.92)');
+
+            this.ctx.setLineDash([3, 5]);
+            this.ctx.beginPath();
+            this.ctx.moveTo(kernelX + kernelR * 0.85, kernelY - kernelR * 0.2 + rowIdx * 9);
+            this.ctx.lineTo(processX - 40, rowY);
+            this.ctx.strokeStyle = active ? 'rgba(255, 232, 135, 0.64)' : 'rgba(120, 215, 255, 0.22)';
+            this.ctx.lineWidth = active ? 1.4 : 0.8;
+            this.ctx.stroke();
+            this.ctx.setLineDash([]);
+
+            this.ctx.beginPath();
+            this.ctx.arc(processX, rowY, active ? 9 : 7, 0, Math.PI * 2);
+            this.ctx.fillStyle = processColor;
+            this.ctx.fill();
+            this.ctx.strokeStyle = active ? 'rgba(255,255,230,0.98)' : 'rgba(220,246,255,0.82)';
+            this.ctx.stroke();
+            this.nodeHitAreas.push({ x: processX, y: rowY, r: 16, pid });
+            this.ctx.fillStyle = active ? '#fff7bf' : 'rgba(212, 238, 255, 0.94)';
+            this.ctx.font = '10px "Share Tech Mono", monospace';
+            this.ctx.fillText(`${String(node.name || 'process').slice(0, 15)}:${pid}`, processX + 14, rowY - 6);
+            this.ctx.fillStyle = 'rgba(150, 220, 238, 0.88)';
+            this.ctx.font = '8px "Share Tech Mono", monospace';
+            this.ctx.fillText(`pressure ${pressure.toFixed(0)} · fd ${Number(node.fd_count || 0)} · th ${Number(node.num_threads || 0)}`, processX + 14, rowY + 8);
+
+            let prev = { x: processX, y: rowY };
+            ops.forEach((op, opIdx) => {
+                const px = graphX0 + 110 + opIdx * Math.min(112, (graphW - 130) / Math.max(1, ops.length));
+                const py = rowY + Math.sin(this.tick * 0.015 + rowIdx + opIdx) * 3;
+                this.ctx.beginPath();
+                this.ctx.moveTo(prev.x + 8, prev.y);
+                this.ctx.lineTo(px - 10, py);
+                this.ctx.strokeStyle = this.semanticOpColor(op.type, op.active).replace('0.94', active ? '0.72' : '0.34');
+                this.ctx.lineWidth = active ? 1.4 : 0.9;
+                this.ctx.stroke();
+
+                const r = active ? 5.2 : 4.2;
+                this.ctx.beginPath();
+                this.ctx.arc(px, py, r, 0, Math.PI * 2);
+                this.ctx.fillStyle = this.semanticOpColor(op.type, true);
+                this.ctx.fill();
+                this.ctx.strokeStyle = 'rgba(235,248,255,0.74)';
+                this.ctx.stroke();
+                this.ctx.fillStyle = active ? 'rgba(245, 252, 255, 0.96)' : 'rgba(190, 215, 235, 0.82)';
+                this.ctx.font = '8px "Share Tech Mono", monospace';
+                this.ctx.fillText(op.label, px + 8, py + 3);
+                opPositions.push({ x: px, y: py, type: op.type, active });
+                prev = { x: px, y: py };
+            });
+        });
+
+        opPositions.forEach((a, idx) => {
+            const b = opPositions.slice(idx + 1).find((candidate) => candidate.type === a.type && Math.abs(candidate.y - a.y) > 20);
+            if (!b) return;
+            this.ctx.globalAlpha = a.active || b.active ? 0.18 : 0.08;
+            this.drawCurvedStroke(a.x, a.y, b.x, b.y, this.semanticOpColor(a.type, true), 0.55, idx * 19, false);
+            this.ctx.globalAlpha = 1;
+        });
+
+        const legendX = x + w * 0.36;
+        const legendY = innerY + innerH - 48;
+        this.drawPanel(legendX, legendY, Math.min(560, w * 0.44), 34, '', { alpha: 0.66, showTitle: false });
+        [
+            ['sched', 'scheduler', this.semanticOpColor('sched')],
+            ['sec', 'LSM/seccomp', this.semanticOpColor('security')],
+            ['net', 'socket/tcp', this.semanticOpColor('network')],
+            ['tls', 'crypto path', this.semanticOpColor('crypto')],
+            ['vfs', 'sendfile/vfs', this.semanticOpColor('vfs')]
+        ].forEach((item, idx) => {
+            const lx = legendX + 14 + idx * 104;
+            this.ctx.fillStyle = item[2];
+            this.ctx.fillRect(lx, legendY + 12, 8, 8);
+            this.ctx.fillStyle = 'rgba(207, 229, 246, 0.92)';
+            this.ctx.font = '8px "Share Tech Mono", monospace';
+            this.ctx.fillText(item[1], lx + 14, legendY + 19);
+        });
+
+        const statusX = x + w - 190;
+        this.drawPanel(statusX, innerY + innerH - 158, 166, 96, '', { alpha: 0.62, showTitle: false });
+        this.ctx.fillStyle = 'rgba(212, 238, 255, 0.94)';
+        this.ctx.font = '9px "Share Tech Mono", monospace';
+        this.ctx.fillText('ENGINE SIGNALS', statusX + 10, innerY + innerH - 140);
+        this.ctx.fillStyle = 'rgba(160, 205, 228, 0.88)';
+        this.ctx.font = '8px "Share Tech Mono", monospace';
+        this.ctx.fillText(`syscalls ${edgeCounts.syscalls || 0}`, statusX + 10, innerY + innerH - 120);
+        this.ctx.fillText(`network ${edgeCounts.network || 0}`, statusX + 10, innerY + innerH - 104);
+        this.ctx.fillText(`ipc ${edgeCounts.ipc || 0}`, statusX + 10, innerY + innerH - 88);
+        this.ctx.fillText(`file ${edgeCounts.file_access || 0}`, statusX + 10, innerY + innerH - 72);
+
+        this.ctx.fillStyle = 'rgba(140, 158, 188, 0.85)';
+        this.ctx.font = '9px "Share Tech Mono", monospace';
+        this.ctx.fillText('semantic kernel graph: process -> syscall -> LSM/netfilter/TCP/TLS/event-loop/VFS · click process to pin focus', x + 12, y + h - 10);
+    }
+
+    drawEbpfKernelModule(coreX, coreY, coreR, x, innerY, w, innerH, securityHooks) {
+        const activeBpf = securityHooks.some((hook) => /bpf/i.test(String(hook.name || '')) && String(hook.status || '') === 'active');
+        const pulse = 0.55 + 0.25 * Math.sin(this.tick * 0.06);
+        const start = -0.55;
+        const end = 0.2;
+        const r0 = coreR * 0.34;
+        const r1 = coreR * 0.96;
+
+        this.ctx.beginPath();
+        this.ctx.arc(coreX, coreY, r1, start, end);
+        this.ctx.arc(coreX, coreY, r0, end, start, true);
+        this.ctx.closePath();
+        this.ctx.fillStyle = activeBpf ? `rgba(90, 255, 190, ${0.22 + pulse * 0.18})` : 'rgba(90, 185, 220, 0.18)';
+        this.ctx.fill();
+        this.ctx.strokeStyle = activeBpf ? 'rgba(135, 255, 205, 0.78)' : 'rgba(120, 220, 255, 0.42)';
+        this.ctx.lineWidth = activeBpf ? 1.6 : 1;
+        this.ctx.stroke();
+
+        for (let i = 0; i < 5; i += 1) {
+            const a = start + (end - start) * (i / 4);
+            const px = coreX + Math.cos(a) * (r0 + (r1 - r0) * 0.58);
+            const py = coreY + Math.sin(a) * (r0 + (r1 - r0) * 0.58);
+            this.ctx.beginPath();
+            this.ctx.arc(px, py, i === 2 ? 3.2 : 2.2, 0, Math.PI * 2);
+            this.ctx.fillStyle = activeBpf ? 'rgba(190, 255, 220, 0.95)' : 'rgba(130, 210, 235, 0.72)';
+            this.ctx.fill();
+        }
+
+        const panelX = x + Math.min(w * 0.31, coreX + coreR * 0.96);
+        const panelY = coreY - coreR * 0.08;
+        this.ctx.setLineDash([3, 4]);
+        this.ctx.beginPath();
+        this.ctx.moveTo(coreX + Math.cos(-0.12) * r1, coreY + Math.sin(-0.12) * r1);
+        this.ctx.lineTo(panelX - 12, panelY + 22);
+        this.ctx.strokeStyle = activeBpf ? 'rgba(135, 255, 205, 0.58)' : 'rgba(120, 220, 255, 0.28)';
+        this.ctx.stroke();
+        this.ctx.setLineDash([]);
+
+        this.drawPanel(panelX, panelY, 178, 82, '', { alpha: activeBpf ? 0.72 : 0.56, showTitle: false });
+        this.ctx.fillStyle = activeBpf ? 'rgba(175, 255, 214, 0.96)' : 'rgba(190, 230, 245, 0.9)';
+        this.ctx.font = '9px "Share Tech Mono", monospace';
+        this.ctx.fillText('eBPF EMBEDDED MODULE', panelX + 10, panelY + 15);
+        this.ctx.fillStyle = activeBpf ? 'rgba(120, 255, 202, 0.94)' : 'rgba(150, 205, 224, 0.82)';
+        this.ctx.font = '7px "Share Tech Mono", monospace';
+        const rows = [
+            ['loader', 'userspace -> bpf()'],
+            ['verifier', 'safety proof'],
+            ['maps', 'shared state'],
+            ['JIT', 'native kernel code'],
+            ['hooks', 'kprobe/tc/tracepoint']
+        ];
+        rows.forEach((row, idx) => {
+            const yy = panelY + 30 + idx * 10;
+            this.ctx.fillStyle = idx === 1 ? 'rgba(255, 232, 145, 0.92)' : (activeBpf ? 'rgba(170, 245, 220, 0.86)' : 'rgba(150, 205, 224, 0.72)');
+            this.ctx.fillText(`${row[0]}: ${row[1]}`.slice(0, 34), panelX + 10, yy);
+        });
+
+        this.ctx.fillStyle = 'rgba(132, 235, 255, 0.18)';
+        for (let i = 0; i < 4; i += 1) {
+            const mx = x + w * (0.36 + i * 0.1);
+            const my = innerY + innerH * (0.21 + i * 0.12);
+            this.ctx.beginPath();
+            this.ctx.arc(mx, my, 5 + i, 0, Math.PI * 2);
+            this.ctx.strokeStyle = 'rgba(120, 235, 255, 0.18)';
+            this.ctx.stroke();
+        }
+    }
+
+    drawReferenceSemanticKernelGraph(nodes, edges, x, y, w, h) {
+        const innerY = y + 4;
+        const innerH = h - 8;
+        this.nodeHitAreas = [];
+        if (!nodes.length) {
+            this.ctx.fillStyle = 'rgba(196,207,224,0.72)';
+            this.ctx.font = '12px "Share Tech Mono", monospace';
+            this.ctx.fillText('NO SEMANTIC KERNEL GRAPH DATA', x + 20, innerY + 28);
+            return;
+        }
+
+        const focus = this.getFocusProcess(nodes);
+        const focusPid = Number(focus?.pid || 0);
+        const networkRows = Array.isArray(this.telemetry?.network_tracing) ? this.telemetry.network_tracing : [];
+        const securityHooks = Array.isArray(this.telemetry?.security_hooks) ? this.telemetry.security_hooks : [];
+        const edgeCounts = edges.reduce((acc, edge) => {
+            const type = String(edge.type || 'link');
+            acc[type] = (acc[type] || 0) + 1;
+            return acc;
+        }, {});
+        const rankedProcesses = nodes
+            .slice()
+            .sort((a, b) => Number(b.syscall_pressure || 0) - Number(a.syscall_pressure || 0))
+            .slice(0, 8);
+        const hotProcesses = rankedProcesses.some((node) => Number(node.pid || 0) === focusPid) || !focus
+            ? rankedProcesses
+            : [focus, ...rankedProcesses.filter((node) => Number(node.pid || 0) !== focusPid)].slice(0, 8);
+
+        const coreX = x + w * 0.04;
+        const coreY = innerY + innerH * 0.56;
+        const coreR = Math.min(w, innerH) * 0.28;
+        const stationLayout = [
+            [0.38, 0.28], [0.55, 0.20], [0.68, 0.37], [0.82, 0.24],
+            [0.43, 0.62], [0.58, 0.74], [0.75, 0.64], [0.90, 0.46]
+        ];
+
+        this.ctx.fillStyle = 'rgba(2, 6, 12, 0.88)';
+        this.ctx.fillRect(x, innerY, w, innerH);
+        const bgGlow = this.ctx.createRadialGradient(x + w * 0.4, innerY + innerH * 0.42, 0, x + w * 0.4, innerY + innerH * 0.42, w * 0.72);
+        bgGlow.addColorStop(0, 'rgba(36, 84, 104, 0.24)');
+        bgGlow.addColorStop(0.45, 'rgba(8, 18, 28, 0.24)');
+        bgGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        this.ctx.fillStyle = bgGlow;
+        this.ctx.fillRect(x, innerY, w, innerH);
+
+        this.ctx.strokeStyle = 'rgba(52, 118, 150, 0.16)';
+        this.ctx.lineWidth = 1;
+        for (let gx = x + 18; gx < x + w; gx += 34) {
+            this.ctx.beginPath();
+            this.ctx.moveTo(gx + 0.5, innerY);
+            this.ctx.lineTo(gx + 0.5, innerY + innerH);
+            this.ctx.stroke();
+        }
+        for (let gy = innerY + 18; gy < innerY + innerH; gy += 30) {
+            this.ctx.beginPath();
+            this.ctx.moveTo(x, gy + 0.5);
+            this.ctx.lineTo(x + w, gy + 0.5);
+            this.ctx.stroke();
+        }
+
+        this.ctx.strokeStyle = 'rgba(66, 178, 220, 0.42)';
+        this.ctx.strokeRect(x + 0.5, innerY + 0.5, w - 1, innerH - 1);
+        const topTabs = ['AUTONOMIC', 'PROC GRAPH', 'EBPF VM', 'IPC CHAIN', 'NET FILTER', 'TLS MAP', 'VFS ROUTES', 'SECURITY'];
+        topTabs.forEach((tab, idx) => {
+            const tw = Math.min(104, (w - 120) / topTabs.length);
+            const tx = x + 52 + idx * (tw + 6);
+            this.ctx.strokeStyle = 'rgba(67, 165, 215, 0.52)';
+            this.ctx.strokeRect(tx, innerY + 8, tw, 13);
+            this.ctx.fillStyle = idx === 1 ? 'rgba(205, 244, 255, 0.95)' : 'rgba(125, 201, 228, 0.82)';
+            this.ctx.font = '7px "Share Tech Mono", monospace';
+            this.ctx.fillText(tab, tx + 5, innerY + 18);
+        });
+
+        for (let i = 0; i < 8; i += 1) {
+            const by = innerY + 42 + i * 24;
+            this.ctx.strokeStyle = 'rgba(0, 228, 185, 0.38)';
+            this.ctx.strokeRect(x + 4, by, 26, 16);
+            this.ctx.fillStyle = i % 3 === 0 ? 'rgba(120, 235, 190, 0.42)' : 'rgba(22, 82, 96, 0.62)';
+            this.ctx.fillRect(x + 7, by + 3, 20, 10);
+        }
+
+        for (let i = 0; i < 54; i += 1) {
+            const px = x + 40 + this.stableUnit(i * 977) * (w - 80);
+            const py = innerY + 44 + this.stableUnit(i * 431) * (innerH - 120);
+            this.ctx.globalAlpha = 0.08 + 0.14 * this.stableUnit(i * 71);
+            this.ctx.fillStyle = i % 4 === 0 ? 'rgba(255, 126, 110, 0.9)' : 'rgba(85, 230, 205, 0.9)';
+            this.ctx.fillRect(px, py, 2, 2);
+        }
+        this.ctx.globalAlpha = 1;
+
+        const coreGradient = this.ctx.createRadialGradient(coreX + coreR * 0.18, coreY - coreR * 0.32, coreR * 0.04, coreX, coreY, coreR);
+        coreGradient.addColorStop(0, 'rgba(230, 255, 248, 0.98)');
+        coreGradient.addColorStop(0.36, 'rgba(110, 232, 224, 0.9)');
+        coreGradient.addColorStop(0.72, 'rgba(39, 133, 154, 0.74)');
+        coreGradient.addColorStop(1, 'rgba(8, 32, 54, 0.98)');
+        this.ctx.beginPath();
+        this.ctx.arc(coreX, coreY, coreR, 0, Math.PI * 2);
+        this.ctx.fillStyle = coreGradient;
+        this.ctx.fill();
+        this.ctx.strokeStyle = 'rgba(210, 255, 246, 0.72)';
+        this.ctx.lineWidth = 1.4;
+        this.ctx.stroke();
+        for (let i = -6; i <= 6; i += 1) {
+            const yy = coreY + i * coreR * 0.12;
+            const half = Math.sqrt(Math.max(0, coreR * coreR - (yy - coreY) * (yy - coreY)));
+            this.ctx.beginPath();
+            this.ctx.moveTo(coreX - half * 0.88, yy);
+            this.ctx.quadraticCurveTo(coreX, yy + Math.sin(i + this.tick * 0.01) * 8, coreX + half * 0.88, yy);
+            this.ctx.strokeStyle = 'rgba(220, 255, 248, 0.14)';
+            this.ctx.stroke();
+        }
+        this.ctx.beginPath();
+        this.ctx.arc(coreX, coreY, coreR * 1.18, -0.36, Math.PI * 1.12);
+        this.ctx.strokeStyle = 'rgba(120, 230, 255, 0.32)';
+        this.ctx.stroke();
+        this.drawEbpfKernelModule(coreX, coreY, coreR, x, innerY, w, innerH, securityHooks);
+
+        this.ctx.fillStyle = 'rgba(220, 255, 248, 0.98)';
+        this.ctx.font = '13px "Share Tech Mono", monospace';
+        this.ctx.fillText('ESD: LINUX KERNEL', x + 72, coreY - coreR * 0.72);
+        this.ctx.fillStyle = 'rgba(120, 255, 202, 0.96)';
+        this.ctx.font = '13px "Share Tech Mono", monospace';
+        this.ctx.fillText('STATUS: ONLINE', x + 72, coreY - coreR * 0.72 + 17);
+        this.ctx.fillStyle = 'rgba(151, 210, 232, 0.86)';
+        this.ctx.font = '8px "Share Tech Mono", monospace';
+        this.ctx.fillText(`SEMANTIC GRAPH ACTIVE · TASKS ${nodes.length} · EDGES ${edges.length}`, x + 74, coreY - coreR * 0.72 + 30);
+        if (focus) {
+            this.drawPanel(x + 78, coreY + coreR * 0.32, 184, 54, '', { alpha: 0.58, showTitle: false });
+            this.ctx.fillStyle = 'rgba(255, 238, 160, 0.96)';
+            this.ctx.font = '9px "Share Tech Mono", monospace';
+            this.ctx.fillText('FOCUS TRACE', x + 90, coreY + coreR * 0.32 + 16);
+            this.ctx.fillStyle = 'rgba(176, 226, 240, 0.9)';
+            this.ctx.font = '8px "Share Tech Mono", monospace';
+            this.ctx.fillText(`${String(focus.name || 'process').slice(0, 18)}:${focusPid}`, x + 90, coreY + coreR * 0.32 + 31);
+            this.ctx.fillText(`pressure ${Number(focus.syscall_pressure || 0).toFixed(0)} · fd ${Number(focus.fd_count || 0)}`, x + 90, coreY + coreR * 0.32 + 44);
+        }
+
+        const stationPoints = [];
+        hotProcesses.forEach((node, idx) => {
+            const [fx, fy] = stationLayout[idx] || [0.5, 0.5];
+            const px = x + w * fx;
+            const py = innerY + innerH * fy;
+            const pid = Number(node.pid || 0);
+            const pressure = Math.max(0, Math.min(100, Number(node.syscall_pressure || 0)));
+            const active = pid === focusPid;
+            const ops = this.buildSemanticOpsForProcess(node, networkRows, securityHooks).slice(0, 5);
+            stationPoints.push({ x: px, y: py, pid, node });
+
+            const startX = coreX + coreR * 0.86;
+            const startY = coreY - coreR * 0.12 + idx * 8;
+            const bendX = x + w * (0.29 + (idx % 3) * 0.08);
+            const routePulse = (Math.sin(this.tick * 0.04 + idx) + 1) * 0.5;
+            this.ctx.setLineDash([2, 3]);
+            this.ctx.beginPath();
+            this.ctx.moveTo(startX, startY);
+            this.ctx.lineTo(bendX, startY);
+            this.ctx.lineTo(bendX, py);
+            this.ctx.lineTo(px - 24, py);
+            this.ctx.strokeStyle = active ? 'rgba(255, 226, 128, 0.78)' : 'rgba(120, 215, 255, 0.28)';
+            this.ctx.lineWidth = active ? 1.5 : 0.8;
+            this.ctx.stroke();
+            this.ctx.setLineDash([]);
+            if (active) {
+                this.ctx.shadowColor = 'rgba(255, 226, 128, 0.75)';
+                this.ctx.shadowBlur = 12;
+                this.ctx.beginPath();
+                const particleX = bendX + (px - 24 - bendX) * routePulse;
+                this.ctx.arc(particleX, py, 3.2, 0, Math.PI * 2);
+                this.ctx.fillStyle = 'rgba(255, 244, 178, 0.95)';
+                this.ctx.fill();
+                this.ctx.shadowBlur = 0;
+            }
+
+            const orbitR = active ? 43 : 32;
+            this.ctx.beginPath();
+            this.ctx.ellipse(px, py, orbitR, orbitR * 0.42, this.tick * 0.002 + idx, 0, Math.PI * 2);
+            this.ctx.strokeStyle = active ? 'rgba(255, 226, 128, 0.36)' : 'rgba(84, 208, 232, 0.22)';
+            this.ctx.stroke();
+            this.ctx.beginPath();
+            this.ctx.arc(px, py, active ? 10 : 7, 0, Math.PI * 2);
+            this.ctx.fillStyle = pressure >= 70 ? 'rgba(255, 126, 102, 0.96)' : (active ? 'rgba(255, 226, 132, 0.96)' : 'rgba(100, 230, 204, 0.96)');
+            this.ctx.fill();
+            this.ctx.strokeStyle = 'rgba(230, 252, 255, 0.86)';
+            this.ctx.stroke();
+            this.nodeHitAreas.push({ x: px, y: py, r: 16, pid });
+
+            const labelW = active ? 204 : 178;
+            const labelH = 45 + Math.min(3, ops.length) * 10;
+            const labelX = px > x + w * 0.78 ? px - labelW - 16 : px + 14;
+            const labelY = py - 28;
+            this.drawPanel(labelX, labelY, labelW, labelH, '', { alpha: active ? 0.78 : 0.58, showTitle: false });
+            if (active) {
+                this.ctx.strokeStyle = 'rgba(255, 226, 128, 0.7)';
+                this.ctx.strokeRect(labelX + 0.5, labelY + 0.5, labelW - 1, labelH - 1);
+            }
+            this.ctx.fillStyle = active ? '#fff7bf' : 'rgba(212, 238, 255, 0.94)';
+            this.ctx.font = '10px "Share Tech Mono", monospace';
+            this.ctx.fillText(`ESD: ${String(node.name || 'process').slice(0, 13).toUpperCase()}`, labelX + 10, labelY + 15);
+            this.ctx.fillStyle = pressure >= 70 ? 'rgba(255, 160, 126, 0.94)' : 'rgba(120, 255, 202, 0.94)';
+            this.ctx.fillText(`STATUS: ${pressure >= 70 ? 'HOT' : 'ONLINE'}`, labelX + 10, labelY + 29);
+            this.ctx.fillStyle = 'rgba(151, 210, 232, 0.86)';
+            this.ctx.font = '7px "Share Tech Mono", monospace';
+            this.ctx.fillText(`PID ${pid} · P ${pressure.toFixed(0)} · FD ${Number(node.fd_count || 0)}`, labelX + 10, labelY + 40);
+            ops.slice(0, 3).forEach((op, opIdx) => {
+                this.ctx.fillStyle = this.semanticOpColor(op.type, true);
+                this.ctx.fillText(`├ ${op.label}`, labelX + 10, labelY + 52 + opIdx * 10);
+            });
+        });
+
+        edges.slice(0, 54).forEach((edge, idx) => {
+            const s = stationPoints.find((p) => p.pid === Number(edge.source || 0));
+            const t = stationPoints.find((p) => p.pid === Number(edge.target || 0));
+            if (!s || !t) return;
+            this.ctx.globalAlpha = 0.14 + Math.min(0.28, Number(edge.weight || 0) * 0.18);
+            this.drawCurvedStroke(s.x, s.y, t.x, t.y, this.edgeColor(String(edge.type || '')), 0.65, idx * 37, false);
+            this.ctx.globalAlpha = 1;
+        });
+
+        const tileY = innerY + innerH - 76;
+        [
+            ['socket()', networkRows.length],
+            ['epoll_wait()', hotProcesses.filter((node) => Number(node.fd_count || 0) > 8).length],
+            ['nf_conntrack', edgeCounts.network || 0],
+            ['sendfile()', edgeCounts.file_access || 0],
+            ['eBPF', securityHooks.some((h) => /bpf/i.test(String(h.name || '')) && String(h.status || '') === 'active') ? 'ON' : 'VM'],
+            ['LSM hooks', securityHooks.length]
+        ].forEach((tile, idx) => {
+            const tx = x + w * 0.46 + idx * 74;
+            this.ctx.fillStyle = 'rgba(7, 42, 52, 0.72)';
+            this.ctx.fillRect(tx, tileY, 62, 24);
+            this.ctx.strokeStyle = 'rgba(70, 210, 190, 0.42)';
+            this.ctx.strokeRect(tx + 0.5, tileY + 0.5, 61, 23);
+            this.ctx.fillStyle = 'rgba(142, 244, 218, 0.88)';
+            this.ctx.font = '7px "Share Tech Mono", monospace';
+            this.ctx.fillText(String(tile[0]).toUpperCase(), tx + 5, tileY + 9);
+            this.ctx.fillStyle = 'rgba(224, 246, 255, 0.9)';
+            this.ctx.font = '10px "Share Tech Mono", monospace';
+            this.ctx.fillText(String(tile[1]), tx + 5, tileY + 20);
+        });
+
+        const dockY = innerY + innerH - 36;
+        const dockFill = this.ctx.createLinearGradient(x + 6, dockY, x + w - 6, dockY);
+        dockFill.addColorStop(0, 'rgba(4, 18, 28, 0.3)');
+        dockFill.addColorStop(0.5, 'rgba(22, 78, 88, 0.36)');
+        dockFill.addColorStop(1, 'rgba(4, 18, 28, 0.3)');
+        this.ctx.fillStyle = dockFill;
+        this.ctx.fillRect(x + 6, dockY, w - 12, 26);
+        this.ctx.strokeStyle = 'rgba(74, 184, 224, 0.46)';
+        this.ctx.strokeRect(x + 6, dockY, w - 12, 26);
+        const dockItems = [
+            ['SYSCALL', edgeCounts.syscalls || 0, 'rgba(136,201,255,0.9)'],
+            ['NETWORK', edgeCounts.network || 0, 'rgba(181,240,255,0.9)'],
+            ['IPC', edgeCounts.ipc || 0, 'rgba(126,242,210,0.9)'],
+            ['FILE', edgeCounts.file_access || 0, 'rgba(255,184,168,0.9)'],
+            ['SECURITY', securityHooks.filter((h) => String(h.status || '') === 'active').length, 'rgba(120,235,170,0.9)']
+        ];
+        dockItems.forEach((item, idx) => {
+            const bx = x + w * 0.47 + idx * 86;
+            this.ctx.fillStyle = item[2];
+            this.ctx.fillRect(bx, dockY + 8, 9, 9);
+            this.ctx.fillStyle = 'rgba(207, 229, 246, 0.92)';
+            this.ctx.font = '8px "Share Tech Mono", monospace';
+            this.ctx.fillText(`${item[0]} ${item[1]}`, bx + 14, dockY + 16);
+        });
+
+        const sideX = x + w - 62;
+        for (let i = 0; i < 4; i += 1) {
+            const py = innerY + innerH * 0.34 + i * 52;
+            this.ctx.strokeStyle = 'rgba(74, 184, 224, 0.46)';
+            this.ctx.strokeRect(sideX, py, 42, 28);
+            this.ctx.beginPath();
+            this.ctx.moveTo(sideX + 7, py + 19);
+            for (let sx = 0; sx < 24; sx += 1) {
+                const vx = sideX + 7 + sx;
+                const vy = py + 15 + Math.sin(this.tick * 0.06 + sx * 0.7 + i) * 5;
+                if (sx === 0) this.ctx.moveTo(vx, vy);
+                else this.ctx.lineTo(vx, vy);
+            }
+            this.ctx.strokeStyle = 'rgba(96, 226, 255, 0.62)';
+            this.ctx.stroke();
+        }
+
+        this.ctx.fillStyle = 'rgba(140, 158, 188, 0.85)';
+        this.ctx.font = '9px "Share Tech Mono", monospace';
+        this.ctx.fillText('semantic kernel graph engine: linux core -> process stations -> syscall/netfilter/tcp/tls/vfs chains · click station to pin', x + 12, y + h - 10);
+    }
+
+    drawMicroscopeGraph(nodes, edges, x, y, w, h) {
+        this.drawReferenceSemanticKernelGraph(nodes, edges, x, y, w, h);
     }
 
     drawTopStats(x, y, w, h) {
@@ -1058,7 +1957,7 @@ class ProcessesSubsystemVisualization {
 
         const gap = 16;
         const top = 58;
-        const statsH = 98;
+        const statsH = this.layoutMode === 'microscope' ? 74 : 98;
         const graphY = top + statsH + gap;
         const graphH = Math.max(260, h - graphY - 36);
 
@@ -1088,7 +1987,21 @@ class ProcessesSubsystemVisualization {
         this.drawHudChrome(gap, graphY, w - gap * 2, graphH);
 
         this.drawKernelHeader();
-        this.drawTopStats(gap, top, w - gap * 2, statsH);
+        if (this.layoutMode === 'microscope') {
+            this.drawPanel(gap, top, w - gap * 2, statsH, '', { alpha: 0.68, showTitle: false });
+            this.ctx.fillStyle = 'rgba(206, 232, 255, 0.92)';
+            this.ctx.font = '10px "Share Tech Mono", monospace';
+            const graph = this.telemetry?.neural_graph || {};
+            const n = Array.isArray(graph.nodes) ? graph.nodes.length : 0;
+            const e = Array.isArray(graph.edges) ? graph.edges.length : 0;
+            const seccompPct = Number(this.telemetry?.meta?.seccomp_filter_percent || 0).toFixed(1);
+            this.ctx.fillText(`scan: tasks ${n} · relations ${e} · seccomp ${seccompPct}%`, gap + 14, top + 24);
+            this.ctx.fillStyle = 'rgba(150, 194, 225, 0.82)';
+            this.ctx.font = '9px "Share Tech Mono", monospace';
+            this.ctx.fillText(`mode ${String(this.layoutMode).toUpperCase()} · edge ${String(this.edgeFilter).toUpperCase()} · ${this.autoFocusEnabled ? 'AUTO' : 'MANUAL'} FOCUS`, gap + 14, top + 44);
+        } else {
+            this.drawTopStats(gap, top, w - gap * 2, statsH);
+        }
         this.drawNeuralGraph(gap, graphY, w - gap * 2, graphH);
     }
 

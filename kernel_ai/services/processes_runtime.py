@@ -247,6 +247,220 @@ def _read_proc_faults(pid: int):
         return {"minflt": 0, "majflt": 0}
 
 
+def _read_proc_fd_semantics(pid: int, max_entries: int = 96) -> dict:
+    """Summarize /proc fd targets into kernel-relevant categories."""
+    summary = {
+        "socket": 0,
+        "pipe": 0,
+        "eventpoll": 0,
+        "eventfd": 0,
+        "timerfd": 0,
+        "regular": 0,
+        "anon": 0,
+        "deleted": 0,
+        "sampled": 0,
+    }
+    try:
+        entries = [name for name in os.listdir(f"/proc/{int(pid)}/fd") if name.isdigit()]
+    except (OSError, ValueError):
+        return summary
+
+    for name in entries[: max(0, int(max_entries))]:
+        try:
+            target = os.readlink(f"/proc/{int(pid)}/fd/{name}")
+        except OSError:
+            continue
+        summary["sampled"] += 1
+        target_l = target.lower()
+        if target_l.startswith("socket:"):
+            summary["socket"] += 1
+        elif target_l.startswith("pipe:"):
+            summary["pipe"] += 1
+        elif "anon_inode:[eventpoll]" in target_l:
+            summary["eventpoll"] += 1
+            summary["anon"] += 1
+        elif "anon_inode:[eventfd]" in target_l:
+            summary["eventfd"] += 1
+            summary["anon"] += 1
+        elif "anon_inode:[timerfd]" in target_l:
+            summary["timerfd"] += 1
+            summary["anon"] += 1
+        elif target_l.startswith("anon_inode:"):
+            summary["anon"] += 1
+        else:
+            summary["regular"] += 1
+        if " (deleted)" in target_l:
+            summary["deleted"] += 1
+    return summary
+
+
+def _parse_tcp_snmp_counters() -> dict:
+    """Read selected global TCP counters from /proc/net/snmp."""
+    try:
+        with open("/proc/net/snmp", "r", encoding="utf-8", errors="ignore") as f:
+            lines = [line.strip() for line in f if line.strip().startswith("Tcp:")]
+    except OSError:
+        return {}
+    if len(lines) < 2:
+        return {}
+    headers = lines[-2].split()[1:]
+    values = lines[-1].split()[1:]
+    out = {}
+    for key, raw in zip(headers, values):
+        if key not in {"ActiveOpens", "PassiveOpens", "RetransSegs", "InSegs", "OutSegs"}:
+            continue
+        try:
+            out[key] = int(raw)
+        except ValueError:
+            continue
+    return out
+
+
+def _semantic_op(label: str, op_type: str, active: bool, weight: float, source: str, evidence: dict | None = None) -> dict:
+    return {
+        "label": label,
+        "type": op_type,
+        "active": bool(active),
+        "weight": round(float(max(0.0, weight)), 2),
+        "source": source,
+        "evidence": evidence or {},
+    }
+
+
+def _build_semantic_ops(node_pool: dict, network_tracing: list[dict], security_hooks: list[dict], tcp_counters: dict) -> list[dict]:
+    """Build semantic kernel-operation chains from procfs/psutil-derived evidence."""
+    network_by_pid = {int(row.get("pid") or 0): row for row in network_tracing}
+    active_security = any(str(hook.get("status") or "") in {"active", "hardened"} for hook in security_hooks)
+    rows = []
+    ranked_nodes = sorted(
+        node_pool.values(),
+        key=lambda row: (int(row.get("syscall_pressure") or 0), int(row.get("connections") or 0), int(row.get("fd_count") or 0)),
+        reverse=True,
+    )
+    for node in ranked_nodes[:18]:
+        pid = int(node.get("pid") or 0)
+        if pid <= 0:
+            continue
+        name = str(node.get("name") or "process")
+        name_l = name.lower()
+        fd_sem = dict(node.get("fd_semantics") or {})
+        network = network_by_pid.get(pid) or {}
+        connections = int(network.get("connections") or node.get("connections") or 0)
+        unique_peers = int(network.get("unique_peers") or node.get("unique_peers") or 0)
+        fd_count = int(node.get("fd_count") or 0)
+        threads = int(node.get("num_threads") or 0)
+        pressure = int(node.get("syscall_pressure") or 0)
+        socket_fds = int(fd_sem.get("socket") or 0)
+        regular_fds = int(fd_sem.get("regular") or 0)
+        eventpoll_fds = int(fd_sem.get("eventpoll") or 0)
+        pipe_fds = int(fd_sem.get("pipe") or 0)
+        has_web_name = any(token in name_l for token in ("nginx", "http", "gunicorn", "node", "curl", "chrome", "firefox"))
+        has_tcp_retrans = int(tcp_counters.get("RetransSegs") or 0) > 0
+        has_tls_hint = has_web_name and (connections > 0 or socket_fds > 0)
+
+        ops = [
+            _semantic_op(
+                "socket()",
+                "network",
+                socket_fds > 0 or connections > 0,
+                max(socket_fds, connections),
+                "/proc/<pid>/fd socket + psutil.net_connections",
+                {"socket_fds": socket_fds, "connections": connections},
+            ),
+            _semantic_op(
+                "connect()/accept()",
+                "network",
+                connections > 0,
+                connections,
+                "psutil.net_connections",
+                {"connections": connections, "top_state": str(network.get("top_state") or "UNKNOWN")},
+            ),
+            _semantic_op(
+                "nf_conntrack",
+                "netfilter",
+                connections > 0 and unique_peers > 0,
+                unique_peers,
+                "psutil.net_connections peer sample",
+                {"unique_peers": unique_peers, "peer_sample": list(network.get("peer_sample") or [])[:4]},
+            ),
+            _semantic_op(
+                "tcp retransmission",
+                "tcp",
+                connections > 0 and has_tcp_retrans,
+                int(tcp_counters.get("RetransSegs") or 0),
+                "/proc/net/snmp Tcp.RetransSegs",
+                {"retrans_segs": int(tcp_counters.get("RetransSegs") or 0)},
+            ),
+            _semantic_op(
+                "TLS handshake",
+                "crypto",
+                has_tls_hint,
+                max(1, connections),
+                "process-name/socket heuristic",
+                {"name": name, "connections": connections},
+            ),
+            _semantic_op(
+                "epoll_wait()",
+                "event",
+                eventpoll_fds > 0,
+                eventpoll_fds,
+                "/proc/<pid>/fd anon_inode:[eventpoll]",
+                {"eventpoll_fds": eventpoll_fds, "fd_sampled": int(fd_sem.get("sampled") or 0)},
+            ),
+            _semantic_op(
+                "sendfile()/splice()",
+                "vfs",
+                (socket_fds > 0 or connections > 0) and regular_fds > 0,
+                regular_fds,
+                "/proc/<pid>/fd regular + socket mix",
+                {"regular_fds": regular_fds, "socket_fds": socket_fds},
+            ),
+            _semantic_op(
+                "seccomp/LSM check",
+                "security",
+                active_security or str(node.get("seccomp_mode") or "") in {"filter", "strict"},
+                2 if active_security else 1,
+                "/sys/kernel/security/lsm + /proc/<pid>/status",
+                {"seccomp_mode": str(node.get("seccomp_mode") or "unknown")},
+            ),
+            _semantic_op(
+                "sched_pick_next()",
+                "sched",
+                True,
+                max(1, threads),
+                "psutil.num_threads",
+                {"threads": threads, "pressure": pressure},
+            ),
+            _semantic_op(
+                "clone/fork lineage",
+                "task",
+                int(node.get("ppid") or 0) > 0,
+                1,
+                "/proc/<pid>/stat",
+                {"ppid": int(node.get("ppid") or 0)},
+            ),
+            _semantic_op(
+                "pipe()/eventfd",
+                "ipc",
+                pipe_fds > 0 or int(fd_sem.get("eventfd") or 0) > 0,
+                pipe_fds + int(fd_sem.get("eventfd") or 0),
+                "/proc/<pid>/fd pipe/eventfd",
+                {"pipe_fds": pipe_fds, "eventfd": int(fd_sem.get("eventfd") or 0)},
+            ),
+        ]
+        active_ops = [op for op in ops if op["active"]]
+        rows.append(
+            {
+                "pid": pid,
+                "name": name,
+                "ops": active_ops[:8],
+                "fd_semantics": fd_sem,
+                "source": "procfs+psutil-derived",
+            }
+        )
+    return rows
+
+
 def _build_memory_process_pressure(syscall_nodes, meminfo_kb):
     mt_kb = max(1, int((meminfo_kb or {}).get("MemTotal") or 0))
     psi = _parse_memory_psi()
@@ -487,6 +701,7 @@ def collect_processes_realtime():
                 fd_count = int(proc.num_fds() or 0)
             except (psutil.Error, OSError, TypeError, ValueError):
                 fd_count = 0
+            fd_semantics = _read_proc_fd_semantics(pid)
             seccomp_mode = "unknown"
             with open(f"/proc/{pid}/status", "r", encoding="utf-8", errors="ignore") as f:
                 for ln in f:
@@ -510,6 +725,7 @@ def collect_processes_realtime():
                     "name": name,
                     "user": user,
                     "fd_count": fd_count,
+                    "fd_semantics": fd_semantics,
                     "num_threads": threads,
                     "syscall_pressure": syscall_pressure,
                     "seccomp_mode": seccomp_mode,
@@ -607,6 +823,7 @@ def collect_processes_realtime():
             "user": str(row.get("user") or ""),
             "syscall_pressure": int(row.get("syscall_pressure") or 0),
             "fd_count": int(row.get("fd_count") or 0),
+            "fd_semantics": dict(row.get("fd_semantics") or {}),
             "num_threads": int(row.get("num_threads") or 0),
             "seccomp_mode": str(row.get("seccomp_mode") or "unknown"),
             "connections": 0,
@@ -626,6 +843,7 @@ def collect_processes_realtime():
                 "user": "",
                 "syscall_pressure": 0,
                 "fd_count": 0,
+                "fd_semantics": {},
                 "num_threads": 0,
                 "seccomp_mode": "unknown",
                 "connections": 0,
@@ -692,6 +910,8 @@ def collect_processes_realtime():
 
     nodes = list(node_pool.values())[:18]
     edges = edges[:64]
+    tcp_counters = _parse_tcp_snmp_counters()
+    semantic_ops = _build_semantic_ops(node_pool, network_tracing, security_hooks, tcp_counters)
 
     try:
         vm = psutil.virtual_memory()
@@ -746,12 +966,15 @@ def collect_processes_realtime():
         "syscalls_interception": syscall_nodes,
         "network_tracing": network_tracing,
         "security_hooks": security_hooks,
+        "semantic_ops": semantic_ops,
         "neural_graph": {"nodes": nodes, "edges": edges},
         "memory_visual": memory_visual,
         "meta": {
             "processes_sampled": len(syscall_nodes),
             "network_processes": len(network_tracing),
             "seccomp_filter_percent": round((seccomp_modes.get("filter", 0) + seccomp_modes.get("strict", 0)) * 100.0 / max(1, sum(seccomp_modes.values())), 2),
-            "mode": "live-heuristic-v1",
+            "semantic_ops_source": "procfs+psutil-derived",
+            "tcp_retrans_segs": int(tcp_counters.get("RetransSegs") or 0),
+            "mode": "live-semantic-v2",
         },
     }

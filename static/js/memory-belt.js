@@ -1,7 +1,7 @@
 // Linux memory subsystem — strip map (same API payload as processes-realtime memory_visual)
-// Version: 2 — deeper meminfo: slab split, dirty/writeback, THP, vmalloc, LRU
+// Version: 3 — memory path now: lightweight kernel path hints from vmstat/PSI
 
-debugLog('💾 memory-belt.js v1: Script loading...');
+debugLog('💾 memory-belt.js v3: Script loading...');
 
 class MemorySubsystemVisualization {
     constructor() {
@@ -26,6 +26,8 @@ class MemorySubsystemVisualization {
         this.clickHandler = null;
         this.viewMode = 'fabric';
         this.viewModeButton = null;
+        this.prevMemoryVmstat = null;
+        this.memoryVmstatDelta = {};
     }
 
     init(containerId = 'memory-belt-container') {
@@ -143,6 +145,7 @@ class MemorySubsystemVisualization {
             .then((data) => {
                 if (!data || data.error) throw new Error(data?.error || 'No data');
                 this.telemetry = data;
+                this.updateMemoryKernelDeltas();
             })
             .catch(() => {
                 this.telemetry = {
@@ -173,6 +176,22 @@ class MemorySubsystemVisualization {
                     }
                 };
             });
+    }
+
+    updateMemoryKernelDeltas() {
+        const vmstat = this.telemetry?.memory_visual?.kernel_memory_state?.vmstat || {};
+        const keys = [
+            'pgfault', 'pgmajfault', 'pgscan_kswapd', 'pgscan_direct',
+            'pgsteal_kswapd', 'pgsteal_direct', 'compact_stall', 'oom_kill'
+        ];
+        const next = {};
+        keys.forEach((key) => {
+            const cur = Number(vmstat[key] || 0);
+            const prev = this.prevMemoryVmstat ? Number(this.prevMemoryVmstat[key] || 0) : cur;
+            next[key] = Math.max(0, cur - prev);
+        });
+        this.memoryVmstatDelta = next;
+        this.prevMemoryVmstat = { ...vmstat };
     }
 
     drawPanel(x, y, w, h, title, opts = {}) {
@@ -211,6 +230,87 @@ class MemorySubsystemVisualization {
         this.ctx.textAlign = 'start';
     }
 
+    buildKernelMemoryPathItems(sum, psiMem) {
+        const delta = this.memoryVmstatDelta || {};
+        const dirtyWb = Number(sum.dirty_writeback_mb || 0);
+        const swapPercent = Number(sum.swap_percent || 0);
+        const psiSome = Number(psiMem.some_avg10 || 0);
+        const psiFull = Number(psiMem.full_avg10 || 0);
+        return [
+            {
+                label: 'page fault',
+                value: Number(delta.pgfault || 0),
+                active: Number(delta.pgfault || 0) > 0,
+                color: 'rgba(120, 220, 255, 0.92)'
+            },
+            {
+                label: 'reclaim',
+                value: Number(delta.pgscan_kswapd || 0) + Number(delta.pgscan_direct || 0),
+                active: Number(delta.pgscan_kswapd || 0) + Number(delta.pgscan_direct || 0) > 0 || psiSome > 0.01,
+                color: 'rgba(126, 242, 210, 0.92)'
+            },
+            {
+                label: 'kswapd',
+                value: Number(delta.pgsteal_kswapd || 0),
+                active: Number(delta.pgsteal_kswapd || 0) > 0,
+                color: 'rgba(118, 230, 170, 0.9)'
+            },
+            {
+                label: 'compaction',
+                value: Number(delta.compact_stall || 0),
+                active: Number(delta.compact_stall || 0) > 0,
+                color: 'rgba(190, 150, 255, 0.9)'
+            },
+            {
+                label: 'writeback',
+                value: dirtyWb,
+                active: dirtyWb > 0.01,
+                color: 'rgba(255, 190, 110, 0.92)'
+            },
+            {
+                label: 'swap',
+                value: swapPercent,
+                active: swapPercent > 0.1 || psiFull > 0.01,
+                color: 'rgba(255, 120, 150, 0.9)'
+            }
+        ];
+    }
+
+    drawKernelMemoryPath(x, y, w, h, sum, psiMem) {
+        const items = this.buildKernelMemoryPathItems(sum, psiMem);
+        this.drawPanel(x, y, w, h, '', { alpha: 0.62, showTitle: false });
+        this.ctx.fillStyle = 'rgba(214, 238, 255, 0.95)';
+        this.ctx.font = '9px "Share Tech Mono", monospace';
+        this.ctx.fillText('KERNEL MEMORY PATH', x + 10, y + 14);
+        this.ctx.fillStyle = 'rgba(145, 198, 224, 0.82)';
+        this.ctx.font = '7px "Share Tech Mono", monospace';
+        this.ctx.fillText('vmstat delta / poll · psi pressure hints', x + 10, y + 26);
+
+        const startY = y + 42;
+        const stepX = Math.max(48, Math.floor((w - 26) / items.length));
+        items.forEach((item, idx) => {
+            const cx = x + 14 + idx * stepX;
+            const activePulse = item.active ? (0.65 + 0.25 * Math.sin(this.tick * 0.08 + idx)) : 0.28;
+            if (idx > 0) {
+                this.ctx.beginPath();
+                this.ctx.moveTo(cx - stepX + 18, startY);
+                this.ctx.lineTo(cx - 8, startY);
+                this.ctx.strokeStyle = item.active ? 'rgba(130, 230, 255, 0.34)' : 'rgba(100, 140, 165, 0.18)';
+                this.ctx.lineWidth = 1;
+                this.ctx.stroke();
+            }
+            this.ctx.beginPath();
+            this.ctx.arc(cx, startY, item.active ? 4.6 : 3.4, 0, Math.PI * 2);
+            this.ctx.fillStyle = item.active ? item.color : `rgba(110, 140, 160, ${activePulse})`;
+            this.ctx.fill();
+            this.ctx.strokeStyle = item.active ? 'rgba(236, 252, 255, 0.82)' : 'rgba(150, 178, 198, 0.38)';
+            this.ctx.stroke();
+            this.ctx.fillStyle = item.active ? 'rgba(226, 246, 255, 0.94)' : 'rgba(142, 166, 184, 0.72)';
+            this.ctx.font = '7px "Share Tech Mono", monospace';
+            this.ctx.fillText(item.label.slice(0, 11), cx - 8, startY + 14);
+        });
+    }
+
     drawMemoryStats(x, y, w, h) {
         const sum = this.telemetry?.memory_visual?.summary || {};
         const procPressure = Array.isArray(this.telemetry?.memory_visual?.process_pressure)
@@ -218,6 +318,8 @@ class MemorySubsystemVisualization {
             : [];
         const psiMem = this.telemetry?.memory_visual?.kernel_memory_state?.psi_memory || {};
         this.drawPanel(x, y, w, h, 'physical memory · /proc/meminfo + psutil', { alpha: 0.88 });
+        const pathW = Math.min(430, Math.max(330, w * 0.34));
+        this.drawKernelMemoryPath(x + w - pathW - 14, y + 32, pathW, 68, sum, psiMem);
         this.ctx.fillStyle = '#c4f8ff';
         this.ctx.font = '11px "Share Tech Mono", monospace';
         this.ctx.fillText(`total ${Number(sum.total_mb || 0).toFixed(0)} MiB`, x + 16, y + 46);

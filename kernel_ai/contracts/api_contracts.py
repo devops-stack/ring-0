@@ -52,6 +52,7 @@ class ProcessesRealtimeResponse(TypedDict):
     syscalls_interception: list
     network_tracing: list
     security_hooks: list
+    semantic_ops: list
     neural_graph: dict
     memory_visual: dict
     meta: dict
@@ -161,6 +162,7 @@ def validate_processes_realtime_response(payload: Any) -> None:
     _expect_key(data, "syscalls_interception", list, "processes_realtime")
     _expect_key(data, "network_tracing", list, "processes_realtime")
     _expect_key(data, "security_hooks", list, "processes_realtime")
+    _expect_key(data, "semantic_ops", list, "processes_realtime")
     _expect_key(data, "neural_graph", dict, "processes_realtime")
     _expect_key(data, "memory_visual", dict, "processes_realtime")
     _expect_key(data, "meta", dict, "processes_realtime")
