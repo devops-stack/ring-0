@@ -10,6 +10,178 @@ import psutil
 from kernel_ai.sentry_helpers import capture_exception
 
 
+def _read_key_value_proc_file(path: str) -> dict:
+    out = {}
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            for raw in f:
+                parts = raw.split()
+                if len(parts) != 2:
+                    continue
+                try:
+                    out[parts[0]] = int(parts[1])
+                except ValueError:
+                    continue
+    except OSError:
+        return {}
+    return out
+
+
+def _read_memory_psi_avg10() -> dict:
+    result = {"some": 0.0, "full": 0.0}
+    try:
+        with open("/proc/pressure/memory", "r", encoding="utf-8", errors="ignore") as f:
+            for raw in f:
+                parts = raw.split()
+                if not parts:
+                    continue
+                scope = parts[0]
+                if scope not in result:
+                    continue
+                for token in parts[1:]:
+                    if token.startswith("avg10="):
+                        try:
+                            result[scope] = float(token.split("=", 1)[1])
+                        except ValueError:
+                            pass
+                        break
+    except OSError:
+        return result
+    return result
+
+
+def _read_tcp_retrans_segs() -> int:
+    try:
+        with open("/proc/net/snmp", "r", encoding="utf-8", errors="ignore") as f:
+            lines = [line.strip() for line in f if line.startswith("Tcp:")]
+    except OSError:
+        return 0
+    if len(lines) < 2:
+        return 0
+    headers = lines[-2].split()[1:]
+    values = lines[-1].split()[1:]
+    for key, value in zip(headers, values):
+        if key != "RetransSegs":
+            continue
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
+
+
+def _read_softirq_totals() -> dict:
+    totals = {}
+    try:
+        with open("/proc/softirqs", "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+    except OSError:
+        return totals
+    for raw in lines[1:]:
+        if ":" not in raw:
+            continue
+        left, right = raw.split(":", 1)
+        name = left.strip()
+        total = 0
+        for token in right.split():
+            if token.isdigit():
+                total += int(token)
+        if total:
+            totals[name] = total
+    return totals
+
+
+def _read_loadavg() -> dict:
+    try:
+        with open("/proc/loadavg", "r", encoding="utf-8", errors="ignore") as f:
+            parts = f.read().split()
+    except OSError:
+        return {"load1": 0.0, "runnable": 0, "threads": 0}
+    runnable = 0
+    threads = 0
+    if len(parts) >= 4 and "/" in parts[3]:
+        left, right = parts[3].split("/", 1)
+        try:
+            runnable = int(left)
+            threads = int(right)
+        except ValueError:
+            pass
+    try:
+        load1 = float(parts[0])
+    except (IndexError, ValueError):
+        load1 = 0.0
+    return {"load1": load1, "runnable": runnable, "threads": threads}
+
+
+def build_kernel_anomaly_mutations() -> list[dict]:
+    """Build lightweight Kernel DNA mutations from procfs symptom counters."""
+    mutations = []
+    vmstat = _read_key_value_proc_file("/proc/vmstat")
+    psi = _read_memory_psi_avg10()
+    loadavg = _read_loadavg()
+    retrans = _read_tcp_retrans_segs()
+    softirq = _read_softirq_totals()
+    cpu_count = max(1, psutil.cpu_count() or 1)
+
+    if float(psi.get("some") or 0.0) >= 1.0 or float(psi.get("full") or 0.0) >= 0.2:
+        mutations.append(
+            {
+                "type": "memory_pressure",
+                "severity": "high" if float(psi.get("full") or 0.0) >= 0.2 else "medium",
+                "message": f"Memory PSI pressure some10={float(psi.get('some') or 0.0):.2f} full10={float(psi.get('full') or 0.0):.2f}",
+                "position": 0.64,
+                "source": "/proc/pressure/memory",
+            }
+        )
+
+    if int(vmstat.get("pgmajfault") or 0) > 0 and int(vmstat.get("pgscan_direct") or 0) > 0:
+        mutations.append(
+            {
+                "type": "page_reclaim_pressure",
+                "severity": "medium",
+                "message": f"Major faults and direct reclaim observed pgmajfault={int(vmstat.get('pgmajfault') or 0)} pgscan_direct={int(vmstat.get('pgscan_direct') or 0)}",
+                "position": 0.72,
+                "source": "/proc/vmstat",
+            }
+        )
+
+    if retrans > 0:
+        mutations.append(
+            {
+                "type": "tcp_retransmission",
+                "severity": "medium",
+                "message": f"TCP retransmissions observed RetransSegs={retrans}",
+                "position": 0.34,
+                "source": "/proc/net/snmp",
+            }
+        )
+
+    net_softirq = int(softirq.get("NET_RX") or 0) + int(softirq.get("NET_TX") or 0)
+    timer_softirq = int(softirq.get("TIMER") or 0)
+    if net_softirq > 0 and timer_softirq > 0 and net_softirq > timer_softirq * 3:
+        mutations.append(
+            {
+                "type": "net_softirq_pressure",
+                "severity": "medium",
+                "message": f"NET softirq dominates timer path net={net_softirq} timer={timer_softirq}",
+                "position": 0.86,
+                "source": "/proc/softirqs",
+            }
+        )
+
+    if int(loadavg.get("runnable") or 0) > cpu_count * 2:
+        mutations.append(
+            {
+                "type": "scheduler_runqueue_pressure",
+                "severity": "medium",
+                "message": f"Runnable tasks exceed CPU capacity runnable={int(loadavg.get('runnable') or 0)} cpus={cpu_count}",
+                "position": 0.18,
+                "source": "/proc/loadavg",
+            }
+        )
+    return mutations[:6]
+
+
 def get_execution_context_data(syscall_names, map_interrupt_to_subsystem_fn, exec_context_prev):
     """Collect execution context payload used by Ring-1 visualization."""
     if platform.system() != "Linux":
@@ -381,5 +553,6 @@ def get_kernel_dna_data(get_real_system_calls_fn, map_syscall_to_subsystem_fn, m
     if locks and locks[0]["count"] > 100:
         mutations.append({"type": "lock_contention", "severity": "medium", "message": f'High lock contention: {locks[0]["count"]} active locks', "position": 0.7})
 
+    mutations.extend(build_kernel_anomaly_mutations())
     dna_data["mutations"] = mutations
     return dna_data

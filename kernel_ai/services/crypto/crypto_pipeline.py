@@ -211,10 +211,94 @@ def collect_crypto_realtime(crypto_prev, callbacks=None, psutil_module=None, log
         algorithm_requesters=algorithm_requesters,
     )
     entropy_cloud = collect_entropy_cloud_status_fn()
+    proc_crypto_names = {str(entry.get("name") or "").lower() for entry in proc_crypto_entries if isinstance(entry, dict)}
+    client_names = {str(row.get("name") or row.get("client") or "").lower() for row in kernel_clients if isinstance(row, dict)}
+    protocol_names = {str(item.get("protocol") or "").upper() for item in items}
+    process_names = {str(item.get("process") or "").lower() for item in items}
+    active_algos = {str(item.get("algorithm") or "").lower() for item in items}
+    entropy_ready = str((entropy_cloud or {}).get("crng_state") or "").lower() in {"ready", "initialized", "crng_ready"}
+
+    def _zone(zone_id, label, active, status, evidence, strength=0.5):
+        return {
+            "id": zone_id,
+            "label": label,
+            "active": bool(active),
+            "status": status,
+            "strength": round(max(0.0, min(1.0, float(strength))), 3),
+            "evidence": evidence,
+        }
+
+    protected_zones = [
+        _zone(
+            "tls",
+            "TLS / kTLS",
+            "TLS" in protocol_names,
+            "active" if "TLS" in protocol_names else "idle",
+            {"sessions": sum(1 for i in items if i.get("protocol") == "TLS"), "terminators": sorted(tls_listener_names)[:4]},
+            min(1.0, 0.35 + sum(1 for i in items if i.get("protocol") == "TLS") / 8.0),
+        ),
+        _zone(
+            "block",
+            "dm-crypt / block",
+            any("xts" in algo or "aes" in algo for algo in active_algos | proc_crypto_names),
+            "active" if any("xts" in algo or "aes" in algo for algo in active_algos | proc_crypto_names) else "unknown",
+            {"algorithms": sorted([x for x in (active_algos | proc_crypto_names) if x])[:5]},
+            0.72 if any("aes" in algo for algo in active_algos | proc_crypto_names) else 0.35,
+        ),
+        _zone(
+            "ipsec",
+            "IPsec / xfrm",
+            any("xfrm" in name or "ipsec" in name for name in process_names | client_names),
+            "active" if any("xfrm" in name or "ipsec" in name for name in process_names | client_names) else "idle",
+            {"clients": sorted([x for x in client_names if x])[:5]},
+            0.62,
+        ),
+        _zone(
+            "fscrypt",
+            "fscrypt",
+            any("fscrypt" in name for name in client_names | proc_crypto_names),
+            "active" if any("fscrypt" in name for name in client_names | proc_crypto_names) else "unknown",
+            {"clients": sorted([x for x in client_names if "fs" in x])[:4]},
+            0.48,
+        ),
+        _zone(
+            "keyring",
+            "keyring",
+            any("key" in name for name in client_names | process_names),
+            "active" if any("key" in name for name in client_names | process_names) else "idle",
+            {"signals": sorted([x for x in (client_names | process_names) if "key" in x])[:4]},
+            0.52,
+        ),
+        _zone(
+            "entropy",
+            "random / entropy",
+            entropy_ready,
+            "active" if entropy_ready else "weak signal",
+            {"crng_state": (entropy_cloud or {}).get("crng_state"), "pool_bits": (entropy_cloud or {}).get("entropy_pool_bits")},
+            0.86 if entropy_ready else 0.34,
+        ),
+        _zone(
+            "module_sig",
+            "module signature",
+            any("sha" in algo or "rsa" in algo or "ecdsa" in algo for algo in proc_crypto_names | active_algos),
+            "active" if any("sha" in algo or "rsa" in algo or "ecdsa" in algo for algo in proc_crypto_names | active_algos) else "unknown",
+            {"algorithms": sorted([x for x in (proc_crypto_names | active_algos) if "sha" in x or "rsa" in x or "ecdsa" in x])[:5]},
+            0.58,
+        ),
+        _zone(
+            "ima_evm",
+            "IMA / EVM",
+            any("ima" in name or "evm" in name for name in client_names | process_names),
+            "active" if any("ima" in name or "evm" in name for name in client_names | process_names) else "unknown",
+            {"signals": sorted([x for x in (client_names | process_names) if "ima" in x or "evm" in x])[:4]},
+            0.42,
+        ),
+    ]
 
     return {
         "items": items[:24],
         "processes": unique_processes[:16],
+        "protected_zones": protected_zones,
         "meta": {
             "ops_per_sec": ops_per_sec,
             "tls_sessions": sum(1 for i in items if i.get("protocol") == "TLS"),
@@ -228,6 +312,7 @@ def collect_crypto_realtime(crypto_prev, callbacks=None, psutil_module=None, log
             "entropy_cloud": entropy_cloud,
             "crypto_decision_pipeline": crypto_decision_pipelines.get("aes", {}),
             "crypto_decision_pipelines": crypto_decision_pipelines,
+            "protected_zones": protected_zones,
             "source": "live-heuristic-v2",
             "timestamp": datetime.utcnow().isoformat() + "Z",
         },

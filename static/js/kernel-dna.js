@@ -1,10 +1,10 @@
 // Kernel DNA Visualization - Double Helix Structure
 // Represents Linux kernel execution paths as DNA strands
-// Version: 21 — UX: enter/exit transitions, loading skeleton, staggered UI reveal
+// Version: 31 — stable process selector during refresh
 
-debugLog('🧬 kernel-dna.js v21: Script loading...');
-debugLog('🧬 kernel-dna.js v21: THREE available:', typeof THREE);
-debugLog('🧬 kernel-dna.js v21: Browser:', navigator.userAgent);
+debugLog('🧬 kernel-dna.js v31: Script loading...');
+debugLog('🧬 kernel-dna.js v31: THREE available:', typeof THREE);
+debugLog('🧬 kernel-dna.js v31: Browser:', navigator.userAgent);
 
 class KernelDNAVisualization {
     constructor() {
@@ -443,6 +443,32 @@ class KernelDNAVisualization {
         const yellowMarker = new THREE.Mesh(markerGeometry, markerMaterial);
         yellowMarker.position.copy(point);
         yellowMarker.position.y += 0.3; // Position above mutation
+
+        const labelText = String(mutationData.type || 'anomaly').replace(/_/g, ' ').toUpperCase().slice(0, 24);
+        const canvas = document.createElement('canvas');
+        canvas.width = 256;
+        canvas.height = 48;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = 'rgba(14, 17, 20, 0.72)';
+        ctx.fillRect(0, 6, canvas.width, 30);
+        ctx.strokeStyle = 'rgba(230, 193, 90, 0.7)';
+        ctx.strokeRect(0.5, 6.5, canvas.width - 1, 29);
+        ctx.fillStyle = '#E6C15A';
+        ctx.font = '18px "Share Tech Mono", monospace';
+        ctx.fillText(labelText, 10, 27);
+        const labelTexture = new THREE.CanvasTexture(canvas);
+        const labelMaterial = new THREE.SpriteMaterial({
+            map: labelTexture,
+            transparent: true,
+            depthTest: false,
+            depthWrite: false
+        });
+        const label = new THREE.Sprite(labelMaterial);
+        label.position.copy(point);
+        label.position.y += 0.56;
+        label.position.x += 0.38;
+        label.scale.set(1.35, 0.25, 1);
         
         // Store reference for cleanup and animation
         mutation.userData.isMutation = true;
@@ -451,6 +477,7 @@ class KernelDNAVisualization {
         
         group.add(mutation);
         group.add(yellowMarker);
+        group.add(label);
         return group;
     }
 
@@ -704,6 +731,11 @@ class KernelDNAVisualization {
             this.isAnimating = true;
             this.animate();
         }
+    }
+
+    isProcessSelectorActive() {
+        const active = document.activeElement;
+        return !!(active && active.closest && active.closest('.dna-process-selector'));
     }
 
     async renderTimeline() {
@@ -1717,18 +1749,17 @@ class KernelDNAVisualization {
             console.error('❌ Error during initial render:', error);
         }
         
-        // Auto-update every 5 seconds (less frequent to reduce jitter)
+        // Auto-update only timeline data. Full Kernel DNA rebuild recreates UI controls
+        // and interrupts typing in the process selector.
         this.updateInterval = setInterval(() => {
             if (this.isActive && !this.isUpdating) {
+                if (!this.timelineMode) return;
+                if (this.isProcessSelectorActive()) return;
                 this.isUpdating = true;
                 // Use requestAnimationFrame to sync update with rendering
                 requestAnimationFrame(async () => {
                     try {
-                        if (this.timelineMode) {
-                            await this.renderTimeline();
-                        } else {
-                            await this.render();
-                        }
+                        await this.renderTimeline();
                     } catch (error) {
                         console.error('❌ Error during update:', error);
                     } finally {
