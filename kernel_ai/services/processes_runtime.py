@@ -316,6 +316,46 @@ def _parse_tcp_snmp_counters() -> dict:
     return out
 
 
+def _build_procfs_map(sampled_pid_count: int, network_count: int, memory_visual: dict) -> dict:
+    """Build a lightweight /proc coverage map without walking every proc file."""
+    try:
+        proc_entries = os.listdir("/proc")
+    except OSError:
+        proc_entries = []
+    pid_dirs = [name for name in proc_entries if name.isdigit()]
+    known_sources = [
+        ("/proc/[pid]/status", "process", max(0, int(sampled_pid_count))),
+        ("/proc/[pid]/fd", "process", max(0, int(sampled_pid_count))),
+        ("/proc/[pid]/stat", "process", max(0, int(sampled_pid_count))),
+        ("/proc/net/tcp", "network", max(0, int(network_count))),
+        ("/proc/net/snmp", "network", 1),
+        ("/proc/meminfo", "memory", 1),
+        ("/proc/vmstat", "memory", len((memory_visual.get("kernel_memory_state") or {}).get("vmstat") or {})),
+        ("/proc/pressure/memory", "memory", len((memory_visual.get("kernel_memory_state") or {}).get("psi_memory") or {})),
+        ("/proc/sys/kernel/yama/ptrace_scope", "security", 1),
+        ("/proc/interrupts", "devices", 1),
+    ]
+    sources = []
+    for path, group, count in known_sources:
+        static_path = path.replace("[pid]", "1")
+        exists = path.startswith("/proc/[pid]") or os.path.exists(static_path)
+        sources.append(
+            {
+                "path": path,
+                "group": group,
+                "active": bool(exists and count >= 0),
+                "samples": int(count or 0),
+            }
+        )
+    return {
+        "pid_dirs": len(pid_dirs),
+        "top_level_entries": len(proc_entries),
+        "sampled_pids": max(0, int(sampled_pid_count)),
+        "coverage_note": "procfs atlas is sampled, not a full recursive /proc mirror",
+        "sources": sources,
+    }
+
+
 def _semantic_op(label: str, op_type: str, active: bool, weight: float, source: str, evidence: dict | None = None) -> dict:
     return {
         "label": label,
@@ -960,6 +1000,11 @@ def collect_processes_realtime():
                 "psi_factor": 1.0,
             },
         }
+    procfs_map = _build_procfs_map(
+        sampled_pid_count=len(nodes),
+        network_count=len(network_tracing),
+        memory_visual=memory_visual,
+    )
 
     return {
         "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -967,6 +1012,7 @@ def collect_processes_realtime():
         "network_tracing": network_tracing,
         "security_hooks": security_hooks,
         "semantic_ops": semantic_ops,
+        "procfs_map": procfs_map,
         "neural_graph": {"nodes": nodes, "edges": edges},
         "memory_visual": memory_visual,
         "meta": {

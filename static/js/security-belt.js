@@ -1,7 +1,7 @@
 // Security Subsystem Visualization (Stage 4: Kernel Security Core)
-// Version: 11
+// Version: 13
 
-debugLog('🛡️ security-belt.js v11: Script loading...');
+debugLog('🛡️ security-belt.js v13: Script loading...');
 
 class SecuritySubsystemVisualization {
     constructor() {

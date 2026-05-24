@@ -1,7 +1,7 @@
 // Processes Subsystem Visualization
-// Version: 20
+// Version: 27
 
-debugLog('🧠 processes-belt.js v20: Script loading...');
+debugLog('🧠 processes-belt.js v27: Script loading...');
 
 class ProcessesSubsystemVisualization {
     constructor() {
@@ -85,7 +85,8 @@ class ProcessesSubsystemVisualization {
         const modes = [
             { key: 'microscope', label: 'MICROSCOPE' },
             { key: 'temporal', label: '3-LAYER GRAPH' },
-            { key: 'radial', label: 'RADIAL GRAPH' }
+            { key: 'radial', label: 'RADIAL GRAPH' },
+            { key: 'wireframe', label: 'WIREFRAME PROC' }
         ];
         modes.forEach((m) => {
             const btn = document.createElement('button');
@@ -106,7 +107,7 @@ class ProcessesSubsystemVisualization {
     }
 
     setLayoutMode(modeKey) {
-        this.layoutMode = ['temporal', 'radial', 'microscope'].includes(modeKey) ? modeKey : 'temporal';
+        this.layoutMode = ['temporal', 'radial', 'microscope', 'wireframe'].includes(modeKey) ? modeKey : 'temporal';
         this.modeButtons.forEach((btn, key) => {
             const active = key === this.layoutMode;
             btn.style.background = active ? 'rgba(32, 52, 81, 0.92)' : 'rgba(8,12,18,0.86)';
@@ -522,12 +523,14 @@ class ProcessesSubsystemVisualization {
             return;
         }
 
-        this.ctx.save();
-        this.ctx.beginPath();
-        this.ctx.rect(x + 2, innerY, w - 4, innerH);
-        this.ctx.clip();
-        this.drawPerspectiveGrid(x + 4, innerY + innerH * 0.5, w - 8, innerH * 0.48);
-        this.ctx.restore();
+        if (this.layoutMode !== 'wireframe') {
+            this.ctx.save();
+            this.ctx.beginPath();
+            this.ctx.rect(x + 2, innerY, w - 4, innerH);
+            this.ctx.clip();
+            this.drawPerspectiveGrid(x + 4, innerY + innerH * 0.5, w - 8, innerH * 0.48);
+            this.ctx.restore();
+        }
 
         if (this.layoutMode === 'radial') {
             const pos = new Map();
@@ -536,6 +539,10 @@ class ProcessesSubsystemVisualization {
         }
         if (this.layoutMode === 'microscope') {
             this.drawMicroscopeGraph(nodes, edges, x, innerY, w, innerH);
+            return;
+        }
+        if (this.layoutMode === 'wireframe') {
+            this.drawWireframeProcGraph(nodes, edges, x, innerY, w, innerH);
             return;
         }
 
@@ -1896,6 +1903,230 @@ class ProcessesSubsystemVisualization {
 
     drawMicroscopeGraph(nodes, edges, x, y, w, h) {
         this.drawReferenceSemanticKernelGraph(nodes, edges, x, y, w, h);
+    }
+
+    projectWireframePoint(px, py, pz, originX, originY, scale) {
+        return {
+            x: originX + (px - py) * scale,
+            y: originY + (px + py) * scale * 0.44 - pz * scale
+        };
+    }
+
+    drawWireframeCube(cx, cy, cz, size, originX, originY, scale, color, alpha, lineWidth) {
+        const h = size * 0.5;
+        const vertices = [
+            [-h, -h, -h], [h, -h, -h], [h, h, -h], [-h, h, -h],
+            [-h, -h, h], [h, -h, h], [h, h, h], [-h, h, h]
+        ].map(([vx, vy, vz]) => this.projectWireframePoint(cx + vx, cy + vy, cz + vz, originX, originY, scale));
+        const edges = [
+            [0, 1], [1, 2], [2, 3], [3, 0],
+            [4, 5], [5, 6], [6, 7], [7, 4],
+            [0, 4], [1, 5], [2, 6], [3, 7]
+        ];
+        this.ctx.globalAlpha = alpha;
+        this.ctx.strokeStyle = color;
+        this.ctx.lineWidth = lineWidth;
+        edges.forEach(([a, b]) => {
+            this.ctx.beginPath();
+            this.ctx.moveTo(vertices[a].x, vertices[a].y);
+            this.ctx.lineTo(vertices[b].x, vertices[b].y);
+            this.ctx.stroke();
+        });
+        this.ctx.globalAlpha = 1;
+        return vertices.reduce(
+            (box, point) => ({
+                minX: Math.min(box.minX, point.x),
+                minY: Math.min(box.minY, point.y),
+                maxX: Math.max(box.maxX, point.x),
+                maxY: Math.max(box.maxY, point.y)
+            }),
+            { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
+        );
+    }
+
+    drawProcfsCoveragePanel(x, y, w, h) {
+        const procfs = this.telemetry?.procfs_map || {};
+        const sources = Array.isArray(procfs.sources) ? procfs.sources : [];
+        this.drawPanel(x, y, w, h, '', { alpha: 0.66, showTitle: false });
+        this.ctx.fillStyle = 'rgba(210, 230, 245, 0.94)';
+        this.ctx.font = '9px "Share Tech Mono", monospace';
+        this.ctx.fillText('PROCFS COVERAGE', x + 12, y + 18);
+        this.ctx.fillStyle = 'rgba(140, 170, 196, 0.86)';
+        this.ctx.font = '8px "Share Tech Mono", monospace';
+        this.ctx.fillText(`/proc dirs ${Number(procfs.pid_dirs || 0)} · sampled ${Number(procfs.sampled_pids || 0)}`, x + 12, y + 34);
+
+        const groupColor = (group) => {
+            if (group === 'process') return 'rgba(170, 212, 245, 0.82)';
+            if (group === 'network') return 'rgba(126, 232, 255, 0.82)';
+            if (group === 'memory') return 'rgba(126, 242, 210, 0.82)';
+            if (group === 'security') return 'rgba(255, 210, 128, 0.82)';
+            return 'rgba(180, 190, 210, 0.72)';
+        };
+        sources.slice(0, 8).forEach((src, idx) => {
+            const yy = y + 52 + idx * 15;
+            const active = src.active !== false;
+            this.ctx.strokeStyle = active ? groupColor(String(src.group || '')) : 'rgba(90, 105, 122, 0.36)';
+            this.ctx.strokeRect(x + 12.5, yy - 8.5, 8, 8);
+            this.ctx.fillStyle = active ? groupColor(String(src.group || '')) : 'rgba(90, 105, 122, 0.36)';
+            this.ctx.fillRect(x + 15, yy - 6, 3, 3);
+            this.ctx.fillStyle = active ? 'rgba(190, 216, 238, 0.86)' : 'rgba(120, 140, 158, 0.62)';
+            this.ctx.fillText(`${String(src.path || '').replace('/proc/', '')}`.slice(0, 26), x + 28, yy);
+            this.ctx.fillStyle = 'rgba(132, 158, 184, 0.78)';
+            this.ctx.fillText(String(src.samples || 0), x + w - 32, yy);
+        });
+        this.ctx.fillStyle = 'rgba(120, 150, 176, 0.68)';
+        this.ctx.font = '7px "Share Tech Mono", monospace';
+        this.ctx.fillText('sampled atlas · not recursive full procfs mirror', x + 12, y + h - 10);
+    }
+
+    drawWireframeProcGraph(nodes, edges, x, y, w, h) {
+        this.nodeHitAreas = [];
+        const originX = x + w * 0.5;
+        const originY = y + h * 0.43;
+        const scale = Math.max(20, Math.min(34, w / 42));
+        const visibleNodes = nodes.slice(0, 24);
+        const cols = 7;
+        const pos = new Map();
+        const ghostCubes = [];
+        const bg = this.ctx.createRadialGradient(x + w * 0.5, y + h * 0.42, 0, x + w * 0.5, y + h * 0.42, Math.max(w, h) * 0.66);
+        bg.addColorStop(0, 'rgba(20, 28, 38, 0.96)');
+        bg.addColorStop(0.6, 'rgba(7, 12, 18, 0.96)');
+        bg.addColorStop(1, 'rgba(2, 5, 10, 0.98)');
+        this.ctx.fillStyle = bg;
+        this.ctx.fillRect(x + 2, y, w - 4, h);
+        this.ctx.strokeStyle = 'rgba(120, 165, 205, 0.18)';
+        this.ctx.strokeRect(x + 2.5, y + 0.5, w - 5, h - 1);
+        this.drawPanel(x + 12, y + 12, Math.min(370, w * 0.34), 76, '', { alpha: 0.72, showTitle: false });
+        this.ctx.fillStyle = 'rgba(230, 240, 252, 0.92)';
+        this.ctx.font = '12px "Share Tech Mono", monospace';
+        this.ctx.fillText('WIREFRAME PROC ARCHITECTURE', x + 26, y + 34);
+        this.ctx.fillStyle = 'rgba(154, 190, 220, 0.86)';
+        this.ctx.font = '9px "Share Tech Mono", monospace';
+        this.ctx.fillText('processes as transparent cubes · links: syscalls / ipc / net / vfs', x + 26, y + 52);
+        this.ctx.fillText(`nodes ${visibleNodes.length} · edges ${edges.length} · hover/click cube to pin`, x + 26, y + 68);
+
+        // Isometric construction guide lines.
+        this.ctx.globalAlpha = 0.28;
+        this.ctx.strokeStyle = 'rgba(118, 184, 224, 0.16)';
+        this.ctx.lineWidth = 1;
+        for (let i = -10; i <= 10; i += 1) {
+            const a = this.projectWireframePoint(i, -6, -0.4, originX, originY, scale);
+            const b = this.projectWireframePoint(i, 10, -0.4, originX, originY, scale);
+            const c = this.projectWireframePoint(-6, i, -0.4, originX, originY, scale);
+            const d = this.projectWireframePoint(10, i, -0.4, originX, originY, scale);
+            this.ctx.beginPath();
+            this.ctx.moveTo(a.x, a.y);
+            this.ctx.lineTo(b.x, b.y);
+            this.ctx.moveTo(c.x, c.y);
+            this.ctx.lineTo(d.x, d.y);
+            this.ctx.stroke();
+        }
+        this.ctx.globalAlpha = 1;
+
+        const procfsSources = Array.isArray(this.telemetry?.procfs_map?.sources) ? this.telemetry.procfs_map.sources : [];
+        procfsSources.slice(0, 10).forEach((src, idx) => {
+            const group = String(src.group || 'procfs');
+            const layer = group === 'process' ? -0.65 : (group === 'network' ? 0.25 : (group === 'memory' ? 0.9 : 1.45));
+            const gx = -4.6 + (idx % 5) * 1.18 + (idx % 2) * 0.28;
+            const gy = 3.1 + Math.floor(idx / 5) * 1.12;
+            const gz = 0.15 + layer + Math.min(1.2, Number(src.samples || 0) / 12);
+            ghostCubes.push({
+                x: gx,
+                y: gy,
+                z: gz,
+                size: 0.42 + Math.min(0.38, Number(src.samples || 0) / 50),
+                group,
+                label: String(src.path || '').replace('/proc/', ''),
+            });
+        });
+        ghostCubes.forEach((cube, idx) => {
+            const color = cube.group === 'network' ? 'rgba(126, 232, 255, 0.34)'
+                : (cube.group === 'memory' ? 'rgba(126, 242, 210, 0.32)'
+                    : (cube.group === 'security' ? 'rgba(255, 210, 128, 0.32)' : 'rgba(170, 212, 245, 0.28)'));
+            this.drawWireframeCube(cube.x, cube.y, cube.z, cube.size, originX, originY, scale, color, 0.34, 0.75);
+            if (idx < 4) {
+                const p = this.projectWireframePoint(cube.x, cube.y, cube.z + cube.size * 0.5, originX, originY, scale);
+                this.ctx.fillStyle = 'rgba(132, 158, 184, 0.58)';
+                this.ctx.font = '7px "Share Tech Mono", monospace';
+                this.ctx.fillText(cube.label.slice(0, 18), p.x + 5, p.y - 3);
+            }
+        });
+        [
+            { x: -5.2, y: -3.8, z: 0.2, size: 1.9 },
+            { x: 4.8, y: -2.9, z: 0.6, size: 2.2 },
+            { x: 5.6, y: 4.1, z: 0.1, size: 1.8 },
+            { x: -3.8, y: 5.2, z: 0.4, size: 1.5 },
+        ].forEach((cube) => {
+            this.drawWireframeCube(cube.x, cube.y, cube.z, cube.size, originX, originY, scale, 'rgba(135, 170, 200, 0.16)', 0.22, 0.7);
+        });
+
+        visibleNodes.forEach((node, idx) => {
+            const pid = Number(node.pid || 0);
+            const col = idx % cols;
+            const row = Math.floor(idx / cols);
+            const pressure = Math.max(0, Math.min(100, Number(node.syscall_pressure || 0)));
+            const fd = Number(node.fd_count || 0);
+            const conns = Number(node.connections || 0);
+            const px = (col - (cols - 1) / 2) * 1.32 + (row % 2) * 0.46;
+            const py = row * 1.16 - 2.35;
+            const pz = 0.25 + Math.min(2.4, pressure / 44 + fd / 90 + conns / 7);
+            const size = 0.62 + Math.min(0.7, pressure / 170 + fd / 190);
+            const screen = this.projectWireframePoint(px, py, pz, originX, originY, scale);
+            pos.set(pid, { x: px, y: py, z: pz, screenX: screen.x, screenY: screen.y, size, node, idx });
+        });
+
+        edges.slice(0, 120).forEach((edge, idx) => {
+            const s = pos.get(Number(edge.source || 0));
+            const t = pos.get(Number(edge.target || 0));
+            if (!s || !t) return;
+            const sp = this.projectWireframePoint(s.x, s.y, s.z, originX, originY, scale);
+            const tp = this.projectWireframePoint(t.x, t.y, t.z, originX, originY, scale);
+            const color = this.edgeColor(String(edge.type || ''));
+            this.ctx.globalAlpha = 0.18 + Math.min(0.32, Number(edge.weight || 0) * 0.22);
+            this.drawCurvedStroke(sp.x, sp.y, tp.x, tp.y, color, 0.6, idx * 13, false);
+            this.ctx.globalAlpha = 1;
+        });
+
+        const sorted = Array.from(pos.values()).sort((a, b) => (a.x + a.y + a.z) - (b.x + b.y + b.z));
+        sorted.forEach((item) => {
+            const node = item.node;
+            const pid = Number(node.pid || 0);
+            const pressure = Math.max(0, Math.min(100, Number(node.syscall_pressure || 0)));
+            const active = pid === this.selectedNodePid || pid === this.hoveredNodePid;
+            const color = pressure >= 70 ? 'rgba(255, 142, 128, 0.72)' : 'rgba(170, 212, 245, 0.5)';
+            const accent = pressure >= 70 ? 'rgba(255, 120, 110, 0.88)' : (active ? 'rgba(255, 230, 148, 0.92)' : 'rgba(120, 190, 230, 0.42)');
+            const box = this.drawWireframeCube(item.x, item.y, item.z, item.size, originX, originY, scale, color, active ? 0.96 : 0.58, active ? 1.6 : 0.95);
+            if (active || pressure >= 70) {
+                this.drawWireframeCube(item.x, item.y, item.z, item.size * 1.08, originX, originY, scale, accent, active ? 0.9 : 0.56, 1.15);
+            }
+            const cx = (box.minX + box.maxX) * 0.5;
+            const cy = (box.minY + box.maxY) * 0.5;
+            this.nodeHitAreas.push({ x: cx, y: cy, r: Math.max(16, (box.maxX - box.minX + box.maxY - box.minY) * 0.18), pid });
+            if (active) {
+                this.ctx.fillStyle = 'rgba(5, 10, 16, 0.84)';
+                this.ctx.fillRect(box.maxX + 8, box.minY - 4, 174, 42);
+                this.ctx.strokeStyle = 'rgba(150, 204, 240, 0.48)';
+                this.ctx.strokeRect(box.maxX + 8.5, box.minY - 3.5, 173, 41);
+                this.ctx.fillStyle = 'rgba(220, 236, 250, 0.94)';
+                this.ctx.font = '9px "Share Tech Mono", monospace';
+                this.ctx.fillText(`${String(node.name || 'proc').slice(0, 16)}:${pid}`, box.maxX + 16, box.minY + 11);
+                this.ctx.fillText(`pressure ${pressure.toFixed(0)} · fd ${Number(node.fd_count || 0)} · net ${Number(node.connections || 0)}`, box.maxX + 16, box.minY + 27);
+            }
+        });
+
+        this.drawPanel(x + w - 238, y + h - 116, 218, 78, '', { alpha: 0.66, showTitle: false });
+        this.ctx.fillStyle = 'rgba(210, 230, 245, 0.9)';
+        this.ctx.font = '9px "Share Tech Mono", monospace';
+        this.ctx.fillText('WIRE LEGEND', x + w - 224, y + h - 96);
+        [
+            ['cube size', 'pressure + fd'],
+            ['height', 'semantic activity'],
+            ['links', 'syscalls/ipc/net/vfs']
+        ].forEach((row, idx) => {
+            this.ctx.fillStyle = 'rgba(140, 170, 196, 0.86)';
+            this.ctx.fillText(`${row[0]}: ${row[1]}`, x + w - 224, y + h - 78 + idx * 15);
+        });
+        this.drawProcfsCoveragePanel(x + 18, y + h - 178, 268, 142);
     }
 
     drawTopStats(x, y, w, h) {

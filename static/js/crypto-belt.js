@@ -1,7 +1,7 @@
 // Crypto subsystem realtime interaction visualization
-// Version: 4
+// Version: 10
 
-debugLog('🔐 crypto-belt.js v4: Script loading...');
+debugLog('🔐 crypto-belt.js v10: Script loading...');
 
 class CryptoSubsystemVisualization {
     constructor() {
@@ -546,6 +546,156 @@ class CryptoSubsystemVisualization {
         });
     }
 
+    getCryptoLayout(width, height) {
+        const rightColumnX = Math.floor(width * 0.67);
+        const rightColumnW = Math.max(360, width - rightColumnX - 16);
+        const leftColumnX = 26;
+        const leftColumnW = Math.max(300, Math.floor(width * 0.26));
+        const middleColumnX = Math.max(
+            leftColumnX + leftColumnW + 18,
+            Math.floor(width * 0.38)
+        );
+        const middleColumnW = Math.max(340, rightColumnX - middleColumnX - 16);
+        const flowBottomY = 530;
+        const lowerRowY = Math.max(flowBottomY + 36, Math.floor(height * 0.57));
+        const lowerRowH = Math.max(232, Math.min(286, height - lowerRowY - 20));
+        const protectedZonesY = 128;
+        const protectedZonesH = 168;
+        const algoCompetitionY = protectedZonesY + protectedZonesH + 14;
+        return {
+            rightColumnX,
+            rightColumnW,
+            leftColumnX,
+            leftColumnW,
+            middleColumnX,
+            middleColumnW,
+            lowerRowY,
+            lowerRowH,
+            protectedZonesY,
+            protectedZonesH,
+            algoCompetitionY,
+            materialCardH: lowerRowH
+        };
+    }
+
+    drawProtectedKernelZones(layer, payload, width, height) {
+        const zones = Array.isArray(payload?.protected_zones)
+            ? payload.protected_zones
+            : (Array.isArray(payload?.meta?.protected_zones) ? payload.meta.protected_zones : []);
+        const layout = this.getCryptoLayout(width, height);
+        const panelX = layout.rightColumnX;
+        const panelY = layout.protectedZonesY;
+        const panelW = layout.rightColumnW;
+        const panelH = layout.protectedZonesH;
+        const cx = panelX + panelW * 0.5;
+        const cy = panelY + 70;
+        const radius = Math.min(40, panelW * 0.18);
+        const panel = layer.append('g').attr('class', 'crypto-protected-zones');
+
+        panel.append('rect')
+            .attr('x', panelX)
+            .attr('y', panelY)
+            .attr('width', panelW)
+            .attr('height', panelH)
+            .attr('rx', 10)
+            .style('fill', 'rgba(7, 10, 16, 0.78)')
+            .style('stroke', 'rgba(150, 178, 220, 0.34)')
+            .style('stroke-width', 1);
+        panel.append('text')
+            .attr('x', panelX + 14)
+            .attr('y', panelY + 22)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '10px')
+            .style('fill', '#d7ddea')
+            .text('PROTECTED KERNEL ZONES');
+        panel.append('text')
+            .attr('x', panelX + 14)
+            .attr('y', panelY + 38)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '8px')
+            .style('fill', '#8795aa')
+            .text('segmented shield: protected kernel paths');
+
+        const activeCount = zones.filter((z) => z.active).length;
+        const weakCount = zones.filter((z) => !z.active || String(z.status || '').includes('weak')).length;
+        panel.append('text')
+            .attr('x', panelX + panelW - 116)
+            .attr('y', panelY + 22)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '8px')
+            .style('fill', '#9fb1c8')
+            .text(`protected ${activeCount} · weak ${weakCount}`);
+
+        panel.append('circle')
+            .attr('cx', cx)
+            .attr('cy', cy)
+            .attr('r', radius * 0.56)
+            .style('fill', 'rgba(12, 18, 26, 0.92)')
+            .style('stroke', 'rgba(214, 225, 242, 0.22)')
+            .style('stroke-width', 1);
+
+        const safeZones = zones.length ? zones : [
+            { id: 'tls', label: 'TLS / kTLS', active: false, status: 'unknown', strength: 0.2 },
+            { id: 'block', label: 'dm-crypt / block', active: false, status: 'unknown', strength: 0.2 },
+            { id: 'entropy', label: 'random / entropy', active: false, status: 'unknown', strength: 0.2 }
+        ];
+        const arc = d3.arc().innerRadius(radius * 0.64).outerRadius(radius).cornerRadius(3);
+        const angleStep = (Math.PI * 2) / Math.max(1, safeZones.length);
+        const colorFor = (zone) => {
+            const status = String(zone.status || '');
+            if (zone.active && status === 'active') return '#78efc1';
+            if (zone.active) return '#bfe9ff';
+            if (status.includes('weak')) return '#ffd279';
+            return '#7d899a';
+        };
+        const shield = panel.append('g').attr('transform', `translate(${cx},${cy})`);
+        safeZones.forEach((zone, idx) => {
+            const start = -Math.PI / 2 + idx * angleStep + 0.03;
+            const end = start + angleStep - 0.06;
+            const color = colorFor(zone);
+            shield.append('path')
+                .attr('d', arc({ startAngle: start, endAngle: end }))
+                .style('fill', color)
+                .style('fill-opacity', zone.active ? (0.18 + Number(zone.strength || 0.4) * 0.42) : 0.08)
+                .style('stroke', color)
+                .style('stroke-opacity', zone.active ? 0.86 : 0.32)
+                .style('stroke-width', zone.active ? 1.4 : 0.8);
+        });
+        shield.append('text')
+            .attr('text-anchor', 'middle')
+            .attr('y', -3)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', '#d7ddea')
+            .text('KERNEL');
+        shield.append('text')
+            .attr('text-anchor', 'middle')
+            .attr('y', 11)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '8px')
+            .style('fill', '#92a2b8')
+            .text('CRYPTO SHIELD');
+
+        safeZones.slice(0, 5).forEach((zone, idx) => {
+            const rowY = panelY + 104 + idx * 12;
+            const color = colorFor(zone);
+            panel.append('rect')
+                .attr('x', panelX + 14)
+                .attr('y', rowY - 6)
+                .attr('width', 7)
+                .attr('height', 7)
+                .style('fill', color)
+                .style('opacity', zone.active ? 0.9 : 0.38);
+            panel.append('text')
+                .attr('x', panelX + 28)
+                .attr('y', rowY)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '9px')
+                .style('fill', zone.active ? '#cdd8e8' : '#78869a')
+                .text(`${String(zone.label || zone.id).slice(0, 28)} · ${String(zone.status || 'unknown').toUpperCase()}`);
+        });
+    }
+
     getCompetitionPayload(meta) {
         const selected = String(this.selectedCompetitionAlgorithm || 'AES').toLowerCase();
         const groups = meta?.algorithm_competitions || null;
@@ -598,16 +748,21 @@ class CryptoSubsystemVisualization {
         };
     }
 
-    drawAlgorithmCompetition(layer, meta, width) {
+    drawAlgorithmCompetition(layer, meta, width, height) {
         const comp = this.getCompetitionPayload(meta);
         const request = String(comp.request || this.selectedCompetitionAlgorithm || 'AES').toUpperCase();
         const impls = Array.isArray(comp.implementations) ? comp.implementations.slice(0, 5) : [];
         const selectedName = String(comp?.selected?.name || '').toLowerCase();
 
-        const panelX = Math.floor(width * 0.73);
-        const panelY = 130;
-        const panelW = Math.max(260, Math.floor(width * 0.24));
-        const panelH = Math.max(220, 170 + impls.length * 30);
+        const layout = this.getCryptoLayout(width, height);
+        const panelX = layout.rightColumnX;
+        const panelY = layout.algoCompetitionY;
+        const panelW = layout.rightColumnW;
+        const listRowStep = 18;
+        const panelH = Math.max(
+            196,
+            Math.min(layout.lowerRowY - panelY - 12, 118 + impls.length * listRowStep)
+        );
 
         const panel = layer.append('g').attr('class', 'crypto-algo-competition');
         panel.append('rect')
@@ -670,7 +825,7 @@ class CryptoSubsystemVisualization {
             .style('fill', '#99a8bd')
             .text(`request ${request} -> lookup -> pick max priority`);
 
-        const stepsY = panelY + 92;
+        const stepsY = panelY + 80;
         panel.append('text')
             .attr('x', panelX + 14)
             .attr('y', stepsY)
@@ -683,19 +838,19 @@ class CryptoSubsystemVisualization {
             .attr('x1', panelX + 20)
             .attr('y1', stepsY + 8)
             .attr('x2', panelX + 20)
-            .attr('y2', stepsY + 28)
+            .attr('y2', stepsY + 22)
             .style('stroke', '#7c8ca2')
             .style('stroke-width', 1);
 
         panel.append('text')
             .attr('x', panelX + 14)
-            .attr('y', stepsY + 42)
+            .attr('y', stepsY + 34)
             .style('font-family', 'Share Tech Mono, monospace')
             .style('font-size', '10px')
             .style('fill', '#b3bece')
             .text('CRYPTO LOOKUP');
 
-        const baseY = stepsY + 64;
+        const baseY = stepsY + 42;
         if (!impls.length) {
             panel.append('text')
                 .attr('x', panelX + 14)
@@ -708,7 +863,7 @@ class CryptoSubsystemVisualization {
         }
 
         impls.forEach((impl, idx) => {
-            const y = baseY + idx * 30;
+            const y = baseY + idx * listRowStep;
             const name = String(impl.name || 'unknown');
             const prio = Number(impl.priority || 0);
             const isSelected = name.toLowerCase() === selectedName;
@@ -717,7 +872,7 @@ class CryptoSubsystemVisualization {
                 .attr('x', panelX + 12)
                 .attr('y', y - 12)
                 .attr('width', panelW - 24)
-                .attr('height', 22)
+                .attr('height', 16)
                 .attr('rx', 5)
                 .style('fill', isSelected ? 'rgba(20, 39, 29, 0.9)' : 'rgba(14, 18, 24, 0.85)')
                 .style('stroke', isSelected ? 'rgba(114, 242, 173, 0.8)' : 'rgba(150, 162, 182, 0.28)')
@@ -725,7 +880,7 @@ class CryptoSubsystemVisualization {
 
             panel.append('text')
                 .attr('x', panelX + 20)
-                .attr('y', y + 2)
+                .attr('y', y + 1)
                 .style('font-family', 'Share Tech Mono, monospace')
                 .style('font-size', '10px')
                 .style('fill', isSelected ? '#9effca' : '#c5cedb')
@@ -733,8 +888,8 @@ class CryptoSubsystemVisualization {
 
             if (isSelected) {
                 panel.append('text')
-                    .attr('x', panelX + panelW - 70)
-                    .attr('y', y + 2)
+                    .attr('x', panelX + panelW - 78)
+                    .attr('y', y + 1)
                     .style('font-family', 'Share Tech Mono, monospace')
                     .style('font-size', '9px')
                     .style('fill', '#9effca')
@@ -751,10 +906,11 @@ class CryptoSubsystemVisualization {
         const selectedDriver = String(pipeline.selected_driver || 'unknown');
         const fallbackDriver = String(pipeline.fallback_driver || 'none');
         const fallbackActive = Boolean(pipeline.fallback_active);
-        const panelX = Math.floor(width * 0.73);
-        const panelW = Math.max(260, Math.floor(width * 0.24));
-        const panelY = Math.max(450, Math.floor(height * 0.52));
-        const panelH = 278;
+        const layout = this.getCryptoLayout(width, height);
+        const panelX = layout.rightColumnX;
+        const panelW = layout.rightColumnW;
+        const panelY = layout.lowerRowY;
+        const panelH = layout.lowerRowH;
 
         const panel = layer.append('g').attr('class', 'crypto-decision-pipeline');
         panel.append('rect')
@@ -817,24 +973,25 @@ class CryptoSubsystemVisualization {
                     });
                 row.append('rect')
                     .attr('x', panelX + 10)
-                    .attr('y', panelY + 46 + idx * 14)
+                    .attr('y', panelY + 46 + idx * 18)
                     .attr('width', panelW - 20)
-                    .attr('height', 13)
+                    .attr('height', 16)
                     .attr('rx', 3)
                 .style('fill', isActiveRequester ? 'rgba(37, 58, 92, 0.62)' : 'transparent')
                 .style('stroke', isActiveRequester ? 'rgba(120, 170, 245, 0.72)' : 'transparent')
                     .style('stroke-width', 0.8);
                 row.append('text')
                     .attr('x', panelX + 14)
-                    .attr('y', panelY + 56 + idx * 14)
+                    .attr('y', panelY + 58 + idx * 18)
                     .style('font-family', 'Share Tech Mono, monospace')
-                    .style('font-size', '9px')
+                    .style('font-size', '10px')
                     .style('fill', isActiveRequester ? '#e1eeff' : (idx === 0 ? '#cce2ff' : '#95a6bc'))
                     .text(`- ${reqName} [${reqKind}] (${reqScore})`);
             });
         }
 
-        const stepsBaseY = panelY + 102;
+        const stepsBaseY = panelY + 108;
+        const lineStep = 22;
         const lines = [
             `request (${request}) from ${String(pipeline.request_origin || 'user/kernel request')}`,
             `tfm lookup: ${String(pipeline.tfm_lookup || 'crypto_lookup(?)')}`,
@@ -847,16 +1004,16 @@ class CryptoSubsystemVisualization {
         lines.forEach((line, idx) => {
             panel.append('text')
                 .attr('x', panelX + 14)
-                .attr('y', stepsBaseY + idx * 22)
+                .attr('y', stepsBaseY + idx * lineStep)
                 .style('font-family', 'Share Tech Mono, monospace')
                 .style('font-size', '10px')
-                .style('fill', idx === 5 ? '#a4ffcf' : '#b8c3d4')
+                .style('fill', line.startsWith('selected') ? '#a4ffcf' : '#b8c3d4')
                 .text(line);
         });
 
         panel.append('text')
             .attr('x', panelX + 14)
-            .attr('y', panelY + 240)
+            .attr('y', panelY + panelH - 24)
             .style('font-family', 'Share Tech Mono, monospace')
             .style('font-size', '10px')
             .style('fill', fallbackActive ? '#ffb0b0' : '#95a6bc')
@@ -864,7 +1021,7 @@ class CryptoSubsystemVisualization {
 
         panel.append('text')
             .attr('x', panelX + 14)
-            .attr('y', panelY + 258)
+            .attr('y', panelY + panelH - 10)
             .style('font-family', 'Share Tech Mono, monospace')
             .style('font-size', '9px')
             .style('fill', '#8393a8')
@@ -942,13 +1099,11 @@ class CryptoSubsystemVisualization {
         const requesters = Array.isArray(pipeline?.requesters) ? pipeline.requesters : [];
         const topRequester = requesters.length ? requesters[0] : null;
 
-        const rightColumnX = Math.floor(width * 0.73);
-        const cardX = Math.floor(width * 0.41) + 10;
-        const maxSafeW = Math.max(300, rightColumnX - cardX - 16);
-        const cardW = Math.max(330, Math.min(Math.min(470, Math.floor(width * 0.3)), maxSafeW));
-        const cardH = 226;
-        const decisionPanelY = Math.max(450, Math.floor(height * 0.52));
-        const cardY = decisionPanelY;
+        const layout = this.getCryptoLayout(width, height);
+        const cardX = layout.middleColumnX;
+        const cardW = layout.middleColumnW;
+        const cardH = layout.materialCardH;
+        const cardY = layout.lowerRowY;
 
         const card = layer.append('g').attr('class', 'crypto-material-card');
         card.append('rect')
@@ -1088,15 +1243,12 @@ class CryptoSubsystemVisualization {
     drawEntropyCloud(layer, meta, width, height) {
         const entropy = this.getEntropyPayload(meta);
         const sources = Array.isArray(entropy.sources) ? entropy.sources.slice(0, 4) : [];
-        const rightColumnX = Math.floor(width * 0.73);
-        const panelX = Math.floor(width * 0.41) + 10;
-        const maxSafeW = Math.max(300, rightColumnX - panelX - 16);
-        const panelW = Math.max(330, Math.min(Math.min(470, Math.floor(width * 0.3)), maxSafeW));
-        const decisionPanelY = Math.max(450, Math.floor(height * 0.52));
-        const materialCardH = 226;
-        const panelY = decisionPanelY + materialCardH + 16;
-        const maxPanelH = Math.max(120, height - panelY - 22);
-        const panelH = Math.min(238, maxPanelH);
+        const layout = this.getCryptoLayout(width, height);
+        const panelX = layout.middleColumnX;
+        const panelW = layout.middleColumnW;
+        const panelY = layout.lowerRowY + layout.materialCardH + 16;
+        const maxPanelH = Math.max(140, height - panelY - 22);
+        const panelH = Math.min(248, maxPanelH);
         const panel = layer.append('g').attr('class', 'crypto-entropy-cloud');
 
         panel.append('rect')
@@ -1268,16 +1420,14 @@ class CryptoSubsystemVisualization {
         const syncAsync = stage.sync_async || {};
         const offload = Array.isArray(stage.hw_offload) ? stage.hw_offload.slice(0, 5) : [];
 
-        const panelW = Math.max(270, Math.floor(width * 0.23));
-        const baseX = 26;
+        const layout = this.getCryptoLayout(width, height);
+        const panelW = layout.leftColumnW;
+        const baseX = layout.leftColumnX;
         const gap = 12;
         const clientsH = 134;
         const queueH = 86;
         const offloadH = 116;
-        const totalH = clientsH + queueH + offloadH + (gap * 2);
-        // Align left stage stack with Algorithm Material Card top level.
-        const decisionPanelY = Math.max(450, Math.floor(height * 0.52));
-        const baseY = Math.min(decisionPanelY, Math.max(180, height - totalH - 20));
+        const baseY = layout.lowerRowY;
         const isAllSelected = this.selectedClientFilters.size === 0;
 
         const drawPanelShell = (x, y, w, h, title) => {
@@ -1591,10 +1741,11 @@ class CryptoSubsystemVisualization {
         this.drawGrid(layer, width, height);
         this.drawProtocolLegend(layer);
         this.drawEntropyCloud(layer, payload?.meta || {}, width, height);
-        this.drawAlgorithmCompetition(layer, payload?.meta || {}, width);
+        this.drawAlgorithmCompetition(layer, payload?.meta || {}, width, height);
         this.drawDecisionPipeline(layer, payload?.meta || {}, width, height);
         this.drawAlgorithmMaterialCard(layer, payload?.meta || {}, width, height);
         this.drawStage1Panels(layer, payload?.meta || {}, width, height);
+        this.drawProtectedKernelZones(layer, payload, width, height);
 
         const sourceLanes = Array.isArray(payload.items) ? payload.items : [];
         const lanes = sourceLanes.filter((lane) => (
