@@ -2,6 +2,19 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+
+def _read_text(path):
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+
+
+def _read_lines(path):
+    return [line.strip() for line in _read_text(path).splitlines() if line.strip()]
+
 
 def infer_crypto_protocol(local_port, remote_port, process_name):
     """Infer protocol/algorithm pair from ports and process hints."""
@@ -279,3 +292,180 @@ def build_crypto_decision_pipelines(algorithm_competitions, kernel_clients, hw_o
             "source": selected_source,
         }
     return pipelines
+
+
+def _detect_wireguard_interfaces():
+    dev_lines = _read_lines("/proc/net/dev")
+    ifaces = []
+    for line in dev_lines:
+        if ":" not in line:
+            continue
+        name = line.split(":", 1)[0].strip()
+        if name.startswith("wg") or "wireguard" in name.lower():
+            ifaces.append(name)
+    return ifaces
+
+
+def _detect_dm_crypt_devices():
+    devices = []
+    for dm_dir in Path("/sys/block").glob("dm-*"):
+        name = _read_text(dm_dir / "dm" / "name").strip()
+        uuid = _read_text(dm_dir / "dm" / "uuid").strip()
+        joined = f"{name} {uuid}".lower()
+        if "crypt" not in joined and "luks" not in joined:
+            continue
+        devices.append({"name": name or dm_dir.name, "uuid": uuid[:32]})
+    return devices
+
+
+def _xfrm_stat_total():
+    total = 0
+    for line in _read_lines("/proc/net/xfrm_stat"):
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            total += int(parts[-1])
+        except ValueError:
+            continue
+    return total
+
+
+def collect_crypto_runtime_sources(items, proc_crypto_entries, kernel_clients, entropy_cloud):
+    """Collect simple real-world crypto source signals without eBPF tracing."""
+    items = list(items or [])
+    proc_crypto_entries = list(proc_crypto_entries or [])
+    kernel_clients = list(kernel_clients or [])
+    entropy_cloud = entropy_cloud or {}
+
+    protocols = {str(item.get("protocol") or "").upper() for item in items}
+    process_names = {str(item.get("process") or "").lower() for item in items}
+    client_by_name = {
+        str(client.get("name") or "").lower(): client
+        for client in kernel_clients
+        if isinstance(client, dict)
+    }
+    proc_names = {
+        str(entry.get("name") or entry.get("driver") or "").lower()
+        for entry in proc_crypto_entries
+        if isinstance(entry, dict)
+    }
+    proc_types = {
+        str(entry.get("type") or "").lower()
+        for entry in proc_crypto_entries
+        if isinstance(entry, dict)
+    }
+    wg_ifaces = _detect_wireguard_interfaces()
+    dm_crypt_devices = _detect_dm_crypt_devices()
+    xfrm_total = _xfrm_stat_total()
+    af_alg_present = "af_alg" in _read_text("/proc/modules").lower() or "alg" in _read_text("/proc/net/protocols").lower()
+
+    def _confidence(active, source):
+        if not active:
+            return 0.0
+        return {"direct": 0.95, "procfs": 0.82, "heuristic": 0.55}.get(source, 0.45)
+
+    def _source(source_id, label, active, source, evidence):
+        return {
+            "id": source_id,
+            "label": label,
+            "active": bool(active),
+            "source": source,
+            "confidence": round(_confidence(active, source), 2),
+            "evidence": evidence,
+        }
+
+    tls_items = [item for item in items if str(item.get("protocol") or "").upper() == "TLS"]
+    ssh_items = [item for item in items if str(item.get("protocol") or "").upper() == "SSH"]
+    wg_items = [item for item in items if str(item.get("protocol") or "").upper() == "WIREGUARD"]
+    af_alg_candidates = sorted(
+        name for name in process_names
+        if any(token in name for token in ("openssl", "python", "curl", "wget"))
+    )
+    ipsec_clients = [
+        name for name, client in client_by_name.items()
+        if "ipsec" in name or "xfrm" in name or int(client.get("active_flows") or 0) > 0 and "ipsec" in name
+    ]
+
+    return [
+        _source(
+            "tls_sockets",
+            "TLS sockets",
+            bool(tls_items),
+            "direct",
+            {
+                "flows": len(tls_items),
+                "processes": sorted({str(i.get("process") or "unknown") for i in tls_items})[:5],
+            },
+        ),
+        _source(
+            "ssh_crypto",
+            "SSH crypto",
+            bool(ssh_items),
+            "direct",
+            {
+                "flows": len(ssh_items),
+                "processes": sorted({str(i.get("process") or "unknown") for i in ssh_items})[:5],
+            },
+        ),
+        _source(
+            "wireguard",
+            "WireGuard",
+            bool(wg_items or wg_ifaces or Path("/sys/module/wireguard").exists()),
+            "procfs" if wg_ifaces or Path("/sys/module/wireguard").exists() else "heuristic",
+            {
+                "flows": len(wg_items),
+                "interfaces": wg_ifaces[:5],
+            },
+        ),
+        _source(
+            "ipsec_xfrm",
+            "IPsec / XFRM",
+            bool(ipsec_clients or xfrm_total > 0),
+            "procfs" if xfrm_total > 0 else "heuristic",
+            {
+                "xfrm_stat_total": xfrm_total,
+                "clients": sorted(ipsec_clients)[:5],
+            },
+        ),
+        _source(
+            "dm_crypt",
+            "dm-crypt / LUKS",
+            bool(dm_crypt_devices or int((client_by_name.get("dm-crypt") or {}).get("active_flows") or 0) > 0),
+            "procfs" if dm_crypt_devices else "heuristic",
+            {
+                "devices": dm_crypt_devices[:5],
+            },
+        ),
+        _source(
+            "af_alg",
+            "AF_ALG userspace",
+            bool(af_alg_present and af_alg_candidates),
+            "procfs" if af_alg_present else "heuristic",
+            {
+                "module_or_protocol": bool(af_alg_present),
+                "candidate_processes": af_alg_candidates[:5],
+            },
+        ),
+        _source(
+            "kernel_registry",
+            "/proc/crypto registry",
+            bool(proc_crypto_entries),
+            "procfs",
+            {
+                "algorithms": len(proc_crypto_entries),
+                "types": sorted(t for t in proc_types if t)[:6],
+                "sample": sorted(n for n in proc_names if n)[:6],
+            },
+        ),
+        _source(
+            "entropy",
+            "kernel random",
+            str(entropy_cloud.get("crng_state") or "").lower() in {"ready", "initialized", "crng_ready"},
+            "procfs",
+            {
+                "crng_state": entropy_cloud.get("crng_state"),
+                "pool_bits": entropy_cloud.get("entropy_pool_bits"),
+            },
+        ),
+    ]
