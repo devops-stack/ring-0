@@ -25,6 +25,7 @@ class NetworkStackRealtimeResponse(TypedDict):
 class CryptoRealtimeResponse(TypedDict):
     items: list
     processes: list
+    runtime_sources: list
     meta: dict
 
 
@@ -131,6 +132,7 @@ def validate_crypto_realtime_response(payload: Any) -> None:
     data = _expect_dict(payload, "crypto_realtime")
     _expect_key(data, "items", list, "crypto_realtime")
     _expect_key(data, "processes", list, "crypto_realtime")
+    _expect_key(data, "runtime_sources", list, "crypto_realtime")
     _expect_key(data, "meta", dict, "crypto_realtime")
     _expect_key(data["meta"], "active_flows", int, "crypto_realtime.meta")
 

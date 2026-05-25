@@ -26,6 +26,7 @@ def collect_crypto_realtime(crypto_prev, callbacks=None, psutil_module=None, log
     collect_algorithm_requesters_fn = callbacks.get("collect_algorithm_requesters", lambda _items, _clients: {"aes": [], "sha": [], "chacha20": []})
     build_crypto_decision_pipelines_fn = callbacks.get("build_crypto_decision_pipelines", lambda **_kwargs: {})
     collect_entropy_cloud_status_fn = callbacks.get("collect_entropy_cloud_status", lambda: {})
+    collect_crypto_runtime_sources_fn = callbacks.get("collect_crypto_runtime_sources", lambda _items, _entries, _clients, _entropy: [])
 
     items = []
     tls_listener_by_port = {}
@@ -211,6 +212,7 @@ def collect_crypto_realtime(crypto_prev, callbacks=None, psutil_module=None, log
         algorithm_requesters=algorithm_requesters,
     )
     entropy_cloud = collect_entropy_cloud_status_fn()
+    runtime_sources = collect_crypto_runtime_sources_fn(items, proc_crypto_entries, kernel_clients, entropy_cloud)
     proc_crypto_names = {str(entry.get("name") or "").lower() for entry in proc_crypto_entries if isinstance(entry, dict)}
     client_names = {str(row.get("name") or row.get("client") or "").lower() for row in kernel_clients if isinstance(row, dict)}
     protocol_names = {str(item.get("protocol") or "").upper() for item in items}
@@ -299,6 +301,7 @@ def collect_crypto_realtime(crypto_prev, callbacks=None, psutil_module=None, log
         "items": items[:24],
         "processes": unique_processes[:16],
         "protected_zones": protected_zones,
+        "runtime_sources": runtime_sources,
         "meta": {
             "ops_per_sec": ops_per_sec,
             "tls_sessions": sum(1 for i in items if i.get("protocol") == "TLS"),
@@ -310,6 +313,7 @@ def collect_crypto_realtime(crypto_prev, callbacks=None, psutil_module=None, log
             "algorithm_requesters": algorithm_requesters,
             "crypto_stage1": crypto_stage1,
             "entropy_cloud": entropy_cloud,
+            "runtime_sources": runtime_sources,
             "crypto_decision_pipeline": crypto_decision_pipelines.get("aes", {}),
             "crypto_decision_pipelines": crypto_decision_pipelines,
             "protected_zones": protected_zones,

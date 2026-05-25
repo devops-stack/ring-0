@@ -27,6 +27,7 @@ __all__ = [
     "collect_hw_offload_status",
     "collect_algorithm_requesters",
     "build_crypto_decision_pipelines",
+    "collect_crypto_runtime_sources",
     "read_sysctl_int",
     "read_proc_interrupt_total",
     "collect_entropy_cloud_status",
@@ -45,6 +46,7 @@ collect_sync_async_queue = _helpers.collect_sync_async_queue
 collect_hw_offload_status = _helpers.collect_hw_offload_status
 collect_algorithm_requesters = _helpers.collect_algorithm_requesters
 build_crypto_decision_pipelines = _helpers.build_crypto_decision_pipelines
+collect_crypto_runtime_sources = _helpers.collect_crypto_runtime_sources
 
 
 def read_sysctl_int(path, default=0):
@@ -80,6 +82,7 @@ def collect_crypto_realtime(crypto_prev, entropy_prev=None, callbacks=None):
         "collect_algorithm_requesters": collect_algorithm_requesters,
         "build_crypto_decision_pipelines": build_crypto_decision_pipelines,
         "collect_entropy_cloud_status": lambda: collect_entropy_cloud_status(entropy_prev_local),
+        "collect_crypto_runtime_sources": collect_crypto_runtime_sources,
     }
     merged_callbacks = dict(defaults)
     if callbacks:
