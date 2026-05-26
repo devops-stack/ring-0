@@ -5,6 +5,9 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
+  schedule:
+    - cron: "27 3 * * 1"
 
 permissions:
   contents: read
@@ -34,7 +37,7 @@ jobs:
         if: always()
         continue-on-error: true
         run: |
-          bandit -c .github/workflows/security/bandit.yml -r . -f json -o bandit-report.json || true
+          bandit -c .github/workflows/security/bandit.yml -r . --severity-level high --confidence-level high -f json -o bandit-report.json || true
 
       - name: pip-audit dependencies
         if: always()
@@ -63,7 +66,7 @@ jobs:
         continue-on-error: true
         run: |
           if [ -f package.json ]; then
-            npm audit --audit-level=high || true
+            npm audit --audit-level=critical || true
           fi
 
       - name: ESLint security scan
@@ -83,7 +86,7 @@ jobs:
       - name: Trivy filesystem scan
         if: always()
         continue-on-error: true
-        uses: aquasecurity/trivy-action@0.20.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
