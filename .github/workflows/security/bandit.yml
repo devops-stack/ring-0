@@ -1,0 +1,9 @@
+exclude_dirs:
+  - tests
+  - node_modules
+  - dist
+  - build
+  - venv
+  - .venv
+  - migrations
+  - .git
