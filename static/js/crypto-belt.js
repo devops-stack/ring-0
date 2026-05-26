@@ -25,7 +25,12 @@ class CryptoSubsystemVisualization {
         this.selectedRequesterFilter = null;
         this.selectedImplementationClassFilter = null;
         this.activeCryptoView = 'LIVE_FLOW';
+        this.titleNode = null;
+        this.subtitleNode = null;
         this.viewToggleNode = null;
+        this.linearAnalysisRendered = false;
+        this.lastLinearAnalysisRenderAt = 0;
+        this.linearAnalysisMinRenderMs = 8000;
     }
 
     init(containerId = 'crypto-belt-container') {
@@ -109,6 +114,7 @@ class CryptoSubsystemVisualization {
         ].join(';');
         title.textContent = 'KERNEL CRYPTO LIVE INTERACTIONS (in development)';
         this.container.appendChild(title);
+        this.titleNode = title;
 
         const subtitle = document.createElement('div');
         subtitle.style.cssText = [
@@ -123,6 +129,7 @@ class CryptoSubsystemVisualization {
         ].join(';');
         subtitle.textContent = 'process -> protocol -> crypto subsystem -> algorithm';
         this.container.appendChild(subtitle);
+        this.subtitleNode = subtitle;
 
         const terminator = document.createElement('div');
         terminator.style.cssText = [
@@ -262,6 +269,25 @@ class CryptoSubsystemVisualization {
             };
             this.viewToggleNode.appendChild(btn);
         });
+    }
+
+    syncOverlayForCurrentView() {
+        const isLinear = this.activeCryptoView === 'LINEAR_ANALYSIS';
+        if (this.titleNode) {
+            this.titleNode.style.display = isLinear ? 'none' : 'block';
+        }
+        if (this.subtitleNode) {
+            this.subtitleNode.style.display = isLinear ? 'none' : 'block';
+        }
+        if (this.terminatorNode) {
+            this.terminatorNode.style.display = isLinear ? 'none' : 'block';
+        }
+        if (this.viewToggleNode) {
+            this.viewToggleNode.style.top = isLinear ? '18px' : '112px';
+            this.viewToggleNode.style.left = isLinear ? 'auto' : '50%';
+            this.viewToggleNode.style.right = isLinear ? '170px' : 'auto';
+            this.viewToggleNode.style.transform = isLinear ? 'none' : 'translateX(-50%)';
+        }
     }
 
     detectTlsTerminator(meta, lanes) {
@@ -664,8 +690,10 @@ class CryptoSubsystemVisualization {
     }
 
     getCryptoLayout(width, height) {
-        const rightColumnX = Math.floor(width * 0.67);
-        const rightColumnW = Math.max(360, width - rightColumnX - 16);
+        const originalRightColumnX = Math.floor(width * 0.67);
+        const originalRightColumnW = Math.max(280, width - originalRightColumnX - 16);
+        const rightColumnW = Math.max(280, Math.floor(originalRightColumnW * 0.8));
+        const rightColumnX = width - rightColumnW - 16;
         const leftColumnX = 26;
         const leftColumnW = Math.max(300, Math.floor(width * 0.26));
         const middleColumnX = Math.max(
@@ -676,6 +704,7 @@ class CryptoSubsystemVisualization {
         const flowBottomY = 530;
         const lowerRowY = Math.max(flowBottomY + 36, Math.floor(height * 0.57));
         const lowerRowH = Math.max(232, Math.min(286, height - lowerRowY - 20));
+        const materialCardH = Math.max(162, Math.min(182, Math.floor(lowerRowH * 0.72)));
         const protectedZonesY = 128;
         const protectedZonesH = 168;
         const algoCompetitionY = protectedZonesY + protectedZonesH + 14;
@@ -691,7 +720,7 @@ class CryptoSubsystemVisualization {
             protectedZonesY,
             protectedZonesH,
             algoCompetitionY,
-            materialCardH: lowerRowH
+            materialCardH
         };
     }
 
@@ -1256,7 +1285,7 @@ class CryptoSubsystemVisualization {
         details.forEach((line, idx) => {
             card.append('text')
                 .attr('x', leftX)
-                .attr('y', baseY + idx * 21)
+                .attr('y', baseY + idx * 16)
                 .style('font-family', 'Share Tech Mono, monospace')
                 .style('font-size', idx === 0 ? '10px' : '9.5px')
                 .style('fill', idx === 0 ? '#f0f4fb' : '#a7b3c4')
@@ -1266,7 +1295,7 @@ class CryptoSubsystemVisualization {
         const cloudX = cardX + Math.floor(cardW * 0.57);
         const cloudY = cardY + 34;
         const cloudW = cardW - Math.floor(cardW * 0.57) - 14;
-        const cloudH = cardH - 46;
+        const cloudH = Math.max(86, cardH - 50);
         card.append('rect')
             .attr('x', cloudX)
             .attr('y', cloudY)
@@ -1293,7 +1322,7 @@ class CryptoSubsystemVisualization {
             const col = idx % 3;
             const row = Math.floor(idx / 3);
             const localX = 16 + col * Math.max(22, Math.floor((cloudW - 40) / 3)) + (jitter % 11) - 5;
-            const localY = 20 + row * 40 + ((Math.floor(jitter / 7) % 11) - 5);
+            const localY = 18 + row * 28 + ((Math.floor(jitter / 7) % 9) - 4);
             const cx = Math.max(cloudX + 12, Math.min(cloudX + cloudW - 12, cloudX + localX));
             const cy = Math.max(cloudY + 12, Math.min(cloudY + cloudH - 12, cloudY + localY));
             const radius = 3.8 + ((prio / maxPriority) * 5.8);
@@ -1363,9 +1392,9 @@ class CryptoSubsystemVisualization {
         const layout = this.getCryptoLayout(width, height);
         const panelX = layout.middleColumnX;
         const panelW = layout.middleColumnW;
-        const panelY = layout.lowerRowY + layout.materialCardH + 16;
-        const maxPanelH = Math.max(140, height - panelY - 22);
-        const panelH = Math.min(248, maxPanelH);
+        const panelY = layout.lowerRowY + layout.materialCardH + 12;
+        const maxPanelH = Math.max(150, height - panelY - 18);
+        const panelH = Math.max(150, Math.min(224, maxPanelH));
         const panel = layer.append('g').attr('class', 'crypto-entropy-cloud');
 
         panel.append('rect')
@@ -1415,8 +1444,8 @@ class CryptoSubsystemVisualization {
         const cloudX = panelX + 12;
         const cloudY = panelY + 86;
         // Keep particle viewport compact so right-side source metrics fit comfortably.
-        const cloudW = Math.max(130, panelW - 220);
-        const cloudH = Math.max(60, panelH - 102);
+        const cloudW = Math.max(150, panelW - 220);
+        const cloudH = Math.max(72, panelH - 104);
         panel.append('rect')
             .attr('x', cloudX)
             .attr('y', cloudY)
@@ -1447,7 +1476,7 @@ class CryptoSubsystemVisualization {
 
         const keyRate = Number(entropy.key_birth_rate_est || 0);
         const keyNodes = Math.max(1, Math.min(5, Math.round(keyRate / 2.2)));
-        const keyBaseX = panelX + panelW - 110;
+        const keyBaseX = panelX + panelW - 112;
         const srcY = panelY + panelH - 66;
         const keyBaseY = srcY - 28;
         panel.append('text')
@@ -1480,7 +1509,7 @@ class CryptoSubsystemVisualization {
             .style('stroke-width', 1)
             .style('stroke-opacity', 0.7);
 
-        const srcX = panelX + panelW - 158;
+        const srcX = panelX + panelW - 162;
         const sourceBarX = srcX + 70;
         const sourceBarW = Math.max(64, Math.min(76, panelX + panelW - sourceBarX - 8));
         panel.append('text')
@@ -1843,6 +1872,28 @@ class CryptoSubsystemVisualization {
         runLoop();
     }
 
+    animateKeyHypothesisOrbit(group, cx, cy, tickId, direction = 1) {
+        const runLoop = () => {
+            if (!this.isActive || tickId !== this.activeAnimationTick || this.activeCryptoView !== 'LINEAR_ANALYSIS') {
+                return;
+            }
+            group
+                .transition()
+                .duration(18000)
+                .ease(d3.easeLinear)
+                .attrTween('transform', () => {
+                    const start = 0;
+                    const end = 360 * direction;
+                    return (t) => `rotate(${start + (end - start) * t}, ${cx}, ${cy})`;
+                })
+                .on('end', () => {
+                    group.attr('transform', `rotate(0, ${cx}, ${cy})`);
+                    runLoop();
+                });
+        };
+        runLoop();
+    }
+
     buildLinearAnalysisModel(payload) {
         const meta = payload?.meta || {};
         const comp = this.getCompetitionPayload(meta);
@@ -1897,10 +1948,17 @@ class CryptoSubsystemVisualization {
         const algLabel = model.request === 'AES' ? 'AES-128' : model.request;
         const margin = 10;
         const gap = 8;
-        const topY = 82;
-        const topH = Math.max(200, Math.floor(height * 0.33));
+        const headerY = 24;
+        const controlsY = 58;
+        const badgesY = 84;
+        const topY = 112;
+        const topH = Math.max(230, Math.floor(height * 0.30));
+        const leftTopY = topY;
+        const contextH = 102;
+        const dataFlowY = leftTopY + contextH + gap;
+        const dataFlowH = Math.max(118, Math.min(146, topY + topH - dataFlowY));
         const midY = topY + topH + gap;
-        const midH = Math.max(170, Math.floor(height * 0.28));
+        const midH = Math.max(160, Math.floor(height * 0.25));
         const bottomY = midY + midH + gap;
         const bottomH = Math.max(84, height - bottomY - 12);
         const leftW = Math.max(205, Math.floor(width * 0.16));
@@ -1976,16 +2034,18 @@ class CryptoSubsystemVisualization {
         }, 0);
 
         layer.append('text')
-            .attr('x', centerX + 8)
-            .attr('y', 30)
+            .attr('x', width * 0.5)
+            .attr('y', headerY)
+            .attr('text-anchor', 'middle')
             .style('font-family', 'Share Tech Mono, monospace')
             .style('font-size', '18px')
             .style('letter-spacing', '1px')
             .style('fill', '#dfe8f7')
             .text('LINEAR CRYPTOANALYSIS VISUALIZATION');
         layer.append('text')
-            .attr('x', centerX + 8)
-            .attr('y', 50)
+            .attr('x', width * 0.5)
+            .attr('y', headerY + 18)
+            .attr('text-anchor', 'middle')
             .style('font-family', 'Share Tech Mono, monospace')
             .style('font-size', '10px')
             .style('fill', '#9cabc0')
@@ -2002,7 +2062,7 @@ class CryptoSubsystemVisualization {
                 });
             btn.append('rect')
                 .attr('x', x)
-                .attr('y', 20)
+                .attr('y', controlsY - 16)
                 .attr('width', 76)
                 .attr('height', 22)
                 .attr('rx', 4)
@@ -2011,7 +2071,7 @@ class CryptoSubsystemVisualization {
                 .style('stroke-width', 1);
             btn.append('text')
                 .attr('x', x + 38)
-                .attr('y', 35)
+                .attr('y', controlsY - 1)
                 .attr('text-anchor', 'middle')
                 .style('font-family', 'Share Tech Mono, monospace')
                 .style('font-size', '9px')
@@ -2025,7 +2085,7 @@ class CryptoSubsystemVisualization {
             const x = centerX + 8 + idx * 118;
             layer.append('rect')
                 .attr('x', x)
-                .attr('y', 58)
+                .attr('y', badgesY - 14)
                 .attr('width', 108)
                 .attr('height', 18)
                 .attr('rx', 4)
@@ -2034,14 +2094,14 @@ class CryptoSubsystemVisualization {
                 .style('stroke-opacity', 0.42);
             layer.append('text')
                 .attr('x', x + 8)
-                .attr('y', 71)
+                .attr('y', badgesY - 1)
                 .style('font-family', 'Share Tech Mono, monospace')
                 .style('font-size', '8px')
                 .style('fill', color)
                 .text(`${String(source.label || source.id).slice(0, 11)}:${src}`);
         });
 
-        const ctx = panel(margin, 10, leftW, 116, 'PROCESS CONTEXT');
+        const ctx = panel(margin, leftTopY, leftW, contextH, 'PROCESS CONTEXT');
         [
             ['process', primary.process || 'kernel/user'],
             ['pid', primary.pid || '?'],
@@ -2052,24 +2112,24 @@ class CryptoSubsystemVisualization {
         ].forEach(([k, v], idx) => {
             ctx.append('text')
                 .attr('x', margin + 14)
-                .attr('y', 42 + idx * 13)
+                .attr('y', leftTopY + 28 + idx * 12)
                 .style('font-family', 'Share Tech Mono, monospace')
                 .style('font-size', '8.8px')
                 .style('fill', '#9fb0c7')
                 .text(`${k}:`);
             ctx.append('text')
                 .attr('x', margin + 76)
-                .attr('y', 42 + idx * 13)
+                .attr('y', leftTopY + 28 + idx * 12)
                 .style('font-family', 'Share Tech Mono, monospace')
                 .style('font-size', '8.8px')
                 .style('fill', '#d0dae8')
                 .text(String(v).slice(0, 24));
         });
 
-        const flow = panel(margin, 136, leftW, 178, 'DATA FLOW');
+        const flow = panel(margin, dataFlowY, leftW, dataFlowH, 'DATA FLOW');
         const flowSteps = ['userspace', 'TLS 1.3', 'sendmsg()/recvmsg()', 'AF_ALG', 'crypto_aead_encrypt', `${model.selectedDriver}`];
         flowSteps.forEach((step, idx) => {
-            const y = 168 + idx * 24;
+            const y = dataFlowY + 30 + idx * 18;
             flow.append('text')
                 .attr('x', margin + leftW * 0.5)
                 .attr('y', y)
@@ -2083,7 +2143,7 @@ class CryptoSubsystemVisualization {
                     .attr('x1', margin + leftW * 0.5)
                     .attr('x2', margin + leftW * 0.5)
                     .attr('y1', y + 6)
-                    .attr('y2', y + 18)
+                    .attr('y2', y + 14)
                     .style('stroke', 'rgba(122, 150, 190, 0.48)');
             }
         });
@@ -2165,27 +2225,6 @@ class CryptoSubsystemVisualization {
                 }
             }
         });
-        const bestTrailPath = d3.path();
-        layerXs.forEach((x, idx) => {
-            const y = bitY((idx * 2 + (model.seed % bitRows)) % bitRows);
-            if (idx === 0) bestTrailPath.moveTo(x - 22, y);
-            bestTrailPath.lineTo(x, y);
-            if (idx === layerXs.length - 1) bestTrailPath.lineTo(mapRight + 26, y);
-        });
-        map.append('path')
-            .attr('d', bestTrailPath.toString())
-            .style('fill', 'none')
-            .style('stroke', '#ffcf7a')
-            .style('stroke-width', 2.2)
-            .style('stroke-opacity', 0.9)
-            .style('filter', 'url(#crypto-line-glow)');
-        map.append('text')
-            .attr('x', mapLeft + 8)
-            .attr('y', mapTop - 22)
-            .style('font-family', 'Share Tech Mono, monospace')
-            .style('font-size', '9px')
-            .style('fill', '#ffcf7a')
-            .text(`BEST LINEAR TRAIL | bias +${model.maxBias.toFixed(5)} | live-source score ${runtimeQuality}`);
         for (let row = 0; row < bitRows; row += 1) {
             const startY = bitY(row);
             layerXs.forEach((x, idx) => {
@@ -2209,7 +2248,10 @@ class CryptoSubsystemVisualization {
         map.append('line').attr('x1', biasX).attr('x2', biasX + centerW * 0.24).attr('y1', biasY).attr('y2', biasY).style('stroke', '#5b48ff').style('stroke-width', 3);
         ['-0.5', '0', '+0.5'].forEach((t, idx) => map.append('text').attr('x', biasX + idx * centerW * 0.24).attr('y', biasY + 16).attr('text-anchor', 'middle').style('font-family', 'Share Tech Mono, monospace').style('font-size', '8px').style('fill', '#9caec5').text(t));
 
-        const info = panel(centerX + centerW + gap, topY, rightW, 138, 'LINEAR APPROXIMATION INFO');
+        const infoH = Math.max(118, Math.min(138, Math.floor(topH * 0.58)));
+        const biasPanelY = topY + infoH + 8;
+        const biasPanelH = Math.max(64, topH - infoH - 8);
+        const info = panel(centerX + centerW + gap, topY, rightW, infoH, 'LINEAR APPROXIMATION INFO');
         [
             `approximation:`,
             `P[L(P,K) = L(C)] = ${(0.5 + model.maxBias).toFixed(7)}`,
@@ -2229,11 +2271,11 @@ class CryptoSubsystemVisualization {
                 .style('fill', idx === 2 || idx === 8 ? '#8effc8' : '#b3bfd0')
                 .text(line);
         });
-        const biasPanel = panel(centerX + centerW + gap, topY + 146, rightW, topH - 146, 'BIAS OVER ROUNDS');
+        const biasPanel = panel(centerX + centerW + gap, biasPanelY, rightW, biasPanelH, 'BIAS OVER ROUNDS');
         const chartX = centerX + centerW + gap + 34;
-        const chartY = topY + 186;
+        const chartY = biasPanelY + 42;
         const chartW = rightW - 58;
-        const chartH = topH - 202;
+        const chartH = Math.max(24, biasPanelH - 56);
         biasPanel.append('line').attr('x1', chartX).attr('x2', chartX + chartW).attr('y1', chartY + chartH / 2).attr('y2', chartY + chartH / 2).style('stroke', 'rgba(116, 138, 170, 0.28)');
         const bp = d3.path();
         model.bestTrail.forEach((step, idx) => {
@@ -2266,6 +2308,8 @@ class CryptoSubsystemVisualization {
         const key = panel(keyX, midY, keyW, midH, 'KEY HYPOTHESIS SPACE (RANKING)');
         const kcx = keyX + keyW * 0.5;
         const kcy = midY + midH * 0.55;
+        const orbitSystem = key.append('g').attr('class', 'key-hypothesis-orbit-system');
+        const orbitSystemReverse = key.append('g').attr('class', 'key-hypothesis-orbit-system-reverse');
         const bestKey = {
             x: kcx + keyW * 0.23,
             y: kcy - midH * 0.18
@@ -2289,6 +2333,50 @@ class CryptoSubsystemVisualization {
             else spiral.lineTo(x, y);
         }
         key.append('path').attr('d', spiral.toString()).style('fill', 'none').style('stroke', '#ff6b55').style('stroke-width', 1.2).style('stroke-opacity', 0.72);
+        [0.22, 0.34, 0.47].forEach((scale, idx) => {
+            const rx = keyW * scale;
+            const ry = midH * (0.08 + idx * 0.055);
+            orbitSystem.append('ellipse')
+                .attr('cx', kcx)
+                .attr('cy', kcy)
+                .attr('rx', rx)
+                .attr('ry', ry)
+                .attr('transform', `rotate(${-18 + idx * 22}, ${kcx}, ${kcy})`)
+                .style('fill', 'none')
+                .style('stroke', idx === 0 ? '#ff875e' : '#6e58ff')
+                .style('stroke-width', 0.75)
+                .style('stroke-opacity', 0.28);
+        });
+        for (let i = 0; i < 18; i += 1) {
+            const h = this.hashText(`${model.seed}-orbit-${i}`);
+            const angle = (Math.PI * 2 * i) / 18;
+            const rx = keyW * (0.18 + (h % 100) / 420);
+            const ry = midH * (0.08 + ((h >> 3) % 100) / 900);
+            const x = kcx + Math.cos(angle) * rx;
+            const y = kcy + Math.sin(angle) * ry;
+            orbitSystem.append('circle')
+                .attr('cx', x)
+                .attr('cy', y)
+                .attr('r', i % 5 === 0 ? 2.6 : 1.5)
+                .style('fill', i % 5 === 0 ? '#ffad7a' : '#8f7dff')
+                .style('opacity', 0.45 + (i % 4) * 0.1)
+                .style('filter', i % 5 === 0 ? 'url(#crypto-line-glow)' : null);
+        }
+        for (let i = 0; i < 9; i += 1) {
+            const angle = (Math.PI * 2 * i) / 9;
+            const rx = keyW * 0.28;
+            const ry = midH * 0.12;
+            orbitSystemReverse.append('rect')
+                .attr('x', kcx + Math.cos(angle) * rx)
+                .attr('y', kcy + Math.sin(angle) * ry)
+                .attr('width', 4)
+                .attr('height', 4)
+                .attr('transform', `rotate(45, ${kcx + Math.cos(angle) * rx + 2}, ${kcy + Math.sin(angle) * ry + 2})`)
+                .style('fill', '#7ee7ff')
+                .style('opacity', 0.58);
+        }
+        this.animateKeyHypothesisOrbit(orbitSystem, kcx, kcy, tickId, 1);
+        this.animateKeyHypothesisOrbit(orbitSystemReverse, kcx, kcy, tickId, -1);
         for (let i = 0; i < 3; i += 1) {
             key.append('circle')
                 .attr('cx', bestKey.x)
@@ -2621,6 +2709,13 @@ class CryptoSubsystemVisualization {
         this.lastPayload = payload;
         this.activeAnimationTick += 1;
         const tickId = this.activeAnimationTick;
+        this.syncOverlayForCurrentView();
+        if (this.activeCryptoView === 'LINEAR_ANALYSIS') {
+            this.linearAnalysisRendered = true;
+            this.lastLinearAnalysisRenderAt = Date.now();
+        } else {
+            this.linearAnalysisRendered = false;
+        }
 
         const width = window.innerWidth;
         const height = window.innerHeight;
@@ -2648,14 +2743,16 @@ class CryptoSubsystemVisualization {
             && this.laneMatchesSelectedRequester(lane)
             && this.laneMatchesSelectedImplementationClass(lane)
         ));
-        const topY = 150;
-        const protocolY = 250;
-        const cryptoY = 350;
-        const algoY = 450;
-        const endpointY = 520;
+        const topY = 172;
+        const protocolY = 265;
+        const cryptoY = 358;
+        const algoY = 452;
+        const endpointY = 532;
 
-        const startX = width * 0.16;
-        const usableWidth = width * 0.52;
+        const liveLayout = this.getCryptoLayout(width, height);
+        const startX = width * 0.14;
+        const flowRightX = Math.max(startX + 220, liveLayout.rightColumnX - 82);
+        const usableWidth = Math.max(160, flowRightX - startX);
         const laneCount = Math.max(lanes.length, 1);
         const laneStep = laneCount > 1 ? usableWidth / (laneCount - 1) : 0;
 
@@ -2796,6 +2893,26 @@ class CryptoSubsystemVisualization {
             .style('fill', '#8e98a9')
                 .text(`- ${item.label} (${age}s)`);
         });
+    }
+
+    renderTelemetryPayload(normalized) {
+        if (this.activeCryptoView !== 'LINEAR_ANALYSIS') {
+            this.renderFlowMap(normalized);
+            return;
+        }
+
+        const now = Date.now();
+        const shouldRender = !this.linearAnalysisRendered
+            || (now - this.lastLinearAnalysisRenderAt) >= this.linearAnalysisMinRenderMs;
+
+        if (shouldRender) {
+            this.renderFlowMap(normalized);
+            return;
+        }
+
+        // Keep telemetry fresh without tearing down and rebuilding the analytical SVG.
+        this.lastPayload = normalized;
+        this.syncOverlayForCurrentView();
     }
 
     getFallbackTelemetry() {
@@ -2996,7 +3113,7 @@ class CryptoSubsystemVisualization {
             .then((data) => {
                 if (!data || data.error) throw new Error(data?.error || 'No crypto telemetry');
                 const normalized = this.normalizeTelemetry(data);
-                this.renderFlowMap(normalized);
+                this.renderTelemetryPayload(normalized);
 
                 if (this.terminatorNode) {
                     const tlsTerminator = this.detectTlsTerminator(data?.meta || {}, normalized.items || []);
@@ -3019,7 +3136,7 @@ class CryptoSubsystemVisualization {
             .catch(() => {
                 const fallback = this.getFallbackTelemetry();
                 const normalized = this.normalizeTelemetry(fallback);
-                this.renderFlowMap(normalized);
+                this.renderTelemetryPayload(normalized);
                 if (this.terminatorNode) {
                     this.setTerminatorBadge('mock/fallback');
                 }
