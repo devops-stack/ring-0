@@ -1,3 +1,4 @@
+"""REST API under ``/api``."""
 from flask import Blueprint
 from kernel_ai.http import api as h
 

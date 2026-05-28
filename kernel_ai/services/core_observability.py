@@ -1,3 +1,5 @@
+"""Core observability helpers extracted from webapp."""
+
 from __future__ import annotations
 
 import logging
