@@ -1,3 +1,10 @@
+"""
+Filesystem collectors for kernel introspection.
+
+Tests should patch functions in ``kernel_ai.collectors.proc_fs`` (or this module's
+attributes) rather than the whole webapp.
+"""
+
 from __future__ import annotations
 
 

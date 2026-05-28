@@ -1,3 +1,4 @@
+// Module for working with active network connections
 class ActiveConnectionsManager {
     constructor() {
         debugLog("ActiveConnectionsManager: constructor called");

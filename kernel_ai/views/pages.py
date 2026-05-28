@@ -1,3 +1,4 @@
+"""Site pages: index, subsystem HTML, and health."""
 from flask import Blueprint
 from kernel_ai.http import pages as h
 

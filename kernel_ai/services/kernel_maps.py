@@ -1,3 +1,5 @@
+"""Kernel syscall maps and subsystem mapping helpers."""
+
 from __future__ import annotations
 
 

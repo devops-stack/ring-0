@@ -1,7 +1,7 @@
-// Orbital Device Ring Visualization
-// Version: 8
+// Device Control Surface Visualization
+// Version: 23
 
-debugLog('🧲 devices-belt.js v8: Script loading...');
+debugLog('🧲 devices-belt.js v23: Script loading...');
 
 class DevicesBeltVisualization {
     constructor() {
@@ -17,6 +17,15 @@ class DevicesBeltVisualization {
         this.resizeHandler = null;
         this.telemetryInterval = null;
         this.telemetryErrorNode = null;
+        this.deviceHudNode = null;
+        this.deviceDetailNode = null;
+        this.raycaster = null;
+        this.mouse = null;
+        this.pointerMoveHandler = null;
+        this.pointerClickHandler = null;
+        this.interactiveDeviceNodes = [];
+        this.selectedDeviceKey = null;
+        this.deviceLookup = {};
 
         this.centralCore = null;
         this.ringGuides = [];
@@ -26,13 +35,25 @@ class DevicesBeltVisualization {
         this.pulses = [];
 
         this.subsystemOrder = ['block', 'net', 'char', 'input', 'usb'];
-        // For links/pulses only; circles stay black+white.
+        this.busOrder = ['pcie', 'usb', 'virtual', 'net'];
+        this.busLabels = {
+            pcie: 'PCIe BUS',
+            usb: 'USB BUS',
+            virtual: 'VIRTUAL BUS',
+            net: 'NET IFACE'
+        };
         this.subsystemColors = {
-            block: 0xaab2bc,
-            net: 0x8f99a6,
-            char: 0x7f8894,
-            input: 0x9aa3ad,
-            usb: 0x6f7884
+            block: 0xb8c7da,
+            net: 0x7fd8ff,
+            char: 0xbfc8d8,
+            input: 0xc9a6ff,
+            usb: 0x8ff0d2
+        };
+        this.busColors = {
+            pcie: 0xb8c7da,
+            usb: 0x8ff0d2,
+            virtual: 0xbfc8d8,
+            net: 0x7fd8ff
         };
     }
 
@@ -48,7 +69,7 @@ class DevicesBeltVisualization {
                 inset: 0;
                 width: 100%;
                 height: 100%;
-                background: #0E1114;
+                background: radial-gradient(circle at 48% 42%, #111b1f 0%, #081014 62%, #030608 100%);
                 z-index: 9999;
                 display: none;
                 visibility: hidden;
@@ -71,16 +92,22 @@ class DevicesBeltVisualization {
         }
 
         this.scene = new THREE.Scene();
-        this.scene.background = new THREE.Color(0x0E1114);
+        this.scene.background = new THREE.Color(0x070c10);
 
         this.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
-        this.camera.position.set(0, 0, 17.5);
+        this.camera.position.set(0, 0.15, 13.2);
         this.camera.lookAt(0, 0, 0);
 
         this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
         this.container.appendChild(this.renderer.domElement);
+        this.raycaster = new THREE.Raycaster();
+        this.mouse = new THREE.Vector2();
+        this.pointerMoveHandler = (event) => this.onPointerMove(event);
+        this.pointerClickHandler = (event) => this.onPointerClick(event);
+        this.renderer.domElement.addEventListener('pointermove', this.pointerMoveHandler);
+        this.renderer.domElement.addEventListener('click', this.pointerClickHandler);
 
         // Intentionally no scene lights: flat HUD look (no 3D shading/highlights).
 
@@ -95,54 +122,71 @@ class DevicesBeltVisualization {
     }
 
     createBaseScene() {
-        const coreGeom = new THREE.CircleGeometry(1.08, 48);
-        const coreMat = new THREE.MeshBasicMaterial({
-            color: 0x000000,
+        const gridMat = new THREE.LineBasicMaterial({ color: 0x54d8e8, transparent: true, opacity: 0.06 });
+        for (let x = -8.8; x <= 8.8; x += 0.72) {
+            const geo = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(x, -5.4, -0.6),
+                new THREE.Vector3(x, 5.4, -0.6)
+            ]);
+            const line = new THREE.Line(geo, gridMat.clone());
+            this.scene.add(line);
+            this.ringGuides.push(line);
+        }
+        for (let y = -5.2; y <= 5.2; y += 0.58) {
+            const geo = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(-8.8, y, -0.6),
+                new THREE.Vector3(8.8, y, -0.6)
+            ]);
+            const line = new THREE.Line(geo, gridMat.clone());
+            this.scene.add(line);
+            this.ringGuides.push(line);
+        }
+
+        const membraneGeo = new THREE.PlaneGeometry(14.2, 7.4);
+        const membraneMat = new THREE.MeshBasicMaterial({
+            color: 0x041014,
             transparent: true,
-            opacity: 0.95
+            opacity: 0.16,
+            depthWrite: false
         });
-        this.centralCore = new THREE.Mesh(coreGeom, coreMat);
+        this.centralCore = new THREE.Mesh(membraneGeo, membraneMat);
+        this.centralCore.position.set(0, -0.1, -0.22);
         this.scene.add(this.centralCore);
-        const coreOutline = new THREE.LineLoop(
-            new THREE.BufferGeometry().setFromPoints(
-                Array.from({ length: 72 }, (_, i) => {
-                    const a = (i / 72) * Math.PI * 2;
-                    return new THREE.Vector3(Math.cos(a) * 1.08, Math.sin(a) * 1.08, 0.001);
-                })
-            ),
-            new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.96 })
+        const membraneEdge = new THREE.LineSegments(
+            new THREE.EdgesGeometry(membraneGeo),
+            new THREE.LineBasicMaterial({ color: 0x54d8e8, transparent: true, opacity: 0.28 })
         );
-        this.scene.add(coreOutline);
-        this.ringGuides.push(coreOutline);
+        membraneEdge.position.copy(this.centralCore.position);
+        this.scene.add(membraneEdge);
+        this.ringGuides.push(membraneEdge);
 
-        const firstRing = new THREE.LineLoop(
-            new THREE.BufferGeometry().setFromPoints(
-                Array.from({ length: 90 }, (_, i) => {
-                    const a = (i / 90) * Math.PI * 2;
-                    return new THREE.Vector3(Math.cos(a) * 4.4, Math.sin(a) * 4.4, 0);
-                })
-            ),
-            new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.18 })
-        );
+        const sectionLines = [
+            { y: 2.46, opacity: 0.28 },
+            { y: 0.64, opacity: 0.18 },
+            { y: -1.72, opacity: 0.28 },
+            { y: -3.42, opacity: 0.22 }
+        ];
+        sectionLines.forEach((item) => {
+            const line = new THREE.Line(
+                new THREE.BufferGeometry().setFromPoints([
+                    new THREE.Vector3(-7.6, item.y, -0.02),
+                    new THREE.Vector3(7.6, item.y, -0.02)
+                ]),
+                new THREE.LineBasicMaterial({ color: 0x54d8e8, transparent: true, opacity: item.opacity })
+            );
+            this.scene.add(line);
+            this.ringGuides.push(line);
+        });
 
-        const secondRing = new THREE.LineLoop(
-            new THREE.BufferGeometry().setFromPoints(
-                Array.from({ length: 110 }, (_, i) => {
-                    const a = (i / 110) * Math.PI * 2;
-                    return new THREE.Vector3(Math.cos(a) * 7.5, Math.sin(a) * 7.5, 0);
-                })
-            ),
-            new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.12 })
-        );
-
-        this.scene.add(firstRing);
-        this.scene.add(secondRing);
-        this.ringGuides.push(firstRing, secondRing);
-
-        const coreLabel = this.createLabelSprite('KERNEL CORE', '#ffffff', 260, 13, 1.38, 0.42, 0.3);
-        coreLabel.position.set(0, 0, 0.002);
+        const coreLabel = this.createLabelSprite('LINUX DEVICE CONTROL SURFACE', '#bff9ff', 560, 15, 3.45, 0.42, 0.42);
+        coreLabel.position.set(-3.75, 3.72, 0.002);
         this.scene.add(coreLabel);
         this.ringGuides.push(coreLabel);
+
+        const lowerLabel = this.createLabelSprite('DEVICE BLOCK LAYER', '#9ff7ff', 380, 14, 2.35, 0.42, 0.35);
+        lowerLabel.position.set(-5.95, -3.82, 0.002);
+        this.scene.add(lowerLabel);
+        this.ringGuides.push(lowerLabel);
     }
 
     createOverlayUI() {
@@ -158,7 +202,7 @@ class DevicesBeltVisualization {
             letter-spacing: 1px;
             z-index: 1001;
         `;
-        title.textContent = 'ORBITAL DEVICE RING (in development)';
+        title.textContent = 'DEVICE CONTROL SURFACE (in development)';
         this.container.appendChild(title);
         this.overlayNodes.push(title);
 
@@ -173,7 +217,7 @@ class DevicesBeltVisualization {
             font-size: 11px;
             z-index: 1001;
         `;
-        subtitle.textContent = 'subsystems orbit kernel core; devices orbit their subsystem (load/irq driven)';
+        subtitle.textContent = 'devices below -> linux kernel interaction matrix -> live system information above';
         this.container.appendChild(subtitle);
         this.overlayNodes.push(subtitle);
 
@@ -194,12 +238,63 @@ class DevicesBeltVisualization {
             line-height: 1.45;
         `;
         window.setSafeHtml(layerHint, `
-            <div style="color:#9aa2aa; margin-bottom:6px;">KERNEL DEVICE MODEL</div>
-            Physical layer -> Driver layer -> Kernel subsystem -> User interaction<br>
-            /sys registration, major/minor, IRQ and throughput drive node activity
+            <div style="color:#54d8e8; margin-bottom:6px;">SURFACE LAYERS</div>
+            bottom: live devices from /sys and /dev<br>
+            middle: Linux kernel parts touching hardware<br>
+            top: current IRQ, DMA, driver and bus telemetry
         `);
         this.container.appendChild(layerHint);
         this.overlayNodes.push(layerHint);
+
+        const hud = document.createElement('div');
+        hud.style.cssText = `
+            position: absolute;
+            top: 230px;
+            right: 24px;
+            color: #aeb8c6;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 10px;
+            z-index: 1001;
+            background: rgba(6, 11, 17, 0.74);
+            border: 1px solid rgba(150, 170, 200, 0.24);
+            border-radius: 6px;
+            padding: 10px 12px;
+            width: 318px;
+            line-height: 1.52;
+        `;
+        window.setSafeHtml(hud, `
+            <div style="color:#dbe7f4; margin-bottom:6px;">SYSTEM ECHO RESULT</div>
+            waiting for /api/devices-realtime
+        `);
+        this.container.appendChild(hud);
+        this.overlayNodes.push(hud);
+        this.deviceHudNode = hud;
+
+        const detail = document.createElement('div');
+        detail.style.cssText = `
+            position: absolute;
+            left: 24px;
+            bottom: 26px;
+            width: 360px;
+            color: #bff9ff;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 10px;
+            z-index: 1001;
+            background: rgba(3, 9, 12, 0.76);
+            border: 1px solid rgba(84, 216, 232, 0.36);
+            box-shadow: 0 0 18px rgba(84, 216, 232, 0.08);
+            border-radius: 4px;
+            padding: 10px 12px;
+            line-height: 1.5;
+            pointer-events: none;
+        `;
+        window.setSafeHtml(detail, `
+            <div style="color:#54d8e8; margin-bottom:6px;">DEVICE SIGNATURE</div>
+            hover a device block to inspect sysfs, driver and IRQ/DMA path
+        `);
+        this.container.appendChild(detail);
+        this.overlayNodes.push(detail);
+        this.deviceDetailNode = detail;
 
         const err = document.createElement('div');
         err.style.cssText = `
@@ -260,26 +355,41 @@ class DevicesBeltVisualization {
 
     createLabelSprite(text, color = '#c8ccd4', width = 220, fontSize = 28, scaleX = 1.8, scaleY = 0.52, letterSpacing = 0.3) {
         const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = 76;
+        const textureScale = 3;
+        const logicalWidth = width;
+        const logicalHeight = 96;
+        canvas.width = logicalWidth * textureScale;
+        canvas.height = logicalHeight * textureScale;
+        canvas.style.width = `${logicalWidth}px`;
+        canvas.style.height = `${logicalHeight}px`;
         const ctx = canvas.getContext('2d');
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.font = `${fontSize}px "Share Tech Mono", monospace`;
+        ctx.scale(textureScale, textureScale);
+        ctx.clearRect(0, 0, logicalWidth, logicalHeight);
+        ctx.font = `700 ${fontSize}px "Share Tech Mono", monospace`;
         ctx.fillStyle = color;
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.92)';
+        ctx.lineWidth = Math.max(2, Math.floor(fontSize * 0.18));
+        ctx.shadowColor = 'rgba(84, 216, 232, 0.42)';
+        ctx.shadowBlur = Math.max(3, Math.floor(fontSize * 0.35));
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        const label = String(text || '').toUpperCase();
-        const chars = Array.from(label);
-        let totalWidth = 0;
-        chars.forEach((ch, idx) => {
-            totalWidth += ctx.measureText(ch).width;
-            if (idx < chars.length - 1) totalWidth += letterSpacing;
-        });
-        let x = (canvas.width - totalWidth) / 2;
-        const y = canvas.height / 2;
-        chars.forEach((ch) => {
-            ctx.fillText(ch, x, y);
-            x += ctx.measureText(ch).width + letterSpacing;
+        const lines = String(text || '').toUpperCase().split('\n');
+        const lineHeight = fontSize * 1.25;
+        const startY = logicalHeight / 2 - ((lines.length - 1) * lineHeight) / 2;
+        lines.forEach((line, lineIdx) => {
+            const chars = Array.from(line);
+            let totalWidth = 0;
+            chars.forEach((ch, idx) => {
+                totalWidth += ctx.measureText(ch).width;
+                if (idx < chars.length - 1) totalWidth += letterSpacing;
+            });
+            let x = (logicalWidth - totalWidth) / 2;
+            const y = startY + lineIdx * lineHeight;
+            chars.forEach((ch) => {
+                ctx.strokeText(ch, x, y);
+                ctx.fillText(ch, x, y);
+                x += ctx.measureText(ch).width + letterSpacing;
+            });
         });
 
         const texture = new THREE.CanvasTexture(canvas);
@@ -291,8 +401,136 @@ class DevicesBeltVisualization {
             depthTest: false
         });
         const sprite = new THREE.Sprite(material);
-        sprite.scale.set(scaleX, scaleY, 1);
+        const sceneTextScale = 1.72;
+        sprite.scale.set(scaleX * sceneTextScale, scaleY * sceneTextScale, 1);
         return sprite;
+    }
+
+    circlePoints(radius, segments = 72, center = new THREE.Vector3(0, 0, 0), z = 0) {
+        return Array.from({ length: segments }, (_, i) => {
+            const a = (i / segments) * Math.PI * 2;
+            return new THREE.Vector3(center.x + Math.cos(a) * radius, center.y + Math.sin(a) * radius, z);
+        });
+    }
+
+    createTopologyNode(label, position, radius, color, options = {}) {
+        const fill = new THREE.Mesh(
+            new THREE.CircleGeometry(radius, options.segments || 28),
+            new THREE.MeshBasicMaterial({
+                color: options.fillColor || 0x000000,
+                transparent: true,
+                opacity: options.fillOpacity ?? 0.93,
+                depthWrite: false
+            })
+        );
+        fill.position.copy(position);
+        this.scene.add(fill);
+
+        const outline = new THREE.LineLoop(
+            new THREE.BufferGeometry().setFromPoints(this.circlePoints(radius, options.segments || 36, position, 0.002)),
+            new THREE.LineBasicMaterial({ color, transparent: true, opacity: options.opacity ?? 0.9 })
+        );
+        this.scene.add(outline);
+
+        const text = this.createLabelSprite(
+            label,
+            options.labelColor || '#f2f5fa',
+            options.labelWidth || 220,
+            options.fontSize || 11,
+            options.scaleX || 1.2,
+            options.scaleY || 0.28,
+            0.25
+        );
+        text.position.set(position.x, position.y + (options.labelOffsetY ?? 0), 0.006);
+        this.scene.add(text);
+
+        const target = options.target || this.deviceNodes;
+        target.push(fill, outline, text);
+        return { fill, outline, label: text };
+    }
+
+    createBoxNode(label, position, size, color, options = {}) {
+        const geom = new THREE.BoxGeometry(size.x, size.y, size.z || 0.08);
+        const fill = new THREE.Mesh(
+            geom,
+            new THREE.MeshBasicMaterial({
+                color: options.fillColor || 0x05080c,
+                transparent: true,
+                opacity: options.fillOpacity ?? 0.74,
+                depthWrite: false
+            })
+        );
+        fill.position.copy(position);
+        this.scene.add(fill);
+
+        const edge = new THREE.LineSegments(
+            new THREE.EdgesGeometry(geom),
+            new THREE.LineBasicMaterial({ color, transparent: true, opacity: options.opacity ?? 0.62 })
+        );
+        edge.position.copy(position);
+        this.scene.add(edge);
+
+        const text = this.createLabelSprite(
+            label,
+            options.labelColor || '#dbe7f4',
+            options.labelWidth || 280,
+            options.fontSize || 9,
+            options.scaleX || 1.28,
+            options.scaleY || 0.24,
+            0.24
+        );
+        text.position.set(position.x, position.y + (options.labelOffsetY ?? 0), position.z + 0.08);
+        this.scene.add(text);
+
+        const target = options.target || this.deviceNodes;
+        target.push(fill, edge, text);
+        return { fill, edge, label: text };
+    }
+
+    createStaticLine(points, color = 0x54d8e8, opacity = 0.35, target = this.deviceNodes) {
+        const line = new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints(points),
+            new THREE.LineBasicMaterial({ color, transparent: true, opacity })
+        );
+        this.scene.add(line);
+        target.push(line);
+        return line;
+    }
+
+    createTinyGrid(origin, cols, rows, cellSize, gap, color, activeCount, target = this.deviceNodes) {
+        const total = cols * rows;
+        for (let i = 0; i < total; i += 1) {
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            const active = i < activeCount || (i + row) % 5 === 0;
+            this.createBoxNode('', new THREE.Vector3(origin.x + col * (cellSize + gap), origin.y - row * (cellSize + gap), origin.z), new THREE.Vector3(cellSize, cellSize, 0.035), color, {
+                target,
+                fillOpacity: active ? 0.34 : 0.035,
+                opacity: active ? 0.78 : 0.18,
+                scaleX: 0.05,
+                scaleY: 0.05
+            });
+        }
+    }
+
+    lifecycleValue(stage, device, bus, category) {
+        const load = Number(device.load_norm || 0);
+        const irq = Number(device.irq_per_sec || 0);
+        const throughput = Number(device.throughput_mb_s || 0);
+        const majorMinor = device.major != null && device.minor != null ? `${device.major}:${device.minor}` : 'hotplug';
+        const driver = String(device.driver || 'driver-core').slice(0, 12);
+        const name = String(device.name || 'dev').slice(0, 12);
+        const interaction = String(device.user_interaction || 'syscall/ioctl').slice(0, 18);
+        const values = {
+            detect: `${bus.toUpperCase()} ${name}`,
+            init: `${category.toUpperCase()} probe`,
+            bind: driver,
+            irq: irq > 0 ? `${irq.toFixed(1)}/s` : 'quiet',
+            dma: throughput > 0 ? `${throughput.toFixed(2)} MB/s` : `${Math.round(load * 100)}% path`,
+            devnode: majorMinor,
+            process: interaction
+        };
+        return values[stage] || name;
     }
 
     clearDynamicObjects() {
@@ -311,6 +549,8 @@ class DevicesBeltVisualization {
         this.deviceNodes = [];
         this.links = [];
         this.pulses = [];
+        this.interactiveDeviceNodes = [];
+        this.deviceLookup = {};
     }
 
     normalizeCategory(category) {
@@ -318,6 +558,63 @@ class DevicesBeltVisualization {
         if (this.subsystemOrder.includes(c)) return c;
         if (c === 'misc' || c === 'gpu') return 'char';
         return 'char';
+    }
+
+    normalizeBus(bus, category) {
+        const b = String(bus || '').toLowerCase();
+        if (this.busOrder.includes(b)) return b;
+        const c = this.normalizeCategory(category);
+        if (c === 'net') return 'net';
+        if (c === 'usb') return 'usb';
+        if (c === 'char' || c === 'input') return 'virtual';
+        return 'pcie';
+    }
+
+    deviceKey(device) {
+        return `${this.normalizeCategory(device?.category)}::${String(device?.name || 'unknown')}`;
+    }
+
+    escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;'
+        }[ch]));
+    }
+
+    formatDeviceDetail(device) {
+        if (!device) {
+            return `
+                <div style="color:#54d8e8; margin-bottom:6px;">DEVICE SIGNATURE</div>
+                hover a device block to inspect sysfs, driver and IRQ/DMA path
+            `;
+        }
+        const category = this.normalizeCategory(device.category);
+        const bus = this.normalizeBus(device.bus, device.category);
+        const majorMinor = device.major != null && device.minor != null ? `${device.major}:${device.minor}` : 'hotplug';
+        const loadPct = Math.round(Number(device.load_norm || 0) * 100);
+        const rows = [
+            ['device', device.name || 'unknown'],
+            ['bus/category', `${bus} / ${category}`],
+            ['driver', device.driver || 'n/a'],
+            ['major:minor', majorMinor],
+            ['irq/sec', Number(device.irq_per_sec || 0).toFixed(2)],
+            ['dma/throughput', `${Number(device.throughput_mb_s || 0).toFixed(3)} MB/s`],
+            ['process path', device.user_interaction || 'syscall/ioctl'],
+            ['sysfs', device.sys_path || '/sys']
+        ];
+        return `
+            <div style="color:#54d8e8; margin-bottom:6px;">DEVICE SIGNATURE :: ${this.escapeHtml(String(device.name || 'unknown').toUpperCase())}</div>
+            <div style="color:#dffcff; margin-bottom:6px;">kernel contact: ${this.escapeHtml(bus.toUpperCase())} -> ${this.escapeHtml(category.toUpperCase())} -> ${this.escapeHtml(majorMinor)} | load ${loadPct}%</div>
+            ${rows.map(([k, v]) => `<div><span style="color:#7fd8ff">${this.escapeHtml(k)}</span> ${this.escapeHtml(v)}</div>`).join('')}
+        `;
+    }
+
+    updateDeviceDetail(device) {
+        if (!this.deviceDetailNode) return;
+        window.setSafeHtml(this.deviceDetailNode, this.formatDeviceDetail(device));
     }
 
     linkLine(from, to, color, opacity, deviceRef, loadNorm) {
@@ -342,118 +639,258 @@ class DevicesBeltVisualization {
         return line;
     }
 
+    setPointerFromEvent(event) {
+        if (!this.renderer || !this.mouse) return false;
+        const rect = this.renderer.domElement.getBoundingClientRect();
+        this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+        return true;
+    }
+
+    pickDevice(event) {
+        if (!this.raycaster || !this.camera || !this.interactiveDeviceNodes.length) return null;
+        if (!this.setPointerFromEvent(event)) return null;
+        this.raycaster.setFromCamera(this.mouse, this.camera);
+        const hits = this.raycaster.intersectObjects(this.interactiveDeviceNodes, false);
+        return hits.length ? hits[0].object.userData.device : null;
+    }
+
+    onPointerMove(event) {
+        const device = this.pickDevice(event);
+        if (device) {
+            this.updateDeviceDetail(device);
+            this.renderer.domElement.style.cursor = 'crosshair';
+        } else {
+            const selected = this.selectedDeviceKey ? this.deviceLookup[this.selectedDeviceKey] : null;
+            this.updateDeviceDetail(selected || null);
+            this.renderer.domElement.style.cursor = 'default';
+        }
+    }
+
+    onPointerClick(event) {
+        const device = this.pickDevice(event);
+        if (!device) return;
+        this.selectedDeviceKey = this.deviceKey(device);
+        this.updateDeviceDetail(device);
+    }
+
     buildDeviceScene(devices) {
         this.clearDynamicObjects();
         const list = Array.isArray(devices) ? devices : [];
+        const hotDevices = list.slice().sort((a, b) => {
+            const aScore = Number(a.load_norm || 0) + Number(a.irq_per_sec || 0) * 0.01 + Number(a.throughput_mb_s || 0) * 0.05;
+            const bScore = Number(b.load_norm || 0) + Number(b.irq_per_sec || 0) * 0.01 + Number(b.throughput_mb_s || 0) * 0.05;
+            return bScore - aScore;
+        }).slice(0, 18);
 
-        const bySubsystem = {};
-        this.subsystemOrder.forEach((k) => {
-            bySubsystem[k] = [];
-        });
+        const totalIrq = list.reduce((acc, d) => acc + Number(d.irq_per_sec || 0), 0);
+        const totalDma = list.reduce((acc, d) => acc + Number(d.throughput_mb_s || 0), 0);
+        const activeDrivers = new Set(list.map((d) => String(d.driver || '').trim()).filter((d) => d && d !== 'n/a')).size;
+        const busCounts = this.busOrder.reduce((acc, bus) => {
+            acc[bus] = list.filter((d) => this.normalizeBus(d.bus, d.category) === bus).length;
+            return acc;
+        }, {});
 
-        list.forEach((d) => {
-            const sub = this.normalizeCategory(d.category);
-            bySubsystem[sub].push(d);
-        });
+        this.createStaticLine([new THREE.Vector3(-7.25, 3.38, 0.08), new THREE.Vector3(7.2, 3.38, 0.08)], 0x54d8e8, 0.42, this.subsystemNodes);
+        this.createStaticLine([new THREE.Vector3(-6.2, 2.1, 0.08), new THREE.Vector3(-3.35, 2.1, 0.08), new THREE.Vector3(-2.95, 1.78, 0.08)], 0x54d8e8, 0.34, this.subsystemNodes);
+        this.createStaticLine([new THREE.Vector3(2.45, 2.04, 0.08), new THREE.Vector3(5.15, 2.04, 0.08), new THREE.Vector3(5.75, 1.72, 0.08)], 0x54d8e8, 0.34, this.subsystemNodes);
 
-        const subsystemRadius = 4.4;
-        const deviceRingBase = 2.15;
-        const deviceMaxPerSubsystem = 8;
-
-        const subsystemAnchors = {};
-
-        this.subsystemOrder.forEach((sub, idx) => {
-            const angle = (idx / this.subsystemOrder.length) * Math.PI * 2 - Math.PI / 2;
-            const x = Math.cos(angle) * subsystemRadius;
-            const y = Math.sin(angle) * subsystemRadius;
-            const pos = new THREE.Vector3(x, y, 0);
-            subsystemAnchors[sub] = { pos, angle };
-
-            const devicesForSub = (bySubsystem[sub] || []).slice().sort((a, b) => {
-                return (b.load_norm || 0) - (a.load_norm || 0);
-            }).slice(0, deviceMaxPerSubsystem);
-
-            const totalLoad = devicesForSub.reduce((acc, d) => acc + Number(d.load_norm || 0), 0);
-            const avgLoad = devicesForSub.length ? totalLoad / devicesForSub.length : 0;
-            const color = this.subsystemColors[sub] || 0x8a939f;
-            const subNode = new THREE.Mesh(
-                new THREE.CircleGeometry(0.44 + avgLoad * 0.16, 28),
-                new THREE.MeshBasicMaterial({
-                    color: 0x000000,
-                    transparent: true,
-                    opacity: 0.95
-                })
-            );
-            subNode.position.copy(pos);
-            this.scene.add(subNode);
-            this.subsystemNodes.push(subNode);
-            const subRadius = 0.44 + avgLoad * 0.16;
-            const subOutline = new THREE.LineLoop(
-                new THREE.BufferGeometry().setFromPoints(
-                    Array.from({ length: 48 }, (_, i) => {
-                        const a = (i / 48) * Math.PI * 2;
-                        return new THREE.Vector3(
-                            pos.x + Math.cos(a) * subRadius,
-                            pos.y + Math.sin(a) * subRadius,
-                            0.001
-                        );
-                    })
-                ),
-                new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.94 })
-            );
-            this.scene.add(subOutline);
-            this.subsystemNodes.push(subOutline);
-
-            const subLabel = this.createLabelSprite(sub.toUpperCase(), '#ffffff', 180, 11, 0.86, 0.24, 0.3);
-            subLabel.position.set(pos.x, pos.y, 0.002);
-            this.scene.add(subLabel);
-            this.subsystemNodes.push(subLabel);
-
-            this.linkLine(pos, new THREE.Vector3(0, 0, 0), color, 0.24 + avgLoad * 0.35, null, avgLoad);
-
-            devicesForSub.forEach((d, j) => {
-                const orbitRadius = deviceRingBase + (j % 3) * 0.42;
-                const localAngle = (j / Math.max(1, devicesForSub.length)) * Math.PI * 2 + angle * 0.55;
-                const dx = Math.cos(localAngle) * orbitRadius;
-                const dy = Math.sin(localAngle) * orbitRadius;
-                const devPos = new THREE.Vector3(pos.x + dx, pos.y + dy, 0);
-
-                const load = Number(d.load_norm || 0);
-                const devRadius = 0.16 + load * 0.08;
-                const node = new THREE.Mesh(
-                    new THREE.CircleGeometry(devRadius, 18),
-                    new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.95 })
-                );
-                node.position.copy(devPos);
-                node.userData.device = d;
-                this.scene.add(node);
-                this.deviceNodes.push(node);
-                const devOutline = new THREE.LineLoop(
-                    new THREE.BufferGeometry().setFromPoints(
-                        Array.from({ length: 24 }, (_, i) => {
-                            const a = (i / 24) * Math.PI * 2;
-                            return new THREE.Vector3(
-                                devPos.x + Math.cos(a) * devRadius,
-                                devPos.y + Math.sin(a) * devRadius,
-                                0.001
-                            );
-                        })
-                    ),
-                    new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 })
-                );
-                this.scene.add(devOutline);
-                this.deviceNodes.push(devOutline);
-
-                const shortName = String(d.name || '').slice(0, 10);
-                const devLabel = this.createLabelSprite(shortName, '#f2f5fa', 240, 13, 1.95, 0.56, 0.3);
-                // Match syscall caption style and place label under device node.
-                devLabel.position.set(devPos.x, devPos.y - devRadius - 0.24, 0.002);
-                this.scene.add(devLabel);
-                this.deviceNodes.push(devLabel);
-
-                this.linkLine(devPos, pos, color, 0.16 + load * 0.34, d, load);
+        const trackingPanels = [
+            { text: `TRACKING CODE 0200A32  ${String(list.length).padStart(2, '0')}/32`, x: -5.05 },
+            { text: `TRACKING CODE 0200B58  ${String(activeDrivers).padStart(2, '0')}/26`, x: -1.65 },
+            { text: `IRQ HOT PATH ${totalIrq.toFixed(1)}`, x: 1.7 },
+            { text: `DMA VECTOR ${totalDma.toFixed(2)}MB`, x: 4.95 }
+        ];
+        trackingPanels.forEach((panel) => {
+            this.createBoxNode(panel.text, new THREE.Vector3(panel.x, 3.02, 0.12), new THREE.Vector3(2.55, 0.28, 0.08), 0x54d8e8, {
+                target: this.subsystemNodes,
+                fillOpacity: 0.06,
+                opacity: 0.72,
+                fontSize: 10,
+                scaleX: 2.15,
+                scaleY: 0.26,
+                labelWidth: 470,
+                labelColor: '#dffcff'
             });
         });
+
+        const leftPanel = new THREE.Vector3(-4.78, 1.62, 0.14);
+        this.createBoxNode('', leftPanel, new THREE.Vector3(4.25, 2.38, 0.08), 0x54d8e8, {
+            target: this.subsystemNodes,
+            fillOpacity: 0.035,
+            opacity: 0.22,
+            scaleX: 0.1,
+            scaleY: 0.1
+        });
+        const utilityTitle = this.createLabelSprite('UTILITY UNIT KIT', '#ffffff', 480, 19, 2.72, 0.52, 0.36);
+        utilityTitle.position.set(-5.25, 2.43, 0.18);
+        this.scene.add(utilityTitle);
+        this.subsystemNodes.push(utilityTitle);
+        const leftRows = [
+            ['CONTROLLING UNIT', `${String(busCounts.pcie || 0).padStart(2, '0')}39`],
+            ['DATA PAD', `${String(busCounts.usb || 0).padStart(2, '0')}78`],
+            ['CODER-SCRAMBLER', `${String(busCounts.virtual || 0).padStart(2, '0')}5-B`]
+        ];
+        leftRows.forEach((row, idx) => {
+            const y = 1.88 - idx * 0.26;
+            const label = this.createLabelSprite(row[0], '#dffcff', 340, 12, 1.78, 0.28, 0.18);
+            label.position.set(-5.2, y, 0.18);
+            this.scene.add(label);
+            this.subsystemNodes.push(label);
+            this.createBoxNode(row[1], new THREE.Vector3(-3.88, y, 0.16), new THREE.Vector3(0.72, 0.18, 0.06), 0x54d8e8, {
+                target: this.subsystemNodes,
+                fillOpacity: 0.42,
+                opacity: 0.64,
+                fontSize: 10,
+                scaleX: 0.78,
+                scaleY: 0.24,
+                labelWidth: 170,
+                labelColor: '#061014'
+            });
+        });
+        this.createTinyGrid(new THREE.Vector3(-5.92, 1.12, 0.16), 5, 4, 0.24, 0.07, 0x54d8e8, Math.min(20, 5 + list.length), this.subsystemNodes);
+
+        const rightPanel = new THREE.Vector3(3.76, 1.62, 0.14);
+        this.createBoxNode('', rightPanel, new THREE.Vector3(4.15, 2.42, 0.08), 0x54d8e8, {
+            target: this.subsystemNodes,
+            fillOpacity: 0.035,
+            opacity: 0.22,
+            scaleX: 0.1,
+            scaleY: 0.1
+        });
+        const radioTitle = this.createLabelSprite('RADIO ECHO RESULT', '#ffffff', 500, 18, 2.65, 0.48, 0.36);
+        radioTitle.position.set(3.33, 2.42, 0.18);
+        this.scene.add(radioTitle);
+        this.subsystemNodes.push(radioTitle);
+        const echoRows = [
+            ['GEN ROOT LINK', list.length],
+            ['SPIN LINK', busCounts.pcie || 0],
+            ['RX-SC LOCKER', activeDrivers],
+            ['READY POINT', busCounts.usb || 0],
+            ['STATIC CONVERT', busCounts.virtual || 0],
+            ['SPRING MESSAGE', totalIrq.toFixed(1)],
+            ['DIRECT X-FLOW', totalDma.toFixed(2)]
+        ];
+        echoRows.forEach((row, idx) => {
+            const y = 2.02 - idx * 0.22;
+            const name = this.createLabelSprite(row[0], '#dffcff', 330, 11, 1.62, 0.24, 0.16);
+            name.position.set(2.95, y, 0.18);
+            this.scene.add(name);
+            this.subsystemNodes.push(name);
+            const value = this.createLabelSprite(String(row[1]), '#ffffff', 130, 11, 0.72, 0.24, 0.16);
+            value.position.set(4.48, y, 0.18);
+            this.scene.add(value);
+            this.subsystemNodes.push(value);
+        });
+
+        const kernelLabel = this.createLabelSprite('LINUX KERNEL CONTACT GRID', '#dffcff', 560, 13, 2.95, 0.38, 0.26);
+        kernelLabel.position.set(-1.25, 0.82, 0.16);
+        this.scene.add(kernelLabel);
+        this.subsystemNodes.push(kernelLabel);
+        this.createTinyGrid(new THREE.Vector3(-3.75, 0.38, 0.14), 22, 4, 0.17, 0.08, 0x54d8e8, Math.min(88, 16 + list.length * 2), this.subsystemNodes);
+        const kernelParts = [
+            ['BUS', -3.75], ['DRV', -2.55], ['PROBE', -1.35], ['IRQ', -0.15], ['DMA', 1.05], ['UDEV', 2.25], ['VFS', 3.45]
+        ];
+        kernelParts.forEach(([label, x]) => {
+            const sprite = this.createLabelSprite(label, '#dffcff', 190, 11, 0.9, 0.24, 0.16);
+            sprite.position.set(x, -0.42, 0.16);
+            this.scene.add(sprite);
+            this.subsystemNodes.push(sprite);
+        });
+
+        const devicesByCategory = {};
+        this.subsystemOrder.forEach((category) => {
+            devicesByCategory[category] = [];
+        });
+        hotDevices.forEach((device) => {
+            const category = this.normalizeCategory(device.category);
+            devicesByCategory[category].push(device);
+        });
+
+        const groupLayout = [
+            { category: 'block', label: 'BLOCK I/O', x: -6.4, y: -2.52, cols: 3, max: 6 },
+            { category: 'net', label: 'NETDEV', x: -3.35, y: -2.52, cols: 2, max: 4 },
+            { category: 'char', label: 'CHARDEV', x: -1.02, y: -2.52, cols: 2, max: 4 },
+            { category: 'input', label: 'INPUT', x: 1.18, y: -2.52, cols: 2, max: 4 },
+            { category: 'usb', label: 'USB/HOTPLUG', x: 3.48, y: -2.52, cols: 3, max: 6 }
+        ];
+        const selectedCandidates = [];
+
+        groupLayout.forEach((group) => {
+            const categoryDevices = (devicesByCategory[group.category] || []).slice(0, group.max);
+            const color = this.subsystemColors[group.category] || 0x54d8e8;
+            const panelWidth = group.cols === 3 ? 2.55 : 1.78;
+            const panelHeight = 1.08;
+            this.createBoxNode('', new THREE.Vector3(group.x + panelWidth / 2 - 0.55, group.y - 0.25, 0.09), new THREE.Vector3(panelWidth, panelHeight, 0.06), color, {
+                target: this.deviceNodes,
+                fillOpacity: 0.025,
+                opacity: 0.18,
+                scaleX: 0.05,
+                scaleY: 0.05
+            });
+
+            const groupLabel = this.createLabelSprite(group.label, '#dffcff', 300, 11, 1.22, 0.28, 0.18);
+            groupLabel.position.set(group.x + panelWidth / 2 - 0.55, group.y + 0.38, 0.15);
+            this.scene.add(groupLabel);
+            this.deviceNodes.push(groupLabel);
+
+            categoryDevices.forEach((device, localIdx) => {
+                const load = Number(device.load_norm || 0);
+                const col = localIdx % group.cols;
+                const row = Math.floor(localIdx / group.cols);
+                const x = group.x + col * 0.74;
+                const y = group.y - row * 0.42;
+                const bus = this.normalizeBus(device.bus, device.category);
+                const name = String(device.name || 'dev').slice(0, 8);
+                const mm = device.major != null && device.minor != null ? `${device.major}:${device.minor}` : 'hot';
+                const key = this.deviceKey(device);
+                const isSelected = this.selectedDeviceKey === key;
+                this.deviceLookup[key] = device;
+
+                const node = this.createBoxNode(
+                    name,
+                    new THREE.Vector3(x, y, 0.16),
+                    new THREE.Vector3(0.62, 0.27, 0.1),
+                    color,
+                    {
+                        target: this.deviceNodes,
+                        fillOpacity: (isSelected ? 0.42 : 0.1) + load * 0.24,
+                        opacity: (isSelected ? 0.92 : 0.48) + load * 0.28,
+                        fontSize: 12,
+                        scaleX: 0.9,
+                        scaleY: 0.28,
+                        labelWidth: 260,
+                        labelColor: isSelected ? '#ffffff' : '#dffcff'
+                    }
+                );
+                node.fill.userData.device = device;
+                this.interactiveDeviceNodes.push(node.fill);
+                selectedCandidates.push(device);
+
+                const detail = this.createLabelSprite(`${bus.toUpperCase()} ${mm}`, '#bff9ff', 250, 10, 0.94, 0.24, 0.14);
+                detail.position.set(x, y - 0.27, 0.16);
+                this.scene.add(detail);
+                this.deviceNodes.push(detail);
+
+                if (selectedCandidates.length <= 14) {
+                    const targetX = -3.75 + (selectedCandidates.length % 22) * 0.25;
+                    const targetY = 0.38 - (selectedCandidates.length % 4) * 0.25;
+                    this.createStaticLine([
+                        new THREE.Vector3(x, y + 0.15, 0.12),
+                        new THREE.Vector3(targetX, targetY, 0.12)
+                    ], color, isSelected ? 0.34 : 0.08 + load * 0.2, this.deviceNodes);
+                }
+            });
+        });
+
+        const selectedDevice = selectedCandidates.find((device) => this.deviceKey(device) === this.selectedDeviceKey)
+            || selectedCandidates[0]
+            || null;
+        if (selectedDevice) {
+            this.selectedDeviceKey = this.selectedDeviceKey || this.deviceKey(selectedDevice);
+        }
+        this.updateDeviceDetail(selectedDevice);
+
     }
 
     spawnPulse(line) {
@@ -521,6 +958,22 @@ class DevicesBeltVisualization {
                         `devices:${data.meta?.count || 0} | buses pcie:${b.pcie || 0} usb:${b.usb || 0} virtual:${b.virtual || 0} net:${b.net || 0} | ` +
                         `cat block:${c.block || 0} net:${c.net || 0} char:${c.char || 0} input:${c.input || 0} usb:${c.usb || 0}`;
                 }
+                if (this.deviceHudNode) {
+                    const b = data.meta?.bus_counts || {};
+                    const top = (data.devices || []).slice(0, 5)
+                        .map((d) => {
+                            const load = Math.round(Number(d.load_norm || 0) * 100);
+                            const mm = d.major != null && d.minor != null ? `${d.major}:${d.minor}` : 'hotplug';
+                            return `<div>${String(d.name || '?').slice(0, 13)} :: detect/${String(d.bus || 'bus').toUpperCase()} -> bind/${String(d.driver || 'driver-core').slice(0, 11)} -> node/<span style="color:#dbe7f4">${mm}</span> ${load}%</div>`;
+                        })
+                        .join('');
+                    window.setSafeHtml(this.deviceHudNode, `
+                        <div style="color:#dbe7f4; margin-bottom:6px;">SYSTEM ECHO RESULT</div>
+                        bus pcie:${b.pcie || 0} usb:${b.usb || 0} virtual:${b.virtual || 0} net:${b.net || 0}<br>
+                        <div style="margin-top:8px; color:#54d8e8;">ACTIVE DEVICE BLOCKS</div>
+                        ${top || '<div>waiting for active devices</div>'}
+                    `);
+                }
             })
             .catch((err) => {
                 if (this.telemetryErrorNode) {
@@ -542,13 +995,8 @@ class DevicesBeltVisualization {
 
         this.updateLinksAndPulses(dt);
 
-        if (this.centralCore) {
-            this.centralCore.rotation.y += 0.35 * dt;
-        }
-
-        const t = now * 0.00022;
-        this.camera.position.x = Math.sin(t) * 0.9;
-        this.camera.position.z = 17.5 + Math.cos(t) * 0.35;
+        this.camera.position.x = 0;
+        this.camera.position.z = 13.2;
         this.camera.lookAt(0, 0, 0);
 
         this.renderer.render(this.scene, this.camera);
