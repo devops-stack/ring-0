@@ -1,5 +1,3 @@
-"""Crypto and security realtime services facade."""
-
 from __future__ import annotations
 
 import logging
