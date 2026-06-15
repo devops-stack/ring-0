@@ -190,6 +190,23 @@ function drawLowerBezierGrid(num = 90) {
     const yBase = height - 200 + lowerFlowYOffset;
     drawBezierDecor(width, height, yBase);
 
+    // Surface line the whiskers should skim along (matches the primary rail in drawBezierDecor).
+    const surfaceY = Math.min(height - 78, yBase + 8);
+    const centerX = width / 2;
+    // Rail span matches drawBezierDecor's primary rail so whiskers ride its length.
+    const railHalf = Math.min(540, Math.max(320, width * 0.32));
+
+    // Publish the I/O surface geometry so the open-files layer can dock file
+    // markers onto the rail (crest = busiest file, left → right = decreasing).
+    window.__ioLayerGeometry = {
+        surfaceY,
+        centerX,
+        railHalf,
+        crestX: centerX - railHalf,
+        railLeft: centerX - railHalf,
+        railRight: centerX + railHalf
+    };
+
     for (let i = 0; i < num; i++) {
         const fromLeft = i < num / 2;
 

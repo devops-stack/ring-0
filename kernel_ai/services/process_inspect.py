@@ -11,15 +11,87 @@ from kernel_ai.services import system_view as _system_view_service
 from kernel_ai.sentry_helpers import capture_exception
 
 
+def _parse_proc_net_socket_inodes():
+    """Map socket inodes to coarse transport families available from /proc/net."""
+    socket_kinds = {}
+
+    try:
+        with open("/proc/net/unix", "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 7 or parts[0] == "Num":
+                    continue
+                if parts[6].isdigit():
+                    socket_kinds[int(parts[6])] = "unix"
+    except (OSError, PermissionError):
+        pass
+
+    for path, kind in (
+        ("/proc/net/tcp", "tcp"),
+        ("/proc/net/tcp6", "tcp"),
+        ("/proc/net/udp", "udp"),
+        ("/proc/net/udp6", "udp"),
+    ):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) < 10 or parts[0] == "sl":
+                        continue
+                    if parts[9].isdigit():
+                        socket_kinds[int(parts[9])] = kind
+        except (OSError, PermissionError):
+            continue
+
+    return socket_kinds
+
+
+def _collect_local_tcp_pairs(proc_names_by_pid):
+    """Return local process-name pairs connected through TCP loopback/local sockets."""
+    endpoints = {}
+    try:
+        connections = psutil.net_connections(kind="tcp")
+    except (psutil.AccessDenied, OSError):
+        return []
+
+    for conn in connections:
+        pid = getattr(conn, "pid", None)
+        laddr = getattr(conn, "laddr", None)
+        raddr = getattr(conn, "raddr", None)
+        if not pid or not laddr or not raddr:
+            continue
+        if not hasattr(laddr, "ip") or not hasattr(raddr, "ip"):
+            continue
+        endpoints[(laddr.ip, int(laddr.port), raddr.ip, int(raddr.port))] = int(pid)
+
+    pairs = set()
+    for (local_ip, local_port, remote_ip, remote_port), left_pid in endpoints.items():
+        right_pid = endpoints.get((remote_ip, remote_port, local_ip, local_port))
+        if not right_pid or right_pid == left_pid:
+            continue
+        left_name = proc_names_by_pid.get(left_pid)
+        right_name = proc_names_by_pid.get(right_pid)
+        if not left_name or not right_name:
+            continue
+        pairs.add(tuple(sorted((left_name, right_name))))
+
+    return sorted(pairs)
+
+
 def get_ipc_links_summary(max_pairs=120, max_nodes=24):
     """Collect IPC relationships by shared sockets, pipes and shared memory mappings."""
     socket_inode_re = re.compile(r"^socket:\[(\d+)\]$")
     pipe_inode_re = re.compile(r"^pipe:\[(\d+)\]$")
+    socket_kinds = _parse_proc_net_socket_inodes()
     socket_owners = {}
+    other_socket_owners = {}
+    unix_socket_owners = {}
+    tcp_socket_owners = {}
     pipe_owners = {}
     shm_owners = {}
     namespace_keys = ["mnt", "pid", "net", "ipc", "uts", "user"]
     namespace_owners = {}
+    proc_names_by_pid = {}
 
     for proc_dir in os.listdir("/proc"):
         if not proc_dir.isdigit():
@@ -32,6 +104,7 @@ def get_ipc_links_summary(max_pairs=120, max_nodes=24):
             continue
         if not proc_name:
             continue
+        proc_names_by_pid[pid] = proc_name
 
         fd_dir = f"/proc/{pid}/fd"
         try:
@@ -50,6 +123,13 @@ def get_ipc_links_summary(max_pairs=120, max_nodes=24):
             if sm:
                 inode = int(sm.group(1))
                 socket_owners.setdefault(inode, set()).add((pid, proc_name))
+                socket_kind = socket_kinds.get(inode)
+                if socket_kind == "unix":
+                    unix_socket_owners.setdefault(inode, set()).add((pid, proc_name))
+                elif socket_kind == "tcp":
+                    tcp_socket_owners.setdefault(inode, set()).add((pid, proc_name))
+                else:
+                    other_socket_owners.setdefault(inode, set()).add((pid, proc_name))
                 continue
 
             pm = pipe_inode_re.match(target)
@@ -95,11 +175,15 @@ def get_ipc_links_summary(max_pairs=120, max_nodes=24):
 
     pair_totals = {}
     pair_socket = {}
+    pair_unix_socket = {}
+    pair_tcp = {}
     pair_pipe = {}
     pair_shm = {}
     pair_namespace = {}
     degree_total = {}
     degree_socket = {}
+    degree_unix_socket = {}
+    degree_tcp = {}
     degree_pipe = {}
     degree_shm = {}
     degree_namespace = {}
@@ -112,6 +196,12 @@ def get_ipc_links_summary(max_pairs=120, max_nodes=24):
         pair_totals[key] = pair_totals.get(key, 0) + 1
         if kind == "socket":
             pair_socket[key] = pair_socket.get(key, 0) + 1
+        elif kind == "unix_socket":
+            pair_socket[key] = pair_socket.get(key, 0) + 1
+            pair_unix_socket[key] = pair_unix_socket.get(key, 0) + 1
+        elif kind == "tcp":
+            pair_socket[key] = pair_socket.get(key, 0) + 1
+            pair_tcp[key] = pair_tcp.get(key, 0) + 1
         elif kind == "pipe":
             pair_pipe[key] = pair_pipe.get(key, 0) + 1
         elif kind == "shm":
@@ -123,6 +213,12 @@ def get_ipc_links_summary(max_pairs=120, max_nodes=24):
             degree_total[nm] = degree_total.get(nm, 0) + 1
             if kind == "socket":
                 degree_socket[nm] = degree_socket.get(nm, 0) + 1
+            elif kind == "unix_socket":
+                degree_socket[nm] = degree_socket.get(nm, 0) + 1
+                degree_unix_socket[nm] = degree_unix_socket.get(nm, 0) + 1
+            elif kind == "tcp":
+                degree_socket[nm] = degree_socket.get(nm, 0) + 1
+                degree_tcp[nm] = degree_tcp.get(nm, 0) + 1
             elif kind == "pipe":
                 degree_pipe[nm] = degree_pipe.get(nm, 0) + 1
             elif kind == "shm":
@@ -139,10 +235,15 @@ def get_ipc_links_summary(max_pairs=120, max_nodes=24):
                 for j in range(i + 1, len(unique)):
                     add_pair_counts(unique[i][1], unique[j][1], kind)
 
-    consume_inode_owners(socket_owners, "socket")
+    consume_inode_owners(other_socket_owners, "socket")
+    consume_inode_owners(unix_socket_owners, "unix_socket")
+    consume_inode_owners(tcp_socket_owners, "tcp")
     consume_inode_owners(pipe_owners, "pipe")
     consume_inode_owners(shm_owners, "shm")
     consume_inode_owners(namespace_owners, "namespace")
+    local_tcp_pairs = _collect_local_tcp_pairs(proc_names_by_pid)
+    for left_name, right_name in local_tcp_pairs:
+        add_pair_counts(left_name, right_name, "tcp")
 
     sorted_pairs = sorted(pair_totals.items(), key=lambda kv: kv[1], reverse=True)[:max_pairs]
     pair_links = []
@@ -153,6 +254,8 @@ def get_ipc_links_summary(max_pairs=120, max_nodes=24):
                 "right": right,
                 "weight": int(weight),
                 "socket_weight": int(pair_socket.get((left, right), pair_socket.get((right, left), 0))),
+                "unix_socket_weight": int(pair_unix_socket.get((left, right), pair_unix_socket.get((right, left), 0))),
+                "tcp_weight": int(pair_tcp.get((left, right), pair_tcp.get((right, left), 0))),
                 "pipe_weight": int(pair_pipe.get((left, right), pair_pipe.get((right, left), 0))),
                 "shm_weight": int(pair_shm.get((left, right), pair_shm.get((right, left), 0))),
                 "ns_weight": int(pair_namespace.get((left, right), pair_namespace.get((right, left), 0))),
@@ -167,6 +270,8 @@ def get_ipc_links_summary(max_pairs=120, max_nodes=24):
                 "name": name,
                 "degree": int(degree),
                 "socket_degree": int(degree_socket.get(name, 0)),
+                "unix_socket_degree": int(degree_unix_socket.get(name, 0)),
+                "tcp_degree": int(degree_tcp.get(name, 0)),
                 "pipe_degree": int(degree_pipe.get(name, 0)),
                 "shm_degree": int(degree_shm.get(name, 0)),
                 "ns_degree": int(degree_namespace.get(name, 0)),
@@ -178,6 +283,9 @@ def get_ipc_links_summary(max_pairs=120, max_nodes=24):
         "pair_links": pair_links,
         "stats": {
             "shared_socket_inodes": int(sum(1 for owners in socket_owners.values() if len({pid for pid, _ in owners}) > 1)),
+            "shared_unix_socket_inodes": int(sum(1 for owners in unix_socket_owners.values() if len({pid for pid, _ in owners}) > 1)),
+            "shared_tcp_socket_inodes": int(sum(1 for owners in tcp_socket_owners.values() if len({pid for pid, _ in owners}) > 1)),
+            "local_tcp_pairs": len(local_tcp_pairs),
             "shared_pipe_inodes": int(sum(1 for owners in pipe_owners.values() if len({pid for pid, _ in owners}) > 1)),
             "shared_memory_regions": int(sum(1 for owners in shm_owners.values() if len({pid for pid, _ in owners}) > 1)),
             "shared_namespace_groups": int(sum(1 for owners in namespace_owners.values() if len({pid for pid, _ in owners}) > 1)),
@@ -313,7 +421,59 @@ def get_process_fds_info(pid):
         except (psutil.AccessDenied, psutil.NoSuchProcess, AttributeError):
             pass
 
-        return {"pid": pid, "num_fds": num_fds, "open_files": open_files[:20], "connections": connections[:20]}
+        descriptors = []
+        fd_dir = f"/proc/{pid}/fd"
+        try:
+            if os.path.exists(fd_dir):
+                for fd_num in sorted((fd for fd in os.listdir(fd_dir) if fd.isdigit()), key=lambda value: int(value)):
+                    try:
+                        target = os.readlink(f"{fd_dir}/{fd_num}")
+                    except (OSError, PermissionError):
+                        continue
+
+                    fd_index = int(fd_num)
+                    if fd_index == 0:
+                        fd_type = "stdin"
+                    elif fd_index == 1:
+                        fd_type = "stdout"
+                    elif fd_index == 2:
+                        fd_type = "stderr"
+                    elif target.startswith("socket:"):
+                        fd_type = "socket"
+                    elif target.startswith("pipe:"):
+                        fd_type = "pipe"
+                    elif target.startswith("anon_inode:"):
+                        fd_type = "anon_inode"
+                    elif target.startswith("/"):
+                        fd_type = "file"
+                    else:
+                        fd_type = "descriptor"
+
+                    descriptors.append({"fd": fd_index, "type": fd_type, "target": target})
+        except (OSError, PermissionError):
+            pass
+
+        connection_by_fd = {item.get("fd"): item for item in connections if item.get("fd") is not None}
+        for descriptor in descriptors:
+            conn = connection_by_fd.get(descriptor["fd"])
+            if not conn:
+                continue
+            family = str(conn.get("family") or "").upper()
+            if "AF_UNIX" in family:
+                descriptor["type"] = "unix socket"
+            elif "AF_INET" in family:
+                descriptor["type"] = "tcp socket" if conn.get("remote_address") else "inet socket"
+            descriptor["local_address"] = conn.get("local_address")
+            descriptor["remote_address"] = conn.get("remote_address")
+            descriptor["status"] = conn.get("status")
+
+        return {
+            "pid": pid,
+            "num_fds": num_fds,
+            "open_files": open_files[:20],
+            "connections": connections[:20],
+            "descriptors": descriptors[:40],
+        }
     except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
         return {"error": f"Access denied or process not found: {str(e)}"}
     except Exception as e:

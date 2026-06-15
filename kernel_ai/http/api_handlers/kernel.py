@@ -49,6 +49,18 @@ def nginx_files():
     return api_json(lambda: {"files": _telemetry.get_nginx_open_files()})
 
 
+def io_open_files():
+    def _payload():
+        try:
+            limit = int(request.args.get("limit", 40))
+        except (TypeError, ValueError):
+            limit = 40
+        limit = max(1, min(limit, 80))
+        return {"files": _telemetry.get_io_open_files(limit=limit)}
+
+    return api_json(_payload)
+
+
 def get_execution_context():
     return api_json(
         lambda: _telemetry.get_execution_context_data(

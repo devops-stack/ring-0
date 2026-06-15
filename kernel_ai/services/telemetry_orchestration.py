@@ -57,6 +57,10 @@ def get_nginx_open_files():
     return _core_observability_service.get_nginx_open_files()
 
 
+def get_io_open_files(limit=40):
+    return _core_observability_service.get_io_open_files(limit=limit)
+
+
 def _kernel_dna_softirq_nucleotides(limit=8):
     return _syscalls_service.get_softirq_nucleotides(
         map_interrupt_to_subsystem_fn=map_interrupt_to_subsystem,

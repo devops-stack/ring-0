@@ -8,6 +8,7 @@ let resizeTimeout;
 let nginxFilesManager;
 let rightSemicircleMenuManager;
 let connectionsManager; // make available for cleanup handlers
+let pinnedProcessDossier = null;
 const MOBILE_LAYOUT_BREAKPOINT = 900;
 function isMobileLayout() {
     return window.innerWidth <= MOBILE_LAYOUT_BREAKPOINT;
@@ -209,6 +210,12 @@ function draw() {
         svg.selectAll(".syscall-box, .syscall-text").remove();
     }
 
+    svg.on('click.processDossierClear', function(event) {
+        const target = event.target;
+        if (target && target.closest && target.closest('.process-node-group')) return;
+        clearPinnedProcessDossier();
+    });
+
     // Define gradients for depth
     const defs = svg.append("defs");
     
@@ -250,6 +257,7 @@ function draw() {
     
     // Draw Ring-1 Execution Context
     drawRing1(centerX, centerY);
+    drawCentralPulseGridForeground(centerX, centerY);
 
     // Mobile mode: keep only the central process composition.
     if (mobileLayout) {
@@ -359,8 +367,788 @@ function drawMobileDefaultProcessLabels(centerX, centerY) {
     });
 }
 
+function formatProcessValue(value, fallback = 'n/a') {
+    return value === null || value === undefined || value === '' ? fallback : value;
+}
+
+function processDossierRows(processData, details = {}) {
+    const threadsData = details.threadsData || {};
+    const cpuData = details.cpuData || {};
+    const fdsData = details.fdsData || {};
+    const cpuTimes = cpuData.cpu_times || {};
+    return [
+        ['identity', `${formatProcessValue(processData.name, 'process')} · pid ${formatProcessValue(processData.pid)}`],
+        ['state', `${formatProcessValue(processData.status)} · mem ${formatProcessValue(processData.memory_mb, 0)} MB`],
+        ['threads', formatProcessValue(threadsData.thread_count, 'loading')],
+        ['vol ctx', threadsData.voluntary_ctxt_switches ? threadsData.voluntary_ctxt_switches.toLocaleString() : 'loading'],
+        ['nonvol ctx', threadsData.nonvoluntary_ctxt_switches ? threadsData.nonvoluntary_ctxt_switches.toLocaleString() : 'loading'],
+        ['cpu time', cpuTimes.user !== undefined ? `usr ${cpuTimes.user}s · sys ${cpuTimes.system}s` : 'loading'],
+        ['nice', cpuData.nice !== undefined && cpuData.nice !== null ? cpuData.nice : 'loading'],
+        ['fds', fdsData.num_fds !== undefined ? fdsData.num_fds : formatProcessValue(processData.num_fds, 'loading')],
+        ['open files', Array.isArray(fdsData.open_files) ? fdsData.open_files.length : 'loading'],
+        ['sockets', Array.isArray(fdsData.connections) ? fdsData.connections.length : 'loading']
+    ];
+}
+
+function processIoSummary(processData, details = {}) {
+    const fdsData = details.fdsData || {};
+    return {
+        fds: fdsData.num_fds !== undefined ? fdsData.num_fds : formatProcessValue(processData.num_fds, 0),
+        files: Array.isArray(fdsData.open_files) ? fdsData.open_files.length : 0,
+        sockets: Array.isArray(fdsData.connections) ? fdsData.connections.length : 0
+    };
+}
+
+function descriptorTone(type) {
+    const normalized = String(type || '').toLowerCase();
+    if (normalized.includes('stdin') || normalized.includes('stdout') || normalized.includes('stderr')) return '#2f2f2f';
+    if (normalized.includes('unix')) return '#1f1f1f';
+    if (normalized.includes('tcp') || normalized.includes('inet') || normalized.includes('socket')) return '#17455a';
+    if (normalized.includes('pipe')) return '#5a5a5a';
+    if (normalized.includes('file')) return '#634a1f';
+    return '#4a4a4a';
+}
+
+function descriptorTargetLabel(descriptor) {
+    if (!descriptor) return '';
+    if (descriptor.remote_address) return descriptor.remote_address;
+    if (descriptor.local_address) return descriptor.local_address;
+    return String(descriptor.target || '');
+}
+
+function processControlStrip(processData, details = {}) {
+    const threadsData = details.threadsData || {};
+    const cpuData = details.cpuData || {};
+    const io = processIoSummary(processData, details);
+    const cpuPercent = Number(cpuData.cpu_percent || processData.cpu_percent || 0);
+    const memoryMb = Number(processData.memory_mb || 0);
+    const threadCount = Number(threadsData.thread_count || processData.num_threads || 0);
+    return [
+        { id: 'SYSCALL', active: true, value: formatProcessValue(processData.status, 'state') },
+        { id: 'VFS', active: io.files > 0, value: `${io.files} files` },
+        { id: 'SOCKET', active: io.sockets > 0, value: `${io.sockets} conns` },
+        { id: 'IRQ', active: threadCount > 8, value: `${threadCount} th` },
+        { id: 'SCHED', active: cpuPercent > 0 || threadCount > 1, value: `${cpuPercent}% cpu` },
+        { id: 'MEM', active: memoryMb > 1, value: `${memoryMb.toFixed ? memoryMb.toFixed(1) : memoryMb} MB` },
+        { id: 'FD', active: Number(io.fds || 0) > 0, value: `${io.fds} fd` }
+    ];
+}
+
+function processTraceMapSteps(processData, details = {}) {
+    const threadsData = details.threadsData || {};
+    const cpuData = details.cpuData || {};
+    const io = processIoSummary(processData, details);
+    const threadCount = Number(threadsData.thread_count || processData.num_threads || 0);
+    const cpuPercent = Number(cpuData.cpu_percent || processData.cpu_percent || 0);
+    return [
+        {
+            id: 'PROCESS',
+            title: String(processData.name || 'process').slice(0, 14),
+            value: `pid ${formatProcessValue(processData.pid)}`,
+            active: true
+        },
+        {
+            id: 'FD TABLE',
+            title: 'FD TABLE',
+            value: `${io.fds} fd`,
+            active: Number(io.fds || 0) > 0
+        },
+        {
+            id: 'VFS',
+            title: 'VFS',
+            value: `${io.files} files`,
+            active: Number(io.files || 0) > 0
+        },
+        {
+            id: 'SOCKET/PIPE',
+            title: 'SOCKET/PIPE',
+            value: `${io.sockets} sockets`,
+            active: Number(io.sockets || 0) > 0
+        },
+        {
+            id: 'SCHED',
+            title: 'SCHED',
+            value: `${threadCount} th · ${cpuPercent}%`,
+            active: threadCount > 1 || cpuPercent > 0
+        },
+        {
+            id: 'KERNEL',
+            title: 'KERNEL',
+            value: formatProcessValue(processData.status, 'state'),
+            active: true
+        }
+    ];
+}
+
+function processInteractionNodes(processData, details = {}) {
+    const threadsData = details.threadsData || {};
+    const cpuData = details.cpuData || {};
+    const io = processIoSummary(processData, details);
+    const cpuPercent = Number(cpuData.cpu_percent || processData.cpu_percent || 0);
+    const memoryMb = Number(processData.memory_mb || 0);
+    const threadCount = Number(threadsData.thread_count || processData.num_threads || 0);
+    return [
+        { id: 'FD', label: 'FD', value: `${io.fds}`, active: Number(io.fds || 0) > 0 },
+        { id: 'VFS', label: 'VFS', value: `${io.files}`, active: Number(io.files || 0) > 0 },
+        { id: 'SOCK', label: 'SOCK', value: `${io.sockets}`, active: Number(io.sockets || 0) > 0 },
+        { id: 'SCHED', label: 'SCHED', value: `${threadCount}`, active: threadCount > 1 || cpuPercent > 0 },
+        { id: 'MEM', label: 'MEM', value: `${Math.round(memoryMb)}M`, active: memoryMb > 1 },
+        { id: 'CPU', label: 'CPU', value: `${Math.round(cpuPercent)}%`, active: cpuPercent > 0 },
+        { id: 'IPC', label: 'IPC', value: 'pipe', active: false },
+        { id: 'IRQ', label: 'IRQ', value: 'ctx', active: threadCount > 8 }
+    ];
+}
+
+function renderProcessInteractionModule(centerX, centerY, processData, anchor = null, details = {}) {
+    d3.selectAll('.process-interaction-module').remove();
+    if (!processData || isMobileLayout()) return;
+
+    const moduleCx = Math.max(310, centerX - 265);
+    const moduleCy = Math.max(190, centerY - 58);
+    const moduleR = anchor ? 80 : 74;
+    const nodes = processInteractionNodes(processData, details);
+    const activeCount = nodes.filter(n => n.active).length;
+
+    const group = svg.append('g')
+        .attr('class', 'process-interaction-module')
+        .attr('pointer-events', 'none');
+
+    if (anchor) {
+        group.append('path')
+            .attr('d', `M${moduleCx + moduleR * 0.72},${moduleCy + moduleR * 0.58} C${moduleCx + 132},${moduleCy + 118} ${anchor.x - 74},${anchor.y + 22} ${anchor.x},${anchor.y}`)
+            .attr('fill', 'none')
+            .attr('stroke', 'rgba(12, 12, 12, 0.48)')
+            .attr('stroke-width', 1.1)
+            .attr('stroke-dasharray', '5 6');
+    } else {
+        group.append('path')
+            .attr('d', `M${moduleCx + moduleR + 28},${moduleCy} C${moduleCx + moduleR + 90},${moduleCy - 36} ${centerX - 160},${centerY - 110} ${centerX - 80},${centerY - 76}`)
+            .attr('fill', 'none')
+            .attr('stroke', 'rgba(28, 28, 28, 0.22)')
+            .attr('stroke-width', 0.8);
+    }
+
+    if (anchor) {
+        const pimDefs = group.append('defs');
+        const pimFilter = pimDefs.append('filter')
+            .attr('id', 'pim-elevation')
+            .attr('x', '-60%')
+            .attr('y', '-60%')
+            .attr('width', '220%')
+            .attr('height', '220%');
+        pimFilter.append('feDropShadow')
+            .attr('dx', 0)
+            .attr('dy', 3)
+            .attr('stdDeviation', 8)
+            .attr('flood-color', '#000')
+            .attr('flood-opacity', 0.42);
+
+        // Radial gradient gives the disc instrument-like volume: dark core, lighter rim.
+        const pimGrad = pimDefs.append('radialGradient')
+            .attr('id', 'pim-disc-grad')
+            .attr('cx', '50%')
+            .attr('cy', '42%')
+            .attr('r', '62%');
+        pimGrad.append('stop').attr('offset', '0%').attr('stop-color', '#0a0a0a');
+        pimGrad.append('stop').attr('offset', '58%').attr('stop-color', '#141414');
+        pimGrad.append('stop').attr('offset', '100%').attr('stop-color', '#2a2a28');
+
+        // Soft light halo separates the module from the busy scene behind it.
+        group.append('circle')
+            .attr('cx', moduleCx)
+            .attr('cy', moduleCy)
+            .attr('r', moduleR + 34)
+            .attr('fill', 'rgba(247, 247, 240, 0.62)')
+            .attr('stroke', 'none')
+            .style('filter', 'blur(3px)');
+
+        group.append('circle')
+            .attr('cx', moduleCx)
+            .attr('cy', moduleCy)
+            .attr('r', moduleR + 16)
+            .attr('fill', 'none')
+            .attr('stroke', 'rgba(20, 20, 20, 0.16)')
+            .attr('stroke-width', 1)
+            .attr('stroke-dasharray', '2 6');
+    }
+
+    group.append('circle')
+        .attr('cx', moduleCx)
+        .attr('cy', moduleCy)
+        .attr('r', moduleR + (anchor ? 6 : 20))
+        .attr('fill', anchor ? 'rgba(12, 12, 12, 0.10)' : 'rgba(240, 240, 232, 0.08)')
+        .attr('stroke', anchor ? 'rgba(8, 8, 8, 0.36)' : 'none')
+        .attr('stroke-width', anchor ? 1.2 : 1.1);
+
+    group.append('circle')
+        .attr('cx', moduleCx)
+        .attr('cy', moduleCy)
+        .attr('r', moduleR)
+        .attr('fill', anchor ? 'url(#pim-disc-grad)' : 'rgba(240, 240, 232, 0.24)')
+        .attr('stroke', anchor ? 'rgba(0, 0, 0, 0.92)' : 'rgba(28, 28, 28, 0.26)')
+        .attr('stroke-width', anchor ? 1.8 : 1)
+        .style('filter', anchor ? 'url(#pim-elevation)' : null);
+
+    if (anchor) {
+        group.append('circle')
+            .attr('cx', moduleCx)
+            .attr('cy', moduleCy)
+            .attr('r', moduleR - 4)
+            .attr('fill', 'none')
+            .attr('stroke', 'rgba(247, 247, 240, 0.55)')
+            .attr('stroke-width', 1.1);
+
+        // Slowly rotating tick ring conveys live telemetry on the instrument rim.
+        const tickRing = group.append('g');
+        const tickR = moduleR - 9;
+        const tickCount = 48;
+        for (let t = 0; t < tickCount; t++) {
+            const ta = (t / tickCount) * Math.PI * 2;
+            const major = t % 6 === 0;
+            const inner = tickR - (major ? 6 : 3);
+            tickRing.append('line')
+                .attr('x1', moduleCx + Math.cos(ta) * tickR)
+                .attr('y1', moduleCy + Math.sin(ta) * tickR)
+                .attr('x2', moduleCx + Math.cos(ta) * inner)
+                .attr('y2', moduleCy + Math.sin(ta) * inner)
+                .attr('stroke', `rgba(238, 238, 228, ${major ? 0.5 : 0.24})`)
+                .attr('stroke-width', major ? 1.1 : 0.7);
+        }
+        tickRing.append('animateTransform')
+            .attr('attributeName', 'transform')
+            .attr('type', 'rotate')
+            .attr('from', `0 ${moduleCx} ${moduleCy}`)
+            .attr('to', `360 ${moduleCx} ${moduleCy}`)
+            .attr('dur', '48s')
+            .attr('repeatCount', 'indefinite');
+
+        // Counter-rotating faint scan marker for extra liveliness.
+        const scan = group.append('g');
+        scan.append('line')
+            .attr('x1', moduleCx)
+            .attr('y1', moduleCy)
+            .attr('x2', moduleCx)
+            .attr('y2', moduleCy - (moduleR - 12))
+            .attr('stroke', 'rgba(238, 238, 228, 0.16)')
+            .attr('stroke-width', 1);
+        scan.append('animateTransform')
+            .attr('attributeName', 'transform')
+            .attr('type', 'rotate')
+            .attr('from', `360 ${moduleCx} ${moduleCy}`)
+            .attr('to', `0 ${moduleCx} ${moduleCy}`)
+            .attr('dur', '11s')
+            .attr('repeatCount', 'indefinite');
+
+        // Segmented activity arc: one segment per channel, aligned to its node.
+        const arcR = moduleR + 11;
+        const segGap = (Math.PI * 2 / nodes.length) * 0.22;
+        const segSpan = (Math.PI * 2 / nodes.length) - segGap;
+        const arcPoint = (a) => `${(moduleCx + Math.cos(a) * arcR).toFixed(2)},${(moduleCy + Math.sin(a) * arcR).toFixed(2)}`;
+        nodes.forEach((node, idx) => {
+            const center = -Math.PI / 2 + (idx / nodes.length) * Math.PI * 2;
+            const a0 = center - segSpan / 2;
+            const a1 = center + segSpan / 2;
+            const seg = group.append('path')
+                .attr('d', `M${arcPoint(a0)} A${arcR},${arcR} 0 0 1 ${arcPoint(a1)}`)
+                .attr('fill', 'none')
+                .attr('stroke', node.active ? 'rgba(238, 238, 228, 0.92)' : 'rgba(238, 238, 228, 0.16)')
+                .attr('stroke-width', node.active ? 2.6 : 1.4)
+                .attr('stroke-linecap', 'round');
+            if (node.active) {
+                seg.append('animate')
+                    .attr('attributeName', 'stroke-opacity')
+                    .attr('values', '0.55;0.95;0.55')
+                    .attr('dur', '2.6s')
+                    .attr('begin', `${(idx % 5) * 0.32}s`)
+                    .attr('repeatCount', 'indefinite');
+            }
+        });
+
+        // Activity gauge readout at the top gap of the arc.
+        group.append('text')
+            .attr('x', moduleCx)
+            .attr('y', moduleCy - arcR - 5)
+            .attr('text-anchor', 'middle')
+            .attr('font-family', 'Share Tech Mono, monospace')
+            .attr('font-size', '6px')
+            .attr('fill', 'rgba(20, 20, 20, 0.6)')
+            .text(`◆ ${activeCount}/${nodes.length}`);
+    }
+
+    group.append('circle')
+        .attr('cx', moduleCx)
+        .attr('cy', moduleCy)
+        .attr('r', moduleR - 18)
+        .attr('fill', 'none')
+        .attr('stroke', anchor ? 'rgba(238, 238, 228, 0.22)' : 'rgba(28, 28, 28, 0.18)')
+        .attr('stroke-width', anchor ? 1.05 : 0.8);
+
+    group.append('circle')
+        .attr('cx', moduleCx)
+        .attr('cy', moduleCy)
+        .attr('r', anchor ? 26 : 22)
+        .attr('fill', anchor ? 'rgba(238, 238, 228, 0.92)' : 'rgba(32, 32, 32, 0.86)')
+        .attr('stroke', anchor ? 'rgba(0, 0, 0, 0.86)' : 'rgba(20, 20, 20, 0.72)')
+        .attr('stroke-width', 1.2);
+
+    group.append('text')
+        .attr('x', moduleCx)
+        .attr('y', moduleCy - 2)
+        .attr('text-anchor', 'middle')
+        .attr('font-family', 'Share Tech Mono, monospace')
+        .attr('font-size', '7.5px')
+        .attr('font-weight', '700')
+        .attr('fill', anchor ? '#161616' : '#f1f1ec')
+        .text(String(processData.name || 'PROC').slice(0, 8).toUpperCase());
+
+    group.append('text')
+        .attr('x', moduleCx)
+        .attr('y', moduleCy + 11)
+        .attr('text-anchor', 'middle')
+        .attr('font-family', 'Share Tech Mono, monospace')
+        .attr('font-size', '6.5px')
+        .attr('fill', anchor ? '#333' : '#c9c9c0')
+        .text(`PID ${formatProcessValue(processData.pid)}`);
+
+    group.append('text')
+        .attr('x', moduleCx - moduleR)
+        .attr('y', moduleCy - moduleR - 12)
+        .attr('font-family', 'Share Tech Mono, monospace')
+        .attr('font-size', '8px')
+        .attr('font-weight', '700')
+        .attr('fill', anchor ? 'rgba(20, 20, 20, 0.82)' : 'rgba(28, 28, 28, 0.72)')
+        .text('PROCESS INTERACTION MODULE');
+
+    group.append('text')
+        .attr('x', moduleCx + moduleR - 2)
+        .attr('y', moduleCy - moduleR - 12)
+        .attr('text-anchor', 'end')
+        .attr('font-family', 'Share Tech Mono, monospace')
+        .attr('font-size', '7px')
+        .attr('fill', anchor ? 'rgba(20, 20, 20, 0.58)' : 'rgba(28, 28, 28, 0.52)')
+        .text(`ACTIVE ${activeCount}/${nodes.length}`);
+
+    nodes.forEach((node, idx) => {
+        const angle = -Math.PI / 2 + (idx / nodes.length) * Math.PI * 2;
+        const nx = moduleCx + Math.cos(angle) * (moduleR + 8);
+        const ny = moduleCy + Math.sin(angle) * (moduleR + 8);
+        const labelOffset = Math.cos(angle) >= 0 ? 14 : -14;
+        const labelX = nx + labelOffset;
+        const labelAnchor = Math.cos(angle) >= 0 ? 'start' : 'end';
+        const nodeFill = anchor
+            ? (node.active ? 'rgba(238, 238, 228, 0.96)' : 'rgba(28, 28, 28, 0.92)')
+            : (node.active ? 'rgba(28, 28, 28, 0.86)' : 'rgba(248, 248, 240, 0.72)');
+        const nodeStroke = anchor
+            ? (node.active ? 'rgba(238, 238, 228, 0.84)' : 'rgba(238, 238, 228, 0.18)')
+            : 'rgba(28, 28, 28, 0.44)';
+        const labelFill = anchor
+            ? (node.active ? 'rgba(238, 238, 228, 0.95)' : '#222')
+            : (node.active ? '#f1f1ec' : '#282828');
+        const valueFill = anchor
+            ? (node.active ? 'rgba(238, 238, 228, 0.72)' : 'rgba(42, 42, 42, 0.62)')
+            : (node.active ? '#c9c9c0' : 'rgba(28, 28, 28, 0.55)');
+
+        group.append('line')
+            .attr('x1', moduleCx + Math.cos(angle) * 28)
+            .attr('y1', moduleCy + Math.sin(angle) * 28)
+            .attr('x2', nx)
+            .attr('y2', ny)
+            .attr('stroke', anchor
+                ? (node.active ? 'rgba(238, 238, 228, 0.36)' : 'rgba(238, 238, 228, 0.11)')
+                : (node.active ? 'rgba(28, 28, 28, 0.42)' : 'rgba(28, 28, 28, 0.16)'))
+            .attr('stroke-width', node.active ? 1.05 : 0.65);
+
+        if (anchor && node.active) {
+            // Breathing pulse halo so active channels read as live telemetry.
+            const pulse = group.append('circle')
+                .attr('cx', nx)
+                .attr('cy', ny)
+                .attr('r', 7.8)
+                .attr('fill', 'none')
+                .attr('stroke', 'rgba(238, 238, 228, 0.5)')
+                .attr('stroke-width', 1.1);
+            const phase = `${(idx % 5) * 0.32}s`;
+            pulse.append('animate')
+                .attr('attributeName', 'r')
+                .attr('values', '7.8;14;7.8')
+                .attr('dur', '2.6s')
+                .attr('begin', phase)
+                .attr('repeatCount', 'indefinite');
+            pulse.append('animate')
+                .attr('attributeName', 'stroke-opacity')
+                .attr('values', '0.55;0;0.55')
+                .attr('dur', '2.6s')
+                .attr('begin', phase)
+                .attr('repeatCount', 'indefinite');
+        }
+
+        const nodeCircle = group.append('circle')
+            .attr('cx', nx)
+            .attr('cy', ny)
+            .attr('r', node.active ? 7.8 : 6.2)
+            .attr('fill', nodeFill)
+            .attr('stroke', nodeStroke)
+            .attr('stroke-width', anchor && node.active ? 1.2 : 0.8);
+
+        if (anchor && node.active) {
+            // Subtle core breathing keeps the node itself alive, not just its halo.
+            const corePhase = `${(idx % 5) * 0.32}s`;
+            nodeCircle.append('animate')
+                .attr('attributeName', 'r')
+                .attr('values', '7.2;8.4;7.2')
+                .attr('dur', '2.6s')
+                .attr('begin', corePhase)
+                .attr('repeatCount', 'indefinite');
+        }
+
+        group.append('rect')
+            .attr('x', Math.cos(angle) >= 0 ? nx + 10 : nx - 80)
+            .attr('y', ny - 9)
+            .attr('width', 70)
+            .attr('height', 18)
+            .attr('rx', 9)
+            .attr('fill', anchor
+                ? (node.active ? 'rgba(18, 18, 18, 0.92)' : 'rgba(238, 238, 228, 0.82)')
+                : (node.active ? 'rgba(28, 28, 28, 0.86)' : 'rgba(248, 248, 240, 0.58)'))
+            .attr('stroke', anchor ? 'rgba(238, 238, 228, 0.34)' : 'rgba(28, 28, 28, 0.22)')
+            .attr('stroke-width', anchor ? 0.9 : 0.7);
+
+        group.append('text')
+            .attr('x', labelX)
+            .attr('y', ny - 1)
+            .attr('text-anchor', labelAnchor)
+            .attr('font-family', 'Share Tech Mono, monospace')
+            .attr('font-size', anchor ? '8px' : '7.5px')
+            .attr('font-weight', '700')
+            .attr('fill', labelFill)
+            .text(node.label);
+
+        group.append('text')
+            .attr('x', labelX)
+            .attr('y', ny + 8)
+            .attr('text-anchor', labelAnchor)
+            .attr('font-family', 'Share Tech Mono, monospace')
+            .attr('font-size', anchor ? '6.4px' : '6px')
+            .attr('fill', valueFill)
+            .text(String(node.value).slice(0, 8));
+    });
+}
+
+function renderProcessDossier() {
+    d3.selectAll('.process-dossier-layer').remove();
+    if (!pinnedProcessDossier || !pinnedProcessDossier.process || !pinnedProcessDossier.anchor) return;
+
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    const processData = pinnedProcessDossier.process;
+    const anchor = pinnedProcessDossier.anchor;
+    const ioSummary = processIoSummary(processData, pinnedProcessDossier.details);
+    const controlRows = processControlStrip(processData, pinnedProcessDossier.details);
+    const threadsData = pinnedProcessDossier.details?.threadsData || {};
+    const cpuData = pinnedProcessDossier.details?.cpuData || {};
+    const menuW = Math.min(760, width - 220);
+    const menuH = 118;
+    const menuX = Math.max(120, width / 2 - menuW / 2);
+    const menuY = Math.min(height - menuH - 34, Math.max(height * 0.68, anchor.y + 210));
+    const cpuPercent = Number(cpuData.cpu_percent || processData.cpu_percent || 0);
+    const threadCount = Number(threadsData.thread_count || processData.num_threads || 0);
+    const actionRows = [
+        { id: 'STATE', value: formatProcessValue(processData.status, 'state'), active: true },
+        { id: 'CPU', value: `${cpuPercent}%`, active: cpuPercent > 0 },
+        { id: 'FD TABLE', value: `${ioSummary.fds} fd`, active: Number(ioSummary.fds || 0) > 0 },
+        { id: 'VFS', value: `${ioSummary.files} files`, active: Number(ioSummary.files || 0) > 0 },
+        { id: 'SOCKET', value: `${ioSummary.sockets} conns`, active: Number(ioSummary.sockets || 0) > 0 },
+        { id: 'SCHED', value: `${threadCount} th`, active: threadCount > 1 || cpuPercent > 0 },
+        { id: 'MEM', value: `${formatProcessValue(processData.memory_mb, 0)} MB`, active: Number(processData.memory_mb || 0) > 1 },
+        { id: 'KERNEL', value: 'CONTACT', active: true }
+    ];
+
+    const layer = svg.append('g')
+        .attr('class', 'process-dossier-layer')
+        .attr('pointer-events', 'none');
+
+    layer.append('path')
+        .attr('d', `M${anchor.x},${anchor.y} C${anchor.x + 34},${anchor.y + 96} ${menuX + 34},${menuY - 44} ${menuX + 54},${menuY + 52}`)
+        .attr('fill', 'none')
+        .attr('stroke', 'rgba(16, 16, 16, 0.36)')
+        .attr('stroke-width', 1.05);
+
+    layer.append('text')
+        .attr('x', (anchor.x + menuX) / 2)
+        .attr('y', (anchor.y + menuY) / 2)
+        .attr('text-anchor', 'middle')
+        .attr('font-family', 'Share Tech Mono, monospace')
+        .attr('font-size', '8px')
+        .attr('fill', 'rgba(24, 24, 24, 0.72)')
+        .text('PROCESS LINK');
+
+    layer.append('rect')
+        .attr('x', menuX)
+        .attr('y', menuY)
+        .attr('width', menuW)
+        .attr('height', menuH)
+        .attr('rx', 6)
+        .attr('fill', 'rgba(238, 238, 228, 0.68)')
+        .attr('stroke', 'rgba(24, 24, 24, 0.2)')
+        .attr('stroke-width', 0.9);
+
+    layer.append('rect')
+        .attr('x', menuX + 10)
+        .attr('y', menuY + 10)
+        .attr('width', menuW - 20)
+        .attr('height', 26)
+        .attr('rx', 3)
+        .attr('fill', 'rgba(24, 24, 24, 0.86)');
+
+    layer.append('text')
+        .attr('x', menuX + 20)
+        .attr('y', menuY + 28)
+        .attr('font-family', 'Share Tech Mono, monospace')
+        .attr('font-size', '10px')
+        .attr('font-weight', '700')
+        .attr('fill', '#f2f2ea')
+        .text('PROCESS ACTION MENU');
+
+    layer.append('text')
+        .attr('x', menuX + menuW - 20)
+        .attr('y', menuY + 28)
+        .attr('text-anchor', 'end')
+        .attr('font-family', 'Share Tech Mono, monospace')
+        .attr('font-size', '8px')
+        .attr('fill', '#cfcfc8')
+        .text(`${String(processData.name || 'process').slice(0, 18)} · PID ${formatProcessValue(processData.pid)}`);
+
+    layer.append('circle')
+        .attr('cx', anchor.x)
+        .attr('cy', anchor.y)
+        .attr('r', 9)
+        .attr('fill', 'none')
+        .attr('stroke', 'rgba(16, 16, 16, 0.72)')
+        .attr('stroke-width', 1.1);
+
+    const itemW = (menuW - 44) / 4;
+    actionRows.forEach((row, idx) => {
+        const col = idx % 4;
+        const r = Math.floor(idx / 4);
+        const x = menuX + 14 + col * itemW;
+        const y = menuY + 48 + r * 30;
+        const w = itemW - 8;
+        layer.append('rect')
+            .attr('x', x)
+            .attr('y', y)
+            .attr('width', w)
+            .attr('height', 22)
+            .attr('rx', 11)
+            .attr('fill', row.active ? 'rgba(24, 24, 24, 0.86)' : 'rgba(255, 255, 255, 0.44)')
+            .attr('stroke', 'rgba(24, 24, 24, 0.18)')
+            .attr('stroke-width', row.active ? 1 : 0.7);
+
+        layer.append('circle')
+            .attr('cx', x + 11)
+            .attr('cy', y + 11)
+            .attr('r', 2.2)
+            .attr('fill', row.active ? '#f2f2ea' : 'rgba(24, 24, 24, 0.46)');
+
+        layer.append('text')
+            .attr('x', x + 20)
+            .attr('y', y + 10)
+            .attr('font-family', 'Share Tech Mono, monospace')
+            .attr('font-size', '8px')
+            .attr('font-weight', '700')
+            .attr('fill', row.active ? '#f2f2ea' : '#2f2f2f')
+            .text(row.id);
+
+        layer.append('text')
+            .attr('x', x + w - 8)
+            .attr('y', y + 17)
+            .attr('text-anchor', 'end')
+            .attr('font-family', 'Share Tech Mono, monospace')
+            .attr('font-size', '6.5px')
+            .attr('fill', row.active ? '#cfcfc8' : '#666')
+            .text(String(row.value).slice(0, 12));
+    });
+
+    renderFdDescriptorMap(layer, processData, pinnedProcessDossier.details, {
+        x: menuX + menuW - 258,
+        y: Math.max(88, menuY - 166),
+        width: 258,
+        height: 142,
+        anchor: { x: menuX + menuW - 42, y: menuY + 12 }
+    });
+}
+
+function renderFdDescriptorMap(layer, processData, details = {}, box) {
+    const fdsData = details.fdsData || {};
+    const descriptors = Array.isArray(fdsData.descriptors) ? fdsData.descriptors : [];
+    const rows = descriptors.length
+        ? descriptors.slice(0, 8)
+        : [
+            { fd: 0, type: 'stdin', target: 'loading' },
+            { fd: 1, type: 'stdout', target: 'loading' },
+            { fd: 2, type: 'stderr', target: 'loading' }
+        ];
+
+    layer.append('path')
+        .attr('d', `M${box.anchor.x},${box.anchor.y} C${box.anchor.x - 18},${box.anchor.y - 42} ${box.x + box.width - 20},${box.y + box.height + 18} ${box.x + box.width - 32},${box.y + box.height - 4}`)
+        .attr('fill', 'none')
+        .attr('stroke', 'rgba(20, 20, 20, 0.22)')
+        .attr('stroke-width', 0.8);
+
+    layer.append('rect')
+        .attr('x', box.x)
+        .attr('y', box.y)
+        .attr('width', box.width)
+        .attr('height', box.height)
+        .attr('rx', 6)
+        .attr('fill', 'rgba(238, 238, 228, 0.76)')
+        .attr('stroke', 'rgba(24, 24, 24, 0.18)')
+        .attr('stroke-width', 0.85);
+
+    layer.append('rect')
+        .attr('x', box.x + 8)
+        .attr('y', box.y + 8)
+        .attr('width', box.width - 16)
+        .attr('height', 22)
+        .attr('rx', 3)
+        .attr('fill', 'rgba(24, 24, 24, 0.84)');
+
+    layer.append('text')
+        .attr('x', box.x + 16)
+        .attr('y', box.y + 23)
+        .attr('font-family', 'Share Tech Mono, monospace')
+        .attr('font-size', '8.5px')
+        .attr('font-weight', '700')
+        .attr('fill', '#f2f2ea')
+        .text('FD DESCRIPTOR MAP');
+
+    layer.append('text')
+        .attr('x', box.x + box.width - 16)
+        .attr('y', box.y + 23)
+        .attr('text-anchor', 'end')
+        .attr('font-family', 'Share Tech Mono, monospace')
+        .attr('font-size', '6.5px')
+        .attr('fill', '#cfcfc8')
+        .text(`PID ${formatProcessValue(processData.pid)}`);
+
+    rows.forEach((descriptor, idx) => {
+        const y = box.y + 42 + idx * 12;
+        const tone = descriptorTone(descriptor.type);
+        const fdLabel = `fd ${formatProcessValue(descriptor.fd)}`;
+        const typeLabel = String(descriptor.type || 'descriptor').toUpperCase().slice(0, 11);
+        const targetLabel = descriptorTargetLabel(descriptor).replace(/^socket:\[/, 'socket[').slice(0, 22);
+
+        layer.append('line')
+            .attr('x1', box.x + 16)
+            .attr('y1', y + 4)
+            .attr('x2', box.x + box.width - 16)
+            .attr('y2', y + 4)
+            .attr('stroke', 'rgba(24, 24, 24, 0.08)')
+            .attr('stroke-width', 0.6);
+
+        layer.append('circle')
+            .attr('cx', box.x + 18)
+            .attr('cy', y)
+            .attr('r', 2.2)
+            .attr('fill', tone);
+
+        layer.append('text')
+            .attr('x', box.x + 28)
+            .attr('y', y + 2.5)
+            .attr('font-family', 'Share Tech Mono, monospace')
+            .attr('font-size', '7px')
+            .attr('font-weight', '700')
+            .attr('fill', '#272727')
+            .text(fdLabel);
+
+        layer.append('text')
+            .attr('x', box.x + 74)
+            .attr('y', y + 2.5)
+            .attr('font-family', 'Share Tech Mono, monospace')
+            .attr('font-size', '7px')
+            .attr('fill', tone)
+            .text(typeLabel);
+
+        layer.append('text')
+            .attr('x', box.x + box.width - 16)
+            .attr('y', y + 2.5)
+            .attr('text-anchor', 'end')
+            .attr('font-family', 'Share Tech Mono, monospace')
+            .attr('font-size', '6.3px')
+            .attr('fill', 'rgba(36, 36, 36, 0.62)')
+            .text(targetLabel);
+    });
+
+    if (descriptors.length > rows.length) {
+        layer.append('text')
+            .attr('x', box.x + box.width - 16)
+            .attr('y', box.y + box.height - 10)
+            .attr('text-anchor', 'end')
+            .attr('font-family', 'Share Tech Mono, monospace')
+            .attr('font-size', '6.5px')
+            .attr('fill', 'rgba(36, 36, 36, 0.56)')
+            .text(`+${descriptors.length - rows.length} more descriptors`);
+    }
+}
+
+function clearPinnedProcessDossier() {
+    if (!pinnedProcessDossier) return;
+    const pinnedPid = pinnedProcessDossier.process?.pid;
+    const isHighlighted = window.__highlightedProcess && window.__highlightedProcess.pid === pinnedPid;
+    pinnedProcessDossier = null;
+    d3.selectAll('.process-dossier-layer').remove();
+    d3.selectAll('.process-interaction-module').remove();
+    d3.selectAll('.process-node-group').classed('process-pinned', false);
+    if (window.nginxFilesManager && typeof window.nginxFilesManager.clearProcessHighlight === 'function') {
+        window.nginxFilesManager.clearProcessHighlight();
+    }
+    if (pinnedPid !== undefined && pinnedPid !== null) {
+        const pinnedGroup = svg.select(`.process-node-group[data-pid="${pinnedPid}"]`);
+        pinnedGroup.select('.process-node')
+            .interrupt()
+            .attr('r', isHighlighted ? 3 : 1)
+            .attr('fill', '#888')
+            .attr('stroke', '#555')
+            .attr('stroke-width', isHighlighted ? 1 : 0.5);
+        svg.select(`.process-line[data-pid="${pinnedPid}"]`)
+            .attr('stroke', 'url(#lineGradient)')
+            .attr('stroke-width', 0.9)
+            .attr('opacity', isHighlighted ? 0.16 : 0.07);
+    }
+}
+
+function pinProcessDossier(processData, anchor) {
+    pinnedProcessDossier = {
+        process: processData,
+        anchor,
+        details: pinnedProcessDossier && pinnedProcessDossier.process?.pid === processData.pid
+            ? pinnedProcessDossier.details
+            : {}
+    };
+    renderProcessDossier();
+    renderProcessInteractionModule(window.innerWidth / 2, window.innerHeight / 2, processData, anchor, pinnedProcessDossier.details);
+    if (window.nginxFilesManager && typeof window.nginxFilesManager.highlightProcessFiles === 'function') {
+        window.nginxFilesManager.highlightProcessFiles(processData.pid);
+    }
+
+    Promise.all([
+        fetch(`/api/process/${processData.pid}/threads`).then(r => r.json()).catch(() => null),
+        fetch(`/api/process/${processData.pid}/cpu`).then(r => r.json()).catch(() => null),
+        fetch(`/api/process/${processData.pid}/fds`).then(r => r.json()).catch(() => null)
+    ]).then(([threadsData, cpuData, fdsData]) => {
+        if (!pinnedProcessDossier || pinnedProcessDossier.process?.pid !== processData.pid) return;
+        pinnedProcessDossier.details = { threadsData, cpuData, fdsData };
+        renderProcessDossier();
+        renderProcessInteractionModule(window.innerWidth / 2, window.innerHeight / 2, processData, anchor, pinnedProcessDossier.details);
+        if (window.nginxFilesManager && typeof window.nginxFilesManager.showProcessFiles === 'function' && fdsData && !fdsData.error) {
+            window.nginxFilesManager.showProcessFiles(processData.pid, fdsData);
+        }
+    });
+}
+
 // Draw central circle
 function drawCentralCircle(centerX, centerY) {
+    drawCentralPulseGrid(centerX, centerY);
+
     svg.append("circle")
         .attr("cx", centerX)
         .attr("cy", centerY)
@@ -374,6 +1162,111 @@ function drawCentralCircle(centerX, centerY) {
         .attr("y", centerY - 30)
         .attr("width", 60)
         .attr("height", 60);
+}
+
+function drawCentralPulseGrid(centerX, centerY) {
+    const grid = svg.append("g")
+        .attr("class", "central-pulse-grid")
+        .attr("pointer-events", "none");
+    const radii = [74, 112, 156, 204];
+
+    radii.forEach((radius, idx) => {
+        grid.append("circle")
+            .attr("cx", centerX)
+            .attr("cy", centerY)
+            .attr("r", radius)
+            .attr("fill", "none")
+            .attr("stroke", "rgba(38, 38, 38, 0.18)")
+            .attr("stroke-width", idx === 0 ? 1 : 0.7)
+            .attr("stroke-dasharray", idx % 2 === 0 ? "2 7" : "1 9");
+    });
+
+    for (let i = 0; i < 36; i += 1) {
+        const angle = (i / 36) * Math.PI * 2;
+        const inner = 78 + (i % 3) * 10;
+        const outer = 218 - (i % 4) * 13;
+        const x1 = centerX + Math.cos(angle) * inner;
+        const y1 = centerY + Math.sin(angle) * inner;
+        const x2 = centerX + Math.cos(angle) * outer;
+        const y2 = centerY + Math.sin(angle) * outer;
+        grid.append("line")
+            .attr("x1", x1)
+            .attr("y1", y1)
+            .attr("x2", x2)
+            .attr("y2", y2)
+            .attr("stroke", "rgba(38, 38, 38, 0.08)")
+            .attr("stroke-width", 0.55);
+    }
+
+    for (let i = 0; i < 72; i += 1) {
+        const angle = (i / 72) * Math.PI * 2;
+        const radius = i % 2 === 0 ? 186 : 196;
+        grid.append("circle")
+            .attr("cx", centerX + Math.cos(angle) * radius)
+            .attr("cy", centerY + Math.sin(angle) * radius)
+            .attr("r", i % 9 === 0 ? 1.7 : 1.05)
+            .attr("fill", "rgba(38, 38, 38, 0.28)");
+    }
+}
+
+function drawCentralPulseGridForeground(centerX, centerY) {
+    const grid = svg.append("g")
+        .attr("class", "central-pulse-grid central-pulse-grid-foreground")
+        .attr("pointer-events", "none");
+    const innerR = 66;
+    const outerR = 148;
+
+    [68, 92, 118, 144].forEach((radius, idx) => {
+        const ring = grid.append("circle")
+            .attr("cx", centerX)
+            .attr("cy", centerY)
+            .attr("r", radius)
+            .attr("fill", "none")
+            .attr("stroke", "rgba(24, 24, 24, 0.46)")
+            .attr("stroke-width", idx === 1 ? 1.2 : 0.85)
+            .attr("stroke-dasharray", idx % 2 === 0 ? "2 6" : "1 8")
+            .attr("opacity", 0.82);
+
+        ring.append("animate")
+            .attr("attributeName", "opacity")
+            .attr("values", "0.5;0.95;0.5")
+            .attr("dur", `${3.2 + idx * 0.35}s`)
+            .attr("repeatCount", "indefinite");
+    });
+
+    for (let i = 0; i < 64; i += 1) {
+        const angle = (i / 64) * Math.PI * 2;
+        const tickInner = innerR + (i % 4) * 5;
+        const tickOuter = outerR - (i % 5) * 4;
+        grid.append("line")
+            .attr("x1", centerX + Math.cos(angle) * tickInner)
+            .attr("y1", centerY + Math.sin(angle) * tickInner)
+            .attr("x2", centerX + Math.cos(angle) * tickOuter)
+            .attr("y2", centerY + Math.sin(angle) * tickOuter)
+            .attr("stroke", "rgba(28, 28, 28, 0.18)")
+            .attr("stroke-width", i % 8 === 0 ? 0.95 : 0.55)
+            .attr("opacity", i % 3 === 0 ? 0.58 : 0.34);
+    }
+
+    for (let i = 0; i < 96; i += 1) {
+        const angle = (i / 96) * Math.PI * 2;
+        const radius = 128 + (i % 3) * 6;
+        const dot = grid.append("circle")
+            .attr("cx", centerX + Math.cos(angle) * radius)
+            .attr("cy", centerY + Math.sin(angle) * radius)
+            .attr("r", i % 12 === 0 ? 1.8 : 1)
+            .attr("fill", "rgba(24, 24, 24, 0.46)")
+            .attr("opacity", 0.68);
+
+        if (i % 8 === 0) {
+            dot.append("animate")
+                .attr("attributeName", "opacity")
+                .attr("values", "0.28;0.9;0.28")
+                .attr("dur", "2.8s")
+                .attr("begin", `${(i % 16) * 0.08}s`)
+                .attr("repeatCount", "indefinite");
+        }
+    }
 }
 
 // Ring-1 update interval (global to prevent multiple intervals)
@@ -715,16 +1608,45 @@ function drawPanels(width, height) {
         .attr("height", 330)
         .attr("class", "feature-panel");
 
-    // Right panel - increased width to accommodate longer values
-    // Positioned so right margin equals left margin (20px)
-    const panelWidth = 170;
-    const rightMargin = 20; // Same as left margin
+    // Right top status module, styled as a compact HUD window.
+    const panelWidth = 214;
+    const panelHeight = 118;
+    const rightMargin = 20;
+    const panelX = width - panelWidth - rightMargin;
+    const panelY = 20;
     svg.append("rect")
-        .attr("x", width - panelWidth - rightMargin)
-        .attr("y", 20)
+        .attr("x", panelX)
+        .attr("y", panelY)
         .attr("width", panelWidth)
-        .attr("height", 100)
-        .attr("class", "feature-panel");
+        .attr("height", panelHeight)
+        .attr("rx", 4)
+        .attr("fill", "rgba(232, 232, 222, 0.72)")
+        .attr("stroke", "rgba(28, 28, 28, 0.34)")
+        .attr("stroke-width", 1);
+
+    svg.append("rect")
+        .attr("x", panelX + 8)
+        .attr("y", panelY + 8)
+        .attr("width", panelWidth - 16)
+        .attr("height", 24)
+        .attr("rx", 2)
+        .attr("fill", "rgba(24, 24, 24, 0.86)")
+        .attr("stroke", "rgba(24, 24, 24, 0.9)");
+
+    svg.append("text")
+        .attr("x", panelX + 16)
+        .attr("y", panelY + 24)
+        .attr("font-family", "Share Tech Mono, monospace")
+        .attr("font-size", "9px")
+        .attr("font-weight", "700")
+        .attr("fill", "#f1f1e8")
+        .text("SYSTEM STATUS MODULE");
+
+    svg.append("circle")
+        .attr("cx", panelX + panelWidth - 20)
+        .attr("cy", panelY + 20)
+        .attr("r", 4)
+        .attr("fill", "rgba(241, 241, 232, 0.9)");
 
     // Text in right panel - will be updated with real data
     const panelData = [
@@ -734,29 +1656,50 @@ function drawPanels(width, height) {
         {label: "Memory", value: "Loading..."}
     ];
     
-    const leftPadding = 10; // Padding from left edge of panel
-    const rightPadding = 10; // Padding from right edge of panel
-    
     panelData.forEach((item, i) => {
+        const col = i % 2;
+        const row = Math.floor(i / 2);
+        const boxW = 92;
+        const boxH = 30;
+        const boxX = panelX + 12 + col * 98;
+        const boxY = panelY + 42 + row * 36;
         const textGroup = svg.append("g")
             .attr("class", `panel-item-${i}`);
-        
-        // Labels aligned to left with padding
+
+        textGroup.append("rect")
+            .attr("x", boxX)
+            .attr("y", boxY)
+            .attr("width", boxW)
+            .attr("height", boxH)
+            .attr("rx", 3)
+            .attr("fill", i === 1 ? "rgba(24, 24, 24, 0.82)" : "rgba(255, 255, 255, 0.48)")
+            .attr("stroke", "rgba(24, 24, 24, 0.18)")
+            .attr("stroke-width", 0.7);
+
+        textGroup.append("circle")
+            .attr("cx", boxX + 9)
+            .attr("cy", boxY + 10)
+            .attr("r", 2.2)
+            .attr("fill", i === 1 ? "#f1f1e8" : "rgba(24, 24, 24, 0.56)");
+
         textGroup.append("text")
-            .attr("x", width - panelWidth - rightMargin + leftPadding)
-            .attr("y", 45 + i * 22)
-            .text(item.label + ":")
-            .attr("class", "feature-text");
-        
-        // Values aligned to right edge of panel with padding
+            .attr("x", boxX + 16)
+            .attr("y", boxY + 11)
+            .text(item.label.toUpperCase())
+            .attr("font-family", "Share Tech Mono, monospace")
+            .attr("font-size", "6.8px")
+            .attr("fill", i === 1 ? "#d8d8cf" : "rgba(40, 40, 40, 0.62)");
+
         textGroup.append("text")
-            .attr("x", width - rightMargin - rightPadding)
-            .attr("y", 45 + i * 22)
+            .attr("x", boxX + boxW - 8)
+            .attr("y", boxY + 24)
             .text(item.value)
-            .attr("class", "feature-text")
+            .attr("font-family", "Share Tech Mono, monospace")
+            .attr("font-size", "10px")
+            .attr("fill", i === 1 ? "#f1f1e8" : "#222")
             .attr("id", `panel-value-${i}`)
             .attr("font-weight", "bold")
-            .attr("text-anchor", "end"); // Right-align text to prevent overflow
+            .attr("text-anchor", "end");
     });
     
     // Update panel with real data
@@ -1059,6 +2002,7 @@ function drawProcessKernelMap2(centerX, centerY) {
             } else {
                 console.warn('⚠️ No process selected for highlighting');
             }
+            d3.selectAll('.process-interaction-module').remove();
             
             processes.forEach((process, i) => {
                 const angle = i * 2 * Math.PI / numProcesses;
@@ -1118,7 +2062,8 @@ function drawProcessKernelMap2(centerX, centerY) {
 
                 // Determine if this is the highlighted process
                 const isHighlighted = highlightedProcess && process.pid === highlightedProcess.pid;
-                const baseRadius = isHighlighted ? 3 : 1; // Larger for highlighted process
+                const isPinnedProcess = pinnedProcessDossier && pinnedProcessDossier.process?.pid === process.pid;
+                const baseRadius = isPinnedProcess ? 4.8 : (isHighlighted ? 3 : 1); // Larger for highlighted/pinned process
                 const hoverRadius = baseRadius * 2.5; // Radius when hovering
                 const hitAreaRadius = 12; // Invisible hit area for easier clicking
                 
@@ -1142,12 +2087,20 @@ function drawProcessKernelMap2(centerX, centerY) {
                     .attr("cx", px)
                     .attr("cy", py)
                     .attr("r", 0) // Start with radius 0
-                    .attr("fill", "#888")
-                    .attr("stroke", "#555")
-                    .attr("stroke-width", isHighlighted ? 1 : 0.5)
+                    .attr("fill", isPinnedProcess ? "#111" : "#888")
+                    .attr("stroke", isPinnedProcess ? "#000" : "#555")
+                    .attr("stroke-width", isPinnedProcess ? 2 : (isHighlighted ? 1 : 0.5))
                     .attr("opacity", 0)
                     .attr("class", "process-node")
                     .style("pointer-events", "none"); // Don't interfere with hit area
+
+                if (isPinnedProcess) {
+                    pinnedProcessDossier.anchor = { x: px, y: py };
+                    line.attr("stroke", "#222")
+                        .attr("stroke-width", 1.8)
+                        .attr("opacity", 0.42)
+                        .attr("data-original-opacity", 0.42);
+                }
 
                 // Animate circle appearance
                 circle.transition()
@@ -1299,6 +2252,24 @@ function drawProcessKernelMap2(centerX, centerY) {
                             .style("top", (event.pageY - 10) + "px");
                     });
                 })
+                    .on("click", function(event, d) {
+                        event.stopPropagation();
+                        const processData = d || process;
+                        if (pinnedProcessDossier && pinnedProcessDossier.process?.pid !== processData.pid) {
+                            clearPinnedProcessDossier();
+                        }
+                        pinProcessDossier(processData, { x: px, y: py });
+                        svg.selectAll('.process-node-group').classed('process-pinned', false);
+                        processGroup.classed('process-pinned', true);
+                        svg.selectAll('.process-node')
+                            .attr('stroke', '#555')
+                            .attr('stroke-width', 0.5);
+                        circle.interrupt()
+                            .attr('r', 8)
+                            .attr('fill', '#111')
+                            .attr('stroke', '#000')
+                            .attr('stroke-width', 2);
+                    })
                     .on("mouseout", function(event, d) {
                         // Get the actual process data from the datum
                         const processData = d || process;
@@ -1308,7 +2279,8 @@ function drawProcessKernelMap2(centerX, centerY) {
                         
                         // Reset circle size on mouseout
                         const isHighlighted = highlightedProcess && processData.pid === highlightedProcess.pid;
-                        if (!isHighlighted) {
+                        const isPinnedProcess = pinnedProcessDossier && pinnedProcessDossier.process?.pid === processData.pid;
+                        if (!isHighlighted && !isPinnedProcess) {
                             // Return to normal size
                             circle.transition()
                                 .duration(200)
@@ -1320,8 +2292,8 @@ function drawProcessKernelMap2(centerX, centerY) {
                             // Return highlighted process to its default size
                             circle.transition()
                                 .duration(200)
-                                .attr("r", baseRadius)
-                                .attr("stroke-width", 1);
+                                .attr("r", isPinnedProcess ? 4.8 : baseRadius)
+                                .attr("stroke-width", isPinnedProcess ? 2 : 1);
                         }
                         
                         // Restore highlighted process to its default size if it was shrunk
@@ -1351,6 +2323,11 @@ function drawProcessKernelMap2(centerX, centerY) {
             } else {
                 d3.selectAll('.ipc-ring-layer').remove();
             }
+            renderProcessDossier();
+
+            // Process lines radiate from the center and wash out the pulse grid;
+            // lift it back above them so the central lattice stays visible.
+            d3.selectAll('.central-pulse-grid-foreground').raise();
         })
         .catch(error => {
             console.error('Error fetching processes:', error);
