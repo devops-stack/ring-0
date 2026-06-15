@@ -10,6 +10,7 @@ _API_ROUTES = [
     ("/process-kernel-map", "process_kernel_map", h.process_kernel_map, None),
     ("/processes", "get_processes", h.get_processes, None),
     ("/nginx-files", "nginx_files", h.nginx_files, None),
+    ("/io-open-files", "io_open_files", h.io_open_files, None),
     ("/active-connections", "active_connections", h.active_connections, None),
     ("/traceroute", "traceroute_info", h.traceroute_info, None),
     ("/network-stack-realtime", "network_stack_realtime", h.network_stack_realtime, None),

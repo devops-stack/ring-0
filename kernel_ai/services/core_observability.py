@@ -196,6 +196,113 @@ def get_mock_nginx_files():
     ]
 
 
+def _classify_io_file_path(path):
+    """Classify an open-file path into a coarse filesystem category."""
+    low = path.lower()
+    if "/var/log/" in low or low.endswith(".log"):
+        return "log"
+    if "/etc/" in low or low.endswith(
+        (".conf", ".cfg", ".ini", ".yaml", ".yml", ".json", ".toml")
+    ):
+        return "config"
+    if low.endswith(".so") or ".so." in low or "/lib/" in low or "/lib64/" in low:
+        return "lib"
+    if "/dev/" in low:
+        return "device"
+    if low.endswith((".db", ".sqlite", ".sqlite3")) or "/var/lib/" in low:
+        return "data"
+    return "other"
+
+
+def _io_open_files_mock():
+    """Mock data for the system-wide open-files I/O layer."""
+    return [
+        {"path": "/lib/x86_64-linux-gnu/libc.so.6", "type": "lib", "activity": 14,
+         "process": "gunicorn", "process_count": 9, "pids": []},
+        {"path": "/etc/nginx/nginx.conf", "type": "config", "activity": 6,
+         "process": "nginx", "process_count": 3, "pids": []},
+        {"path": "/var/log/nginx/access.log", "type": "log", "activity": 5,
+         "process": "nginx", "process_count": 2, "pids": []},
+        {"path": "/var/lib/postgresql/data/base", "type": "data", "activity": 4,
+         "process": "postgres", "process_count": 2, "pids": []},
+        {"path": "/var/log/syslog", "type": "log", "activity": 3,
+         "process": "rsyslogd", "process_count": 1, "pids": []},
+        {"path": "/etc/ssl/certs/ca-certificates.crt", "type": "config", "activity": 2,
+         "process": "python3", "process_count": 1, "pids": []},
+    ]
+
+
+def get_io_open_files(limit=40, max_procs=600):
+    """Aggregate open files across processes ranked by how widely they're held.
+
+    "Activity" is approximated by the number of open handles to a path across the
+    system, which surfaces hot/shared files (libs, configs, logs) for the
+    KERNEL I/O LAYER visualization. Returns a list sorted by activity desc.
+    """
+    try:
+        counts = {}
+        scanned = 0
+        for proc in psutil.process_iter(["pid", "name"]):
+            if scanned >= max_procs:
+                break
+            scanned += 1
+            try:
+                open_files = proc.open_files()
+            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                continue
+            name = proc.info.get("name") or ""
+            pid = proc.info.get("pid")
+            for file in open_files:
+                path = getattr(file, "path", None)
+                if not path:
+                    continue
+                rec = counts.get(path)
+                if rec is None:
+                    rec = {
+                        "path": path,
+                        "type": _classify_io_file_path(path),
+                        "count": 0,
+                        "procs": set(),
+                        "pids": set(),
+                    }
+                    counts[path] = rec
+                rec["count"] += 1
+                if name:
+                    rec["procs"].add(name)
+                if pid is not None:
+                    rec["pids"].add(pid)
+
+        if not counts:
+            return _io_open_files_mock()
+
+        ranked = sorted(counts.values(), key=lambda r: r["count"], reverse=True)[:limit]
+        result = []
+        for rec in ranked:
+            procs = sorted(rec["procs"])
+            result.append(
+                {
+                    "path": rec["path"],
+                    "type": rec["type"],
+                    "activity": rec["count"],
+                    "process": procs[0] if procs else "",
+                    "process_count": len(procs),
+                    "pids": sorted(rec["pids"])[:32],
+                }
+            )
+        return result
+    except (psutil.Error, OSError, ValueError) as exc:
+        log_event(
+            logger,
+            "DEBUG",
+            "Failed to aggregate system open files, using mock",
+            event_dataset="kernel_ai.app",
+            component="services.core_observability",
+            operation="get_io_open_files",
+            event_data={"error": str(exc)},
+        )
+        return _io_open_files_mock()
+
+
 def get_nginx_open_files():
     """Get open files for Nginx process."""
     try:

@@ -2,6 +2,7 @@
 
 from kernel_ai.http.api_handlers.kernel import (
     get_execution_context,
+    io_open_files,
     kernel_data,
     kernel_dna,
     nginx_files,
@@ -56,6 +57,7 @@ __all__ = [
     "get_processes",
     "get_processes_detailed",
     "ingest_frontend_logs",
+    "io_open_files",
     "isolation_context",
     "kernel_data",
     "kernel_dna",

@@ -21,6 +21,24 @@ svg {
     filter: drop-shadow(0 0 5px rgba(40, 48, 58, 0.22));
 }
 
+.central-pulse-grid {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: centralGridPulse 3.6s ease-in-out infinite;
+    mix-blend-mode: multiply;
+}
+
+@keyframes centralGridPulse {
+    0%, 100% {
+        opacity: 0.48;
+        transform: scale(0.992);
+    }
+    50% {
+        opacity: 0.82;
+        transform: scale(1.012);
+    }
+}
+
 /* Tag icons */
 .tag-icon {
     cursor: pointer;
