@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 
 import psutil
 
@@ -363,6 +364,112 @@ def get_process_cpu_info(pid):
         return {"error": str(e)}
 
 
+_NAMESPACE_TYPES = [
+    ("mnt", "MNT", "mount points / filesystem view"),
+    ("pid", "PID", "process id tree"),
+    ("net", "NET", "network stack / interfaces / ports"),
+    ("ipc", "IPC", "SysV IPC / POSIX message queues"),
+    ("uts", "UTS", "hostname / domain name"),
+    ("user", "USER", "uid/gid mapping & capabilities"),
+]
+_HOST_NS_CACHE = {"ts": 0.0, "inodes": {}}
+
+
+def _host_namespace_inodes():
+    """Namespace inodes of PID 1 act as the host/init reference set."""
+    now = time.time()
+    if _HOST_NS_CACHE["inodes"] and now - _HOST_NS_CACHE["ts"] < 30:
+        return _HOST_NS_CACHE["inodes"]
+    inodes = {}
+    for ns_name, _label, _desc in _NAMESPACE_TYPES:
+        inodes[ns_name] = _system_view_service.read_namespace_inode(1, ns_name)
+    _HOST_NS_CACHE["inodes"] = inodes
+    _HOST_NS_CACHE["ts"] = now
+    return inodes
+
+
+def _namespace_peer_pids(self_pid, isolated_inodes, limit=240):
+    """PIDs that share every isolated namespace inode with ``self_pid``.
+
+    These are the process's "cell mates" — the rest of its container/sandbox.
+    Only the isolated namespaces are compared (and we early-out on first
+    mismatch), so a single-namespace sandbox costs one readlink per process.
+    """
+    peers = []
+    if not isolated_inodes:
+        return peers
+    ns_items = list(isolated_inodes.items())
+    for proc in psutil.process_iter(["pid"]):
+        try:
+            pid = proc.info["pid"]
+            if pid == self_pid:
+                continue
+            for ns_name, inode in ns_items:
+                if _system_view_service.read_namespace_inode(pid, ns_name) != inode:
+                    break
+            else:
+                peers.append(pid)
+                if len(peers) >= limit:
+                    break
+        except (psutil.NoSuchProcess, psutil.AccessDenied, KeyError):
+            continue
+    return peers
+
+
+def get_process_namespace_fingerprint(pid):
+    """Per-process namespace isolation profile relative to the host (PID 1).
+
+    For each namespace type, reports whether the process lives in its own
+    namespace (isolated) or shares the host's. When the process is isolated in
+    at least one namespace, also resolves its co-resident peers (container
+    mates). Used by the dossier fingerprint + containment halo.
+    """
+    host = _host_namespace_inodes()
+    namespaces = []
+    isolated_count = 0
+    readable = 0
+    isolated_inodes = {}
+    for ns_name, label, desc in _NAMESPACE_TYPES:
+        inode = _system_view_service.read_namespace_inode(pid, ns_name)
+        host_inode = host.get(ns_name)
+        if inode:
+            readable += 1
+        isolated = bool(inode and host_inode and inode != host_inode)
+        if isolated:
+            isolated_count += 1
+            isolated_inodes[ns_name] = inode
+        namespaces.append(
+            {
+                "id": ns_name,
+                "label": label,
+                "description": desc,
+                "inode": inode,
+                "host_inode": host_inode,
+                "isolated": isolated,
+            }
+        )
+    total = len(_NAMESPACE_TYPES)
+    if isolated_count >= total:
+        verdict = "fully isolated"
+    elif isolated_count == 0:
+        verdict = "host process"
+    else:
+        verdict = "partially sandboxed"
+
+    peer_pids = _namespace_peer_pids(pid, isolated_inodes)
+    return {
+        "namespaces": namespaces,
+        "isolated_count": isolated_count,
+        "total": total,
+        "readable": readable,
+        "containerized": isolated_count > 0,
+        "verdict": verdict,
+        "peer_pids": peer_pids,
+        "peer_count": len(peer_pids),
+        "container_size": len(peer_pids) + 1 if isolated_count > 0 else 0,
+    }
+
+
 def get_process_fds_info(pid):
     try:
         proc = psutil.Process(pid)
@@ -473,6 +580,7 @@ def get_process_fds_info(pid):
             "open_files": open_files[:20],
             "connections": connections[:20],
             "descriptors": descriptors[:40],
+            "namespace_fingerprint": get_process_namespace_fingerprint(pid),
         }
     except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
         return {"error": f"Access denied or process not found: {str(e)}"}
