@@ -975,6 +975,22 @@ function renderProcessDossier() {
         height: 142,
         anchor: { x: menuX + menuW - 42, y: menuY + 12 }
     });
+
+    renderNamespaceFingerprint(layer, processData, pinnedProcessDossier.details, {
+        x: menuX,
+        y: Math.max(88, menuY - 150),
+        width: 226,
+        height: 126,
+        anchor: { x: menuX + 28, y: menuY + 12 }
+    });
+
+    const nsFingerprint = pinnedProcessDossier.details?.fdsData?.namespace_fingerprint;
+    const containmentPeers = nsFingerprint && Array.isArray(nsFingerprint.peer_pids)
+        ? nsFingerprint.peer_pids
+        : [];
+    if (containmentPeers.length) {
+        drawContainmentHalo(layer, processData, containmentPeers);
+    }
 }
 
 function renderFdDescriptorMap(layer, processData, details = {}, box) {
@@ -1087,6 +1103,236 @@ function renderFdDescriptorMap(layer, processData, details = {}, box) {
             .attr('font-size', '6.5px')
             .attr('fill', 'rgba(36, 36, 36, 0.56)')
             .text(`+${descriptors.length - rows.length} more descriptors`);
+    }
+}
+
+const NS_FINGERPRINT_PLACEHOLDER = [
+    { id: 'mnt', label: 'MNT', isolated: false },
+    { id: 'pid', label: 'PID', isolated: false },
+    { id: 'net', label: 'NET', isolated: false },
+    { id: 'ipc', label: 'IPC', isolated: false },
+    { id: 'uts', label: 'UTS', isolated: false },
+    { id: 'user', label: 'USER', isolated: false }
+];
+
+function renderNamespaceFingerprint(layer, processData, details = {}, box) {
+    const fdsData = details.fdsData || {};
+    const fp = fdsData.namespace_fingerprint || null;
+    const nsList = fp && Array.isArray(fp.namespaces) ? fp.namespaces : NS_FINGERPRINT_PLACEHOLDER;
+    const isolatedCount = fp ? Number(fp.isolated_count || 0) : 0;
+    const total = fp ? Number(fp.total || nsList.length) : nsList.length;
+    const verdict = fp ? String(fp.verdict || '') : 'reading…';
+
+    layer.append('path')
+        .attr('d', `M${box.anchor.x},${box.anchor.y} C${box.anchor.x + 18},${box.anchor.y - 42} ${box.x + 24},${box.y + box.height + 18} ${box.x + 32},${box.y + box.height - 4}`)
+        .attr('fill', 'none')
+        .attr('stroke', 'rgba(20, 20, 20, 0.22)')
+        .attr('stroke-width', 0.8);
+
+    layer.append('rect')
+        .attr('x', box.x)
+        .attr('y', box.y)
+        .attr('width', box.width)
+        .attr('height', box.height)
+        .attr('rx', 6)
+        .attr('fill', 'rgba(238, 238, 228, 0.76)')
+        .attr('stroke', 'rgba(24, 24, 24, 0.18)')
+        .attr('stroke-width', 0.85);
+
+    layer.append('rect')
+        .attr('x', box.x + 8)
+        .attr('y', box.y + 8)
+        .attr('width', box.width - 16)
+        .attr('height', 22)
+        .attr('rx', 3)
+        .attr('fill', 'rgba(24, 24, 24, 0.84)');
+
+    layer.append('text')
+        .attr('x', box.x + 16)
+        .attr('y', box.y + 23)
+        .attr('font-family', 'Share Tech Mono, monospace')
+        .attr('font-size', '8.5px')
+        .attr('font-weight', '700')
+        .attr('fill', '#f2f2ea')
+        .text('NAMESPACE ISOLATION');
+
+    layer.append('text')
+        .attr('x', box.x + box.width - 16)
+        .attr('y', box.y + 23)
+        .attr('text-anchor', 'end')
+        .attr('font-family', 'Share Tech Mono, monospace')
+        .attr('font-size', '7px')
+        .attr('font-weight', '700')
+        .attr('fill', isolatedCount > 0 ? '#9fe0c2' : '#cfcfc8')
+        .text(`${isolatedCount}/${total}`);
+
+    layer.append('text')
+        .attr('x', box.x + 16)
+        .attr('y', box.y + 42)
+        .attr('font-family', 'Share Tech Mono, monospace')
+        .attr('font-size', '6.8px')
+        .attr('fill', isolatedCount > 0 ? 'rgba(20, 90, 64, 0.9)' : 'rgba(36, 36, 36, 0.6)')
+        .text(verdict.toUpperCase());
+
+    const cols = 3;
+    const gap = 7;
+    const cellW = (box.width - 32 - gap * (cols - 1)) / cols;
+    const cellH = 24;
+    const gridY = box.y + 52;
+
+    nsList.slice(0, 6).forEach((ns, i) => {
+        const c = i % cols;
+        const r = Math.floor(i / cols);
+        const x = box.x + 16 + c * (cellW + gap);
+        const y = gridY + r * (cellH + 7);
+        const isolated = !!ns.isolated;
+
+        layer.append('rect')
+            .attr('x', x)
+            .attr('y', y)
+            .attr('width', cellW)
+            .attr('height', cellH)
+            .attr('rx', 4)
+            .attr('fill', isolated ? 'rgba(24, 24, 24, 0.86)' : 'rgba(255, 255, 255, 0.5)')
+            .attr('stroke', isolated ? 'rgba(20, 90, 64, 0.55)' : 'rgba(24, 24, 24, 0.16)')
+            .attr('stroke-width', isolated ? 1 : 0.7)
+            .style('pointer-events', fp ? 'all' : 'none')
+            .style('cursor', fp ? 'help' : 'default')
+            .on('mouseenter', (event) => showNamespaceCellTooltip(event, ns))
+            .on('mousemove', (event) => {
+                d3.selectAll('.ns-fp-tooltip')
+                    .style('left', `${event.pageX + 12}px`)
+                    .style('top', `${event.pageY - 10}px`);
+            })
+            .on('mouseleave', () => d3.selectAll('.ns-fp-tooltip').remove());
+
+        // Filled node = own (isolated) namespace; hollow ring = shares host's.
+        layer.append('circle')
+            .attr('cx', x + 9)
+            .attr('cy', y + cellH / 2)
+            .attr('r', 3)
+            .attr('fill', isolated ? '#7fd6b0' : 'none')
+            .attr('stroke', isolated ? 'none' : 'rgba(24, 24, 24, 0.42)')
+            .attr('stroke-width', 0.9);
+
+        layer.append('text')
+            .attr('x', x + 18)
+            .attr('y', y + cellH / 2 + 2.5)
+            .attr('font-family', 'Share Tech Mono, monospace')
+            .attr('font-size', '7.5px')
+            .attr('font-weight', '700')
+            .attr('fill', isolated ? '#f2f2ea' : '#2f2f2f')
+            .text(ns.label || String(ns.id || '').toUpperCase());
+
+        layer.append('text')
+            .attr('x', x + cellW - 5)
+            .attr('y', y + cellH / 2 + 2.5)
+            .attr('text-anchor', 'end')
+            .attr('font-family', 'Share Tech Mono, monospace')
+            .attr('font-size', '5.5px')
+            .attr('fill', isolated ? '#9fe0c2' : 'rgba(36, 36, 36, 0.45)')
+            .text(isolated ? 'OWN' : 'host');
+    });
+
+    const peerCount = fp ? Number(fp.peer_count || 0) : 0;
+    const footer = fp
+        ? (isolatedCount > 0
+            ? `CO-RESIDENT: ${peerCount} proc${peerCount === 1 ? '' : 's'}`
+            : 'CO-RESIDENT: host namespace (shared)')
+        : 'hover a cell for inode';
+    layer.append('text')
+        .attr('x', box.x + 16)
+        .attr('y', box.y + box.height - 9)
+        .attr('font-family', 'Share Tech Mono, monospace')
+        .attr('font-size', '6.3px')
+        .attr('fill', peerCount > 0 ? 'rgba(20, 90, 64, 0.85)' : 'rgba(36, 36, 36, 0.5)')
+        .text(footer);
+}
+
+function showNamespaceCellTooltip(event, ns) {
+    d3.selectAll('.ns-fp-tooltip').remove();
+    const isolated = !!ns.isolated;
+    const inode = ns.inode || 'n/a';
+    const hostInode = ns.host_inode || 'n/a';
+    const statusLine = isolated
+        ? '<span style="color:#7fd6b0;">OWN namespace — isolated from host</span>'
+        : '<span style="color:#cfcfc8;">shares the host namespace</span>';
+    d3.select('body')
+        .append('div')
+        .attr('class', 'tooltip ns-fp-tooltip')
+        .style('position', 'absolute')
+        .style('background', 'rgba(0, 0, 0, 0.88)')
+        .style('color', '#fff')
+        .style('padding', '8px 10px')
+        .style('border-radius', '4px')
+        .style('font-size', '11px')
+        .style('font-family', 'Share Tech Mono, monospace')
+        .style('pointer-events', 'none')
+        .style('z-index', '1300')
+        .style('left', `${event.pageX + 12}px`)
+        .style('top', `${event.pageY - 10}px`)
+        .html(
+            `<strong>${ns.label || String(ns.id || '').toUpperCase()} NAMESPACE</strong><br>` +
+            `${ns.description || ''}<br>` +
+            `<hr style="border-color:#555;margin:4px 0;">` +
+            `${statusLine}<br>` +
+            `<strong>inode:</strong> ${inode}<br>` +
+            `<strong>host inode:</strong> ${hostInode}`
+        );
+}
+
+// Containment halo: ring the selected process and its container/sandbox mates
+// (processes sharing every isolated namespace inode) on the process map.
+function drawContainmentHalo(layer, processData, peerPids) {
+    const selfPid = processData.pid;
+    const drawn = [{ pid: selfPid, self: true }]
+        .concat(peerPids.slice(0, 120).map((pid) => ({ pid, self: false })));
+    let visibleMates = 0;
+
+    drawn.forEach(({ pid, self }) => {
+        const group = svg.select(`.process-node-group[data-pid="${pid}"]`);
+        if (group.empty()) return;
+        const circle = group.select('circle.process-node');
+        if (circle.empty()) return;
+        const cx = Number(circle.attr('cx'));
+        const cy = Number(circle.attr('cy'));
+        if (!Number.isFinite(cx) || !Number.isFinite(cy)) return;
+        if (!self) visibleMates += 1;
+
+        const halo = layer.append('circle')
+            .attr('cx', cx)
+            .attr('cy', cy)
+            .attr('r', self ? 9 : 6.5)
+            .attr('fill', 'none')
+            .attr('stroke', self ? 'rgba(36, 150, 104, 0.95)' : 'rgba(72, 174, 124, 0.7)')
+            .attr('stroke-width', self ? 1.8 : 1.05)
+            .attr('stroke-dasharray', self ? 'none' : '3 3')
+            .style('pointer-events', 'none');
+
+        if (self) {
+            const pulse = () => {
+                halo.attr('r', 9).attr('opacity', 0.95)
+                    .transition().duration(1700).ease(d3.easeSinOut)
+                    .attr('r', 15).attr('opacity', 0)
+                    .on('end', function () { pulse(); });
+            };
+            pulse();
+        }
+    });
+
+    if (visibleMates > 0) {
+        const selfGroup = svg.select(`.process-node-group[data-pid="${selfPid}"]`);
+        const selfCircle = selfGroup.empty() ? null : selfGroup.select('circle.process-node');
+        if (selfCircle && !selfCircle.empty()) {
+            layer.append('text')
+                .attr('x', Number(selfCircle.attr('cx')) + 12)
+                .attr('y', Number(selfCircle.attr('cy')) - 10)
+                .attr('font-family', 'Share Tech Mono, monospace')
+                .attr('font-size', '7px')
+                .attr('font-weight', '700')
+                .attr('fill', 'rgba(28, 120, 84, 0.92)')
+                .text(`container · ${visibleMates} on map`);
+        }
     }
 }
 
