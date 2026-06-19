@@ -10,8 +10,22 @@ let rightSemicircleMenuManager;
 let connectionsManager; // make available for cleanup handlers
 let pinnedProcessDossier = null;
 const MOBILE_LAYOUT_BREAKPOINT = 900;
+const MOBILE_TOUCH_SHORT_SIDE = 820;
 function isMobileLayout() {
-    return window.innerWidth <= MOBILE_LAYOUT_BREAKPOINT;
+    // Primary signal: narrow viewport.
+    if (window.innerWidth <= MOBILE_LAYOUT_BREAKPOINT) return true;
+
+    // Fallback for touch devices that report a wide viewport (large phones,
+    // phones in landscape, small tablets, in-app browsers). The desktop
+    // composition is built for ~1400px and overflows these screens, leaving
+    // only the central circle visible — so route them to the mobile layout too.
+    const mm = typeof window.matchMedia === 'function' ? window.matchMedia.bind(window) : null;
+    const isTouch = (mm && (mm('(pointer: coarse)').matches || mm('(hover: none)').matches))
+        || (typeof navigator !== 'undefined' && Number(navigator.maxTouchPoints || 0) > 0);
+    const shortSide = Math.min(window.innerWidth, window.innerHeight);
+    if (isTouch && shortSide <= MOBILE_TOUCH_SHORT_SIDE) return true;
+
+    return false;
 }
 
 function syncRealtimeFeedsForViewport() {
