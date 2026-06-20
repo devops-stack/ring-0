@@ -5,12 +5,16 @@ from __future__ import annotations
 import logging
 import platform
 import sys
+import time
 
 import psutil
 
 from kernel_ai.logging_helpers import log_event
 
 logger = logging.getLogger(__name__)
+
+# Cached counters for per-second I/O pulse deltas (vmstat + disk_io).
+_IO_PULSE_PREV = {"ts": None, "vmstat": {}, "disk": None}
 
 
 def get_system_info():
@@ -159,6 +163,100 @@ def get_kernel_subsystem_status():
             event_data={"error": str(exc)},
         )
         return get_mock_kernel_subsystems()
+
+
+def _read_vmstat():
+    """Parse /proc/vmstat into an int dict."""
+    out = {}
+    try:
+        with open("/proc/vmstat", "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                key, _, value = line.partition(" ")
+                value = value.strip()
+                if value.isdigit():
+                    out[key] = int(value)
+    except (OSError, ValueError):
+        pass
+    return out
+
+
+def _io_pulse_zero():
+    return {
+        "pgfault_per_sec": 0,
+        "pgmajfault_per_sec": 0,
+        "pswpin_per_sec": 0,
+        "pswpout_per_sec": 0,
+        "disk_read_mb_s": 0.0,
+        "disk_write_mb_s": 0.0,
+        "disk_read_iops": 0,
+        "disk_write_iops": 0,
+    }
+
+
+def get_io_pulse():
+    """Per-second deltas for memory (page faults/swaps) and block I/O.
+
+    Stateful: the first call establishes a baseline and returns zeros.
+    """
+    try:
+        if platform.system() != "Linux":
+            return _io_pulse_zero()
+
+        now = time.time()
+        vmstat = _read_vmstat()
+        try:
+            disk = psutil.disk_io_counters()
+        except (psutil.Error, OSError):
+            disk = None
+
+        prev = _IO_PULSE_PREV
+        prev_ts = prev.get("ts")
+        prev_vm = prev.get("vmstat") or {}
+        prev_disk = prev.get("disk")
+
+        # Update cache for next call.
+        _IO_PULSE_PREV["ts"] = now
+        _IO_PULSE_PREV["vmstat"] = vmstat
+        _IO_PULSE_PREV["disk"] = disk
+
+        if prev_ts is None:
+            return _io_pulse_zero()
+
+        dt = max(0.001, now - prev_ts)
+
+        def vm_rate(key):
+            delta = vmstat.get(key, 0) - prev_vm.get(key, 0)
+            return max(0, int(delta / dt))
+
+        result = {
+            "pgfault_per_sec": vm_rate("pgfault"),
+            "pgmajfault_per_sec": vm_rate("pgmajfault"),
+            "pswpin_per_sec": vm_rate("pswpin"),
+            "pswpout_per_sec": vm_rate("pswpout"),
+            "disk_read_mb_s": 0.0,
+            "disk_write_mb_s": 0.0,
+            "disk_read_iops": 0,
+            "disk_write_iops": 0,
+        }
+
+        if disk is not None and prev_disk is not None:
+            result["disk_read_mb_s"] = round(max(0.0, (disk.read_bytes - prev_disk.read_bytes) / dt) / (1024 * 1024), 3)
+            result["disk_write_mb_s"] = round(max(0.0, (disk.write_bytes - prev_disk.write_bytes) / dt) / (1024 * 1024), 3)
+            result["disk_read_iops"] = max(0, int((disk.read_count - prev_disk.read_count) / dt))
+            result["disk_write_iops"] = max(0, int((disk.write_count - prev_disk.write_count) / dt))
+
+        return result
+    except (OSError, ValueError, psutil.Error) as exc:
+        log_event(
+            logger,
+            "DEBUG",
+            "Failed to build io pulse",
+            event_dataset="kernel_ai.app",
+            component="services.core_observability",
+            operation="get_io_pulse",
+            event_data={"error": str(exc)},
+        )
+        return _io_pulse_zero()
 
 
 def get_mock_process_kernel_map():

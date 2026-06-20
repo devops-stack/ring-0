@@ -1,7 +1,7 @@
 // Network Stack Visualization - vertical packet flow through Linux networking layers
-// Version: 1
+// Version: 5
 
-debugLog('🌐 network-stack.js v1: Script loading...');
+debugLog('🌐 network-stack.js v5: Script loading...');
 
 class NetworkStackVisualization {
     constructor() {
@@ -270,7 +270,13 @@ class NetworkStackVisualization {
         const layerDepth = 3.8;
         const layerHeight = 0.16;
 
-        layerDefs.forEach(def => {
+        // Top-heavy "spinning top" radius profile: peak width in the upper third
+        // (socket/tcp), then a long taper down to a tip at the NIC.
+        const towerProfile = [0.92, 1.36, 1.5, 1.26, 0.96, 0.66, 0.4];
+        const plateHeight = 0.44;
+        const plateFacets = 16;
+
+        layerDefs.forEach((def, i) => {
             const material = new THREE.MeshPhongMaterial({
                 color: def.color,
                 transparent: true,
@@ -304,9 +310,44 @@ class NetworkStackVisualization {
 
             const noiseRig = this.createLayerNoiseRig(def, layerDepth);
 
+            // Central stack tower: a faceted plate per layer (the "figure").
+            const plateRadius = towerProfile[i] || 0.8;
+            const plateGroup = new THREE.Group();
+            plateGroup.position.set(0, def.y, 0);
+
+            const plateGeom = new THREE.CylinderGeometry(plateRadius, plateRadius, plateHeight, plateFacets, 1, false);
+            const plateFill = new THREE.Mesh(
+                plateGeom,
+                new THREE.MeshPhongMaterial({
+                    color: 0x244154,
+                    transparent: true,
+                    opacity: 0.22,
+                    shininess: 80,
+                    emissive: new THREE.Color(0x58b6d8),
+                    emissiveIntensity: 0.12
+                })
+            );
+            plateGroup.add(plateFill);
+
+            const plateEdge = new THREE.LineSegments(
+                new THREE.EdgesGeometry(plateGeom),
+                new THREE.LineBasicMaterial({ color: 0xbfe6f2, transparent: true, opacity: 0.85 })
+            );
+            plateGroup.add(plateEdge);
+
+            // Inner drum (double-rim turbine detail).
+            const innerGeom = new THREE.CylinderGeometry(plateRadius * 0.6, plateRadius * 0.6, plateHeight * 1.18, plateFacets, 1, false);
+            const innerEdge = new THREE.LineSegments(
+                new THREE.EdgesGeometry(innerGeom),
+                new THREE.LineBasicMaterial({ color: 0x6fb6cf, transparent: true, opacity: 0.45 })
+            );
+            plateGroup.add(innerEdge);
+
+            this.scene.add(plateGroup);
+
             mesh.userData.layerId = def.id;
             this.layerMeshes.push(mesh);
-            this.layers.push({ ...def, mesh, edge, strip, noiseRig });
+            this.layers.push({ ...def, mesh, edge, strip, noiseRig, plateGroup, plateFill, plateEdge, plateRadius });
             this.layerMap[def.id] = def.y;
 
             if (this.hideOsiTiles) {
@@ -324,6 +365,95 @@ class NetworkStackVisualization {
             new THREE.LineBasicMaterial({ color: 0x58b6d8, transparent: true, opacity: 0.35 })
         );
         this.scene.add(flowLine);
+
+        this.buildTowerFrame(plateHeight, plateFacets);
+    }
+
+    // Clean ordered polygon ring (LineLoop) at a given radius/height.
+    makeRingLoop(radius, y, facets, color, opacity) {
+        const pts = [];
+        for (let k = 0; k < facets; k++) {
+            const a = (k / facets) * Math.PI * 2;
+            pts.push(new THREE.Vector3(Math.cos(a) * radius, y, Math.sin(a) * radius));
+        }
+        const loop = new THREE.LineLoop(
+            new THREE.BufferGeometry().setFromPoints(pts),
+            new THREE.LineBasicMaterial({ color, transparent: true, opacity })
+        );
+        return loop;
+    }
+
+    // Vertical cage struts, intermediate sub-rings, top capsule + bottom tip.
+    buildTowerFrame(plateHeight, plateFacets) {
+        const STRUT_FACETS = 8;
+        const octagon = (radius, y) => {
+            const pts = [];
+            for (let k = 0; k < STRUT_FACETS; k++) {
+                const a = (k / STRUT_FACETS) * Math.PI * 2;
+                pts.push(new THREE.Vector3(Math.cos(a) * radius, y, Math.sin(a) * radius));
+            }
+            return pts;
+        };
+
+        const strutPts = [];
+        for (let i = 0; i < this.layers.length - 1; i++) {
+            const top = this.layers[i];
+            const bottom = this.layers[i + 1];
+            const topRing = octagon(top.plateRadius, top.y - plateHeight / 2);
+            const botRing = octagon(bottom.plateRadius, bottom.y + plateHeight / 2);
+            for (let k = 0; k < STRUT_FACETS; k++) {
+                strutPts.push(topRing[k], botRing[k]);
+            }
+
+            // Intermediate sub-rings densify the stack (turbine-disc look).
+            for (let s = 1; s <= 2; s++) {
+                const t = s / 3;
+                const r = top.plateRadius + (bottom.plateRadius - top.plateRadius) * t;
+                const y = top.y + (bottom.y - top.y) * t;
+                this.scene.add(this.makeRingLoop(r * 1.02, y, plateFacets, 0x7fc4da, 0.3));
+            }
+        }
+        const struts = new THREE.LineSegments(
+            new THREE.BufferGeometry().setFromPoints(strutPts),
+            new THREE.LineBasicMaterial({ color: 0x6fb6cf, transparent: true, opacity: 0.32 })
+        );
+        this.scene.add(struts);
+        this.towerStruts = struts;
+
+        const first = this.layers[0];
+        const last = this.layers[this.layers.length - 1];
+
+        // Top capsule: stacked decreasing dome rings + a faceted pod tip.
+        const capTopY = first.y + plateHeight / 2;
+        const podRadii = [first.plateRadius * 0.78, first.plateRadius * 0.6, first.plateRadius * 0.4, first.plateRadius * 0.22];
+        podRadii.forEach((r, idx) => {
+            this.scene.add(this.makeRingLoop(r, capTopY + 0.28 + idx * 0.26, plateFacets, 0x9fd2e4, 0.6));
+        });
+        const pod = new THREE.LineSegments(
+            new THREE.EdgesGeometry(new THREE.SphereGeometry(first.plateRadius * 0.34, 12, 6)),
+            new THREE.LineBasicMaterial({ color: 0xbfe6f2, transparent: true, opacity: 0.6 })
+        );
+        pod.position.set(0, capTopY + 0.28 + podRadii.length * 0.26 + 0.12, 0);
+        this.scene.add(pod);
+
+        // Bottom: converging tip below the NIC plate.
+        const bottomCap = new THREE.LineSegments(
+            new THREE.EdgesGeometry(new THREE.ConeGeometry(last.plateRadius * 0.98, 1.05, plateFacets)),
+            new THREE.LineBasicMaterial({ color: 0x9fd2e4, transparent: true, opacity: 0.55 })
+        );
+        bottomCap.position.set(0, last.y - plateHeight / 2 - 0.52, 0);
+        bottomCap.rotation.x = Math.PI;
+        this.scene.add(bottomCap);
+
+        // Axis-antenna extending beyond both ends.
+        const axis = new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(0, pod.position.y + 0.5, 0),
+                new THREE.Vector3(0, last.y - plateHeight / 2 - 1.4, 0)
+            ]),
+            new THREE.LineBasicMaterial({ color: 0x67c8e0, transparent: true, opacity: 0.5 })
+        );
+        this.scene.add(axis);
     }
 
     createRodBetween(start, end, radius = 0.018, color = 0x8d97a3, opacity = 0.32) {
@@ -818,38 +948,152 @@ class NetworkStackVisualization {
             this.kpiNodes[spec.id] = { card, label, value };
         });
 
+        // One aligned stack axis: each layer is a single row spanning the scene —
+        // [health dot + name] on the left, the live lane in the middle, and the
+        // live metric chip on the right, all sharing the same vertical position.
+        const layerRows = [
+            { id: 'userspace', name: 'USERSPACE', top: '22%' },
+            { id: 'socket', name: 'SOCKET API', top: '30%' },
+            { id: 'tcp', name: 'TCP / UDP', top: '38%' },
+            { id: 'ip', name: 'IP', top: '46%' },
+            { id: 'netfilter', name: 'NETFILTER', top: '54%' },
+            { id: 'driver', name: 'DRIVER', top: '62%' },
+            { id: 'nic', name: 'NIC', top: '70%' }
+        ];
+
+        // Transparent full-bleed container for the left row labels. Kept as
+        // layersPanelNode so existing view/read-mode toggles still show/hide it.
         const layersPanel = document.createElement('div');
         layersPanel.style.cssText = `
             position: absolute;
-            top: 148px;
-            left: 24px;
+            inset: 0;
             z-index: 1001;
-            color: #d1d8e0;
-            font-family: 'Share Tech Mono', monospace;
-            font-size: 12px;
-            line-height: 1.5;
-            background: rgba(10, 15, 24, 0.84);
-            border: 1px solid rgba(129, 145, 168, 0.32);
-            border-radius: 6px;
-            padding: 11px 13px;
-            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.24);
-            backdrop-filter: blur(1px);
+            pointer-events: none;
         `;
-        window.setSafeHtml(layersPanel, [
-            '<span style="font-size:10px;color:#7f8fa2;letter-spacing:0.55px">LAYERS</span>',
-            'Userspace',
-            '&rarr; Socket API',
-            '&rarr; TCP/UDP',
-            '&rarr; IP',
-            '&rarr; Netfilter',
-            '&rarr; Driver',
-            '&rarr; NIC'
-        ].join('<br>'));
         this.container.appendChild(layersPanel);
         this.overlayNodes.push(layersPanel);
         this.layersPanelNode = layersPanel;
 
-        // Layer metrics as subtle chips aligned with layers (not a table).
+        // Section caption sitting above the first row.
+        const stackCaption = document.createElement('div');
+        stackCaption.style.cssText = `
+            position: absolute;
+            left: 24px;
+            top: 16%;
+            transform: translateY(-50%);
+            color: #7f8fa2;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 10px;
+            letter-spacing: 1.1px;
+        `;
+        stackCaption.textContent = 'STACK  ·  userspace → wire';
+        layersPanel.appendChild(stackCaption);
+
+        this.layerRows = {};
+        this.layerConnectors = {};
+
+        // Reference-style channel list cells (one per stack layer).
+        layerRows.forEach((spec, i) => {
+            const level = 7 - i;
+            const row = document.createElement('div');
+            row.style.cssText = `
+                position: absolute;
+                left: 24px;
+                top: ${spec.top};
+                transform: translateY(-50%);
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+                min-width: 150px;
+                padding: 4px 9px;
+                background: rgba(13, 18, 28, 0.72);
+                border: 1px solid rgba(108, 122, 142, 0.3);
+                border-left: 2px solid rgba(103, 190, 224, 0.7);
+                border-radius: 3px;
+                font-family: 'Share Tech Mono', monospace;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+            `;
+            const code = document.createElement('div');
+            code.style.cssText = `font-size: 8px; letter-spacing: 1px; color: #6f8597;`;
+            code.textContent = `NS-STACK-L${String(level).padStart(2, '0')}`;
+            const mainline = document.createElement('div');
+            mainline.style.cssText = `display: flex; align-items: center; gap: 7px;`;
+            const dot = document.createElement('span');
+            dot.style.cssText = `
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                flex: 0 0 auto;
+                background: rgba(122, 150, 168, 0.6);
+                transition: background 220ms ease, box-shadow 220ms ease;
+            `;
+            const name = document.createElement('span');
+            name.style.cssText = `
+                color: #cdd6e0;
+                font-size: 11.5px;
+                letter-spacing: 0.5px;
+            `;
+            name.textContent = spec.name;
+            mainline.appendChild(dot);
+            mainline.appendChild(name);
+            row.appendChild(code);
+            row.appendChild(mainline);
+            layersPanel.appendChild(row);
+            this.layerRows[spec.id] = { row, dot, name };
+        });
+
+        // Connector overlay: leader lines from the channel list to the tower
+        // segments (projected from 3D each frame in updateConnectors()).
+        const svgNS = 'http://www.w3.org/2000/svg';
+        const connectorSvg = document.createElementNS(svgNS, 'svg');
+        connectorSvg.style.cssText = 'position:absolute; inset:0; width:100%; height:100%; z-index:1000; pointer-events:none;';
+        this.container.appendChild(connectorSvg);
+        this.overlayNodes.push(connectorSvg);
+        this.connectorSvg = connectorSvg;
+
+        const rail = document.createElementNS(svgNS, 'path');
+        rail.setAttribute('fill', 'none');
+        rail.setAttribute('stroke', 'rgba(103, 190, 224, 0.28)');
+        rail.setAttribute('stroke-width', '1');
+        connectorSvg.appendChild(rail);
+        this.connectorRail = rail;
+
+        layerRows.forEach((spec) => {
+            const path = document.createElementNS(svgNS, 'path');
+            path.setAttribute('fill', 'none');
+            path.setAttribute('stroke', 'rgba(103, 190, 224, 0.5)');
+            path.setAttribute('stroke-width', '1');
+            connectorSvg.appendChild(path);
+            const node = document.createElementNS(svgNS, 'circle');
+            node.setAttribute('r', '2.6');
+            node.setAttribute('fill', '#67c8e0');
+            connectorSvg.appendChild(node);
+            this.layerConnectors[spec.id] = { path, node, frac: parseFloat(spec.top) / 100 };
+        });
+
+        // Right connectors: tower right edge -> right metric chips (mirror of left).
+        this.layerConnectorsRight = {};
+        const railRight = document.createElementNS(svgNS, 'path');
+        railRight.setAttribute('fill', 'none');
+        railRight.setAttribute('stroke', 'rgba(103, 190, 224, 0.28)');
+        railRight.setAttribute('stroke-width', '1');
+        connectorSvg.appendChild(railRight);
+        this.connectorRailRight = railRight;
+
+        layerRows.forEach((spec) => {
+            const path = document.createElementNS(svgNS, 'path');
+            path.setAttribute('fill', 'none');
+            path.setAttribute('stroke', 'rgba(103, 190, 224, 0.5)');
+            path.setAttribute('stroke-width', '1');
+            connectorSvg.appendChild(path);
+            const node = document.createElementNS(svgNS, 'circle');
+            node.setAttribute('r', '2.6');
+            node.setAttribute('fill', '#67c8e0');
+            connectorSvg.appendChild(node);
+            this.layerConnectorsRight[spec.id] = { path, node, frac: parseFloat(spec.top) / 100 };
+        });
+
+        // Right-aligned live metric chips, sharing each row's vertical position.
         const chipLayer = document.createElement('div');
         chipLayer.style.cssText = `
             position: absolute;
@@ -860,39 +1104,160 @@ class NetworkStackVisualization {
         this.container.appendChild(chipLayer);
         this.overlayNodes.push(chipLayer);
         this.chipLayerNode = chipLayer;
-        const chipSpec = [
-            { id: 'userspace', top: '22%' },
-            { id: 'socket', top: '30%' },
-            { id: 'tcp', top: '38%' },
-            { id: 'ip', top: '46%' },
-            { id: 'netfilter', top: '54%' },
-            { id: 'driver', top: '62%' },
-            { id: 'nic', top: '70%' }
-        ];
-        chipSpec.forEach(spec => {
-            const chip = document.createElement('div');
-            chip.style.cssText = `
+        this.layerGauges = {};
+        this.layerSpectra = {};
+        const SPEC_W = 48;
+        const SPEC_H = 26;
+        const SPEC_N = 14;
+        layerRows.forEach(spec => {
+            const box = document.createElement('div');
+            box.style.cssText = `
                 position: absolute;
                 right: 2.4%;
                 top: ${spec.top};
                 transform: translateY(-50%);
-                color: #bac4cf;
+                display: flex;
+                flex-direction: row;
+                align-items: center;
+                gap: 8px;
                 font-family: 'Share Tech Mono', monospace;
-                font-size: 11px;
-                letter-spacing: 0.42px;
                 background: rgba(16, 22, 32, 0.68);
                 border: 1px solid rgba(115, 128, 145, 0.32);
                 border-radius: 4px;
                 padding: 4px 9px;
-                white-space: nowrap;
                 min-width: 196px;
-                text-align: left;
                 box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
             `;
+
+            // Mini spectrogram: scrolling vertical bars of the layer's activity.
+            const spectro = document.createElementNS(svgNS, 'svg');
+            spectro.setAttribute('width', String(SPEC_W));
+            spectro.setAttribute('height', String(SPEC_H));
+            spectro.style.cssText = 'flex:0 0 auto; background:rgba(8,12,18,0.65); border:1px solid rgba(80,96,112,0.3);';
+            const bars = [];
+            const barW = SPEC_W / SPEC_N;
+            for (let i = 0; i < SPEC_N; i++) {
+                const r = document.createElementNS(svgNS, 'rect');
+                r.setAttribute('x', (i * barW).toFixed(2));
+                r.setAttribute('width', Math.max(1, barW - 0.8).toFixed(2));
+                r.setAttribute('y', String(SPEC_H - 1));
+                r.setAttribute('height', '1');
+                r.setAttribute('fill', 'rgba(103, 190, 224, 0.55)');
+                spectro.appendChild(r);
+                bars.push(r);
+            }
+
+            const col = document.createElement('div');
+            col.style.cssText = 'display:flex; flex-direction:column; gap:4px; flex:1 1 auto; min-width:0;';
+
+            const chip = document.createElement('div');
+            chip.style.cssText = `
+                color: #bac4cf;
+                font-size: 11px;
+                letter-spacing: 0.42px;
+                white-space: nowrap;
+                border-radius: 3px;
+            `;
             chip.textContent = '';
-            chipLayer.appendChild(chip);
+
+            const gauge = document.createElement('div');
+            gauge.style.cssText = `
+                position: relative;
+                width: 100%;
+                height: 5px;
+                background: rgba(40, 52, 64, 0.5);
+                border-radius: 2px;
+                overflow: hidden;
+            `;
+            const gaugeFill = document.createElement('div');
+            gaugeFill.style.cssText = `
+                position: absolute;
+                left: 0; top: 0; bottom: 0;
+                width: 20%;
+                background: rgba(103, 190, 224, 0.7);
+                transition: width 220ms ease, background 220ms ease;
+            `;
+            gauge.appendChild(gaugeFill);
+
+            col.appendChild(chip);
+            col.appendChild(gauge);
+            box.appendChild(spectro);
+            box.appendChild(col);
+            chipLayer.appendChild(box);
             this.metricChips[spec.id] = chip;
+            this.layerGauges[spec.id] = gaugeFill;
+            this.layerSpectra[spec.id] = { bars, hist: new Array(SPEC_N).fill(0), h: SPEC_H };
         });
+
+        // Left operation-mode rail (reference style). The active cell follows the
+        // current read mode so it stays meaningful, not decorative.
+        const modePanel = document.createElement('div');
+        modePanel.style.cssText = `
+            position: absolute;
+            left: 18px;
+            top: 14px;
+            z-index: 1001;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            width: 112px;
+            font-family: 'Share Tech Mono', monospace;
+        `;
+        this.container.appendChild(modePanel);
+        this.overlayNodes.push(modePanel);
+        this.modePanelNode = modePanel;
+
+        const modeStat = document.createElement('div');
+        modeStat.style.cssText = `
+            background: rgba(16, 22, 32, 0.7);
+            border: 1px solid rgba(115, 128, 145, 0.32);
+            border-radius: 3px;
+            padding: 5px 7px;
+            margin-bottom: 3px;
+        `;
+        const modeStatCap = document.createElement('div');
+        modeStatCap.style.cssText = `font-size: 7.5px; letter-spacing: 1.1px; color: #6f8597;`;
+        modeStatCap.textContent = 'STREAM · ACTIVE';
+        const modeStatVal = document.createElement('div');
+        modeStatVal.style.cssText = `font-size: 14px; letter-spacing: 0.5px; color: #9bd4f2; line-height: 1.1;`;
+        modeStatVal.textContent = '--';
+        modeStat.appendChild(modeStatCap);
+        modeStat.appendChild(modeStatVal);
+        modePanel.appendChild(modeStat);
+        this.modeStatValue = modeStatVal;
+
+        const modeDefs = [
+            { id: 'active', label: 'ACTIVE' },
+            { id: 'setup', label: 'SETUP' },
+            { id: 'system', label: 'SYSTEM' },
+            { id: 'monitor', label: 'MONITOR' },
+            { id: 'diagnostic', label: 'DIAGNOSTIC' },
+            { id: 'log', label: 'LOG' }
+        ];
+        this.modeCells = {};
+        modeDefs.forEach((m) => {
+            const cell = document.createElement('div');
+            cell.style.cssText = `
+                background: rgba(14, 19, 28, 0.66);
+                border: 1px solid rgba(96, 110, 128, 0.28);
+                border-left: 2px solid rgba(96, 110, 128, 0.4);
+                border-radius: 2px;
+                padding: 4px 7px;
+                line-height: 1.15;
+            `;
+            const cap = document.createElement('div');
+            cap.style.cssText = `font-size: 7px; letter-spacing: 1px; color: #5d7286;`;
+            cap.textContent = 'MODE';
+            const name = document.createElement('div');
+            name.style.cssText = `font-size: 11px; letter-spacing: 0.5px; color: #8190a0;`;
+            name.textContent = m.label;
+            cell.appendChild(cap);
+            cell.appendChild(name);
+            modePanel.appendChild(cell);
+            this.modeCells[m.id] = { cell, name };
+        });
+        this.updateModePanel();
 
         const err = document.createElement('div');
         err.style.cssText = `
@@ -1039,87 +1404,99 @@ class NetworkStackVisualization {
         this.overlayNodes.push(layerTip);
         this.layerTooltipNode = layerTip;
 
-        const viewModeBtn = document.createElement('button');
-        viewModeBtn.textContent = 'MODE: DETAILED';
-        viewModeBtn.style.cssText = `
+        // Grouped "VIEW" control rail: the four view toggles live in one compact
+        // card (clearly a control surface, distinct from the read-only metric
+        // chips) instead of four separate floating pills stacked down the edge.
+        const controlCard = document.createElement('div');
+        controlCard.style.cssText = `
             position: absolute;
-            top: 58px;
+            top: 60px;
             right: 20px;
-            padding: 7px 10px;
+            z-index: 1002;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            padding: 7px 7px 8px;
+            background: rgba(10, 15, 24, 0.62);
+            border: 1px solid rgba(115, 128, 145, 0.26);
+            border-radius: 7px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
+            pointer-events: auto;
+        `;
+        this.container.appendChild(controlCard);
+        this.overlayNodes.push(controlCard);
+        this.controlCardNode = controlCard;
+
+        const controlHeader = document.createElement('div');
+        controlHeader.style.cssText = `
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 8.5px;
+            letter-spacing: 1.1px;
+            color: #6f7d8e;
+            padding: 1px 2px 4px;
+            border-bottom: 1px solid rgba(115, 128, 145, 0.2);
+        `;
+        controlHeader.textContent = 'VIEW';
+        controlCard.appendChild(controlHeader);
+
+        const baseBtnCss = `
+            display: block;
+            width: 132px;
+            text-align: left;
+            padding: 5px 9px;
             background: rgba(12, 18, 28, 0.88);
             border: 1px solid rgba(125, 138, 156, 0.34);
             color: #c6d0db;
             font-family: 'Share Tech Mono', monospace;
-            font-size: 10px;
-            letter-spacing: 0.5px;
+            font-size: 9.5px;
+            letter-spacing: 0.4px;
             cursor: pointer;
-            z-index: 1002;
+            border-radius: 4px;
             transition: all 0.2s ease;
         `;
+
+        const viewModeBtn = document.createElement('button');
+        viewModeBtn.textContent = 'MODE: DETAILED';
+        viewModeBtn.style.cssText = baseBtnCss;
         viewModeBtn.onmouseenter = () => {
             viewModeBtn.style.background = 'rgba(19, 28, 40, 0.95)';
             viewModeBtn.style.color = '#edf2f8';
         };
         viewModeBtn.onmouseleave = () => {
             viewModeBtn.style.background = 'rgba(12, 18, 28, 0.88)';
-            viewModeBtn.style.color = '#c6d0db';
+            viewModeBtn.style.color = this.viewDensityMode === 'minimal' ? '#f0dca2' : '#c6d0db';
         };
         viewModeBtn.onclick = () => {
             this.toggleViewDensityMode();
         };
-        this.container.appendChild(viewModeBtn);
+        controlCard.appendChild(viewModeBtn);
         this.overlayNodes.push(viewModeBtn);
         this.viewModeButton = viewModeBtn;
 
         const puzzleModeBtn = document.createElement('button');
         puzzleModeBtn.textContent = 'PUZZLE: OVERVIEW';
-        puzzleModeBtn.style.cssText = `
-            position: absolute;
-            top: 94px;
-            right: 20px;
-            padding: 7px 10px;
-            background: rgba(12, 18, 28, 0.88);
-            border: 1px solid rgba(125, 138, 156, 0.34);
-            color: #c6d0db;
-            font-family: 'Share Tech Mono', monospace;
-            font-size: 10px;
-            letter-spacing: 0.45px;
-            cursor: pointer;
-            z-index: 1002;
-            transition: all 0.2s ease;
-        `;
+        puzzleModeBtn.style.cssText = baseBtnCss;
         puzzleModeBtn.onmouseenter = () => {
             puzzleModeBtn.style.background = 'rgba(19, 28, 40, 0.95)';
             puzzleModeBtn.style.color = '#edf2f8';
         };
         puzzleModeBtn.onmouseleave = () => {
             puzzleModeBtn.style.background = 'rgba(12, 18, 28, 0.88)';
-            puzzleModeBtn.style.color = '#c6d0db';
+            puzzleModeBtn.style.color = this.puzzleDetailMode === 'overview' ? '#c6d0db' : '#f0dca2';
         };
         puzzleModeBtn.onclick = () => {
             this.togglePuzzleDetailMode();
         };
-        this.container.appendChild(puzzleModeBtn);
+        controlCard.appendChild(puzzleModeBtn);
         this.overlayNodes.push(puzzleModeBtn);
         this.puzzleModeButton = puzzleModeBtn;
 
         const noiseModeBtn = document.createElement('button');
         noiseModeBtn.textContent = 'NOISE: DENSE';
-        noiseModeBtn.style.cssText = `
-            position: absolute;
-            top: 130px;
-            right: 20px;
-            padding: 7px 10px;
-            background: rgba(12, 18, 28, 0.88);
-            border: 1px solid rgba(230, 193, 90, 0.58);
-            color: #f0dca2;
-            font-family: 'Share Tech Mono', monospace;
-            font-size: 10px;
-            letter-spacing: 0.45px;
-            cursor: pointer;
-            z-index: 1002;
-            transition: all 0.2s ease;
-        `;
+        noiseModeBtn.style.cssText = baseBtnCss;
+        // Default state is dense → start in the active (amber) styling.
+        noiseModeBtn.style.borderColor = 'rgba(230, 193, 90, 0.58)';
+        noiseModeBtn.style.color = '#f0dca2';
         noiseModeBtn.onmouseenter = () => {
             noiseModeBtn.style.background = 'rgba(19, 28, 40, 0.95)';
             noiseModeBtn.style.color = '#edf2f8';
@@ -1131,27 +1508,13 @@ class NetworkStackVisualization {
         noiseModeBtn.onclick = () => {
             this.toggleNoiseDetailMode();
         };
-        this.container.appendChild(noiseModeBtn);
+        controlCard.appendChild(noiseModeBtn);
         this.overlayNodes.push(noiseModeBtn);
         this.noiseModeButton = noiseModeBtn;
 
         const readModeBtn = document.createElement('button');
         readModeBtn.textContent = 'READ: FORENSICS';
-        readModeBtn.style.cssText = `
-            position: absolute;
-            top: 166px;
-            right: 20px;
-            padding: 7px 10px;
-            background: rgba(12, 18, 28, 0.88);
-            border: 1px solid rgba(125, 138, 156, 0.34);
-            color: #c6d0db;
-            font-family: 'Share Tech Mono', monospace;
-            font-size: 10px;
-            letter-spacing: 0.45px;
-            cursor: pointer;
-            z-index: 1002;
-            transition: all 0.2s ease;
-        `;
+        readModeBtn.style.cssText = baseBtnCss;
         readModeBtn.onmouseenter = () => {
             readModeBtn.style.background = 'rgba(19, 28, 40, 0.95)';
             readModeBtn.style.color = '#edf2f8';
@@ -1165,7 +1528,7 @@ class NetworkStackVisualization {
         readModeBtn.onclick = () => {
             this.toggleReadMode();
         };
-        this.container.appendChild(readModeBtn);
+        controlCard.appendChild(readModeBtn);
         this.overlayNodes.push(readModeBtn);
         this.readModeButton = readModeBtn;
         this.updateBottomPanelsLayout();
@@ -1317,6 +1680,23 @@ class NetworkStackVisualization {
         }
         this.applyReadModeVisibility();
         this.updatePacketLifecycleUI();
+        this.updateModePanel();
+    }
+
+    // Reflect read mode + live load on the left operation-mode rail.
+    updateModePanel() {
+        if (!this.modeCells) return;
+        const readToMode = { scene: 'monitor', ops: 'system', forensics: 'diagnostic' };
+        const lit = new Set(['active', readToMode[this.readMode] || 'monitor']);
+        Object.keys(this.modeCells).forEach((id) => {
+            const c = this.modeCells[id];
+            if (!c) return;
+            const on = lit.has(id);
+            c.cell.style.background = on ? 'rgba(20, 46, 60, 0.8)' : 'rgba(14, 19, 28, 0.66)';
+            c.cell.style.borderColor = on ? 'rgba(103, 190, 224, 0.55)' : 'rgba(96, 110, 128, 0.28)';
+            c.cell.style.borderLeftColor = on ? 'rgba(103, 190, 224, 0.95)' : 'rgba(96, 110, 128, 0.4)';
+            c.name.style.color = on ? '#dff1fa' : '#8190a0';
+        });
     }
 
     selectGalaxy(id) {
@@ -1696,12 +2076,13 @@ class NetworkStackVisualization {
 
     getHealthTone(level) {
         if (level === 'critical') {
-            return { bg: 'rgba(65, 20, 24, 0.74)', border: 'rgba(226, 106, 118, 0.65)', text: '#ffb8c0' };
+            return { bg: 'rgba(65, 20, 24, 0.74)', border: 'rgba(226, 106, 118, 0.65)', text: '#ffb8c0', dot: 'rgba(232, 96, 104, 0.95)', glow: 'rgba(232, 96, 104, 0.55)' };
         }
         if (level === 'warn') {
-            return { bg: 'rgba(64, 52, 22, 0.72)', border: 'rgba(226, 193, 102, 0.64)', text: '#f2d89b' };
+            return { bg: 'rgba(64, 52, 22, 0.72)', border: 'rgba(226, 193, 102, 0.64)', text: '#f2d89b', dot: 'rgba(230, 193, 90, 0.95)', glow: 'rgba(230, 193, 90, 0.5)' };
         }
-        return { bg: 'rgba(16, 22, 32, 0.68)', border: 'rgba(115, 128, 145, 0.32)', text: '#bac4cf' };
+        // Idle/healthy stays calm: muted neutral dot so only warn/critical pop.
+        return { bg: 'rgba(16, 22, 32, 0.68)', border: 'rgba(115, 128, 145, 0.32)', text: '#bac4cf', dot: 'rgba(122, 150, 168, 0.6)', glow: 'rgba(0, 0, 0, 0)' };
     }
 
     updateKpiCard(id, value, level = 'normal') {
@@ -1715,13 +2096,22 @@ class NetworkStackVisualization {
     }
 
     setMetricChip(id, label, value, level = 'normal') {
-        const chip = this.metricChips[id];
-        if (!chip) return;
         const tone = this.getHealthTone(level);
-        chip.textContent = `${label} ${value}`;
-        chip.style.background = tone.bg;
-        chip.style.borderColor = tone.border;
-        chip.style.color = tone.text;
+        const chip = this.metricChips[id];
+        if (chip) {
+            chip.textContent = `${label} ${value}`;
+            chip.style.background = tone.bg;
+            chip.style.borderColor = tone.border;
+            chip.style.color = tone.text;
+        }
+        // Mirror health onto the left row's status dot so the whole row reads as
+        // one unit (name · lane · metric) with a single health signal.
+        const row = this.layerRows && this.layerRows[id];
+        if (row && row.dot) {
+            row.dot.style.background = tone.dot;
+            row.dot.style.boxShadow = level === 'normal' ? 'none' : `0 0 8px ${tone.glow}`;
+            if (row.name) row.name.style.color = level === 'normal' ? '#cdd6e0' : tone.text;
+        }
     }
 
     updateTelemetryUI() {
@@ -1809,6 +2199,13 @@ class NetworkStackVisualization {
             `${m.nic?.iface ?? 'n/a'} err ${nicErrRx}/${nicErrTx}`,
             nicLevel
         );
+
+        if (this.modeStatValue) {
+            const procs = safeNum(m.userspace?.active_processes ?? 0);
+            const est = safeNum(m.socket_api?.established ?? 0);
+            this.modeStatValue.textContent = `${procs} · ${est}`;
+        }
+        this.updateModePanel();
 
         this.updateGalaxyPanel(m, flow);
 
@@ -2289,7 +2686,112 @@ class NetworkStackVisualization {
         this.camera.position.z = 13.2 + Math.cos(t) * 0.35;
         this.camera.lookAt(0, 0, 0);
 
+        // Overlay updates must never block the 3D render: a bug in connector
+        // projection should at worst drop the leader lines, not blank the scene.
+        try {
+            this.updateConnectors();
+            this.updateRightInstruments();
+        } catch (e) {
+            if (!this._connWarned) {
+                console.warn('overlay update failed:', e);
+                this._connWarned = true;
+            }
+        }
+
         this.renderer.render(this.scene, this.camera);
+    }
+
+    // Project each tower plate's left edge to screen and draw leader lines
+    // from the channel-list rail into the central figure.
+    updateConnectors() {
+        if (!this.connectorSvg || !this.camera || !this.renderer) return;
+        const hidden = this.layersPanelNode && this.layersPanelNode.style.display === 'none';
+        this.connectorSvg.style.display = hidden ? 'none' : 'block';
+        if (hidden) return;
+
+        const el = this.renderer.domElement;
+        const W = el.clientWidth || el.width;
+        const H = el.clientHeight || el.height;
+        const RAIL = 200;
+        let minY = Infinity;
+        let maxY = -Infinity;
+
+        this.layers.forEach((layer) => {
+            const conn = this.layerConnectors[layer.id];
+            if (!conn) return;
+            const startY = conn.frac * H;
+            const v = new THREE.Vector3(-(layer.plateRadius || 0.8) - 0.05, layer.y, 0).project(this.camera);
+            const endX = (v.x * 0.5 + 0.5) * W;
+            const endY = (-v.y * 0.5 + 0.5) * H;
+            const bendX = Math.max(RAIL + 18, endX - 26);
+            conn.path.setAttribute('d', `M ${RAIL} ${startY.toFixed(1)} L ${bendX.toFixed(1)} ${startY.toFixed(1)} L ${endX.toFixed(1)} ${endY.toFixed(1)}`);
+            conn.node.setAttribute('cx', endX.toFixed(1));
+            conn.node.setAttribute('cy', endY.toFixed(1));
+            if (startY < minY) minY = startY;
+            if (startY > maxY) maxY = startY;
+        });
+
+        if (this.connectorRail && isFinite(minY) && isFinite(maxY)) {
+            this.connectorRail.setAttribute('d', `M ${RAIL} ${minY.toFixed(1)} L ${RAIL} ${maxY.toFixed(1)}`);
+        }
+
+        // Right side: tower right edge -> right metric chips (mirror of left).
+        if (this.layerConnectorsRight) {
+            const RAIL_R = W - (W * 0.024) - 214 - 8;
+            let rMinY = Infinity;
+            let rMaxY = -Infinity;
+            this.layers.forEach((layer) => {
+                const conn = this.layerConnectorsRight[layer.id];
+                if (!conn) return;
+                const startY = conn.frac * H;
+                const v = new THREE.Vector3((layer.plateRadius || 0.8) + 0.05, layer.y, 0).project(this.camera);
+                const endX = (v.x * 0.5 + 0.5) * W;
+                const endY = (-v.y * 0.5 + 0.5) * H;
+                const bendX = Math.min(RAIL_R - 18, endX + 26);
+                conn.path.setAttribute('d', `M ${RAIL_R} ${startY.toFixed(1)} L ${bendX.toFixed(1)} ${startY.toFixed(1)} L ${endX.toFixed(1)} ${endY.toFixed(1)}`);
+                conn.node.setAttribute('cx', endX.toFixed(1));
+                conn.node.setAttribute('cy', endY.toFixed(1));
+                if (startY < rMinY) rMinY = startY;
+                if (startY > rMaxY) rMaxY = startY;
+            });
+            if (this.connectorRailRight && isFinite(rMinY) && isFinite(rMaxY)) {
+                this.connectorRailRight.setAttribute('d', `M ${RAIL_R} ${rMinY.toFixed(1)} L ${RAIL_R} ${rMaxY.toFixed(1)}`);
+            }
+        }
+    }
+
+    // Right-row instruments: gauge tracks live load, spectrogram scrolls a
+    // short history of it. Spectrogram advances on a throttle so it reads as a
+    // slow waterfall rather than per-frame noise.
+    updateRightInstruments() {
+        if (!this.layerGauges) return;
+        const now = performance.now();
+        const advance = !this._lastSpectro || (now - this._lastSpectro) > 150;
+        if (advance) this._lastSpectro = now;
+        Object.keys(this.layerGauges).forEach((id) => {
+            const act = Math.max(0, Math.min(1, Number(this.layerActivity[id] ?? 0.2)));
+            const fill = this.layerGauges[id];
+            if (fill) {
+                fill.style.width = `${(8 + act * 92).toFixed(0)}%`;
+                fill.style.background = act > 0.8
+                    ? 'rgba(232, 96, 104, 0.8)'
+                    : (act > 0.55 ? 'rgba(230, 193, 90, 0.8)' : 'rgba(103, 190, 224, 0.7)');
+            }
+            if (!advance) return;
+            const sp = this.layerSpectra && this.layerSpectra[id];
+            if (!sp) return;
+            sp.hist.push(act * (0.55 + Math.random() * 0.45));
+            sp.hist.shift();
+            for (let i = 0; i < sp.bars.length; i++) {
+                const val = sp.hist[i] || 0;
+                const h = Math.max(1, val * (sp.h - 2));
+                sp.bars[i].setAttribute('y', (sp.h - h).toFixed(2));
+                sp.bars[i].setAttribute('height', h.toFixed(2));
+                sp.bars[i].setAttribute('fill', val > 0.8
+                    ? 'rgba(232, 96, 104, 0.7)'
+                    : (val > 0.55 ? 'rgba(230, 193, 90, 0.7)' : 'rgba(103, 190, 224, 0.55)'));
+            }
+        });
     }
 
     activate() {

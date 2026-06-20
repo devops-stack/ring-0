@@ -1436,7 +1436,7 @@ function drawCentralPulseGrid(centerX, centerY) {
             .attr("cy", centerY)
             .attr("r", radius)
             .attr("fill", "none")
-            .attr("stroke", "rgba(38, 38, 38, 0.18)")
+            .attr("stroke", "rgba(38, 38, 38, 0.09)")
             .attr("stroke-width", idx === 0 ? 1 : 0.7)
             .attr("stroke-dasharray", idx % 2 === 0 ? "2 7" : "1 9");
     });
@@ -1454,7 +1454,7 @@ function drawCentralPulseGrid(centerX, centerY) {
             .attr("y1", y1)
             .attr("x2", x2)
             .attr("y2", y2)
-            .attr("stroke", "rgba(38, 38, 38, 0.08)")
+            .attr("stroke", "rgba(38, 38, 38, 0.045)")
             .attr("stroke-width", 0.55);
     }
 
@@ -1465,7 +1465,7 @@ function drawCentralPulseGrid(centerX, centerY) {
             .attr("cx", centerX + Math.cos(angle) * radius)
             .attr("cy", centerY + Math.sin(angle) * radius)
             .attr("r", i % 9 === 0 ? 1.7 : 1.05)
-            .attr("fill", "rgba(38, 38, 38, 0.28)");
+            .attr("fill", "rgba(38, 38, 38, 0.14)");
     }
 }
 
@@ -2302,7 +2302,7 @@ function drawProcessKernelMap2(centerX, centerY) {
                     .attr("stroke", "url(#lineGradient)") // Use gradient for depth
                     .attr("stroke-width", 0.9) // Thicker core/process links for stronger center hierarchy
                     .attr("data-original-stroke-width", 0.9) // Store original stroke-width for restoration
-                    .attr("data-original-opacity", 0.05 + Math.random() * 0.03) // Store original opacity
+                    .attr("data-original-opacity", 0.03 + Math.random() * 0.022) // Store original opacity
                     .attr("opacity", 0) // Start invisible
                     .attr("fill", "none")
                     .attr("stroke-dasharray", function() {
@@ -2317,7 +2317,7 @@ function drawProcessKernelMap2(centerX, centerY) {
                 line.transition()
                     .duration(300 + Math.random() * 200) // Random duration 300-500ms
                     .delay(i * 20) // Staggered animation
-                    .attr("opacity", 0.05 + Math.random() * 0.03)
+                    .attr("opacity", 0.03 + Math.random() * 0.022)
                     .attr("stroke-dashoffset", 0);
 
                 // Determine if this is the highlighted process
