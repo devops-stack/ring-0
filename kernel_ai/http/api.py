@@ -3,6 +3,7 @@
 from kernel_ai.http.api_handlers.kernel import (
     get_execution_context,
     io_open_files,
+    io_pulse,
     kernel_data,
     kernel_dna,
     nginx_files,
@@ -58,6 +59,7 @@ __all__ = [
     "get_processes_detailed",
     "ingest_frontend_logs",
     "io_open_files",
+    "io_pulse",
     "isolation_context",
     "kernel_data",
     "kernel_dna",

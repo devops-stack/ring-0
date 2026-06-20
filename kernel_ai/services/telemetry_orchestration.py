@@ -46,6 +46,10 @@ def get_kernel_subsystem_status():
     return _core_observability_service.get_kernel_subsystem_status()
 
 
+def get_io_pulse():
+    return _core_observability_service.get_io_pulse()
+
+
 def get_process_kernel_map():
     return _core_observability_service.get_process_kernel_map(
         openai_available=OPENAI_AVAILABLE,

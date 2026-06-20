@@ -25,6 +25,15 @@ def syscalls_realtime():
     )
 
 
+def io_pulse():
+    return api_json(
+        lambda: {
+            "timestamp": datetime.now().isoformat(),
+            **_telemetry.get_io_pulse(),
+        }
+    )
+
+
 def kernel_data():
     return api_json(
         lambda: {
