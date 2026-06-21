@@ -251,6 +251,14 @@ class NetworkStackVisualization {
 
         this.resizeHandler = () => this.onResize();
         window.addEventListener('resize', this.resizeHandler);
+        // ResizeObserver catches viewport changes the window 'resize' event can
+        // miss (e.g. docking/undocking DevTools), keeping the canvas in sync.
+        if (typeof ResizeObserver !== 'undefined') {
+            this.resizeObserver = new ResizeObserver(() => {
+                if (this.isActive) this.onResize();
+            });
+            this.resizeObserver.observe(this.container);
+        }
 
         return true;
     }
@@ -902,7 +910,7 @@ class NetworkStackVisualization {
             z-index: 1001;
             display: flex;
             gap: 8px;
-            align-items: stretch;
+            align-items: flex-start;
             pointer-events: none;
         `;
         this.container.appendChild(kpiBar);
@@ -948,6 +956,55 @@ class NetworkStackVisualization {
             this.kpiNodes[spec.id] = { card, label, value };
         });
 
+        // ARRAY OUTPUT block: a compact reference-style pattern matrix that is
+        // actually a live "stack activity" heatmap — 7 layer rows × N time cols,
+        // each cell colored by that layer's activity at that moment (built from
+        // <div>s on purpose; an <svg> would be blown up by the global svg rule).
+        const MATRIX_COLS = 20;
+        const matrixOrder = ['userspace', 'socket', 'tcp', 'ip', 'netfilter', 'driver', 'nic'];
+        const arrayCard = document.createElement('div');
+        arrayCard.style.cssText = `
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            background: rgba(13, 18, 28, 0.88);
+            border: 1px solid rgba(108, 122, 142, 0.32);
+            border-radius: 6px;
+            padding: 6px 9px 7px;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.22);
+            font-family: 'Share Tech Mono', monospace;
+        `;
+        const arrayHead = document.createElement('div');
+        arrayHead.style.cssText = 'display:flex; align-items:baseline; gap:6px;';
+        const arrayLabel = document.createElement('div');
+        arrayLabel.style.cssText = 'font-size:9px; letter-spacing:0.7px; color:#8391a1;';
+        arrayLabel.textContent = 'NS-ARRAY · STACK ACTIVITY';
+        const arrayDesig = document.createElement('div');
+        arrayDesig.style.cssText = 'font-size:11px; letter-spacing:0.5px; color:#9bd4f2;';
+        arrayDesig.textContent = 'TCP';
+        arrayHead.appendChild(arrayLabel);
+        arrayHead.appendChild(arrayDesig);
+        this.arrayDesignator = arrayDesig;
+
+        const matrix = document.createElement('div');
+        matrix.style.cssText = `display:grid; grid-template-columns: repeat(${MATRIX_COLS}, 4px); grid-template-rows: repeat(${matrixOrder.length}, 4px); gap:1px;`;
+        this.matrixCells = [];
+        this.matrixData = [];
+        this.matrixOrder = matrixOrder;
+        for (let r = 0; r < matrixOrder.length; r++) {
+            this.matrixCells[r] = [];
+            this.matrixData[r] = new Array(MATRIX_COLS).fill(0);
+            for (let c = 0; c < MATRIX_COLS; c++) {
+                const cell = document.createElement('div');
+                cell.style.cssText = 'width:4px; height:4px; background:rgba(40,52,64,0.5);';
+                matrix.appendChild(cell);
+                this.matrixCells[r][c] = cell;
+            }
+        }
+        arrayCard.appendChild(arrayHead);
+        arrayCard.appendChild(matrix);
+        kpiBar.appendChild(arrayCard);
+
         // One aligned stack axis: each layer is a single row spanning the scene —
         // [health dot + name] on the left, the live lane in the middle, and the
         // live metric chip on the right, all sharing the same vertical position.
@@ -978,7 +1035,7 @@ class NetworkStackVisualization {
         const stackCaption = document.createElement('div');
         stackCaption.style.cssText = `
             position: absolute;
-            left: 24px;
+            left: 120px;
             top: 16%;
             transform: translateY(-50%);
             color: #7f8fa2;
@@ -998,7 +1055,7 @@ class NetworkStackVisualization {
             const row = document.createElement('div');
             row.style.cssText = `
                 position: absolute;
-                left: 24px;
+                left: 120px;
                 top: ${spec.top};
                 transform: translateY(-50%);
                 display: flex;
@@ -1117,9 +1174,8 @@ class NetworkStackVisualization {
                 top: ${spec.top};
                 transform: translateY(-50%);
                 display: flex;
-                flex-direction: row;
-                align-items: center;
-                gap: 8px;
+                flex-direction: column;
+                gap: 4px;
                 font-family: 'Share Tech Mono', monospace;
                 background: rgba(16, 22, 32, 0.68);
                 border: 1px solid rgba(115, 128, 145, 0.32);
@@ -1129,11 +1185,27 @@ class NetworkStackVisualization {
                 box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
             `;
 
+            const chip = document.createElement('div');
+            chip.style.cssText = `
+                color: #bac4cf;
+                font-size: 11px;
+                letter-spacing: 0.42px;
+                white-space: nowrap;
+                border-radius: 3px;
+            `;
+            chip.textContent = '';
+
+            const gaugeRow = document.createElement('div');
+            gaugeRow.style.cssText = 'display:flex; align-items:center; gap:6px;';
+
             // Mini spectrogram: scrolling vertical bars of the layer's activity.
+            // Fixed size + flex:none so it can never stretch the cell.
             const spectro = document.createElementNS(svgNS, 'svg');
             spectro.setAttribute('width', String(SPEC_W));
             spectro.setAttribute('height', String(SPEC_H));
-            spectro.style.cssText = 'flex:0 0 auto; background:rgba(8,12,18,0.65); border:1px solid rgba(80,96,112,0.3);';
+            // Explicit inline px size overrides the global `svg { width:100%; height:100vh }`
+            // rule in main.css; without this the SVG would blow up to full screen.
+            spectro.style.cssText = `display:block; width:${SPEC_W}px; height:${SPEC_H}px; flex:none; align-self:flex-start; background:rgba(8,12,18,0.65); border:1px solid rgba(80,96,112,0.3);`;
             const bars = [];
             const barW = SPEC_W / SPEC_N;
             for (let i = 0; i < SPEC_N; i++) {
@@ -1147,23 +1219,10 @@ class NetworkStackVisualization {
                 bars.push(r);
             }
 
-            const col = document.createElement('div');
-            col.style.cssText = 'display:flex; flex-direction:column; gap:4px; flex:1 1 auto; min-width:0;';
-
-            const chip = document.createElement('div');
-            chip.style.cssText = `
-                color: #bac4cf;
-                font-size: 11px;
-                letter-spacing: 0.42px;
-                white-space: nowrap;
-                border-radius: 3px;
-            `;
-            chip.textContent = '';
-
             const gauge = document.createElement('div');
             gauge.style.cssText = `
                 position: relative;
-                width: 100%;
+                flex: 1 1 auto;
                 height: 5px;
                 background: rgba(40, 52, 64, 0.5);
                 border-radius: 2px;
@@ -1179,10 +1238,10 @@ class NetworkStackVisualization {
             `;
             gauge.appendChild(gaugeFill);
 
-            col.appendChild(chip);
-            col.appendChild(gauge);
-            box.appendChild(spectro);
-            box.appendChild(col);
+            gaugeRow.appendChild(spectro);
+            gaugeRow.appendChild(gauge);
+            box.appendChild(chip);
+            box.appendChild(gaugeRow);
             chipLayer.appendChild(box);
             this.metricChips[spec.id] = chip;
             this.layerGauges[spec.id] = gaugeFill;
@@ -1194,14 +1253,14 @@ class NetworkStackVisualization {
         const modePanel = document.createElement('div');
         modePanel.style.cssText = `
             position: absolute;
-            left: 18px;
-            top: 14px;
+            left: 14px;
+            top: 15%;
             z-index: 1001;
             pointer-events: none;
             display: flex;
             flex-direction: column;
             gap: 4px;
-            width: 112px;
+            width: 96px;
             font-family: 'Share Tech Mono', monospace;
         `;
         this.container.appendChild(modePanel);
@@ -2157,6 +2216,7 @@ class NetworkStackVisualization {
         }
 
         this.updateKpiCard('flow', `${flowType}${flowState ? ` ${flowState}` : ''}`, flow ? 'normal' : 'warn');
+        if (this.arrayDesignator) this.arrayDesignator.textContent = flowType || 'TCP';
         this.updateKpiCard('rtt', `${rttMs.toFixed(1)} ms`, rttLevel);
         this.updateKpiCard('drop', `${dropPerSec.toFixed(1)}/s`, dropLevel);
         this.updateKpiCard('retrans', `${retransPerSec.toFixed(1)}/s`, retransLevel);
@@ -2691,6 +2751,7 @@ class NetworkStackVisualization {
         try {
             this.updateConnectors();
             this.updateRightInstruments();
+            this.updateActivityMatrix();
         } catch (e) {
             if (!this._connWarned) {
                 console.warn('overlay update failed:', e);
@@ -2699,6 +2760,29 @@ class NetworkStackVisualization {
         }
 
         this.renderer.render(this.scene, this.camera);
+    }
+
+    // Scroll the stack-activity matrix: each tick pushes the current per-layer
+    // activity as a new right-hand column (throttled into a slow waterfall).
+    updateActivityMatrix() {
+        if (!this.matrixCells) return;
+        const now = performance.now();
+        if (this._lastMatrix && now - this._lastMatrix < 200) return;
+        this._lastMatrix = now;
+        for (let r = 0; r < this.matrixOrder.length; r++) {
+            const id = this.matrixOrder[r];
+            const a = Math.max(0, Math.min(1, Number((this.layerActivity && this.layerActivity[id]) ?? 0.2)));
+            const row = this.matrixData[r];
+            row.push(a);
+            row.shift();
+            for (let c = 0; c < row.length; c++) {
+                const v = row[c];
+                this.matrixCells[r][c].style.background = v > 0.8
+                    ? 'rgba(232, 96, 104, 0.9)'
+                    : (v > 0.55 ? 'rgba(230, 193, 90, 0.9)'
+                        : (v > 0.25 ? 'rgba(103, 190, 224, 0.8)' : `rgba(60, 80, 96, ${(0.28 + v).toFixed(2)})`));
+            }
+        }
     }
 
     // Project each tower plate's left edge to screen and draw leader lines
@@ -2712,7 +2796,7 @@ class NetworkStackVisualization {
         const el = this.renderer.domElement;
         const W = el.clientWidth || el.width;
         const H = el.clientHeight || el.height;
-        const RAIL = 200;
+        const RAIL = 300;
         let minY = Infinity;
         let maxY = -Infinity;
 
@@ -2761,8 +2845,7 @@ class NetworkStackVisualization {
     }
 
     // Right-row instruments: gauge tracks live load, spectrogram scrolls a
-    // short history of it. Spectrogram advances on a throttle so it reads as a
-    // slow waterfall rather than per-frame noise.
+    // short history of it on a throttle (slow waterfall, not per-frame noise).
     updateRightInstruments() {
         if (!this.layerGauges) return;
         const now = performance.now();
@@ -2803,6 +2886,12 @@ class NetworkStackVisualization {
         this.container.style.display = 'block';
         this.container.style.visibility = 'visible';
         this.container.style.pointerEvents = 'auto';
+        // Sync the renderer to the current viewport now that the container is
+        // visible. Without this the canvas can keep a stale size from init time
+        // (e.g. if DevTools/window changed since), pushing the tower out of the
+        // clipped (overflow:hidden) container until the next resize event.
+        this.onResize();
+        requestAnimationFrame(() => { if (this.isActive) this.onResize(); });
         if (this.renderer?.domElement && !this.mouseMoveHandler) {
             this.mouseMoveHandler = (event) => this.onMouseMove(event);
             this.renderer.domElement.addEventListener('mousemove', this.mouseMoveHandler);
@@ -2846,10 +2935,19 @@ class NetworkStackVisualization {
 
     onResize() {
         if (!this.camera || !this.renderer) return;
-        this.camera.aspect = window.innerWidth / window.innerHeight;
+        // Prefer the actual container box; fall back to the window. The container
+        // is fixed/inset:0 so this equals the visible viewport even when DevTools
+        // is docked.
+        const w = (this.container && this.container.clientWidth) || window.innerWidth;
+        const h = (this.container && this.container.clientHeight) || window.innerHeight;
+        if (w < 2 || h < 2) return;
+        this.camera.aspect = w / h;
         this.camera.updateProjectionMatrix();
-        this.renderer.setSize(window.innerWidth, window.innerHeight);
+        this.renderer.setSize(w, h);
         this.updateBottomPanelsLayout();
+        if (this.scene) {
+            this.renderer.render(this.scene, this.camera);
+        }
     }
 }
 
