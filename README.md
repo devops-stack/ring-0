@@ -11,6 +11,9 @@
     国家や民族が消えてなくなるほど
   </i>
 </p>
+<p align="right" style="margin-top:0; margin-right:12px;">
+  <sub>(ghost in the shell)</sub>
+</p>
 
 <p align="center">
   Real-time Linux Kernel Visualization • eBPF • AI Mapping • Networking
