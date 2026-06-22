@@ -28,6 +28,7 @@ _API_ROUTES = [
     ("/proc-timeline-branches", "get_proc_timeline_branches", h.get_proc_timeline_branches, None),
     ("/execution-context", "get_execution_context", h.get_execution_context, None),
     ("/kernel-dna", "kernel_dna", h.kernel_dna, None),
+    ("/ml-anomalies", "ml_anomalies", h.ml_anomalies, None),
     ("/crypto-realtime", "crypto_realtime", h.crypto_realtime, None),
     ("/security-realtime", "security_realtime", h.security_realtime, None),
     ("/processes-realtime", "processes_realtime", h.processes_realtime, None),

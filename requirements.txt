@@ -5,3 +5,4 @@ openai==0.28.1
 python-dotenv==1.0.0
 gunicorn==21.2.0
 sentry-sdk
+psycopg[binary]==3.2.3
