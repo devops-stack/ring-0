@@ -4,7 +4,7 @@
 
 <h1 align="center">Ring 0 — Linux Kernel AI</h1>
 
-<p align="center">
+<p align="right" style="margin-top:0; margin-right:12px;">
   <i>
     企業のネットが星を被い<br>
     電子や光が駆け巡っても<br>
