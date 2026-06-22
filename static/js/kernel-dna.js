@@ -416,12 +416,22 @@ class KernelDNAVisualization {
         const group = new THREE.Group();
         const t = mutationData.position;
         const point = helixCurve.getPoint(t);
-        
-        // Mutation: "broken" appearance - distorted/irregular shape with yellow assessment marker
-        // Use octahedron for "broken" geometric look instead of perfect sphere
+
+        // Two sources of mutations, rendered side by side but distinguishable:
+        //   rule  -> threshold rules (gray "broken" wireframe)
+        //   ml    -> statistical baseline detector (cyan wireframe)
+        // Severity drives the assessment marker colour (high = red, else yellow).
+        const isML = mutationData.source === 'ml';
+        const isHigh = String(mutationData.severity || '').toLowerCase() === 'high';
+        const wireColor = isML ? 0x67C8E0 : this.colors.mutedText;
+        const markerColor = isHigh ? 0xE0564E : this.colors.signalYellow;
+        const accentCss = isML ? 'rgba(103, 200, 224, 0.9)' : 'rgba(230, 193, 90, 0.7)';
+        const accentText = isML ? '#67C8E0' : '#E6C15A';
+
+        // Mutation: "broken" appearance - distorted/irregular shape.
         const geometry = new THREE.OctahedronGeometry(0.25, 0); // Irregular shape
         const material = new THREE.MeshBasicMaterial({
-            color: this.colors.mutedText, // Muted text: #6B7076 - "broken" gray
+            color: wireColor,
             side: THREE.DoubleSide,
             wireframe: true // Wireframe for "broken" appearance
         });
@@ -434,17 +444,18 @@ class KernelDNAVisualization {
             Math.random() * Math.PI
         ); // Random rotation for "broken" look
         
-        // Yellow assessment marker - small sphere
+        // Assessment marker - small sphere (red when severity is high).
         const markerGeometry = new THREE.SphereGeometry(0.08, 8, 8);
         const markerMaterial = new THREE.MeshBasicMaterial({
-            color: this.colors.signalYellow, // Signal yellow: #E6C15A
+            color: markerColor,
             side: THREE.DoubleSide
         });
         const yellowMarker = new THREE.Mesh(markerGeometry, markerMaterial);
         yellowMarker.position.copy(point);
         yellowMarker.position.y += 0.3; // Position above mutation
 
-        const labelText = String(mutationData.type || 'anomaly').replace(/_/g, ' ').toUpperCase().slice(0, 24);
+        const baseLabel = String(mutationData.type || 'anomaly').replace(/_/g, ' ').toUpperCase().slice(0, 22);
+        const tag = isML ? 'ML' : 'RULE';
         const canvas = document.createElement('canvas');
         canvas.width = 256;
         canvas.height = 48;
@@ -452,11 +463,14 @@ class KernelDNAVisualization {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.fillStyle = 'rgba(14, 17, 20, 0.72)';
         ctx.fillRect(0, 6, canvas.width, 30);
-        ctx.strokeStyle = 'rgba(230, 193, 90, 0.7)';
+        ctx.strokeStyle = accentCss;
         ctx.strokeRect(0.5, 6.5, canvas.width - 1, 29);
-        ctx.fillStyle = '#E6C15A';
+        // Source tag chip on the left edge.
+        ctx.fillStyle = accentText;
+        ctx.font = 'bold 11px "Share Tech Mono", monospace';
+        ctx.fillText(tag, 8, 24);
         ctx.font = '18px "Share Tech Mono", monospace';
-        ctx.fillText(labelText, 10, 27);
+        ctx.fillText(baseLabel, 42, 27);
         const labelTexture = new THREE.CanvasTexture(canvas);
         const labelMaterial = new THREE.SpriteMaterial({
             map: labelTexture,
@@ -473,7 +487,10 @@ class KernelDNAVisualization {
         // Store reference for cleanup and animation
         mutation.userData.isMutation = true;
         mutation.userData.mutationType = mutationData.type || 'anomaly';
-        mutation.userData.description = mutationData.description || 'Anomaly detected';
+        mutation.userData.mutationSource = isML ? 'ml' : 'rule';
+        mutation.userData.mutationSeverity = mutationData.severity || 'medium';
+        mutation.userData.mutationScore = mutationData.score;
+        mutation.userData.description = mutationData.description || mutationData.message || 'Anomaly detected';
         
         group.add(mutation);
         group.add(yellowMarker);
@@ -1553,6 +1570,8 @@ class KernelDNAVisualization {
                 <div style="margin-bottom: 5px;">C (▲) = Context Switch</div>
                 <div style="margin-bottom: 5px;">G (◆) = Lock/Mutex</div>
                 <div style="margin-top: 10px; color: #cc4444;">⚠ Mutations = Anomalies</div>
+                <div style="margin-top: 4px; color: #E6C15A;">◇ RULE = threshold</div>
+                <div style="margin-bottom: 2px; color: #67C8E0;">◇ ML = baseline z-score</div>
             </div>
         `);
         legendDiv.style.cssText = `
@@ -1978,13 +1997,22 @@ class KernelDNAVisualization {
                         <div style="color: #6B7076; font-size: 10px;">Subsystem: ${userData.subsystem || 'kernel'}</div>
                     `;
                 } else if (userData.mutationType) {
-                    // Mutation - yellow assessment, not red
+                    // Mutation - source-coloured header (ML cyan, rule yellow).
+                    const isML = userData.mutationSource === 'ml';
+                    const headColor = isML ? '#67C8E0' : '#E6C15A';
+                    const sourceLabel = isML ? 'ML baseline detector' : 'Threshold rule';
+                    const sev = String(userData.mutationSeverity || 'medium').toUpperCase();
+                    const scoreLine = (userData.mutationScore != null)
+                        ? `<div style="color: #8A8F95; font-size: 10px;">z-score: ${userData.mutationScore}</div>`
+                        : '';
                     tooltipContent = `
-                        <div style="font-weight: bold; color: #E6C15A; margin-bottom: 4px;">
+                        <div style="font-weight: bold; color: ${headColor}; margin-bottom: 4px;">
                             MUTATION: ${userData.mutationType}
                         </div>
                         <div style="margin-bottom: 2px; color: #D0D3D6;">${userData.description || 'Anomaly detected'}</div>
-                        <div style="color: #6B7076; font-size: 10px; margin-top: 4px;">Assessment: Anomaly</div>
+                        <div style="color: #6B7076; font-size: 10px; margin-top: 4px;">Source: ${sourceLabel}</div>
+                        <div style="color: #6B7076; font-size: 10px;">Severity: ${sev}</div>
+                        ${scoreLine}
                     `;
                 } else {
                     // Generic tooltip
