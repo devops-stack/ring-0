@@ -215,7 +215,19 @@ function draw() {
         if (window.rightSemicircleMenuManager) {
             window.rightSemicircleMenuManager.hide();
         }
+        // The desktop composition is authored in raw pixels for ~1400px. On a
+        // phone that overflows and only the central rings stay on-screen. Frame
+        // the hero with a viewBox so the whole composition scales to fit and
+        // stays centered (pointer/tooltip math uses pageX/Y, so hit-testing is
+        // unaffected by the coordinate scaling).
+        const frameHalf = 255;
+        svg.attr('viewBox', `${centerX - frameHalf} ${centerY - frameHalf} ${frameHalf * 2} ${frameHalf * 2}`)
+            .attr('preserveAspectRatio', 'xMidYMid meet');
     } else {
+        // Desktop renders 1:1 with the viewport — make sure no mobile viewBox lingers.
+        svg.attr('viewBox', null).attr('preserveAspectRatio', null);
+        hideMobileHud();
+        hideMobileNotice();
         // Clear all elements to prevent duplication, but preserve system calls
         // and Kernel analysis overlay (Matrix / Timeline submenu & elements)
         const preserveClasses = '.syscall-box, .syscall-text, .matrix-view-item, .matrix-header, .matrix-panel-bg, .matrix-backdrop, .kernel-exit-button, .kernel-dna-exit-button, .kernel-submenu';
@@ -283,6 +295,10 @@ function draw() {
         drawMobileDefaultProcessLabels(centerX, centerY);
         // Restore namespace shell segments in mobile mode.
         drawIsolationConceptLayer(centerX, centerY, width, height);
+        // Live, readable kernel metrics at the bottom (HTML overlay).
+        renderMobileHud();
+        // Advise that the full experience is built for desktop.
+        renderMobileNotice();
         return;
     }
 
@@ -351,7 +367,7 @@ function drawMobileFormulaAndCaption(centerX, centerY, width, height) {
         .style('font-size', '11px')
         .style('letter-spacing', '0.4px')
         .style('fill', 'rgba(62, 62, 62, 0.58)')
-        .text('For the best experience, use a desktop device');
+        .text('linux kernel · live process map');
 }
 
 function drawMobileDefaultProcessLabels(centerX, centerY) {
@@ -379,6 +395,133 @@ function drawMobileDefaultProcessLabels(centerX, centerY) {
             .style('fill', 'rgba(96, 96, 96, 0.52)')
             .text(name);
     });
+}
+
+// ---- Mobile HUD: a compact, readable strip of live kernel metrics ----------
+// The hero is decorative; on a phone we still want real, glanceable numbers.
+// Pure HTML overlay (fixed), so the SVG viewBox scaling never touches it.
+let mobileHudTimer = null;
+const MOBILE_HUD_TILES = [
+    { id: 'procs', label: 'PROCS' },
+    { id: 'mem', label: 'MEM' },
+    { id: 'disk', label: 'DISK' },
+    { id: 'faults', label: 'FAULTS/s' }
+];
+
+function renderMobileHud() {
+    let hud = document.getElementById('mobile-hud');
+    if (!hud) {
+        hud = document.createElement('div');
+        hud.id = 'mobile-hud';
+        Object.assign(hud.style, {
+            position: 'fixed', left: '0', right: '0', bottom: '0', zIndex: '8000',
+            display: 'flex', gap: '1px', justifyContent: 'center',
+            padding: '8px 8px calc(8px + env(safe-area-inset-bottom))',
+            background: 'linear-gradient(0deg, rgba(8,10,13,0.94) 0%, rgba(8,10,13,0.0) 100%)',
+            fontFamily: "'JetBrains Mono','Share Tech Mono',monospace", pointerEvents: 'none'
+        });
+        MOBILE_HUD_TILES.forEach((tile) => {
+            const cell = document.createElement('div');
+            Object.assign(cell.style, {
+                flex: '1 1 0', maxWidth: '120px', textAlign: 'center',
+                background: 'rgba(16,20,27,0.9)', border: '1px solid rgba(103,190,224,0.22)',
+                borderRadius: '8px', padding: '7px 4px 8px', margin: '0 3px'
+            });
+            const val = document.createElement('div');
+            val.id = `mobile-hud-${tile.id}`;
+            val.textContent = '--';
+            Object.assign(val.style, { color: '#dbe6ef', fontSize: '15px', fontWeight: '600', lineHeight: '1.1' });
+            const lab = document.createElement('div');
+            lab.textContent = tile.label;
+            Object.assign(lab.style, { color: '#6f8895', fontSize: '8.5px', letterSpacing: '1px', marginTop: '3px' });
+            cell.append(val, lab);
+            hud.appendChild(cell);
+        });
+        document.body.appendChild(hud);
+    }
+    hud.style.display = 'flex';
+    if (!mobileHudTimer) {
+        updateMobileHud();
+        mobileHudTimer = setInterval(updateMobileHud, 5000);
+    }
+}
+
+function hideMobileHud() {
+    const hud = document.getElementById('mobile-hud');
+    if (hud) hud.style.display = 'none';
+    if (mobileHudTimer) {
+        clearInterval(mobileHudTimer);
+        mobileHudTimer = null;
+    }
+}
+
+// Top banner advising that the experience is built for desktop. Dismissible,
+// and once dismissed it stays hidden for the session.
+function renderMobileNotice() {
+    if (window.__mobileNoticeDismissed) return;
+    let notice = document.getElementById('mobile-notice');
+    if (!notice) {
+        notice = document.createElement('div');
+        notice.id = 'mobile-notice';
+        Object.assign(notice.style, {
+            position: 'fixed', left: '0', right: '0', top: '0', zIndex: '8200',
+            display: 'flex', alignItems: 'center', gap: '8px',
+            padding: '9px 12px', paddingTop: 'calc(9px + env(safe-area-inset-top))',
+            background: 'rgba(12,16,22,0.92)', borderBottom: '1px solid rgba(103,190,224,0.25)',
+            backdropFilter: 'blur(4px)',
+            fontFamily: "'JetBrains Mono','Share Tech Mono',monospace", color: '#bcd3de'
+        });
+        const icon = document.createElement('span');
+        icon.textContent = '🖥';
+        Object.assign(icon.style, { fontSize: '13px', flex: '0 0 auto', opacity: '0.9' });
+        const text = document.createElement('span');
+        text.textContent = 'Best viewed on desktop — this dashboard is designed for a large screen.';
+        Object.assign(text.style, { flex: '1 1 auto', fontSize: '11px', lineHeight: '1.35', letterSpacing: '0.2px' });
+        const close = document.createElement('button');
+        close.textContent = '×';
+        Object.assign(close.style, {
+            flex: '0 0 auto', cursor: 'pointer', background: 'transparent', border: 'none',
+            color: '#7f97a4', fontSize: '18px', lineHeight: '1', padding: '0 2px'
+        });
+        close.addEventListener('click', () => {
+            window.__mobileNoticeDismissed = true;
+            notice.style.display = 'none';
+        });
+        notice.append(icon, text, close);
+        document.body.appendChild(notice);
+    }
+    notice.style.display = 'flex';
+}
+
+function hideMobileNotice() {
+    const notice = document.getElementById('mobile-notice');
+    if (notice) notice.style.display = 'none';
+}
+
+function setHudTile(id, text) {
+    const node = document.getElementById(`mobile-hud-${id}`);
+    if (node) node.textContent = text;
+}
+
+function updateMobileHud() {
+    if (!isMobileLayout()) { hideMobileHud(); return; }
+    const fetchJson = window.fetchJson || ((url) => fetch(url, { cache: 'no-store' }).then((r) => r.json()));
+    fetchJson('/api/kernel-data', { cache: 'no-store' }, { timeoutMs: 6000, retries: 0, context: 'mobile-hud' })
+        .then((d) => {
+            if (!d) return;
+            if (d.processes !== undefined) setHudTile('procs', String(d.processes));
+            const st = d.system_stats || {};
+            if (st.memory_total) setHudTile('mem', `${Math.round(st.memory_total / (1024 ** 3))}G`);
+            if (st.disk_usage !== undefined) setHudTile('disk', `${Math.round(st.disk_usage)}%`);
+        })
+        .catch(() => {});
+    fetchJson('/api/io-pulse', { cache: 'no-store' }, { timeoutMs: 5000, retries: 0, context: 'mobile-hud' })
+        .then((d) => {
+            if (!d) return;
+            const pf = Number(d.pgfault_per_sec || 0);
+            setHudTile('faults', pf >= 1000 ? `${(pf / 1000).toFixed(1)}k` : String(Math.round(pf)));
+        })
+        .catch(() => {});
 }
 
 function formatProcessValue(value, fallback = 'n/a') {
@@ -2294,15 +2437,21 @@ function drawProcessKernelMap2(centerX, centerY) {
 
                 const path = `M${centerX},${centerY} C${cx1},${cy1} ${cx2},${cy2} ${px},${py}`;
 
+                // On mobile the whole hero is scaled down by the viewBox, so the
+                // near-invisible desktop links (opacity ~0.03) vanish entirely —
+                // bump opacity and stroke so the radial fabric reads on a phone.
+                const lineOpacity = mobileLayout ? (0.12 + Math.random() * 0.05) : (0.03 + Math.random() * 0.022);
+                const lineWidth = mobileLayout ? 1.3 : 0.9;
+
                 // Draw the line with animation
                 const line = svg.append("path")
                     .attr("d", path)
                     .attr("class", "process-line")
                     .attr("data-pid", process.pid) // Store PID for highlighting
                     .attr("stroke", "url(#lineGradient)") // Use gradient for depth
-                    .attr("stroke-width", 0.9) // Thicker core/process links for stronger center hierarchy
-                    .attr("data-original-stroke-width", 0.9) // Store original stroke-width for restoration
-                    .attr("data-original-opacity", 0.03 + Math.random() * 0.022) // Store original opacity
+                    .attr("stroke-width", lineWidth) // Thicker core/process links for stronger center hierarchy
+                    .attr("data-original-stroke-width", lineWidth) // Store original stroke-width for restoration
+                    .attr("data-original-opacity", lineOpacity) // Store original opacity
                     .attr("opacity", 0) // Start invisible
                     .attr("fill", "none")
                     .attr("stroke-dasharray", function() {
@@ -2317,13 +2466,13 @@ function drawProcessKernelMap2(centerX, centerY) {
                 line.transition()
                     .duration(300 + Math.random() * 200) // Random duration 300-500ms
                     .delay(i * 20) // Staggered animation
-                    .attr("opacity", 0.03 + Math.random() * 0.022)
+                    .attr("opacity", lineOpacity)
                     .attr("stroke-dashoffset", 0);
 
                 // Determine if this is the highlighted process
                 const isHighlighted = highlightedProcess && process.pid === highlightedProcess.pid;
                 const isPinnedProcess = pinnedProcessDossier && pinnedProcessDossier.process?.pid === process.pid;
-                const baseRadius = isPinnedProcess ? 4.8 : (isHighlighted ? 3 : 1); // Larger for highlighted/pinned process
+                const baseRadius = isPinnedProcess ? 4.8 : (isHighlighted ? 3 : (mobileLayout ? 2.3 : 1)); // Larger for highlighted/pinned process
                 const hoverRadius = baseRadius * 2.5; // Radius when hovering
                 const hitAreaRadius = 12; // Invisible hit area for easier clicking
                 
