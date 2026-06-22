@@ -82,6 +82,41 @@ def kernel_dna():
     return api_json(_telemetry.get_kernel_dna_data)
 
 
+def ml_anomalies():
+    """Recent ML-detected anomalies (Stage 1 baselines) for Kernel DNA.
+
+    Read-only: the Flask app never computes anomalies, it only reads what the
+    isolated ML worker wrote to the shared store. If the store is unreachable,
+    the underlying reader returns an empty list rather than failing the page.
+    """
+
+    def _payload():
+        from kernel_ai.ml.config import MLConfig
+        from kernel_ai.ml.store import fetch_recent_anomalies
+
+        try:
+            since = int(request.args.get("since_seconds", 120))
+        except (TypeError, ValueError):
+            since = 120
+        since = max(5, min(since, 3600))
+        try:
+            limit = int(request.args.get("limit", 100))
+        except (TypeError, ValueError):
+            limit = 100
+        limit = max(1, min(limit, 500))
+
+        cfg = MLConfig()
+        anomalies = fetch_recent_anomalies(cfg.dsn, since_seconds=since, limit=limit)
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "since_seconds": since,
+            "count": len(anomalies),
+            "anomalies": anomalies,
+        }
+
+    return api_json(_payload)
+
+
 def sentry_test():
     """Temporary endpoint for manual Sentry verification."""
     if not current_app.config.get("SENTRY_TEST_ENDPOINT_ENABLED", False):
