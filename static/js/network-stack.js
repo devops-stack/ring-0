@@ -251,6 +251,14 @@ class NetworkStackVisualization {
 
         this.resizeHandler = () => this.onResize();
         window.addEventListener('resize', this.resizeHandler);
+        // ResizeObserver catches viewport changes the window 'resize' event can
+        // miss (e.g. docking/undocking DevTools), keeping the canvas in sync.
+        if (typeof ResizeObserver !== 'undefined') {
+            this.resizeObserver = new ResizeObserver(() => {
+                if (this.isActive) this.onResize();
+            });
+            this.resizeObserver.observe(this.container);
+        }
 
         return true;
     }
@@ -270,9 +278,10 @@ class NetworkStackVisualization {
         const layerDepth = 3.8;
         const layerHeight = 0.16;
 
-        // Top-heavy "spinning top" radius profile: peak width in the upper third
-        // (socket/tcp), then a long taper down to a tip at the NIC.
-        const towerProfile = [0.92, 1.36, 1.5, 1.26, 0.96, 0.66, 0.4];
+        // Reference-style silhouette: peak width in the upper third (socket/tcp),
+        // then a gentle taper that stays a "column" — the lower plates remain
+        // substantial (no needle/spike at the bottom).
+        const towerProfile = [0.96, 1.36, 1.5, 1.34, 1.14, 0.96, 0.82];
         const plateHeight = 0.44;
         const plateFacets = 16;
 
@@ -405,12 +414,35 @@ class NetworkStackVisualization {
                 strutPts.push(topRing[k], botRing[k]);
             }
 
-            // Intermediate sub-rings densify the stack (turbine-disc look).
+            // Intermediate thin sub-plates densify the stack into the reference's
+            // "stacked discs" silhouette (thin filled disc + bright rim + ring).
             for (let s = 1; s <= 2; s++) {
                 const t = s / 3;
                 const r = top.plateRadius + (bottom.plateRadius - top.plateRadius) * t;
                 const y = top.y + (bottom.y - top.y) * t;
                 this.scene.add(this.makeRingLoop(r * 1.02, y, plateFacets, 0x7fc4da, 0.3));
+
+                const subGeom = new THREE.CylinderGeometry(r * 0.9, r * 0.9, 0.1, plateFacets, 1, false);
+                const subPlate = new THREE.Mesh(
+                    subGeom,
+                    new THREE.MeshPhongMaterial({
+                        color: 0x244154,
+                        transparent: true,
+                        opacity: 0.16,
+                        shininess: 80,
+                        emissive: new THREE.Color(0x58b6d8),
+                        emissiveIntensity: 0.08
+                    })
+                );
+                subPlate.position.set(0, y, 0);
+                this.scene.add(subPlate);
+
+                const subEdge = new THREE.LineSegments(
+                    new THREE.EdgesGeometry(subGeom),
+                    new THREE.LineBasicMaterial({ color: 0x8fd0e6, transparent: true, opacity: 0.42 })
+                );
+                subEdge.position.set(0, y, 0);
+                this.scene.add(subEdge);
             }
         }
         const struts = new THREE.LineSegments(
@@ -436,22 +468,33 @@ class NetworkStackVisualization {
         pod.position.set(0, capTopY + 0.28 + podRadii.length * 0.26 + 0.12, 0);
         this.scene.add(pod);
 
-        // Bottom: converging tip below the NIC plate.
-        const bottomCap = new THREE.LineSegments(
-            new THREE.EdgesGeometry(new THREE.ConeGeometry(last.plateRadius * 0.98, 1.05, plateFacets)),
+        // Bottom: a SHORT BLUNT cap (no needle) — a couple of decreasing rings
+        // and a small base drum, so the column ends solidly like the reference.
+        const botPlateY = last.y - plateHeight / 2;
+        [0.86, 0.68, 0.52].forEach((f, idx) => {
+            this.scene.add(this.makeRingLoop(last.plateRadius * f, botPlateY - 0.16 - idx * 0.17, plateFacets, 0x9fd2e4, 0.5));
+        });
+        const baseDrumY = botPlateY - 0.16 - 3 * 0.17;
+        const baseDrum = new THREE.LineSegments(
+            new THREE.EdgesGeometry(new THREE.CylinderGeometry(last.plateRadius * 0.5, last.plateRadius * 0.4, 0.18, plateFacets, 1, false)),
             new THREE.LineBasicMaterial({ color: 0x9fd2e4, transparent: true, opacity: 0.55 })
         );
-        bottomCap.position.set(0, last.y - plateHeight / 2 - 0.52, 0);
-        bottomCap.rotation.x = Math.PI;
-        this.scene.add(bottomCap);
+        baseDrum.position.set(0, baseDrumY, 0);
+        this.scene.add(baseDrum);
 
-        // Axis-antenna extending beyond both ends.
+        // Central spindle: a thin rod running through the whole stack (visible
+        // turbine axis), plus a faint antenna line extending past both caps.
+        this.createRodBetween(
+            new THREE.Vector3(0, first.y + plateHeight / 2 + 0.15, 0),
+            new THREE.Vector3(0, baseDrumY - 0.1, 0),
+            0.03, 0x67c8e0, 0.55
+        );
         const axis = new THREE.Line(
             new THREE.BufferGeometry().setFromPoints([
                 new THREE.Vector3(0, pod.position.y + 0.5, 0),
-                new THREE.Vector3(0, last.y - plateHeight / 2 - 1.4, 0)
+                new THREE.Vector3(0, baseDrumY - 0.55, 0)
             ]),
-            new THREE.LineBasicMaterial({ color: 0x67c8e0, transparent: true, opacity: 0.5 })
+            new THREE.LineBasicMaterial({ color: 0x67c8e0, transparent: true, opacity: 0.45 })
         );
         this.scene.add(axis);
     }
@@ -902,7 +945,7 @@ class NetworkStackVisualization {
             z-index: 1001;
             display: flex;
             gap: 8px;
-            align-items: stretch;
+            align-items: flex-start;
             pointer-events: none;
         `;
         this.container.appendChild(kpiBar);
@@ -948,6 +991,120 @@ class NetworkStackVisualization {
             this.kpiNodes[spec.id] = { card, label, value };
         });
 
+        // ARRAY OUTPUT block: a compact reference-style pattern matrix that is
+        // actually a live "stack activity" heatmap — 7 layer rows × N time cols,
+        // each cell colored by that layer's activity at that moment (built from
+        // <div>s on purpose; an <svg> would be blown up by the global svg rule).
+        const MATRIX_COLS = 20;
+        const matrixOrder = ['userspace', 'socket', 'tcp', 'ip', 'netfilter', 'driver', 'nic'];
+        const arrayCard = document.createElement('div');
+        arrayCard.style.cssText = `
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            background: rgba(13, 18, 28, 0.88);
+            border: 1px solid rgba(108, 122, 142, 0.32);
+            border-radius: 6px;
+            padding: 6px 9px 7px;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.22);
+            font-family: 'Share Tech Mono', monospace;
+        `;
+        const arrayHead = document.createElement('div');
+        arrayHead.style.cssText = 'display:flex; align-items:baseline; gap:6px;';
+        const arrayLabel = document.createElement('div');
+        arrayLabel.style.cssText = 'font-size:9px; letter-spacing:0.7px; color:#8391a1;';
+        arrayLabel.textContent = 'NS-ARRAY · STACK ACTIVITY';
+        const arrayDesig = document.createElement('div');
+        arrayDesig.style.cssText = 'font-size:11px; letter-spacing:0.5px; color:#9bd4f2;';
+        arrayDesig.textContent = 'TCP';
+        arrayHead.appendChild(arrayLabel);
+        arrayHead.appendChild(arrayDesig);
+        this.arrayDesignator = arrayDesig;
+
+        const matrix = document.createElement('div');
+        matrix.style.cssText = `display:grid; grid-template-columns: repeat(${MATRIX_COLS}, 4px); grid-template-rows: repeat(${matrixOrder.length}, 4px); gap:1px;`;
+        this.matrixCells = [];
+        this.matrixData = [];
+        this.matrixOrder = matrixOrder;
+        for (let r = 0; r < matrixOrder.length; r++) {
+            this.matrixCells[r] = [];
+            this.matrixData[r] = new Array(MATRIX_COLS).fill(0);
+            for (let c = 0; c < MATRIX_COLS; c++) {
+                const cell = document.createElement('div');
+                cell.style.cssText = 'width:4px; height:4px; background:rgba(40,52,64,0.5);';
+                matrix.appendChild(cell);
+                this.matrixCells[r][c] = cell;
+            }
+        }
+        arrayCard.appendChild(arrayHead);
+        arrayCard.appendChild(matrix);
+        kpiBar.appendChild(arrayCard);
+
+        // Top-left reference header: "ARRAY OUTPUT PATTERN BIAS / PANEL" with an
+        // A-badge and a compact pattern matrix of code tiles that light up with
+        // live stack activity (a sweeping scan column + activity-locked tiles).
+        const header = document.createElement('div');
+        header.style.cssText = `
+            position: absolute;
+            left: 14px;
+            top: 14px;
+            z-index: 1001;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            background: rgba(13, 18, 28, 0.86);
+            border: 1px solid rgba(108, 122, 142, 0.34);
+            border-radius: 6px;
+            padding: 7px 9px 8px;
+            box-shadow: 0 3px 12px rgba(0, 0, 0, 0.28);
+            font-family: 'Share Tech Mono', monospace;
+        `;
+        this.container.appendChild(header);
+        this.overlayNodes.push(header);
+        this.patternHeaderNode = header;
+
+        const hTop = document.createElement('div');
+        hTop.style.cssText = 'display:flex; align-items:flex-start; gap:8px;';
+        const hTitle = document.createElement('div');
+        hTitle.style.cssText = 'display:flex; flex-direction:column; gap:1px;';
+        const hMicro = document.createElement('div');
+        hMicro.style.cssText = 'font-size:7px; letter-spacing:0.6px; color:#5f7484;';
+        hMicro.textContent = 'OBS.06';
+        const hMain = document.createElement('div');
+        hMain.style.cssText = 'font-size:11px; letter-spacing:0.55px; color:#cdd6e0;';
+        hMain.textContent = 'ARRAY OUTPUT PATTERN BIAS';
+        const hSub = document.createElement('div');
+        hSub.style.cssText = 'font-size:8px; letter-spacing:0.5px; color:#7f8fa2;';
+        hSub.textContent = 'PANEL 06 · INDUCTION PATTERN GROUP 43-65';
+        hTitle.appendChild(hMicro);
+        hTitle.appendChild(hMain);
+        hTitle.appendChild(hSub);
+        const hBadge = document.createElement('div');
+        hBadge.style.cssText = 'flex:none; margin-left:auto; padding:3px 7px; background:rgba(103,190,224,0.16); border:1px solid rgba(103,190,224,0.5); border-radius:3px; color:#9bd4f2; font-size:14px; letter-spacing:1px;';
+        hBadge.textContent = 'A7';
+        hTop.appendChild(hTitle);
+        hTop.appendChild(hBadge);
+
+        const PAT_CODES = [
+            'MTN', 'NEL', 'SIN', 'DSP', 'DIL', 'LAW', 'BAB', 'SCI', 'COM', 'LNK', 'GAP', 'COL',
+            'GET', 'VPM', 'JET', 'IDU', 'SUB', 'DMP', 'DWN', 'RUN', 'SYN', 'HEP', 'NET', 'BUF'
+        ];
+        const PAT_COLS = 12;
+        const patGrid = document.createElement('div');
+        patGrid.style.cssText = `display:grid; grid-template-columns: repeat(${PAT_COLS}, 1fr); gap:2px;`;
+        this.patternTiles = [];
+        PAT_CODES.forEach((code) => {
+            const tile = document.createElement('div');
+            tile.style.cssText = 'font-size:6.5px; letter-spacing:0.2px; text-align:center; color:#7b8a9a; background:rgba(34,44,56,0.6); border:1px solid rgba(80,96,112,0.28); border-radius:1px; padding:2px 1px; transition:background 180ms ease, color 180ms ease;';
+            tile.textContent = code;
+            patGrid.appendChild(tile);
+            this.patternTiles.push(tile);
+        });
+
+        header.appendChild(hTop);
+        header.appendChild(patGrid);
+
         // One aligned stack axis: each layer is a single row spanning the scene —
         // [health dot + name] on the left, the live lane in the middle, and the
         // live metric chip on the right, all sharing the same vertical position.
@@ -978,7 +1135,7 @@ class NetworkStackVisualization {
         const stackCaption = document.createElement('div');
         stackCaption.style.cssText = `
             position: absolute;
-            left: 24px;
+            left: 120px;
             top: 16%;
             transform: translateY(-50%);
             color: #7f8fa2;
@@ -998,7 +1155,7 @@ class NetworkStackVisualization {
             const row = document.createElement('div');
             row.style.cssText = `
                 position: absolute;
-                left: 24px;
+                left: 120px;
                 top: ${spec.top};
                 transform: translateY(-50%);
                 display: flex;
@@ -1104,36 +1261,88 @@ class NetworkStackVisualization {
         this.container.appendChild(chipLayer);
         this.overlayNodes.push(chipLayer);
         this.chipLayerNode = chipLayer;
-        this.layerGauges = {};
+        // Right side = a per-layer horizontal "signal chain" (reference style):
+        //   [number] › [EQ + spectrogram] › [INTENSITY dial] › [LF BIAS]×2 › [INDUCTION RESPONSE]
+        // The leader beam from the tower lands on the [number] block, then the
+        // chain flows to the right. Fixed total width + fixed right offset keep
+        // the number block at a deterministic X so the beam can terminate on it.
         this.layerSpectra = {};
-        const SPEC_W = 48;
-        const SPEC_H = 26;
-        const SPEC_N = 14;
-        layerRows.forEach(spec => {
-            const box = document.createElement('div');
-            box.style.cssText = `
+        this.chainModules = {};
+        this.layerHeadline = {};
+        this.chainWidth = 452;
+        this.chainRight = 20;
+        const SPEC_W = 78;
+        const SPEC_H = 40;
+        const SPEC_N = 22;
+
+        // Small cyan "›" connector glyph placed between chain modules.
+        const makeSep = () => {
+            const s = document.createElement('div');
+            s.style.cssText = 'flex:none; color:rgba(103,190,224,0.7); font-size:11px; line-height:1; align-self:center;';
+            s.textContent = '›';
+            return s;
+        };
+        const makeHeader = (text) => {
+            const h = document.createElement('div');
+            h.style.cssText = 'font-size:6.5px; letter-spacing:0.55px; color:#6f8597; white-space:nowrap; margin-bottom:2px;';
+            h.textContent = text;
+            return h;
+        };
+
+        layerRows.forEach((spec, idx) => {
+            const chain = document.createElement('div');
+            chain.style.cssText = `
                 position: absolute;
-                right: 2.4%;
+                right: ${this.chainRight}px;
                 top: ${spec.top};
                 transform: translateY(-50%);
+                width: ${this.chainWidth}px;
                 display: flex;
-                flex-direction: row;
                 align-items: center;
-                gap: 8px;
+                gap: 7px;
                 font-family: 'Share Tech Mono', monospace;
-                background: rgba(16, 22, 32, 0.68);
-                border: 1px solid rgba(115, 128, 145, 0.32);
-                border-radius: 4px;
-                padding: 4px 9px;
-                min-width: 196px;
-                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
             `;
 
-            // Mini spectrogram: scrolling vertical bars of the layer's activity.
+            // 1) NUMBER block — the beam target. Caption (array slot) + big
+            // headline + a small metric label so the units stay legible.
+            const metricCaption = {
+                userspace: 'active procs',
+                socket: 'established',
+                tcp: 'rtt ms',
+                ip: 'packets/s i+o',
+                netfilter: 'drops/s',
+                driver: 'tx queue',
+                nic: 'rx+tx errors'
+            };
+            const numBlock = document.createElement('div');
+            numBlock.style.cssText = 'flex:none; width:70px; display:flex; flex-direction:column; gap:0;';
+            const numCap = document.createElement('div');
+            numCap.style.cssText = 'font-size:7px; letter-spacing:0.5px; color:#6f8597; white-space:nowrap;';
+            numCap.textContent = `ARRAY 0${idx + 1}`;
+            const numVal = document.createElement('div');
+            numVal.style.cssText = 'font-size:16px; line-height:1.05; letter-spacing:0.3px; color:#cfe6f2; white-space:nowrap;';
+            numVal.textContent = '--';
+            const numSub = document.createElement('div');
+            numSub.style.cssText = 'font-size:6.5px; letter-spacing:0.3px; color:#728697; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;';
+            numSub.textContent = metricCaption[spec.id] || '';
+            numBlock.appendChild(numCap);
+            numBlock.appendChild(numVal);
+            numBlock.appendChild(numSub);
+
+            // 2) EQ + spectrogram block.
+            const eqBlock = document.createElement('div');
+            eqBlock.style.cssText = 'flex:none; display:flex; align-items:stretch; gap:3px; background:rgba(13,18,28,0.78); border:1px solid rgba(96,110,128,0.34); border-radius:2px; padding:2px;';
+            const eqLabel = document.createElement('div');
+            eqLabel.style.cssText = 'font-size:7px; letter-spacing:0.5px; color:#8391a1; writing-mode:vertical-rl; text-orientation:mixed; transform:rotate(180deg); align-self:center;';
+            eqLabel.textContent = 'EQ';
+            const eqCol = document.createElement('div');
+            eqCol.style.cssText = 'display:flex; flex-direction:column; gap:1px;';
             const spectro = document.createElementNS(svgNS, 'svg');
             spectro.setAttribute('width', String(SPEC_W));
             spectro.setAttribute('height', String(SPEC_H));
-            spectro.style.cssText = 'flex:0 0 auto; background:rgba(8,12,18,0.65); border:1px solid rgba(80,96,112,0.3);';
+            // Explicit inline px size overrides the global `svg { width:100%; height:100vh }`
+            // rule in main.css; without this the SVG would blow up to full screen.
+            spectro.style.cssText = `display:block; width:${SPEC_W}px; height:${SPEC_H}px; flex:none; background:rgba(6,10,16,0.85);`;
             const bars = [];
             const barW = SPEC_W / SPEC_N;
             for (let i = 0; i < SPEC_N; i++) {
@@ -1146,46 +1355,88 @@ class NetworkStackVisualization {
                 spectro.appendChild(r);
                 bars.push(r);
             }
+            const eqFoot = document.createElement('div');
+            eqFoot.style.cssText = 'display:flex; justify-content:space-between; font-size:7px; color:#5f7484; letter-spacing:1px;';
+            eqFoot.innerHTML = '<span>‹</span><span>›</span>';
+            eqCol.appendChild(spectro);
+            eqCol.appendChild(eqFoot);
+            eqBlock.appendChild(eqLabel);
+            eqBlock.appendChild(eqCol);
 
-            const col = document.createElement('div');
-            col.style.cssText = 'display:flex; flex-direction:column; gap:4px; flex:1 1 auto; min-width:0;';
+            // 3) INTENSITY — big number on a circular dial.
+            const intBlock = document.createElement('div');
+            intBlock.style.cssText = 'flex:none; display:flex; flex-direction:column; align-items:center;';
+            intBlock.appendChild(makeHeader('INTENSITY'));
+            const dial = document.createElement('div');
+            dial.style.cssText = 'position:relative; width:34px; height:34px; border-radius:50%; background:conic-gradient(rgba(103,190,224,0.85) 40deg, rgba(34,44,56,0.7) 0); box-shadow:0 0 0 1px rgba(96,110,128,0.4) inset; display:flex; align-items:center; justify-content:center;';
+            const dialNum = document.createElement('div');
+            dialNum.style.cssText = 'font-size:12px; color:#dbe7f0; letter-spacing:0.3px;';
+            dialNum.textContent = '0';
+            dial.appendChild(dialNum);
+            intBlock.appendChild(dial);
 
-            const chip = document.createElement('div');
-            chip.style.cssText = `
-                color: #bac4cf;
-                font-size: 11px;
-                letter-spacing: 0.42px;
-                white-space: nowrap;
-                border-radius: 3px;
-            `;
-            chip.textContent = '';
+            // 4) LF BIAS ×2 — Lissajous "woven" pattern boxes that morph with load.
+            const biasPaths = [];
+            const makeBias = () => {
+                const col = document.createElement('div');
+                col.style.cssText = 'flex:none; display:flex; flex-direction:column; align-items:center;';
+                col.appendChild(makeHeader('LF BIAS'));
+                const svg = document.createElementNS(svgNS, 'svg');
+                svg.setAttribute('width', '32');
+                svg.setAttribute('height', '32');
+                svg.setAttribute('viewBox', '0 0 32 32');
+                svg.style.cssText = 'display:block; width:32px; height:32px; flex:none; background:rgba(10,14,22,0.7); border:1px solid rgba(96,110,128,0.3);';
+                const p = document.createElementNS(svgNS, 'path');
+                p.setAttribute('fill', 'none');
+                p.setAttribute('stroke', 'rgba(168,200,214,0.7)');
+                p.setAttribute('stroke-width', '0.8');
+                svg.appendChild(p);
+                col.appendChild(svg);
+                biasPaths.push(p);
+                return col;
+            };
+            const bias1 = makeBias();
+            const bias2 = makeBias();
 
-            const gauge = document.createElement('div');
-            gauge.style.cssText = `
-                position: relative;
-                width: 100%;
-                height: 5px;
-                background: rgba(40, 52, 64, 0.5);
-                border-radius: 2px;
-                overflow: hidden;
-            `;
-            const gaugeFill = document.createElement('div');
-            gaugeFill.style.cssText = `
-                position: absolute;
-                left: 0; top: 0; bottom: 0;
-                width: 20%;
-                background: rgba(103, 190, 224, 0.7);
-                transition: width 220ms ease, background 220ms ease;
-            `;
-            gauge.appendChild(gaugeFill);
+            // 5) INDUCTION RESPONSE — labelled horizontal bars (CT/HT/AM/FR style).
+            const respBlock = document.createElement('div');
+            respBlock.style.cssText = 'flex:1 1 auto; min-width:84px; display:flex; flex-direction:column;';
+            respBlock.appendChild(makeHeader('INDUCTION RESPONSE'));
+            const respBars = [];
+            const respLabels = ['CT', 'HT', 'AM', 'FR'];
+            respLabels.forEach((rl) => {
+                const r = document.createElement('div');
+                r.style.cssText = 'display:flex; align-items:center; gap:4px; margin-bottom:1px;';
+                const lab = document.createElement('div');
+                lab.style.cssText = 'font-size:6.5px; color:#6f8597; width:13px; flex:none;';
+                lab.textContent = rl;
+                const track = document.createElement('div');
+                track.style.cssText = 'position:relative; flex:1 1 auto; height:3px; background:rgba(40,52,64,0.5);';
+                const fill = document.createElement('div');
+                fill.style.cssText = 'position:absolute; left:0; top:0; bottom:0; width:20%; background:rgba(103,190,224,0.7); transition:width 220ms ease, background 220ms ease;';
+                track.appendChild(fill);
+                r.appendChild(lab);
+                r.appendChild(track);
+                respBlock.appendChild(r);
+                respBars.push(fill);
+            });
 
-            col.appendChild(chip);
-            col.appendChild(gauge);
-            box.appendChild(spectro);
-            box.appendChild(col);
-            chipLayer.appendChild(box);
-            this.metricChips[spec.id] = chip;
-            this.layerGauges[spec.id] = gaugeFill;
+            chain.appendChild(numBlock);
+            chain.appendChild(makeSep());
+            chain.appendChild(eqBlock);
+            chain.appendChild(makeSep());
+            chain.appendChild(intBlock);
+            chain.appendChild(makeSep());
+            chain.appendChild(bias1);
+            chain.appendChild(bias2);
+            chain.appendChild(makeSep());
+            chain.appendChild(respBlock);
+            chipLayer.appendChild(chain);
+
+            // metricChips is still read by setMetricChip(); point it at numVal so
+            // the headline updates and the left-row health dot keeps working.
+            this.metricChips[spec.id] = null;
+            this.chainModules[spec.id] = { numCap, numVal, dialArc: dial, dialNum, biasPaths, respBars };
             this.layerSpectra[spec.id] = { bars, hist: new Array(SPEC_N).fill(0), h: SPEC_H };
         });
 
@@ -1194,14 +1445,14 @@ class NetworkStackVisualization {
         const modePanel = document.createElement('div');
         modePanel.style.cssText = `
             position: absolute;
-            left: 18px;
-            top: 14px;
+            left: 14px;
+            top: 15%;
             z-index: 1001;
             pointer-events: none;
             display: flex;
             flex-direction: column;
             gap: 4px;
-            width: 112px;
+            width: 96px;
             font-family: 'Share Tech Mono', monospace;
         `;
         this.container.appendChild(modePanel);
@@ -2157,6 +2408,7 @@ class NetworkStackVisualization {
         }
 
         this.updateKpiCard('flow', `${flowType}${flowState ? ` ${flowState}` : ''}`, flow ? 'normal' : 'warn');
+        if (this.arrayDesignator) this.arrayDesignator.textContent = flowType || 'TCP';
         this.updateKpiCard('rtt', `${rttMs.toFixed(1)} ms`, rttLevel);
         this.updateKpiCard('drop', `${dropPerSec.toFixed(1)}/s`, dropLevel);
         this.updateKpiCard('retrans', `${retransPerSec.toFixed(1)}/s`, retransLevel);
@@ -2199,6 +2451,18 @@ class NetworkStackVisualization {
             `${m.nic?.iface ?? 'n/a'} err ${nicErrRx}/${nicErrTx}`,
             nicLevel
         );
+
+        // Headline numbers shown on each chain's NUMBER block (the beam target):
+        // the single most representative live figure for that layer.
+        this.layerHeadline = {
+            userspace: `${m.userspace?.active_processes ?? 0}p`,
+            socket: `${m.socket_api?.established ?? 0}`,
+            tcp: `${rttMs.toFixed(0)}ms`,
+            ip: `${(safeNum(m.ip?.in_packets_per_sec ?? 0) + safeNum(m.ip?.out_packets_per_sec ?? 0)).toFixed(0)}/s`,
+            netfilter: `${dropPerSec.toFixed(0)}/s`,
+            driver: `${driverTxQ}q`,
+            nic: `${nicErrTotal}e`
+        };
 
         if (this.modeStatValue) {
             const procs = safeNum(m.userspace?.active_processes ?? 0);
@@ -2691,6 +2955,8 @@ class NetworkStackVisualization {
         try {
             this.updateConnectors();
             this.updateRightInstruments();
+            this.updateActivityMatrix();
+            this.updatePatternMatrix();
         } catch (e) {
             if (!this._connWarned) {
                 console.warn('overlay update failed:', e);
@@ -2699,6 +2965,57 @@ class NetworkStackVisualization {
         }
 
         this.renderer.render(this.scene, this.camera);
+    }
+
+    // Scroll the stack-activity matrix: each tick pushes the current per-layer
+    // activity as a new right-hand column (throttled into a slow waterfall).
+    updateActivityMatrix() {
+        if (!this.matrixCells) return;
+        const now = performance.now();
+        if (this._lastMatrix && now - this._lastMatrix < 200) return;
+        this._lastMatrix = now;
+        for (let r = 0; r < this.matrixOrder.length; r++) {
+            const id = this.matrixOrder[r];
+            const a = Math.max(0, Math.min(1, Number((this.layerActivity && this.layerActivity[id]) ?? 0.2)));
+            const row = this.matrixData[r];
+            row.push(a);
+            row.shift();
+            for (let c = 0; c < row.length; c++) {
+                const v = row[c];
+                this.matrixCells[r][c].style.background = v > 0.8
+                    ? 'rgba(232, 96, 104, 0.9)'
+                    : (v > 0.55 ? 'rgba(230, 193, 90, 0.9)'
+                        : (v > 0.25 ? 'rgba(103, 190, 224, 0.8)' : `rgba(60, 80, 96, ${(0.28 + v).toFixed(2)})`));
+            }
+        }
+    }
+
+    // Light up the top header pattern matrix: a scan column sweeps left->right
+    // while activity-locked tiles glow proportionally to mean stack activity.
+    updatePatternMatrix() {
+        if (!this.patternTiles || !this.patternTiles.length) return;
+        const now = performance.now();
+        if (this._lastPattern && now - this._lastPattern < 180) return;
+        this._lastPattern = now;
+        const ids = Object.keys(this.layerActivity || {});
+        let mean = 0;
+        ids.forEach((id) => { mean += Math.max(0, Math.min(1, Number(this.layerActivity[id]) || 0)); });
+        mean = ids.length ? mean / ids.length : 0.2;
+        const cols = 12;
+        this._patternScan = ((this._patternScan || 0) + 1) % cols;
+        const tile = (v, base) => (v > 0.8
+            ? ['rgba(232,96,104,0.85)', '#0b0f16']
+            : (v > 0.55 ? ['rgba(230,193,90,0.85)', '#0b0f16']
+                : (v > base ? ['rgba(103,190,224,0.8)', '#0b0f16'] : ['rgba(34,44,56,0.6)', '#7b8a9a'])));
+        this.patternTiles.forEach((t, i) => {
+            const col = i % cols;
+            const onScan = col === this._patternScan;
+            const locked = ((i * 7 + 3) % 11) / 11 < mean;
+            const v = onScan ? Math.max(mean, 0.6) : (locked ? mean : 0.0);
+            const [bg, fg] = tile(v, 0.25);
+            t.style.background = bg;
+            t.style.color = fg;
+        });
     }
 
     // Project each tower plate's left edge to screen and draw leader lines
@@ -2712,7 +3029,7 @@ class NetworkStackVisualization {
         const el = this.renderer.domElement;
         const W = el.clientWidth || el.width;
         const H = el.clientHeight || el.height;
-        const RAIL = 200;
+        const RAIL = 300;
         let minY = Infinity;
         let maxY = -Infinity;
 
@@ -2735,49 +3052,104 @@ class NetworkStackVisualization {
             this.connectorRail.setAttribute('d', `M ${RAIL} ${minY.toFixed(1)} L ${RAIL} ${maxY.toFixed(1)}`);
         }
 
-        // Right side: tower right edge -> right metric chips (mirror of left).
+        // Right side: tower right edge -> a vertical rail -> drops onto each
+        // chain's NUMBER block (reference: short stub, vertical rail, leader in).
         if (this.layerConnectorsRight) {
-            const RAIL_R = W - (W * 0.024) - 214 - 8;
-            let rMinY = Infinity;
-            let rMaxY = -Infinity;
+            const numX = W - (this.chainRight || 20) - (this.chainWidth || 452);
+            // First pass: project each tower tap point to find the rail position.
+            const taps = [];
+            let maxTapX = -Infinity;
             this.layers.forEach((layer) => {
                 const conn = this.layerConnectorsRight[layer.id];
                 if (!conn) return;
-                const startY = conn.frac * H;
                 const v = new THREE.Vector3((layer.plateRadius || 0.8) + 0.05, layer.y, 0).project(this.camera);
-                const endX = (v.x * 0.5 + 0.5) * W;
-                const endY = (-v.y * 0.5 + 0.5) * H;
-                const bendX = Math.min(RAIL_R - 18, endX + 26);
-                conn.path.setAttribute('d', `M ${RAIL_R} ${startY.toFixed(1)} L ${bendX.toFixed(1)} ${startY.toFixed(1)} L ${endX.toFixed(1)} ${endY.toFixed(1)}`);
-                conn.node.setAttribute('cx', endX.toFixed(1));
-                conn.node.setAttribute('cy', endY.toFixed(1));
-                if (startY < rMinY) rMinY = startY;
-                if (startY > rMaxY) rMaxY = startY;
+                const tapX = (v.x * 0.5 + 0.5) * W;
+                const tapY = (-v.y * 0.5 + 0.5) * H;
+                taps.push({ conn, tapX, tapY });
+                if (tapX > maxTapX) maxTapX = tapX;
+            });
+            const railX = Math.min(numX - 26, maxTapX + 26);
+            let rMinY = Infinity;
+            let rMaxY = -Infinity;
+            taps.forEach(({ conn, tapX, tapY }) => {
+                const cardY = conn.frac * H;
+                // tower tap -> rail (at tap height) -> down/up rail -> into number.
+                conn.path.setAttribute('d', `M ${tapX.toFixed(1)} ${tapY.toFixed(1)} L ${railX.toFixed(1)} ${tapY.toFixed(1)} L ${railX.toFixed(1)} ${cardY.toFixed(1)} L ${numX.toFixed(1)} ${cardY.toFixed(1)}`);
+                conn.node.setAttribute('cx', numX.toFixed(1));
+                conn.node.setAttribute('cy', cardY.toFixed(1));
+                if (cardY < rMinY) rMinY = cardY;
+                if (cardY > rMaxY) rMaxY = cardY;
             });
             if (this.connectorRailRight && isFinite(rMinY) && isFinite(rMaxY)) {
-                this.connectorRailRight.setAttribute('d', `M ${RAIL_R} ${rMinY.toFixed(1)} L ${RAIL_R} ${rMaxY.toFixed(1)}`);
+                this.connectorRailRight.setAttribute('d', `M ${railX.toFixed(1)} ${rMinY.toFixed(1)} L ${railX.toFixed(1)} ${rMaxY.toFixed(1)}`);
             }
         }
     }
 
-    // Right-row instruments: gauge tracks live load, spectrogram scrolls a
-    // short history of it. Spectrogram advances on a throttle so it reads as a
-    // slow waterfall rather than per-frame noise.
+    // Right-row signal chain: drive INTENSITY dial, LF BIAS Lissajous patterns,
+    // INDUCTION RESPONSE bars and the EQ spectrogram from each layer's live
+    // activity + semantic noise. Spectrogram/pattern morph is throttled into a
+    // slow waterfall instead of per-frame noise.
     updateRightInstruments() {
-        if (!this.layerGauges) return;
+        if (!this.chainModules) return;
         const now = performance.now();
         const advance = !this._lastSpectro || (now - this._lastSpectro) > 150;
         if (advance) this._lastSpectro = now;
-        Object.keys(this.layerGauges).forEach((id) => {
+        const toneFill = (v) => (v > 0.8
+            ? 'rgba(232, 96, 104, 0.8)'
+            : (v > 0.55 ? 'rgba(230, 193, 90, 0.8)' : 'rgba(103, 190, 224, 0.7)'));
+        Object.keys(this.chainModules).forEach((id) => {
+            const mod = this.chainModules[id];
+            if (!mod) return;
             const act = Math.max(0, Math.min(1, Number(this.layerActivity[id] ?? 0.2)));
-            const fill = this.layerGauges[id];
-            if (fill) {
-                fill.style.width = `${(8 + act * 92).toFixed(0)}%`;
-                fill.style.background = act > 0.8
-                    ? 'rgba(232, 96, 104, 0.8)'
-                    : (act > 0.55 ? 'rgba(230, 193, 90, 0.8)' : 'rgba(103, 190, 224, 0.7)');
+            const noise = (this.layerSemanticNoise && this.layerSemanticNoise[id]) || { stress: 0.2, jitter: 0.2, branch: 0.2 };
+
+            // Headline number on the NUMBER block (beam target).
+            if (mod.numVal && this.layerHeadline && this.layerHeadline[id] != null) {
+                mod.numVal.textContent = this.layerHeadline[id];
             }
+
+            // INTENSITY dial: 0..99 + arc fill proportional to activity.
+            if (mod.dialNum) mod.dialNum.textContent = String(Math.round(act * 99));
+            if (mod.dialArc) {
+                const deg = Math.round(act * 360);
+                const col = act > 0.8 ? 'rgba(232,96,104,0.9)' : (act > 0.55 ? 'rgba(230,193,90,0.9)' : 'rgba(103,190,224,0.85)');
+                mod.dialArc.style.background = `conic-gradient(${col} ${deg}deg, rgba(34,44,56,0.7) 0)`;
+            }
+
+            // INDUCTION RESPONSE bars: activity / jitter / stress / branch.
+            if (mod.respBars && mod.respBars.length === 4) {
+                const vals = [act, noise.jitter, noise.stress, noise.branch];
+                mod.respBars.forEach((fill, i) => {
+                    const v = Math.max(0, Math.min(1, Number(vals[i]) || 0));
+                    fill.style.width = `${(8 + v * 92).toFixed(0)}%`;
+                    fill.style.background = toneFill(v);
+                });
+            }
+
             if (!advance) return;
+
+            // LF BIAS Lissajous: phase advances over time, amplitude tracks load.
+            if (mod.biasPaths && mod.biasPaths.length) {
+                const t0 = now / 1000;
+                mod.biasPaths.forEach((p, k) => {
+                    const a = 3 + k;
+                    const b = 2 + k;
+                    const phase = t0 * (0.6 + act * 1.4) + k * 1.3;
+                    const amp = 9 + act * 4;
+                    let d = '';
+                    for (let s = 0; s <= 48; s++) {
+                        const u = (s / 48) * Math.PI * 2;
+                        const x = 16 + amp * Math.sin(a * u + phase);
+                        const y = 16 + amp * Math.sin(b * u);
+                        d += `${s === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)} `;
+                    }
+                    p.setAttribute('d', d);
+                    p.setAttribute('stroke', act > 0.8 ? 'rgba(232,96,104,0.75)' : (act > 0.55 ? 'rgba(230,193,90,0.75)' : 'rgba(168,200,214,0.7)'));
+                });
+            }
+
+            // EQ spectrogram waterfall.
             const sp = this.layerSpectra && this.layerSpectra[id];
             if (!sp) return;
             sp.hist.push(act * (0.55 + Math.random() * 0.45));
@@ -2803,6 +3175,12 @@ class NetworkStackVisualization {
         this.container.style.display = 'block';
         this.container.style.visibility = 'visible';
         this.container.style.pointerEvents = 'auto';
+        // Sync the renderer to the current viewport now that the container is
+        // visible. Without this the canvas can keep a stale size from init time
+        // (e.g. if DevTools/window changed since), pushing the tower out of the
+        // clipped (overflow:hidden) container until the next resize event.
+        this.onResize();
+        requestAnimationFrame(() => { if (this.isActive) this.onResize(); });
         if (this.renderer?.domElement && !this.mouseMoveHandler) {
             this.mouseMoveHandler = (event) => this.onMouseMove(event);
             this.renderer.domElement.addEventListener('mousemove', this.mouseMoveHandler);
@@ -2846,10 +3224,19 @@ class NetworkStackVisualization {
 
     onResize() {
         if (!this.camera || !this.renderer) return;
-        this.camera.aspect = window.innerWidth / window.innerHeight;
+        // Prefer the actual container box; fall back to the window. The container
+        // is fixed/inset:0 so this equals the visible viewport even when DevTools
+        // is docked.
+        const w = (this.container && this.container.clientWidth) || window.innerWidth;
+        const h = (this.container && this.container.clientHeight) || window.innerHeight;
+        if (w < 2 || h < 2) return;
+        this.camera.aspect = w / h;
         this.camera.updateProjectionMatrix();
-        this.renderer.setSize(window.innerWidth, window.innerHeight);
+        this.renderer.setSize(w, h);
         this.updateBottomPanelsLayout();
+        if (this.scene) {
+            this.renderer.render(this.scene, this.camera);
+        }
     }
 }
 
