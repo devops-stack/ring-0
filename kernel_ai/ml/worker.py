@@ -11,6 +11,7 @@ evidence (z-score, baseline) that triggered them.
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import time
 
@@ -58,6 +59,39 @@ def _build_anomalies(scores: dict[str, Score], cfg: MLConfig) -> list[dict]:
     return out
 
 
+def _build_isoforest_anomaly(score: float, scores: dict[str, Score], cfg: MLConfig) -> dict:
+    """Build a mutation from an IsolationForest verdict.
+
+    The forest judges the whole feature vector, so we borrow the Stage 1
+    z-scores to point at the single most-deviating feature for the helix
+    position / subsystem and a human-readable cause.
+    """
+    top = max(scores.values(), key=lambda s: abs(s.z), default=None)
+    feature = top.name if top else "vector"
+    spec = FEATURE_SPECS.get(feature)
+    severity = "high" if score > 0.1 else "medium"
+    label = spec.label if spec else feature
+    return {
+        "source": "stage2_isoforest",
+        "feature": feature,
+        "subsystem": spec.subsystem if spec else None,
+        "type": f"isoforest:{feature}",
+        "severity": severity,
+        "score": round(score, 4),
+        "value": round(top.value, 3) if top else None,
+        "baseline_mean": round(top.mean, 3) if top else None,
+        "baseline_std": round(top.std, 3) if top else None,
+        "position": spec.position if spec else 0.5,
+        "message": (
+            f"IsolationForest flagged an unusual system state "
+            f"(top deviation: {label}, z={top.z:.1f}, if_score={score:.3f})"
+            if top else
+            f"IsolationForest flagged an unusual system state (if_score={score:.3f})"
+        ),
+        "meta": {"stage": 2, "if_score": round(score, 4)},
+    }
+
+
 class MLWorker:
     def __init__(self, cfg: MLConfig | None = None) -> None:
         self.cfg = cfg or MLConfig()
@@ -66,6 +100,35 @@ class MLWorker:
         self.store = PostgresStore(self.cfg.dsn)
         self._running = True
         self._min_std = {n: s.min_std for n, s in FEATURE_SPECS.items()}
+        # Stage 2 model (loaded lazily; absent until train.py has produced it).
+        self.model = None
+        self._model_mtime: float | None = None
+        self._last_if_emit = 0.0
+        self._maybe_load_model()
+
+    def _maybe_load_model(self) -> None:
+        """Load / hot-reload the IsolationForest artifact if present and changed.
+
+        Importing sklearn/joblib only happens once a model file exists, so a
+        Stage-1-only deployment never pays the memory cost.
+        """
+        if not self.cfg.enable_stage2:
+            return
+        path = self.cfg.model_path
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            return  # no model yet -> Stage 2 stays dormant
+        if self._model_mtime is not None and mtime <= self._model_mtime:
+            return
+        try:
+            from kernel_ai.ml.model import IsolationForestModel
+
+            self.model = IsolationForestModel.load(path)
+            self._model_mtime = mtime
+            logger.info("loaded Stage 2 model: %s (%s)", path, self.model.meta)
+        except Exception as exc:  # noqa: BLE001 - keep running on Stage 1 only
+            logger.warning("failed to load Stage 2 model: %s", exc)
 
     def stop(self, *_args) -> None:
         self._running = False
@@ -76,6 +139,21 @@ class MLWorker:
             return 0
         scores = self.baseline.update_and_score(features, self._min_std)
         anomalies = _build_anomalies(scores, self.cfg)
+
+        # Stage 2 second opinion: the forest can catch unusual *combinations*
+        # the per-feature z-score misses. Rate-limited so a sustained anomaly
+        # doesn't spam one mutation per tick.
+        if self.model is not None:
+            try:
+                is_anom, if_score = self.model.score_one(features)
+            except Exception as exc:  # noqa: BLE001
+                is_anom, if_score = False, 0.0
+                logger.warning("isoforest scoring failed: %s", exc)
+            now = time.time()
+            if is_anom and (now - self._last_if_emit) >= self.cfg.if_cooldown_sec:
+                anomalies.append(_build_isoforest_anomaly(if_score, scores, self.cfg))
+                self._last_if_emit = now
+
         if self.cfg.store_features:
             self.store.insert_feature_snapshot(features)
         if anomalies:
@@ -108,6 +186,8 @@ class MLWorker:
                 if ticks % _HOUSEKEEPING_EVERY == 0:
                     self.store.save_baseline(self.baseline.export_state())
                     self.store.prune(self.cfg.retain_features_hours, self.cfg.retain_anomalies_hours)
+                    # Pick up a freshly retrained model without a restart.
+                    self._maybe_load_model()
             except Exception as exc:  # noqa: BLE001 - keep the loop alive
                 logger.exception("tick failed: %s", exc)
                 # Reconnect on DB hiccups rather than dying.
