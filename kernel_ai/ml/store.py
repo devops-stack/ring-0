@@ -51,6 +51,17 @@ CREATE TABLE IF NOT EXISTS ml_baseline_state (
     count      integer          NOT NULL,
     updated_at timestamptz      NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS ml_drift (
+    ts            timestamptz NOT NULL DEFAULT now(),
+    flag_rate     double precision,
+    expected_rate double precision,
+    feature_drift double precision,
+    n_recent      integer,
+    drifted       boolean,
+    detail        jsonb
+);
+CREATE INDEX IF NOT EXISTS ml_drift_ts_idx ON ml_drift (ts);
 """
 
 
@@ -152,6 +163,78 @@ class PostgresStore:
             self.conn.close()
         except Exception:  # noqa: BLE001 - best-effort cleanup
             pass
+
+
+def fetch_recent_feature_dicts(dsn: str, *, minutes: int = 30, limit: int = 5000) -> list[dict]:
+    """Recent feature snapshots (as dicts) for drift measurement."""
+    with connect(dsn) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT features FROM ml_feature_snapshots
+            WHERE ts > now() - make_interval(mins => %s)
+            ORDER BY ts DESC LIMIT %s
+            """,
+            (minutes, limit),
+        )
+        return [r[0] for r in cur.fetchall() if isinstance(r[0], dict)]
+
+
+def fetch_training_snapshots(
+    dsn: str,
+    *,
+    limit: int = 50000,
+    exclude_anomalous: bool = True,
+    guard_sec: int = 120,
+) -> list[dict]:
+    """Snapshots for (re)training. With ``exclude_anomalous`` we drop any
+    snapshot within +/- ``guard_sec`` of a HIGH-severity anomaly, so a real
+    incident can't poison the model's idea of "normal"."""
+    with connect(dsn) as conn, conn.cursor() as cur:
+        if exclude_anomalous:
+            cur.execute(
+                """
+                SELECT s.features
+                FROM ml_feature_snapshots s
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM ml_anomalies a
+                    WHERE a.severity = 'high'
+                      AND a.ts BETWEEN s.ts - make_interval(secs => %s)
+                                   AND s.ts + make_interval(secs => %s)
+                )
+                ORDER BY s.ts DESC LIMIT %s
+                """,
+                (guard_sec, guard_sec, limit),
+            )
+        else:
+            cur.execute(
+                "SELECT features FROM ml_feature_snapshots ORDER BY ts DESC LIMIT %s",
+                (limit,),
+            )
+        return [r[0] for r in cur.fetchall() if isinstance(r[0], dict)]
+
+
+def insert_drift(dsn: str, record: dict) -> None:
+    """Persist one drift measurement (best-effort)."""
+    try:
+        with connect(dsn) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO ml_drift
+                    (flag_rate, expected_rate, feature_drift, n_recent, drifted, detail)
+                VALUES (%(flag_rate)s, %(expected_rate)s, %(feature_drift)s,
+                        %(n_recent)s, %(drifted)s, %(detail)s)
+                """,
+                {
+                    "flag_rate": record.get("flag_rate"),
+                    "expected_rate": record.get("expected_rate"),
+                    "feature_drift": record.get("feature_drift"),
+                    "n_recent": record.get("n_recent"),
+                    "drifted": record.get("drifted"),
+                    "detail": Json(record.get("detail") or {}),
+                },
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("insert_drift failed: %s", exc)
 
 
 def fetch_recent_anomalies(dsn: str, *, since_seconds: int = 120, limit: int = 100) -> list[dict]:

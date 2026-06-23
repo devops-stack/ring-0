@@ -23,7 +23,7 @@ import statistics
 from kernel_ai.ml.config import MLConfig
 from kernel_ai.ml.features import FEATURE_SPECS
 from kernel_ai.ml.model import IsolationForestModel
-from kernel_ai.ml.store import connect
+from kernel_ai.ml.store import fetch_training_snapshots
 
 logger = logging.getLogger("kernel_ai.ml.train")
 
@@ -31,20 +31,20 @@ logger = logging.getLogger("kernel_ai.ml.train")
 FEATURE_ORDER = list(FEATURE_SPECS.keys())
 
 
-def load_matrix(dsn: str, limit: int = 50000) -> list[list[float]]:
-    """Load feature snapshots into a dense matrix in canonical column order."""
-    with connect(dsn) as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT features FROM ml_feature_snapshots ORDER BY ts DESC LIMIT %s",
-            (limit,),
-        )
-        rows = cur.fetchall()
-    matrix = []
-    for (features,) in rows:
-        if not isinstance(features, dict):
-            continue
-        matrix.append([float(features.get(name, 0.0)) for name in FEATURE_ORDER])
-    return matrix
+def _dicts_to_matrix(rows: list[dict]) -> list[list[float]]:
+    return [[float(r.get(name, 0.0)) for name in FEATURE_ORDER] for r in rows]
+
+
+def _feature_stats(matrix: list[list[float]]) -> dict[str, dict]:
+    """Per-feature mean/std over the training set, stored in the model meta so
+    the drift monitor can later compare live data against the trained 'normal'."""
+    stats: dict[str, dict] = {}
+    for col, name in enumerate(FEATURE_ORDER):
+        values = [row[col] for row in matrix]
+        mean = statistics.fmean(values) if values else 0.0
+        std = statistics.pstdev(values) if len(values) > 1 else 0.0
+        stats[name] = {"mean": mean, "std": std}
+    return stats
 
 
 def _percentile(values: list[float], pct: float) -> float:
@@ -55,36 +55,61 @@ def _percentile(values: list[float], pct: float) -> float:
     return ordered[k]
 
 
-def train(cfg: MLConfig, *, min_samples: int, contamination: float, trees: int) -> dict:
-    matrix = load_matrix(cfg.dsn)
+def train(
+    cfg: MLConfig,
+    *,
+    min_samples: int,
+    contamination: float,
+    trees: int,
+    exclude_anomalous: bool = True,
+    enforce_guardrails: bool = True,
+) -> dict:
+    rows = fetch_training_snapshots(
+        cfg.dsn,
+        exclude_anomalous=exclude_anomalous,
+        guard_sec=cfg.poison_guard_sec,
+    )
+    matrix = _dicts_to_matrix(rows)
     n = len(matrix)
     if n < min_samples:
         raise SystemExit(
-            f"Not enough samples to train: have {n}, need >= {min_samples}. "
+            f"Not enough clean samples to train: have {n}, need >= {min_samples}. "
             f"Let the worker collect more (it runs every {cfg.interval_sec:.0f}s)."
         )
 
     model = IsolationForestModel(feature_names=FEATURE_ORDER)
     model.fit(matrix, contamination=contamination, n_estimators=trees)
+    # Stash training distribution so drift can be measured against it later.
+    model.meta["feature_stats"] = _feature_stats(matrix)
 
     # Evaluate on the training set: how the score is distributed and what
     # fraction would be flagged (should sit near `contamination`).
     scores = model.score_matrix(matrix)
     preds = model.model.predict(matrix)
     flagged = sum(1 for p in preds if p == -1)
+    flag_rate = flagged / n if n else 0.0
     metrics = {
         "n_samples": float(n),
         "n_features": float(len(FEATURE_ORDER)),
-        "flag_rate": flagged / n if n else 0.0,
+        "flag_rate": flag_rate,
         "score_mean": statistics.fmean(scores) if scores else 0.0,
         "score_p95": _percentile(scores, 95),
         "score_max": max(scores) if scores else 0.0,
+        "excluded_anomalous": 1.0 if exclude_anomalous else 0.0,
     }
+
+    # Guardrail: refuse to promote a degenerate model (flags ~nothing or
+    # ~everything). The previously saved artifact is left untouched.
+    if enforce_guardrails and not (cfg.retrain_min_flag_rate <= flag_rate <= cfg.retrain_max_flag_rate):
+        raise SystemExit(
+            f"Refusing to save model: flag_rate={flag_rate:.3f} outside sane band "
+            f"[{cfg.retrain_min_flag_rate}, {cfg.retrain_max_flag_rate}]. Keeping previous model."
+        )
 
     # Persist the artifact the worker loads (independent of MLflow availability).
     os.makedirs(os.path.dirname(cfg.model_path), exist_ok=True)
     model.save(cfg.model_path)
-    logger.info("saved model artifact -> %s", cfg.model_path)
+    logger.info("saved model artifact -> %s (flag_rate=%.3f, n=%d)", cfg.model_path, flag_rate, n)
 
     # MLflow tracking + registry (best-effort: training must not hard-fail if
     # MLflow has a hiccup, the artifact is already saved above).

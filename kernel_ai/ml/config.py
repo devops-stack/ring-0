@@ -87,6 +87,22 @@ class MLConfig:
     # sustained anomaly).
     if_cooldown_sec: float = _env_float("KERNEL_AI_ML_IF_COOLDOWN_SEC", 15.0)
 
+    # --- Stage 3 (drift + auto-retrain) ---
+    # Window of recent snapshots used to measure drift (minutes).
+    drift_window_min: int = _env_int("KERNEL_AI_ML_DRIFT_WINDOW_MIN", 30)
+    # Drift trips when the live flag rate exceeds expected (contamination) by
+    # this multiple, or when the mean per-feature distribution shift (in train
+    # std units) exceeds the z threshold.
+    drift_rate_mult: float = _env_float("KERNEL_AI_ML_DRIFT_RATE_MULT", 5.0)
+    drift_feature_z: float = _env_float("KERNEL_AI_ML_DRIFT_FEATURE_Z", 3.0)
+    # Poison guard: exclude snapshots within +/- this many seconds of a
+    # high-severity anomaly from the retraining set (don't learn the attack).
+    poison_guard_sec: int = _env_int("KERNEL_AI_ML_POISON_GUARD_SEC", 120)
+    # A retrained model is rejected (kept previous) if its training flag rate is
+    # outside this sane band (degenerate model: flags nothing or everything).
+    retrain_min_flag_rate: float = _env_float("KERNEL_AI_ML_RETRAIN_MIN_FLAG", 0.001)
+    retrain_max_flag_rate: float = _env_float("KERNEL_AI_ML_RETRAIN_MAX_FLAG", 0.30)
+
     @property
     def alpha(self) -> float:
         return 2.0 / (max(2, self.baseline_window) + 1.0)
