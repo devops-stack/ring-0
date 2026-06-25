@@ -117,6 +117,47 @@ def ml_anomalies():
     return api_json(_payload)
 
 
+def ml_drift():
+    """Latest model-drift verdict + short history for the Kernel DNA UI.
+
+    Read-only: surfaces what the drift monitor / retrain job wrote to the shared
+    store, plus the on-disk model artifact age (a proxy for "model freshness").
+    Degrades to ``available: false`` if the store/model is unreachable.
+    """
+
+    def _payload():
+        import os
+
+        from kernel_ai.ml.config import MLConfig
+        from kernel_ai.ml.store import fetch_drift_status
+
+        try:
+            history = int(request.args.get("history", 48))
+        except (TypeError, ValueError):
+            history = 48
+        history = max(1, min(history, 200))
+
+        cfg = MLConfig()
+        status = fetch_drift_status(cfg.dsn, history=history)
+
+        model_age_sec = None
+        try:
+            mtime = os.path.getmtime(cfg.model_path)
+            model_age_sec = max(0.0, datetime.now().timestamp() - mtime)
+        except OSError:
+            model_age_sec = None
+
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "available": status.get("available", False),
+            "model_age_sec": model_age_sec,
+            "latest": status.get("latest"),
+            "history": status.get("history", []),
+        }
+
+    return api_json(_payload)
+
+
 def sentry_test():
     """Temporary endpoint for manual Sentry verification."""
     if not current_app.config.get("SENTRY_TEST_ENDPOINT_ENABLED", False):

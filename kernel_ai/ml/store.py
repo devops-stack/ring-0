@@ -62,6 +62,15 @@ CREATE TABLE IF NOT EXISTS ml_drift (
     detail        jsonb
 );
 CREATE INDEX IF NOT EXISTS ml_drift_ts_idx ON ml_drift (ts);
+
+CREATE TABLE IF NOT EXISTS ml_syscall_ngrams (
+    ngram      text PRIMARY KEY,
+    n          smallint    NOT NULL,
+    count      bigint      NOT NULL DEFAULT 0,
+    first_seen timestamptz NOT NULL DEFAULT now(),
+    last_seen  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ml_syscall_ngrams_n_idx ON ml_syscall_ngrams (n);
 """
 
 
@@ -120,6 +129,22 @@ class PostgresStore:
                     }
                     for a in anomalies
                 ],
+            )
+
+    def upsert_ngram_counts(self, n: int, counts: dict[str, int]) -> None:
+        """Accumulate observed syscall n-gram counts (profile growth)."""
+        if not counts:
+            return
+        with self.conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO ml_syscall_ngrams (ngram, n, count)
+                VALUES (%(ngram)s, %(n)s, %(count)s)
+                ON CONFLICT (ngram) DO UPDATE
+                    SET count = ml_syscall_ngrams.count + EXCLUDED.count,
+                        last_seen = now()
+                """,
+                [{"ngram": g, "n": n, "count": c} for g, c in counts.items()],
             )
 
     def save_baseline(self, rows: list[dict]) -> None:
@@ -235,6 +260,46 @@ def insert_drift(dsn: str, record: dict) -> None:
             )
     except Exception as exc:  # noqa: BLE001
         logger.warning("insert_drift failed: %s", exc)
+
+
+def fetch_ngram_counts(dsn: str, *, n: int) -> dict[str, int]:
+    """Read accumulated syscall n-gram counts for STIDE profile building."""
+    with connect(dsn) as conn, conn.cursor() as cur:
+        cur.execute("SELECT ngram, count FROM ml_syscall_ngrams WHERE n = %s", (n,))
+        return {row[0]: int(row[1]) for row in cur.fetchall()}
+
+
+def fetch_drift_status(dsn: str, *, history: int = 48) -> dict:
+    """Read the latest drift verdict plus a short history for the API.
+
+    Returns ``{"available": bool, "latest": {...}|None, "history": [...]}``.
+    Never raises on DB trouble (API must degrade gracefully).
+    """
+    try:
+        with connect(dsn) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT ts, flag_rate, expected_rate, feature_drift, n_recent, drifted
+                FROM ml_drift
+                ORDER BY ts DESC
+                LIMIT %s
+                """,
+                (max(1, int(history)),),
+            )
+            cols = [d.name for d in cur.description]
+            rows = []
+            for row in cur.fetchall():
+                rec = dict(zip(cols, row))
+                if rec.get("ts") is not None:
+                    rec["ts"] = rec["ts"].isoformat()
+                rows.append(rec)
+        if not rows:
+            return {"available": True, "latest": None, "history": []}
+        # rows are newest-first; history is returned oldest-first for charting.
+        return {"available": True, "latest": rows[0], "history": list(reversed(rows))}
+    except Exception as exc:  # noqa: BLE001 - API must degrade gracefully
+        logger.warning("fetch_drift_status failed: %s", exc)
+        return {"available": False, "latest": None, "history": []}
 
 
 def fetch_recent_anomalies(dsn: str, *, since_seconds: int = 120, limit: int = 100) -> list[dict]:
