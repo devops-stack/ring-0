@@ -1582,9 +1582,222 @@ class KernelDNAVisualization {
         `;
         this.container.appendChild(legendDiv);
 
+        const driftEl = this._ensureDriftIndicator();
+
         await this.addProcessSelector();
         const selectorEl = this.container.querySelector('.dna-process-selector');
-        this._applyStaggeredReveal([titleDiv, devLabel, legendDiv, selectorEl]);
+        this._applyStaggeredReveal([titleDiv, devLabel, legendDiv, driftEl, selectorEl]);
+    }
+
+    /**
+     * Model-freshness indicator: shows whether the ML baseline is "fresh" or has
+     * "drifted", current flag-rate vs the expected contamination, feature drift,
+     * model artifact age, and a small flag-rate history sparkline. Reads from the
+     * read-only /api/ml-drift endpoint that the drift monitor / retrain job feeds.
+     */
+    _ensureDriftStyles() {
+        if (this._driftStylesInjected || typeof document === 'undefined') return;
+        const style = document.createElement('style');
+        style.id = 'kernel-dna-drift-styles';
+        style.textContent = `
+            .dna-drift-indicator {
+                position: absolute;
+                bottom: 26px;
+                left: 20px;
+                z-index: 1001;
+                width: 196px;
+                padding: 11px 13px 12px;
+                font-family: 'Share Tech Mono', monospace;
+                color: #c8ccd4;
+                cursor: default;
+                background:
+                    linear-gradient(180deg, rgba(18,26,32,0.78), rgba(10,13,16,0.72));
+                border: 1px solid rgba(103, 200, 224, 0.28);
+                box-shadow: 0 0 18px rgba(103,200,224,0.08),
+                            inset 0 0 24px rgba(103,200,224,0.04);
+                backdrop-filter: blur(3px);
+                overflow: hidden;
+                /* clipped "cut corner" -> instrument-panel silhouette */
+                clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+            }
+            /* corner tick brackets */
+            .dna-drift-indicator::before,
+            .dna-drift-indicator::after {
+                content: '';
+                position: absolute;
+                width: 9px; height: 9px;
+                border: 1px solid rgba(103,200,224,0.65);
+                pointer-events: none;
+            }
+            .dna-drift-indicator::before { top: 4px; left: 4px; border-width: 1px 0 0 1px; }
+            .dna-drift-indicator::after { bottom: 4px; right: 4px; border-width: 0 1px 1px 0; }
+            /* slow scanline sweep */
+            .dna-drift-scan {
+                position: absolute; left: 0; right: 0; top: 0; height: 28px;
+                background: linear-gradient(180deg, rgba(103,200,224,0.10), rgba(103,200,224,0));
+                pointer-events: none;
+                animation: dna-drift-scan 4.6s linear infinite;
+            }
+            @keyframes dna-drift-scan {
+                0%   { transform: translateY(-30px); opacity: 0; }
+                12%  { opacity: 1; }
+                88%  { opacity: 1; }
+                100% { transform: translateY(150px); opacity: 0; }
+            }
+            .dna-drift-head { display:flex; align-items:center; gap:7px; margin-bottom:8px; }
+            .dna-drift-led {
+                width:7px; height:7px; border-radius:50%;
+                background:#9aa3ad; box-shadow:0 0 6px rgba(154,163,173,0.8);
+                animation: dna-drift-led 1.8s ease-in-out infinite;
+            }
+            @keyframes dna-drift-led { 0%,100%{opacity:0.45;} 50%{opacity:1;} }
+            .dna-drift-title {
+                font-size:10px; letter-spacing:1.2px; opacity:0.82; flex:1;
+                text-shadow: 0 0 8px rgba(103,200,224,0.25);
+            }
+            .dna-drift-pill {
+                font-size:8.5px; letter-spacing:0.6px; padding:2px 7px;
+                border:1px solid rgba(120,128,138,0.5); color:#9aa3ad;
+                clip-path: polygon(0 0, calc(100% - 5px) 0, 100% 5px, 100% 100%, 5px 100%, 0 calc(100% - 5px));
+            }
+            .dna-drift-metrics { font-size:10px; line-height:1.6; opacity:0.9; }
+            .dna-drift-metrics .k { opacity:0.5; }
+        `;
+        document.head.appendChild(style);
+        this._driftStylesInjected = true;
+    }
+
+    _ensureDriftIndicator() {
+        let panel = this.container.querySelector('.dna-drift-indicator');
+        if (panel) return panel;
+        this._ensureDriftStyles();
+
+        panel = document.createElement('div');
+        panel.className = 'dna-drift-indicator';
+        window.setSafeHtml(panel, `
+            <div class="dna-drift-scan"></div>
+            <div class="dna-drift-head">
+                <span class="dna-drift-led"></span>
+                <span class="dna-drift-title">ML MODEL</span>
+                <span class="dna-drift-pill">…</span>
+            </div>
+            <svg class="dna-drift-spark" width="170" height="30" style="display:block; width:170px; height:30px; overflow:visible; margin-bottom:8px;"></svg>
+            <div class="dna-drift-metrics">
+                <div>flags <span class="dna-drift-flag">–</span> <span class="k">/ exp <span class="dna-drift-exp">–</span></span></div>
+                <div>feat drift <span class="dna-drift-feat">–</span></div>
+                <div class="k">model <span class="dna-drift-age">–</span></div>
+            </div>
+        `);
+        this.container.appendChild(panel);
+        this._startDriftPolling();
+        return panel;
+    }
+
+    _startDriftPolling() {
+        if (this.driftInterval) return;
+        const poll = async () => {
+            if (!this.isActive) return;
+            try {
+                const resp = await fetch('/api/ml-drift?history=40');
+                const payload = await resp.json();
+                this._renderDriftIndicator(payload);
+            } catch (e) {
+                this._renderDriftIndicator({ available: false });
+            }
+        };
+        poll();
+        this.driftInterval = setInterval(poll, 15000);
+    }
+
+    _fmtAge(sec) {
+        if (sec == null || !isFinite(sec)) return 'n/a';
+        if (sec < 90) return `${Math.round(sec)}s ago`;
+        if (sec < 5400) return `${Math.round(sec / 60)}m ago`;
+        if (sec < 172800) return `${Math.round(sec / 3600)}h ago`;
+        return `${Math.round(sec / 86400)}d ago`;
+    }
+
+    _renderDriftIndicator(payload) {
+        const panel = this.container && this.container.querySelector('.dna-drift-indicator');
+        if (!panel) return;
+        const pill = panel.querySelector('.dna-drift-pill');
+        const led = panel.querySelector('.dna-drift-led');
+        const setText = (sel, txt) => { const el = panel.querySelector(sel); if (el) el.textContent = txt; };
+        const setState = (label, color, border) => {
+            pill.textContent = label;
+            pill.style.color = color;
+            pill.style.borderColor = border;
+            if (led) { led.style.background = color; led.style.boxShadow = `0 0 7px ${color}`; }
+        };
+
+        if (!payload || payload.available === false) {
+            setState('OFFLINE', '#6b7076', 'rgba(107,112,118,0.5)');
+            setText('.dna-drift-flag', '–'); setText('.dna-drift-exp', '–');
+            setText('.dna-drift-feat', '–'); setText('.dna-drift-age', '–');
+            this._drawDriftSparkline([], 0.02);
+            return;
+        }
+
+        const latest = payload.latest;
+        const history = Array.isArray(payload.history) ? payload.history : [];
+        const exp = latest && latest.expected_rate != null ? latest.expected_rate : 0.02;
+
+        if (!latest) {
+            setState('WARMING', '#9aa3ad', 'rgba(120,128,138,0.5)');
+        } else if (latest.drifted) {
+            setState('DRIFTED', '#E0564E', 'rgba(224,86,78,0.6)');
+        } else {
+            setState('FRESH', '#5BD6A0', 'rgba(91,214,160,0.5)');
+        }
+
+        if (latest) {
+            const fr = latest.flag_rate != null ? latest.flag_rate : 0;
+            const fd = latest.feature_drift != null ? latest.feature_drift : 0;
+            setText('.dna-drift-flag', `${(fr * 100).toFixed(1)}%`);
+            setText('.dna-drift-exp', `${(exp * 100).toFixed(1)}%`);
+            setText('.dna-drift-feat', fd > 99 ? '>99σ' : `${fd.toFixed(2)}σ`);
+        }
+        setText('.dna-drift-age', this._fmtAge(payload.model_age_sec));
+        this._drawDriftSparkline(history, exp);
+    }
+
+    _drawDriftSparkline(history, expected) {
+        const svg = this.container && this.container.querySelector('.dna-drift-spark');
+        if (!svg) return;
+        const NS = 'http://www.w3.org/2000/svg';
+        while (svg.firstChild) svg.removeChild(svg.firstChild);
+        const W = 170, H = 30;
+        const vals = history.map(h => Math.max(0, Math.min(1, h && h.flag_rate != null ? h.flag_rate : 0)));
+        // Scale so the expected line and the data are both visible.
+        const peak = Math.max(0.04, expected * 2, ...vals);
+        const y = (v) => H - 2 - (v / peak) * (H - 4);
+        const x = (i, n) => n <= 1 ? 0 : (i / (n - 1)) * W;
+
+        // expected (baseline) reference line
+        const base = document.createElementNS(NS, 'line');
+        base.setAttribute('x1', 0); base.setAttribute('x2', W);
+        base.setAttribute('y1', y(expected)); base.setAttribute('y2', y(expected));
+        base.setAttribute('stroke', 'rgba(150,160,170,0.35)');
+        base.setAttribute('stroke-dasharray', '3 3');
+        base.setAttribute('stroke-width', '1');
+        svg.appendChild(base);
+
+        if (vals.length >= 2) {
+            const pts = vals.map((v, i) => `${x(i, vals.length).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+            const line = document.createElementNS(NS, 'polyline');
+            line.setAttribute('points', pts);
+            line.setAttribute('fill', 'none');
+            line.setAttribute('stroke', '#67C8E0');
+            line.setAttribute('stroke-width', '1.4');
+            line.setAttribute('stroke-linejoin', 'round');
+            svg.appendChild(line);
+            // highlight the newest point
+            const last = vals[vals.length - 1];
+            const dot = document.createElementNS(NS, 'circle');
+            dot.setAttribute('cx', W); dot.setAttribute('cy', y(last)); dot.setAttribute('r', '2.4');
+            dot.setAttribute('fill', last > expected * 3 ? '#E0564E' : '#67C8E0');
+            svg.appendChild(dot);
+        }
     }
 
     appendInDevelopmentLabel(topPx = 52) {
@@ -1814,6 +2027,13 @@ class KernelDNAVisualization {
             clearInterval(this.updateInterval);
             this.updateInterval = null;
         }
+
+        if (this.driftInterval) {
+            clearInterval(this.driftInterval);
+            this.driftInterval = null;
+        }
+        const driftPanel = this.container && this.container.querySelector('.dna-drift-indicator');
+        if (driftPanel && driftPanel.parentNode) driftPanel.parentNode.removeChild(driftPanel);
         
         // Explicitly remove exit button before hiding container
         if (this.exitButton && this.exitButton.parentNode) {

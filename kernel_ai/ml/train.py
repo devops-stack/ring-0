@@ -113,11 +113,22 @@ def train(
 
     # MLflow tracking + registry (best-effort: training must not hard-fail if
     # MLflow has a hiccup, the artifact is already saved above).
+    #
+    # MLflow's sqlite store unconditionally mkdir's its default artifact root
+    # (``./mlruns``) relative to the *current working directory* at store-init
+    # time. Under systemd the cwd is the (read-only-to-www-data) project root,
+    # so we run the whole MLflow block from inside the writable data dir.
+    data_dir = os.path.dirname(cfg.model_path)
+    prev_cwd = os.getcwd()
     try:
+        os.chdir(data_dir)
         import mlflow
         import mlflow.sklearn
 
         mlflow.set_tracking_uri(cfg.mlflow_uri)
+        # Ensure the experiment stores artifacts in the service-writable data dir.
+        if mlflow.get_experiment_by_name(cfg.mlflow_experiment) is None:
+            mlflow.create_experiment(cfg.mlflow_experiment, artifact_location=cfg.mlflow_artifact_uri)
         mlflow.set_experiment(cfg.mlflow_experiment)
         with mlflow.start_run() as run:
             mlflow.log_params(
@@ -139,6 +150,22 @@ def train(
             logger.info("logged MLflow run %s (experiment=%s)", run.info.run_id, cfg.mlflow_experiment)
     except Exception as exc:  # noqa: BLE001 - tracking is optional
         logger.warning("MLflow logging skipped: %s", exc)
+    finally:
+        os.chdir(prev_cwd)
+
+    # Stage 4: rebuild the syscall-sequence (STIDE) profile from the n-grams the
+    # worker has accumulated. Best-effort: a missing/young vocabulary must not
+    # block IsolationForest training (which is already saved above).
+    if cfg.enable_stage4:
+        try:
+            from kernel_ai.ml.sequence import build_profile
+
+            seq_meta = build_profile(cfg)
+            metrics["seq_vocab_kept"] = float(seq_meta.get("vocab_kept", 0))
+        except SystemExit as exc:
+            logger.info("STIDE profile not rebuilt: %s", exc)
+        except Exception as exc:  # noqa: BLE001 - sequence profile is optional
+            logger.warning("STIDE profile build failed: %s", exc)
 
     return metrics
 

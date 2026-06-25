@@ -29,6 +29,7 @@ _API_ROUTES = [
     ("/execution-context", "get_execution_context", h.get_execution_context, None),
     ("/kernel-dna", "kernel_dna", h.kernel_dna, None),
     ("/ml-anomalies", "ml_anomalies", h.ml_anomalies, None),
+    ("/ml-drift", "ml_drift", h.ml_drift, None),
     ("/crypto-realtime", "crypto_realtime", h.crypto_realtime, None),
     ("/security-realtime", "security_realtime", h.security_realtime, None),
     ("/processes-realtime", "processes_realtime", h.processes_realtime, None),

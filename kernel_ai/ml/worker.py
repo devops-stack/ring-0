@@ -92,6 +92,35 @@ def _build_isoforest_anomaly(score: float, scores: dict[str, Score], cfg: MLConf
     }
 
 
+def _build_sequence_anomaly(mismatch: float, misses: int, window_len: int,
+                            top_unseen: list[str], cfg: MLConfig) -> dict:
+    """Build a mutation from a STIDE syscall-sequence verdict (Stage 4).
+
+    Unlike Stages 1-2 (which judge *magnitudes*), this fires when the recent
+    *order* of syscalls contains a high fraction of sequences never seen while
+    the normal profile was learned -- the classic signature of an intrusion.
+    """
+    severity = "high" if mismatch >= cfg.seq_mismatch_crit else "medium"
+    cause = ("; novel: " + ", ".join(top_unseen)) if top_unseen else ""
+    return {
+        "source": "stage4_sequence",
+        "feature": "syscall_seq",
+        "subsystem": "scheduler",
+        "type": "syscall_sequence",
+        "severity": severity,
+        "score": round(mismatch, 4),
+        "value": float(misses),
+        "baseline_mean": None,
+        "baseline_std": None,
+        "position": 0.22,
+        "message": (
+            f"Unusual syscall sequencing: {mismatch * 100:.0f}% of recent "
+            f"{window_len} n-grams are novel ({misses} unseen){cause}"
+        ),
+        "meta": {"stage": 4, "mismatch": round(mismatch, 4), "window": window_len},
+    }
+
+
 class MLWorker:
     def __init__(self, cfg: MLConfig | None = None) -> None:
         self.cfg = cfg or MLConfig()
@@ -105,6 +134,22 @@ class MLWorker:
         self._model_mtime: float | None = None
         self._last_if_emit = 0.0
         self._maybe_load_model()
+
+        # Stage 4 (syscall sequence / STIDE). Sampler + tracker run regardless so
+        # the n-gram vocabulary keeps growing; scoring only happens once a profile
+        # artifact exists (built by training/retrain).
+        self.seq_sampler = None
+        self.seq_tracker = None
+        self.seq_model = None
+        self._seq_model_mtime: float | None = None
+        self._last_seq_emit = 0.0
+        self._last_seq_flush = 0.0
+        if self.cfg.enable_stage4:
+            from kernel_ai.ml.sequence import NgramTracker, SyscallSampler
+
+            self.seq_sampler = SyscallSampler(max_pids=self.cfg.seq_max_pids)
+            self.seq_tracker = NgramTracker(n=self.cfg.seq_n, window=self.cfg.seq_window)
+            self._maybe_load_seq_model()
 
     def _maybe_load_model(self) -> None:
         """Load / hot-reload the IsolationForest artifact if present and changed.
@@ -130,6 +175,63 @@ class MLWorker:
         except Exception as exc:  # noqa: BLE001 - keep running on Stage 1 only
             logger.warning("failed to load Stage 2 model: %s", exc)
 
+    def _maybe_load_seq_model(self) -> None:
+        """Load / hot-reload the STIDE profile artifact if present and changed."""
+        if not self.cfg.enable_stage4:
+            return
+        path = self.cfg.seq_model_path
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            return  # no profile yet -> sequence scoring stays dormant
+        if self._seq_model_mtime is not None and mtime <= self._seq_model_mtime:
+            return
+        try:
+            from kernel_ai.ml.sequence import StideModel
+
+            self.seq_model = StideModel.load(path)
+            self._seq_model_mtime = mtime
+            logger.info("loaded Stage 4 STIDE profile: %s (%s)", path, self.seq_model.meta)
+        except Exception as exc:  # noqa: BLE001 - keep running without Stage 4
+            logger.warning("failed to load STIDE profile: %s", exc)
+
+    def _tick_sequence(self) -> dict | None:
+        """Sample syscalls, grow the n-gram vocabulary, and score the window."""
+        if self.seq_sampler is None or self.seq_tracker is None:
+            return None
+        # Burst of rapid sub-samples: parked daemons still yield X,X,X (normal),
+        # while actively-working processes reveal real syscall transitions.
+        bursts = max(1, self.cfg.seq_subsamples)
+        gap = max(0.0, self.cfg.seq_subsample_gap_ms / 1000.0)
+        for i in range(bursts):
+            samples = self.seq_sampler.sample()
+            if samples:
+                self.seq_tracker.update(samples)
+            if i < bursts - 1 and gap:
+                time.sleep(gap)
+
+        # Periodically persist newly observed n-grams so the profile can grow.
+        now = time.time()
+        if (now - self._last_seq_flush) >= self.cfg.seq_flush_sec:
+            pending = self.seq_tracker.drain_pending()
+            if pending:
+                self.store.upsert_ngram_counts(self.cfg.seq_n, pending)
+            self._last_seq_flush = now
+
+        if self.seq_model is None:
+            return None
+        window = self.seq_tracker.recent()
+        if len(window) < self.cfg.seq_min_window:
+            return None
+        mismatch, misses = self.seq_model.score_window(window)
+        if mismatch < self.cfg.seq_mismatch_warn:
+            return None
+        if (now - self._last_seq_emit) < self.cfg.seq_cooldown_sec:
+            return None
+        self._last_seq_emit = now
+        top = self.seq_model.top_unseen(window, limit=3)
+        return _build_sequence_anomaly(mismatch, misses, len(window), top, self.cfg)
+
     def stop(self, *_args) -> None:
         self._running = False
 
@@ -153,6 +255,15 @@ class MLWorker:
             if is_anom and (now - self._last_if_emit) >= self.cfg.if_cooldown_sec:
                 anomalies.append(_build_isoforest_anomaly(if_score, scores, self.cfg))
                 self._last_if_emit = now
+
+        # Stage 4 second opinion: anomalous *ordering* of syscalls.
+        if self.cfg.enable_stage4:
+            try:
+                seq_anom = self._tick_sequence()
+                if seq_anom is not None:
+                    anomalies.append(seq_anom)
+            except Exception as exc:  # noqa: BLE001 - never let Stage 4 kill the tick
+                logger.warning("sequence scoring failed: %s", exc)
 
         if self.cfg.store_features:
             self.store.insert_feature_snapshot(features)
@@ -188,6 +299,7 @@ class MLWorker:
                     self.store.prune(self.cfg.retain_features_hours, self.cfg.retain_anomalies_hours)
                     # Pick up a freshly retrained model without a restart.
                     self._maybe_load_model()
+                    self._maybe_load_seq_model()
             except Exception as exc:  # noqa: BLE001 - keep the loop alive
                 logger.exception("tick failed: %s", exc)
                 # Reconnect on DB hiccups rather than dying.

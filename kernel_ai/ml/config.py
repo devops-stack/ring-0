@@ -13,6 +13,11 @@ from pathlib import Path
 # Project root (parent of the ``kernel_ai`` package), used for default paths.
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
+# All ML runtime data (model artifacts, MLflow sqlite + artifacts) lives in one
+# directory owned by the service user (www-data), so the worker and the retrain
+# job can both read/write it. Override with KERNEL_AI_ML_DATA_DIR.
+_DATA_DIR = Path(os.getenv("KERNEL_AI_ML_DATA_DIR", str(_PROJECT_ROOT / "mldata")))
+
 
 def _env_float(name: str, default: float) -> float:
     try:
@@ -70,13 +75,18 @@ class MLConfig:
     # Saved model artifact the worker loads (decoupled from MLflow).
     model_path: str = os.getenv(
         "KERNEL_AI_ML_MODEL_PATH",
-        str(_PROJECT_ROOT / "models" / "isoforest_latest.joblib"),
+        str(_DATA_DIR / "isoforest_latest.joblib"),
     )
     # MLflow tracking store. sqlite gives both tracking + a model registry while
     # staying file-light (no always-on server). Override on PROD if desired.
     mlflow_uri: str = os.getenv(
         "KERNEL_AI_MLFLOW_URI",
-        f"sqlite:///{_PROJECT_ROOT / 'mlflow.db'}",
+        f"sqlite:///{_DATA_DIR / 'mlflow.db'}",
+    )
+    # Artifact root for MLflow runs (must be writable by the service user).
+    mlflow_artifact_uri: str = os.getenv(
+        "KERNEL_AI_MLFLOW_ARTIFACT_URI",
+        f"file:{_DATA_DIR / 'mlruns'}",
     )
     mlflow_experiment: str = os.getenv("KERNEL_AI_MLFLOW_EXPERIMENT", "kernel_dna_anomaly")
     mlflow_model_name: str = os.getenv("KERNEL_AI_MLFLOW_MODEL", "kernel_dna_isoforest")
@@ -90,6 +100,9 @@ class MLConfig:
     # --- Stage 3 (drift + auto-retrain) ---
     # Window of recent snapshots used to measure drift (minutes).
     drift_window_min: int = _env_int("KERNEL_AI_ML_DRIFT_WINDOW_MIN", 30)
+    # Minimum recent samples before drift verdicts are trusted (avoid declaring
+    # drift off one or two noisy snapshots right after a worker restart).
+    drift_min_recent: int = _env_int("KERNEL_AI_ML_DRIFT_MIN_RECENT", 20)
     # Drift trips when the live flag rate exceeds expected (contamination) by
     # this multiple, or when the mean per-feature distribution shift (in train
     # std units) exceeds the z threshold.
@@ -102,6 +115,36 @@ class MLConfig:
     # outside this sane band (degenerate model: flags nothing or everything).
     retrain_min_flag_rate: float = _env_float("KERNEL_AI_ML_RETRAIN_MIN_FLAG", 0.001)
     retrain_max_flag_rate: float = _env_float("KERNEL_AI_ML_RETRAIN_MAX_FLAG", 0.30)
+
+    # --- Stage 4 (syscall sequence model: STIDE n-grams) ---
+    # Detects anomalous *sequences* of syscalls rather than per-feature spikes.
+    # Built on sampled /proc/<pid>/syscall traces (L0), so it is a coarse but
+    # zero-dependency HIDS; eBPF/auditd tracing (L2) is the future upgrade.
+    enable_stage4: bool = os.getenv("KERNEL_AI_ML_STAGE4", "true").lower() == "true"
+    seq_model_path: str = os.getenv(
+        "KERNEL_AI_ML_SEQ_MODEL_PATH",
+        str(_DATA_DIR / "stide_latest.joblib"),
+    )
+    seq_n: int = _env_int("KERNEL_AI_ML_SEQ_N", 3)                  # n-gram size
+    seq_max_pids: int = _env_int("KERNEL_AI_ML_SEQ_MAX_PIDS", 512)  # pids sampled/tick
+    seq_window: int = _env_int("KERNEL_AI_ML_SEQ_WINDOW", 400)      # rolling n-grams scored
+    seq_min_window: int = _env_int("KERNEL_AI_ML_SEQ_MIN_WINDOW", 120)  # before scoring
+    # 2s tick sampling only catches processes *parked* in a syscall. A short burst
+    # of sub-samples per tick captures real syscall transitions (better sequences).
+    seq_subsamples: int = _env_int("KERNEL_AI_ML_SEQ_SUBSAMPLES", 4)
+    seq_subsample_gap_ms: int = _env_int("KERNEL_AI_ML_SEQ_SUBSAMPLE_GAP_MS", 40)
+    # Minimum distinct n-grams required before a STIDE profile is built (a profile
+    # learned from too little data would flag almost everything).
+    seq_min_vocab: int = _env_int("KERNEL_AI_ML_SEQ_MIN_VOCAB", 50)
+    # Window mismatch fraction (unseen n-grams) that counts as a sequence anomaly.
+    seq_mismatch_warn: float = _env_float("KERNEL_AI_ML_SEQ_MISMATCH_WARN", 0.30)
+    seq_mismatch_crit: float = _env_float("KERNEL_AI_ML_SEQ_MISMATCH_CRIT", 0.55)
+    seq_cooldown_sec: float = _env_float("KERNEL_AI_ML_SEQ_COOLDOWN_SEC", 30.0)
+    # Flush newly observed n-grams to the store every N seconds (profile growth).
+    seq_flush_sec: float = _env_float("KERNEL_AI_ML_SEQ_FLUSH_SEC", 30.0)
+    # Training keeps n-grams seen at least this many times (frequency-based poison
+    # guard: a one-off attack sequence never enters the "normal" profile).
+    seq_min_ngram_count: int = _env_int("KERNEL_AI_ML_SEQ_MIN_COUNT", 3)
 
     @property
     def alpha(self) -> float:

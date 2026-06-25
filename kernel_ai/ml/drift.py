@@ -72,11 +72,13 @@ def compute_drift(cfg: MLConfig | None = None, *, persist: bool = True) -> dict:
     n = len(recent)
     contamination = float(model.meta.get("contamination", cfg.if_contamination))
 
-    if n == 0:
+    # Too few recent samples (e.g. right after a worker restart) -> a single
+    # noisy point must not be allowed to declare "drift".
+    if n < cfg.drift_min_recent:
         result = {
-            "available": True, "n_recent": 0, "flag_rate": 0.0,
+            "available": True, "n_recent": n, "flag_rate": 0.0,
             "expected_rate": contamination, "feature_drift": 0.0, "drifted": False,
-            "detail": {"reason": "no_recent_data"},
+            "detail": {"reason": "insufficient_recent_data", "min_recent": cfg.drift_min_recent},
         }
         if persist:
             insert_drift(cfg.dsn, result)
