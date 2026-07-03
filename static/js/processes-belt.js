@@ -1,7 +1,7 @@
 // Processes Subsystem Visualization
-// Version: 27
+// Version: 31 — FLOW mode: strand bundle rising into a wireframe cube
 
-debugLog('🧠 processes-belt.js v27: Script loading...');
+debugLog('🧠 processes-belt.js v31: Script loading...');
 
 class ProcessesSubsystemVisualization {
     constructor() {
@@ -15,7 +15,7 @@ class ProcessesSubsystemVisualization {
         this.telemetry = null;
         this.tick = 0;
         this.nodeLayout = new Map();
-        this.layoutMode = 'microscope';
+        this.layoutMode = 'flow';
         this.modeButtons = new Map();
         this.edgeFilter = 'all';
         this.filterButtons = new Map();
@@ -83,6 +83,7 @@ class ProcessesSubsystemVisualization {
             position:absolute;top:18px;left:18px;display:flex;gap:8px;z-index:1001;
         `;
         const modes = [
+            { key: 'flow', label: 'FLOW' },
             { key: 'microscope', label: 'MICROSCOPE' },
             { key: 'temporal', label: '3-LAYER GRAPH' },
             { key: 'radial', label: 'RADIAL GRAPH' },
@@ -107,7 +108,7 @@ class ProcessesSubsystemVisualization {
     }
 
     setLayoutMode(modeKey) {
-        this.layoutMode = ['temporal', 'radial', 'microscope', 'wireframe'].includes(modeKey) ? modeKey : 'temporal';
+        this.layoutMode = ['flow', 'temporal', 'radial', 'microscope', 'wireframe'].includes(modeKey) ? modeKey : 'temporal';
         this.modeButtons.forEach((btn, key) => {
             const active = key === this.layoutMode;
             btn.style.background = active ? 'rgba(32, 52, 81, 0.92)' : 'rgba(8,12,18,0.86)';
@@ -2186,6 +2187,11 @@ class ProcessesSubsystemVisualization {
         this.ctx.clearRect(0, 0, w, h);
         this.tick += 1;
 
+        if (this.layoutMode === 'flow') {
+            this.drawFlowScene(w, h);
+            return;
+        }
+
         const gap = 16;
         const top = 58;
         const statsH = this.layoutMode === 'microscope' ? 74 : 98;
@@ -2234,6 +2240,226 @@ class ProcessesSubsystemVisualization {
             this.drawTopStats(gap, top, w - gap * 2, statsH);
         }
         this.drawNeuralGraph(gap, graphY, w - gap * 2, graphH);
+    }
+
+    // Map a horizontal position 0..1 to the reference's hue ramp:
+    // left cyan/teal -> centre amber -> right red/pink (through pure red).
+    _flowHue(f) {
+        f = Math.max(0, Math.min(1, f));
+        let hue;
+        if (f <= 0.5) {
+            hue = 188 + (45 - 188) * (f / 0.5);        // cyan -> amber
+        } else {
+            hue = 45 + (-70) * ((f - 0.5) / 0.5);      // amber -> red -> pink
+        }
+        return ((hue % 360) + 360) % 360;
+    }
+
+    // Rotate a point (Y then X) and apply a simple perspective projection.
+    _project3d(x, y, z, cx, cy, rotY, rotX, focal) {
+        const cY = Math.cos(rotY), sY = Math.sin(rotY);
+        const x1 = x * cY - z * sY;
+        const z1 = x * sY + z * cY;
+        const cX = Math.cos(rotX), sX = Math.sin(rotX);
+        const y2 = y * cX - z1 * sX;
+        const z2 = y * sX + z1 * cX;
+        const scale = focal / (focal + z2);
+        return { x: cx + x1 * scale, y: cy - y2 * scale, scale, z: z2 };
+    }
+
+    // FLOW mode: process strands rise from a tight bundle at the bottom and fan
+    // up into the edges/faces of a slowly-rotating wireframe cube (one-to-one
+    // with the reference). Visual-first: uses live telemetry when present,
+    // otherwise a demo field so it always looks alive. Field mapping (width /
+    // colour <- real metrics) is intentionally coarse for now.
+    drawFlowScene(w, h) {
+        const ctx = this.ctx;
+        const t = this.tick * 0.016; // approx seconds
+        if (!this.flowStreams) this.flowStreams = new Map();
+        this.nodeHitAreas = [];
+
+        // Background: near-black vertical wash + soft vignette.
+        const bg = ctx.createLinearGradient(0, 0, 0, h);
+        bg.addColorStop(0, '#05070b');
+        bg.addColorStop(0.5, '#070a10');
+        bg.addColorStop(1, '#02040a');
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, w, h);
+
+        // Drifting bokeh for depth.
+        if (!this.flowBokeh) {
+            this.flowBokeh = Array.from({ length: 46 }, () => ({
+                x: Math.random() * w, y: Math.random() * h,
+                r: 2 + Math.random() * 26, a: 0.04 + Math.random() * 0.10,
+                vy: 4 + Math.random() * 12, f: Math.random()
+            }));
+        }
+        ctx.globalCompositeOperation = 'lighter';
+        this.flowBokeh.forEach((b) => {
+            b.y -= b.vy * 0.016;
+            if (b.y < -40) { b.y = h + 40; b.x = Math.random() * w; b.f = Math.random(); }
+            const hue = this._flowHue(b.f);
+            const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r);
+            g.addColorStop(0, `hsla(${hue},80%,65%,${b.a})`);
+            g.addColorStop(1, `hsla(${hue},80%,65%,0)`);
+            ctx.fillStyle = g;
+            ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+        });
+
+        // Build per-stream specs from telemetry (or a demo field).
+        const nodes = Array.isArray(this.telemetry?.neural_graph?.nodes)
+            ? this.telemetry.neural_graph.nodes : [];
+        let specs;
+        if (nodes.length) {
+            specs = nodes.slice(0, 90).map((n, i) => {
+                const pid = Number(n.pid || 0) || -(i + 1);
+                const press = Number(n.syscall_pressure || 0);
+                const m = press > 0
+                    ? Math.max(0.18, Math.min(1, press / 100))
+                    : 0.2 + this.stableUnit(pid) * 0.7;
+                return { key: pid, m };
+            });
+        } else {
+            specs = Array.from({ length: 72 }, (_, i) => ({
+                key: -(i + 1), m: 0.3 + this.stableUnit(i + 1) * 0.65
+            }));
+        }
+
+        const count = specs.length;
+        const seen = new Set();
+
+        // --- slowly-rotating wireframe cube the strands rise into ---
+        const cx = w * 0.5;
+        const cy = h * 0.40;
+        const s = Math.min(w, h) * 0.24;
+        const focal = s * 3.6;
+        this.flowCubeRot = (this.flowCubeRot || 0) + 0.0035;
+        const rotY = this.flowCubeRot;
+        const rotX = 0.5; // tilt so we look slightly up into it from the bundle
+        const project = (p) => this._project3d(p[0] * s, p[1] * s, p[2] * s, cx, cy, rotY, rotX, focal);
+
+        const V = [
+            [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
+            [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]
+        ];
+        const E = [
+            [0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6],
+            [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]
+        ];
+        const projV = V.map(project);
+
+        // Attachment targets: cube vertices + points subdividing each edge, so
+        // strands land on the edges/faces of the cube.
+        if (!this.flowCubeTargets) {
+            const targets = V.map((v) => v.slice());
+            E.forEach(([a, b]) => {
+                for (let k = 1; k <= 3; k++) {
+                    const tk = k / 4;
+                    targets.push([
+                        V[a][0] + (V[b][0] - V[a][0]) * tk,
+                        V[a][1] + (V[b][1] - V[a][1]) * tk,
+                        V[a][2] + (V[b][2] - V[a][2]) * tk
+                    ]);
+                }
+            });
+            this.flowCubeTargets = targets;
+        }
+        const projTargets = this.flowCubeTargets.map(project);
+
+        // --- bundle of strands: from a tight bottom knot up to cube targets ---
+        const bundleX = w * 0.5;
+        const bundleY = h * 0.99;
+
+        specs.forEach((spec) => {
+            seen.add(spec.key);
+            const u = this.stableUnit(spec.key < 0 ? (-spec.key + 777) : spec.key);
+            const targetIdx = Math.floor(u * projTargets.length) % projTargets.length;
+            let st = this.flowStreams.get(spec.key);
+            if (!st) {
+                st = { growth: 0, m: spec.m, phase: u * Math.PI * 2, speed: 0.5 + u * 0.7, targetIdx };
+                this.flowStreams.set(spec.key, st);
+            }
+            st.m += (spec.m - st.m) * 0.05;       // ease metric changes
+            st.growth += (1 - st.growth) * 0.04;  // birth: grow out of the bundle
+
+            const target = projTargets[st.targetIdx];
+            const hue = this._flowHue(Math.max(0, Math.min(1, target.x / w)));
+            const width = 1 + st.m * 2.6;
+
+            // Origin jitter forms the bundle ("пучок") at the bottom centre.
+            const ox = bundleX + (u - 0.5) * w * 0.045;
+            const oy = bundleY;
+            // Growth eases the live endpoint up out of the knot toward the cube.
+            const ex = ox + (target.x - ox) * st.growth;
+            const ey = oy + (target.y - oy) * st.growth;
+            // Control: rise vertically out of the bundle, then curve to the cube.
+            const c1x = ox + (ex - ox) * 0.2;
+            const c1y = oy - (oy - ey) * 0.7;
+            const swayAmp = (5 + u * 12) * (0.5 + st.m * 0.7);
+
+            const N = 26;
+            const pts = [];
+            for (let i = 0; i <= N; i++) {
+                const tt = i / N;
+                const mt = 1 - tt;
+                let xx = mt * mt * ox + 2 * mt * tt * c1x + tt * tt * ex;
+                const yy = mt * mt * oy + 2 * mt * tt * c1y + tt * tt * ey;
+                xx += Math.sin(t * st.speed + st.phase + tt * Math.PI * 1.4) * swayAmp * tt;
+                pts.push([xx, yy]);
+            }
+
+            // Body: gradient dim at the bundle, bright where it meets the cube.
+            const grad = ctx.createLinearGradient(ox, oy, ex, ey);
+            grad.addColorStop(0, `hsla(${hue},92%,55%,0)`);
+            grad.addColorStop(0.3, `hsla(${hue},92%,58%,0.22)`);
+            grad.addColorStop(1, `hsla(${hue},95%,68%,0.9)`);
+            ctx.strokeStyle = grad;
+            ctx.lineWidth = width;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(pts[0][0], pts[0][1]);
+            for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+            ctx.stroke();
+
+            // Glow where the strand meets the cube.
+            const tip = pts[pts.length - 1];
+            const tr = 5 + st.m * 7;
+            const tg = ctx.createRadialGradient(tip[0], tip[1], 0, tip[0], tip[1], tr);
+            tg.addColorStop(0, `hsla(${hue},95%,82%,0.95)`);
+            tg.addColorStop(1, `hsla(${hue},95%,70%,0)`);
+            ctx.fillStyle = tg;
+            ctx.beginPath(); ctx.arc(tip[0], tip[1], tr, 0, Math.PI * 2); ctx.fill();
+
+            // Travelling shimmer riding up the strand.
+            const sh = ((t * 0.35 * st.speed) + u) % 1;
+            const sp = pts[Math.min(N, Math.max(0, Math.floor(sh * N)))];
+            ctx.fillStyle = `hsla(${hue},100%,90%,${0.5 * Math.sin(sh * Math.PI)})`;
+            ctx.beginPath(); ctx.arc(sp[0], sp[1], width * 0.85, 0, Math.PI * 2); ctx.fill();
+        });
+
+        // Drop streams whose process has gone.
+        for (const k of this.flowStreams.keys()) {
+            if (!seen.has(k)) this.flowStreams.delete(k);
+        }
+
+        // --- wireframe cube on top (subtle, glassy) ---
+        ctx.lineWidth = 1.2;
+        ctx.strokeStyle = 'rgba(150, 205, 235, 0.35)';
+        E.forEach(([a, b]) => {
+            ctx.beginPath();
+            ctx.moveTo(projV[a].x, projV[a].y);
+            ctx.lineTo(projV[b].x, projV[b].y);
+            ctx.stroke();
+        });
+        projV.forEach((p) => {
+            ctx.fillStyle = 'rgba(190, 225, 245, 0.7)';
+            ctx.beginPath(); ctx.arc(p.x, p.y, 2.2, 0, Math.PI * 2); ctx.fill();
+        });
+
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.fillStyle = 'rgba(200,214,235,0.5)';
+        ctx.font = '10px "Share Tech Mono", monospace';
+        ctx.fillText(`PROCESS FLOW · ${count} streams${nodes.length ? '' : ' · demo'}`, 18, h - 18);
     }
 
     animate() {
