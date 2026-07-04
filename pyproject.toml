@@ -1,31 +1,29 @@
-[tool.black]
-line-length = 88
-target-version = ['py310']
-include = '\.pyi?$'
-extend-exclude = '''
-/(
-  # directories
-  \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | venv
-  | _build
-  | buck-out
-  | build
-  | dist
-)/
-'''
+# Project tooling config. Kept minimal on purpose: pytest + coverage settings
+# live here so `pytest` and `pytest --cov` behave the same locally and in CI.
 
-[tool.isort]
-profile = "black"
-multi_line_output = 3
-line_length = 88
-known_first_party = ["app"]
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
 
-[tool.pylint]
-load-plugins = ["pylint_flask"]
-disable = ["C0114", "C0116"]
-max-line-length = 88
+[tool.coverage.run]
+# Measure only our own package (not the venv or third-party code), and track
+# branch coverage (did both sides of each `if` run?) which is more honest than
+# plain line coverage.
+source = ["kernel_ai"]
+branch = true
+omit = [
+    "*/__main__.py",
+    "*/tests/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+# Lines we don't expect (or want) to cover — excluded from the % so the number
+# reflects real gaps, not boilerplate.
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
