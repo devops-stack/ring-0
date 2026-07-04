@@ -54,6 +54,9 @@ def test_get_process_fds_info_descriptors(monkeypatch):
     monkeypatch.setattr(svc.os.path, "exists", lambda path: path == "/proc/123/fd")
     monkeypatch.setattr(svc.os, "listdir", lambda path: ["19", "0", "7", "2", "1"] if path == "/proc/123/fd" else [])
     monkeypatch.setattr(svc.os, "readlink", lambda path: targets[path])
+    # Isolate the unrelated namespace probe: this test is about fd descriptor
+    # parsing, and the real fingerprint reads /proc/<pid>/ns/* (not mocked here).
+    monkeypatch.setattr(svc, "get_process_namespace_fingerprint", lambda _pid: {})
 
     out = svc.get_process_fds_info(123)
     descriptors = out["descriptors"]
