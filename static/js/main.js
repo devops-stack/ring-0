@@ -1498,6 +1498,8 @@ function clearPinnedProcessDossier() {
     const pinnedPid = pinnedProcessDossier.process?.pid;
     const isHighlighted = window.__highlightedProcess && window.__highlightedProcess.pid === pinnedPid;
     pinnedProcessDossier = null;
+    stopProcessModalTopKeeper();
+    d3.selectAll('.process-modal-scrim').remove();
     d3.selectAll('.process-dossier-layer').remove();
     d3.selectAll('.process-interaction-module').remove();
     d3.selectAll('.process-node-group').classed('process-pinned', false);
@@ -1519,6 +1521,78 @@ function clearPinnedProcessDossier() {
     }
 }
 
+// Единый "модальный" скрим под панелями открытого меню процесса.
+// Мягкая бумажная вуаль с лёгкой виньеткой к краям гасит плотную основную
+// сцену, чтобы панели читались как сфокусированный слой, а не случайные окна.
+function ensureProcessModalScrim() {
+    if (isMobileLayout()) return;
+    if (!svg.select('.process-modal-scrim').empty()) return;
+
+    let defs = svg.select('defs');
+    if (defs.empty()) defs = svg.append('defs');
+    if (svg.select('#process-scrim-grad').empty()) {
+        const grad = defs.append('radialGradient')
+            .attr('id', 'process-scrim-grad')
+            .attr('cx', '50%').attr('cy', '46%').attr('r', '65%');
+        grad.append('stop').attr('offset', '0%').attr('stop-color', '#e4e4df').attr('stop-opacity', 0.34);
+        grad.append('stop').attr('offset', '68%').attr('stop-color', '#deded8').attr('stop-opacity', 0.58);
+        grad.append('stop').attr('offset', '100%').attr('stop-color', '#d3d3cc').attr('stop-opacity', 0.76);
+    }
+
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    svg.append('rect')
+        .attr('class', 'process-modal-scrim')
+        .attr('x', -80).attr('y', -80)
+        .attr('width', w + 160).attr('height', h + 160)
+        .attr('fill', 'url(#process-scrim-grad)')
+        .style('pointer-events', 'all')
+        .style('opacity', 0)
+        .transition().duration(220).style('opacity', 1);
+}
+
+// Держим фокус-слой корректным по z-order: любые "живые" элементы (анимация
+// syscalls и т.п.), дорисованные в svg ПОСЛЕ вуали, задвигаем ПОД неё. Панели
+// меню (scrim/dossier/module) не трогаем — иначе рестартовали бы их анимации.
+let processModalTopObserver = null;
+
+function buryLiveLayersUnderScrim() {
+    const svgNode = svg.node();
+    if (!svgNode) return;
+    const scrimNode = svgNode.querySelector('.process-modal-scrim');
+    if (!scrimNode) return;
+    const modalClasses = ['process-modal-scrim', 'process-dossier-layer', 'process-interaction-module'];
+    const toMove = [];
+    for (let sib = scrimNode.nextSibling; sib; sib = sib.nextSibling) {
+        if (sib.nodeType !== 1) continue;
+        const cl = sib.classList;
+        if (cl && modalClasses.some(c => cl.contains(c))) continue;
+        toMove.push(sib);
+    }
+    toMove.forEach(n => svgNode.insertBefore(n, scrimNode));
+}
+
+function startProcessModalTopKeeper() {
+    const svgNode = svg.node();
+    if (!svgNode || typeof MutationObserver === 'undefined') return;
+    buryLiveLayersUnderScrim();
+    if (processModalTopObserver) return;
+    processModalTopObserver = new MutationObserver(() => {
+        if (!pinnedProcessDossier) return;
+        processModalTopObserver.disconnect();
+        buryLiveLayersUnderScrim();
+        processModalTopObserver.observe(svgNode, { childList: true });
+    });
+    processModalTopObserver.observe(svgNode, { childList: true });
+}
+
+function stopProcessModalTopKeeper() {
+    if (processModalTopObserver) {
+        processModalTopObserver.disconnect();
+        processModalTopObserver = null;
+    }
+}
+
 function pinProcessDossier(processData, anchor) {
     pinnedProcessDossier = {
         process: processData,
@@ -1527,8 +1601,10 @@ function pinProcessDossier(processData, anchor) {
             ? pinnedProcessDossier.details
             : {}
     };
+    ensureProcessModalScrim();
     renderProcessDossier();
     renderProcessInteractionModule(window.innerWidth / 2, window.innerHeight / 2, processData, anchor, pinnedProcessDossier.details);
+    startProcessModalTopKeeper();
     if (window.nginxFilesManager && typeof window.nginxFilesManager.highlightProcessFiles === 'function') {
         window.nginxFilesManager.highlightProcessFiles(processData.pid);
     }

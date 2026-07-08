@@ -285,6 +285,8 @@ def get_isolation_context():
     namespace_keys = ["mnt", "pid", "net", "ipc", "uts", "user"]
     namespace_labels = {"mnt": "MNT", "pid": "PID", "net": "NET", "ipc": "IPC", "uts": "UTS", "user": "USER"}
     namespace_counts = {k: {} for k in namespace_keys}
+    # Per-namespace, per-inode sample process names (each inode = one isolated "world").
+    namespace_samples = {k: {} for k in namespace_keys}
     cgroup_aggregates = {}
     total_scanned = 0
 
@@ -305,11 +307,15 @@ def get_isolation_context():
                 process_name = proc.info.get("name") or "unknown"
                 agg["sample_processes"].append(process_name)
 
+            proc_name = proc.info.get("name") or "unknown"
             for ns_name in namespace_keys:
                 inode = read_namespace_inode(pid, ns_name)
                 if inode:
                     ns_map = namespace_counts[ns_name]
                     ns_map[inode] = ns_map.get(inode, 0) + 1
+                    samples = namespace_samples[ns_name].setdefault(inode, [])
+                    if len(samples) < 5 and proc_name not in samples:
+                        samples.append(proc_name)
         except (psutil.NoSuchProcess, psutil.AccessDenied, KeyError):
             continue
 
@@ -322,6 +328,15 @@ def get_isolation_context():
         if entries:
             dominant_inode, dominant_count = max(entries.items(), key=lambda kv: kv[1])
         activity = round((dominant_count / total_scanned), 3) if total_scanned > 0 else 0
+        # Top isolated "worlds" for this namespace (one per inode), richest first.
+        worlds = [
+            {
+                "inode": inode,
+                "count": count,
+                "sample": namespace_samples[ns_name].get(inode, []),
+            }
+            for inode, count in sorted(entries.items(), key=lambda kv: kv[1], reverse=True)[:6]
+        ]
         namespaces.append(
             {
                 "id": ns_name,
@@ -330,6 +345,8 @@ def get_isolation_context():
                 "dominant_inode": dominant_inode,
                 "dominant_count": dominant_count,
                 "activity": activity,
+                "isolated": unique_count > 1,
+                "worlds": worlds,
             }
         )
 
