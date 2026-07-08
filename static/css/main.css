@@ -13,6 +13,11 @@ svg {
     height: 100vh;
 }
 
+/* Модальный скрим открытого меню процесса (клик по нему закрывает меню) */
+.process-modal-scrim {
+    cursor: pointer;
+}
+
 /* Central circle */
 .central-circle {
     fill: rgba(0, 0, 0, 0.09);
@@ -167,6 +172,121 @@ svg {
     pointer-events: none;
     z-index: 1000;
     max-width: 300px;
+}
+
+/* Namespace HUD tooltip (ink-on-paper FUI style) */
+.ns-hud-tooltip {
+    background: rgba(20, 22, 26, 0.94);
+    color: #e8eaef;
+    border: 1px solid rgba(120, 126, 138, 0.5);
+    border-radius: 3px;
+    padding: 9px 11px;
+    min-width: 172px;
+    max-width: 240px;
+    box-shadow: 0 6px 22px rgba(0, 0, 0, 0.35);
+}
+.ns-hud-head {
+    font-size: 10px;
+    letter-spacing: 1.6px;
+    color: #ffffff;
+    padding-bottom: 5px;
+    margin-bottom: 6px;
+    border-bottom: 1px solid rgba(120, 126, 138, 0.35);
+}
+.ns-hud-desc {
+    font-size: 9.5px;
+    line-height: 1.35;
+    color: #aab0bc;
+    margin-bottom: 7px;
+}
+.ns-hud-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 9.5px;
+    letter-spacing: 0.4px;
+    padding: 1px 0;
+}
+.ns-hud-row span { color: #8b909c; }
+.ns-hud-row b { color: #e8eaef; font-weight: 600; }
+.ns-hud-bar {
+    margin-top: 7px;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(120, 126, 138, 0.25);
+    overflow: hidden;
+}
+.ns-hud-bar i {
+    display: block;
+    height: 100%;
+    background: rgba(88, 182, 216, 0.85);
+}
+.ns-hud-foot {
+    margin-top: 4px;
+    font-size: 8px;
+    letter-spacing: 1.2px;
+    color: #7f8794;
+    text-align: right;
+}
+
+/* Marker for namespace cells that contain real isolation (unique_count > 1) */
+.ns-isolated-marker {
+    animation: nsIsolatedPulse 1.8s ease-in-out infinite;
+    transform-box: fill-box;
+    transform-origin: center;
+}
+@keyframes nsIsolatedPulse {
+    0%, 100% { opacity: 0.35; }
+    50% { opacity: 1; }
+}
+
+/* Namespace system-info tree (unfolds from a namespace cell) */
+.ns-tree-conn { stroke: rgba(90, 94, 102, 0.75); stroke-width: 1.3; fill: none; }
+.ns-tree-anchor { fill: rgba(60, 63, 70, 0.9); }
+.ns-tree-frame {
+    fill: rgba(20, 22, 26, 0.95);
+    stroke: rgba(120, 126, 138, 0.5);
+    stroke-width: 1;
+}
+.ns-tree-title {
+    fill: #ffffff;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 1.5px;
+}
+.ns-tree-link { stroke: rgba(150, 156, 168, 0.5); stroke-width: 1; fill: none; }
+.ns-tree-root rect {
+    fill: rgba(88, 182, 216, 0.9);
+    stroke: rgba(88, 182, 216, 1);
+    stroke-width: 1;
+}
+.ns-tree-root text {
+    fill: #06131b;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.6px;
+}
+.ns-tree-branch rect {
+    fill: rgba(255, 255, 255, 0.1);
+    stroke: rgba(255, 255, 255, 0.28);
+    stroke-width: 1;
+}
+.ns-tree-branch text {
+    fill: #eef1f5;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 1px;
+}
+.ns-tree-leaf rect {
+    fill: rgba(255, 255, 255, 0.045);
+    stroke: rgba(120, 126, 138, 0.42);
+    stroke-width: 1;
+}
+.ns-tree-leaf text {
+    fill: #c4c9d3;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 8.5px;
+    letter-spacing: 0.3px;
 }
 
 /* Bezier curve styles - matching connection lines */
