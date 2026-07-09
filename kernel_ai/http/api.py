@@ -36,6 +36,7 @@ from kernel_ai.http.api_handlers.processes import (
     processes_realtime,
 )
 from kernel_ai.http.api_handlers.security_logs import (
+    crypto_aes_demo,
     crypto_realtime,
     ingest_frontend_logs,
     security_realtime,
@@ -43,6 +44,7 @@ from kernel_ai.http.api_handlers.security_logs import (
 
 __all__ = [
     "active_connections",
+    "crypto_aes_demo",
     "crypto_realtime",
     "devices_realtime",
     "filesystem_blocks",

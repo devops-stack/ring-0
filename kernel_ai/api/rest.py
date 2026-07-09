@@ -31,6 +31,7 @@ _API_ROUTES = [
     ("/ml-anomalies", "ml_anomalies", h.ml_anomalies, None),
     ("/ml-drift", "ml_drift", h.ml_drift, None),
     ("/crypto-realtime", "crypto_realtime", h.crypto_realtime, None),
+    ("/crypto-aes-demo", "crypto_aes_demo", h.crypto_aes_demo, None),
     ("/security-realtime", "security_realtime", h.security_realtime, None),
     ("/processes-realtime", "processes_realtime", h.processes_realtime, None),
     ("/frontend-logs", "ingest_frontend_logs", h.ingest_frontend_logs, ["POST", "OPTIONS"]),

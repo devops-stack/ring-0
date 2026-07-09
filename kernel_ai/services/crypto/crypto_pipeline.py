@@ -20,6 +20,8 @@ def collect_crypto_realtime(crypto_prev, callbacks=None, psutil_module=None, log
     infer_tls_terminator_fn = callbacks.get("infer_tls_terminator", lambda _name, _port, _proto, _listeners: "n/a")
     collect_algorithm_competition_fn = callbacks.get("collect_algorithm_competition", lambda _algo: {"request": "AES", "implementations": [], "selected": None})
     parse_proc_crypto_entries_fn = callbacks.get("parse_proc_crypto_entries", lambda: [])
+    read_cpu_crypto_flags_fn = callbacks.get("read_cpu_crypto_flags", lambda: {"detected": [], "display": [], "aes_ni": False, "source": "unavailable"})
+    read_kernel_crypto_ops_fn = callbacks.get("read_kernel_crypto_ops", lambda: {"available": False})
     collect_kernel_crypto_clients_fn = callbacks.get("collect_kernel_crypto_clients", lambda _items: [])
     collect_hw_offload_status_fn = callbacks.get("collect_hw_offload_status", lambda _entries, _comps: [])
     collect_sync_async_queue_fn = callbacks.get("collect_sync_async_queue", lambda _items: {})
@@ -185,6 +187,19 @@ def collect_crypto_realtime(crypto_prev, callbacks=None, psutil_module=None, log
     else:
         ops_per_sec = round(active_flows * 90, 2)
 
+    # Real network throughput (proxy for encrypted traffic volume on a TLS host).
+    try:
+        net_counters = psutil_module.net_io_counters()
+        net_bytes_now = int(getattr(net_counters, "bytes_sent", 0) or 0) + int(getattr(net_counters, "bytes_recv", 0) or 0)
+    except Exception:  # noqa: BLE001 - psutil backends vary across kernels
+        net_bytes_now = 0
+    prev_net_bytes = crypto_prev.get("net_bytes")
+    if prev_ts and prev_net_bytes is not None and net_bytes_now:
+        net_mb_s = round(max(net_bytes_now - int(prev_net_bytes), 0) / max(now - prev_ts, 0.001) / (1024.0 * 1024.0), 3)
+    else:
+        net_mb_s = 0.0
+    crypto_prev["net_bytes"] = net_bytes_now
+
     unique_processes = []
     for item in items:
         p = item["process"]
@@ -297,6 +312,156 @@ def collect_crypto_realtime(crypto_prev, callbacks=None, psutil_module=None, log
         ),
     ]
 
+    # --- Real CPU crypto flags ---------------------------------------------
+    cpu_flags = read_cpu_crypto_flags_fn() or {}
+
+    # --- Real kernel crypto operations (Tier 3, kprobe collector) ----------
+    kernel_ops = read_kernel_crypto_ops_fn() or {"available": False}
+    kernel_ops_available = bool(kernel_ops.get("available"))
+    kernel_totals = kernel_ops.get("totals") or {}
+    kernel_by_driver = kernel_ops.get("by_driver") or []
+
+    # --- Selected kernel crypto algorithms (from /proc/crypto competition) --
+    tls_sessions = sum(1 for i in items if i.get("protocol") == "TLS")
+    family_labels = {"aes": "AES", "sha": "SHA-2", "chacha20": "ChaCha20"}
+
+    def _norm_driver(name):
+        # Normalise driver names so registry-selected wrappers match observed leaf
+        # drivers, e.g. "cryptd(__xts-aes-aesni)" and "__xts-aes-aesni" -> "xts-aes-aesni".
+        core = str(name or "").lower().replace("cryptd(", "").replace(")", "").strip()
+        return core.lstrip("_")
+
+    observed_ops_norm = {}
+    for row in kernel_by_driver:
+        drv = _norm_driver(row.get("driver"))
+        if drv:
+            observed_ops_norm[drv] = observed_ops_norm.get(drv, 0.0) + float(row.get("ops_per_sec") or 0.0)
+
+    def _observed_for(driver_name):
+        norm = _norm_driver(driver_name)
+        if not norm:
+            return 0.0
+        total = 0.0
+        for obs_name, obs_ops in observed_ops_norm.items():
+            if norm == obs_name or norm in obs_name or obs_name in norm:
+                total += obs_ops
+        return total
+
+    active_algorithms = []
+    for family_key in ("aes", "sha", "chacha20"):
+        comp = algorithm_competitions.get(family_key) or {}
+        selected = comp.get("selected") or {}
+        driver_name = str(selected.get("name") or "n/a")
+        observed = _observed_for(driver_name) if driver_name != "n/a" else 0.0
+        if driver_name == "n/a":
+            status = "idle"
+        elif observed > 0:
+            status = "executing"
+        else:
+            status = "selected"
+        active_algorithms.append(
+            {
+                "family": family_labels.get(family_key, family_key.upper()),
+                "driver": driver_name,
+                "priority": selected.get("priority"),
+                "source": str(selected.get("source") or "kernel"),
+                "status": status,
+                "observed_ops_per_sec": round(observed, 1) if observed else 0.0,
+            }
+        )
+
+    # --- Kernel crypto metrics (real / procfs-derived) ---------------------
+    entropy_bits = int((entropy_cloud or {}).get("entropy_pool_bits") or 0)
+    entropy_size = int((entropy_cloud or {}).get("entropy_pool_size_bits") or 256) or 256
+    entropy_pct = round(100.0 * entropy_bits / entropy_size, 1)
+    crng_state = str((entropy_cloud or {}).get("crng_state") or "unknown")
+    rng_health = "good" if crng_state.lower() in {"ready", "initialized", "crng_ready"} else "warming"
+    hw_offload_rows = crypto_stage1.get("hw_offload") or []
+    aes_engine_active = any(
+        "aes-ni" in str(row.get("engine", "")).lower() and row.get("status") == "active"
+        for row in hw_offload_rows
+    )
+    if bool(cpu_flags.get("aes_ni")):
+        aes_ni_status = "active" if aes_engine_active else "available"
+    else:
+        aes_ni_status = "n/a"
+    queue_meta = crypto_stage1.get("sync_async") or {}
+    # Prefer real kernel-measured throughput/latency/ops when the collector is live.
+    if kernel_ops_available:
+        kernel_ops_per_sec = float(kernel_totals.get("ops_per_sec") or 0.0)
+        kernel_mb_s = float(kernel_totals.get("mb_per_sec") or 0.0)
+        kernel_lat_us = kernel_totals.get("avg_lat_us")
+        crypto_latency_ms = round(float(kernel_lat_us) / 1000.0, 4) if kernel_lat_us is not None else queue_meta.get("queue_latency_ms_est")
+    else:
+        kernel_ops_per_sec = None
+        kernel_mb_s = None
+        crypto_latency_ms = queue_meta.get("queue_latency_ms_est")
+    crypto_metrics = {
+        "entropy_pool_bits": entropy_bits,
+        "entropy_pool_size_bits": entropy_size,
+        "entropy_pct": entropy_pct,
+        "crng_state": crng_state,
+        "rng_health": rng_health,
+        "aes_ni_status": aes_ni_status,
+        "aes_ni_available": bool(cpu_flags.get("aes_ni")),
+        "latency_ms": crypto_latency_ms,
+        "net_mb_s": net_mb_s,
+        "ops_per_sec": ops_per_sec,
+        "tls_sessions": tls_sessions,
+        "active_flows": active_flows,
+        # Real kernel crypto (None when collector is not running)
+        "kernel_ops_available": kernel_ops_available,
+        "kernel_ops_per_sec": kernel_ops_per_sec,
+        "kernel_mb_s": kernel_mb_s,
+    }
+
+    # --- Rolling, change-driven crypto event log ---------------------------
+    def _now_hms():
+        return datetime.now().strftime("%H:%M:%S")
+
+    prev_selected = crypto_prev.get("selected_drivers") or {}
+    current_selected = {a["family"]: a["driver"] for a in active_algorithms if a["driver"] != "n/a"}
+    new_events = []
+    for family_name, driver_name in current_selected.items():
+        if prev_selected.get(family_name) != driver_name:
+            new_events.append({"ts": _now_hms(), "tag": family_name.lower(), "msg": f"{driver_name}: selected"})
+    crypto_prev["selected_drivers"] = current_selected
+
+    if crypto_prev.get("crng_state_seen") != crng_state:
+        new_events.append({"ts": _now_hms(), "tag": "random", "msg": f"crng -> {crng_state} ({entropy_bits}/{entropy_size}b)"})
+    crypto_prev["crng_state_seen"] = crng_state
+
+    if prev_ts and active_flows != prev_flows:
+        delta_flows = active_flows - prev_flows
+        sign = "+" if delta_flows > 0 else ""
+        new_events.append({"ts": _now_hms(), "tag": "flows", "msg": f"crypto actors {sign}{delta_flows} -> {active_flows}"})
+
+    if kernel_ops_available and kernel_by_driver:
+        top_kernel = kernel_by_driver[0]
+        top_key = f"{top_kernel.get('op')}|{top_kernel.get('driver')}"
+        if crypto_prev.get("top_kernel_op") != top_key:
+            new_events.append({
+                "ts": _now_hms(),
+                "tag": "kops",
+                "msg": f"{top_kernel.get('driver')} {top_kernel.get('op')} @ {top_kernel.get('ops_per_sec')}/s",
+            })
+        crypto_prev["top_kernel_op"] = top_key
+
+    active_engines = [str(row.get("engine")) for row in hw_offload_rows if row.get("status") == "active"]
+    prev_engines = crypto_prev.get("hw_engines_seen")
+    if prev_engines is None or set(active_engines) != set(prev_engines):
+        if active_engines:
+            new_events.append({"ts": _now_hms(), "tag": "offload", "msg": f"hw: {', '.join(active_engines)}"[:44]})
+    crypto_prev["hw_engines_seen"] = active_engines
+
+    prev_log = list(crypto_prev.get("event_log") or [])
+    if new_events:
+        prev_log = (new_events + prev_log)[:40]
+    if not prev_log:
+        prev_log = [{"ts": _now_hms(), "tag": "crypto", "msg": "crypto telemetry online"}]
+    crypto_prev["event_log"] = prev_log
+    event_log = prev_log[:12]
+
     return {
         "items": items[:24],
         "processes": unique_processes[:16],
@@ -304,6 +469,12 @@ def collect_crypto_realtime(crypto_prev, callbacks=None, psutil_module=None, log
         "runtime_sources": runtime_sources,
         "meta": {
             "ops_per_sec": ops_per_sec,
+            "net_mb_s": net_mb_s,
+            "cpu_flags": cpu_flags,
+            "crypto_metrics": crypto_metrics,
+            "active_algorithms": active_algorithms,
+            "kernel_ops": kernel_ops,
+            "event_log": event_log,
             "tls_sessions": sum(1 for i in items if i.get("protocol") == "TLS"),
             "active_flows": active_flows,
             "unknown_pid_flows": int(unknown_pid_flows),

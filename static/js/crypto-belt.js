@@ -24,7 +24,7 @@ class CryptoSubsystemVisualization {
         this.selectedClientFilters = new Set();
         this.selectedRequesterFilter = null;
         this.selectedImplementationClassFilter = null;
-        this.activeCryptoView = 'LIVE_FLOW';
+        this.activeCryptoView = 'LINEAR_ANALYSIS';
         this.titleNode = null;
         this.subtitleNode = null;
         this.viewToggleNode = null;
@@ -242,8 +242,8 @@ class CryptoSubsystemVisualization {
     updateCryptoViewToggle() {
         if (!this.viewToggleNode) return;
         const views = [
-            ['LIVE_FLOW', 'LIVE FLOW'],
-            ['LINEAR_ANALYSIS', 'LINEAR ANALYSIS']
+            ['LINEAR_ANALYSIS', 'AES INTERNALS'],
+            ['LIVE_FLOW', 'LIVE FLOW']
         ];
         this.viewToggleNode.innerHTML = '';
         views.forEach(([id, label]) => {
@@ -1938,9 +1938,807 @@ class CryptoSubsystemVisualization {
         };
     }
 
+    computeAesLive(aes) {
+        // Live avalanche for the CURRENT user-selected input difference, computed
+        // in the browser with the real AES-128 so bit-flips update instantly.
+        if (!aes || !window.AESRef) return null;
+        const R = window.AESRef;
+        const pt = R.hexToBytes(aes.demo_vectors.plaintext);
+        const key = R.hexToBytes(aes.demo_vectors.key);
+        if (pt.length !== 16 || key.length !== 16) return null;
+        if (!Array.isArray(this.aesInputDiff) || this.aesInputDiff.length !== 16) {
+            this.aesInputDiff = new Array(16).fill(0);
+            this.aesInputDiff[0] = 0x80; // default: flip MSB of byte 0 (matches backend demo)
+        }
+        const traceA = R.encryptTrace(pt, key);
+        // Self-check against the verified backend ciphertext; degrade gracefully.
+        if (R.bytesToHex(traceA.ciphertext) !== String(aes.demo_vectors.ciphertext)) {
+            return null;
+        }
+        const diff = this.aesInputDiff;
+        const ptB = pt.map((v, i) => v ^ diff[i]);
+        const traceB = R.encryptTrace(ptB, key);
+        const rounds = traceA.roundStates.length;
+        const grids = [];
+        const curve = [];
+        for (let r = 0; r < rounds; r += 1) {
+            const g = [];
+            let h = 0;
+            for (let i = 0; i < 16; i += 1) {
+                const pc = R.popcount(traceA.roundStates[r][i] ^ traceB.roundStates[r][i]);
+                g.push(pc);
+                h += pc;
+            }
+            grids.push(g);
+            curve.push(h);
+        }
+        const flippedBits = diff.reduce((s, v) => s + R.popcount(v), 0);
+        return {
+            pt, key, diff, traceA, traceB, grids, curve, rounds, flippedBits,
+            curvePct: curve.map((h) => Math.round((1000 * h) / 128) / 10)
+        };
+    }
+
+    toggleAesInputBit(byteIndex) {
+        if (!Array.isArray(this.aesInputDiff) || this.aesInputDiff.length !== 16) {
+            this.aesInputDiff = new Array(16).fill(0);
+        }
+        // Toggle the most-significant bit of the clicked byte's difference mask.
+        this.aesInputDiff[byteIndex] ^= 0x80;
+        if (this.lastPayload) this.renderFlowMap(this.lastPayload);
+    }
+
+    resetAesInputDiff() {
+        this.aesInputDiff = new Array(16).fill(0);
+        this.aesInputDiff[0] = 0x80;
+        if (this.lastPayload) this.renderFlowMap(this.lastPayload);
+    }
+
+    showTip(lines, event) {
+        if (!this.hoverCard) return;
+        this.hoverCard.textContent = lines.join('\n');
+        this.hoverCard.style.display = 'block';
+        this.positionHoverCard(event);
+    }
+
+    openAesOpsOverlay(round) {
+        this.aesOverlay = 'ops';
+        this.aesOpsRound = Math.max(1, Math.min(10, round));
+        this.aesOpsClock = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        this.renderAesOpsOverlay();
+    }
+
+    closeAesOpsOverlay() {
+        this.aesOverlay = null;
+        this.aesOpsRound = null;
+        if (this.svg) this.svg.selectAll('.aes-ops-overlay').remove();
+        if (this._aesOpsRaf) {
+            cancelAnimationFrame(this._aesOpsRaf);
+            this._aesOpsRaf = null;
+        }
+    }
+
+    _aesOverlayShell(titleText, subtitleText) {
+        // Shared modal shell used by the key-schedule and mode overlays.
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+        this.svg.selectAll('.aes-ops-overlay').remove();
+        const ov = this.svg.append('g').attr('class', 'aes-ops-overlay').style('cursor', 'default');
+        ov.append('rect').attr('x', 0).attr('y', 0).attr('width', width).attr('height', height)
+            .style('fill', 'rgba(4, 7, 12, 0.72)').style('cursor', 'pointer')
+            .on('click', () => this.closeAesOpsOverlay());
+        const panelW = Math.min(1180, Math.max(680, width * 0.82));
+        const panelH = Math.min(560, Math.max(380, height * 0.66));
+        const px = (width - panelW) / 2;
+        const py = (height - panelH) / 2;
+        const box = ov.append('g');
+        box.append('rect').attr('x', px).attr('y', py).attr('width', panelW).attr('height', panelH).attr('rx', 10)
+            .style('fill', 'rgba(6, 10, 16, 0.96)').style('stroke', 'rgba(150, 180, 220, 0.5)').style('stroke-width', 1.2);
+        box.append('text').attr('x', px + 22).attr('y', py + 30)
+            .style('font-family', 'Share Tech Mono, monospace').style('font-size', '14px')
+            .style('letter-spacing', '0.6px').style('fill', '#e6edf8').text(titleText);
+        box.append('text').attr('x', px + 22).attr('y', py + 48)
+            .style('font-family', 'Share Tech Mono, monospace').style('font-size', '9.5px')
+            .style('fill', '#8fa0b8').text(subtitleText);
+        const closeG = box.append('g').style('cursor', 'pointer').on('click', () => this.closeAesOpsOverlay());
+        closeG.append('circle').attr('cx', px + panelW - 24).attr('cy', py + 24).attr('r', 11)
+            .style('fill', 'rgba(255,120,90,0.14)').style('stroke', 'rgba(255,140,110,0.6)');
+        closeG.append('text').attr('x', px + panelW - 24).attr('y', py + 28).attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace').style('font-size', '12px').style('fill', '#ffb59a').text('x');
+        return { box, px, py, panelW, panelH };
+    }
+
+    openKeyScheduleOverlay(pinWord = null) {
+        this.aesOverlay = 'keysched';
+        // When opened from an AddRoundKey ⊕XX tag, pin the highlight to that word
+        // (and its two parents) instead of running the auto-sweep.
+        this._aesKeySchedPin = (Number.isInteger(pinWord) && pinWord >= 0 && pinWord < 44) ? pinWord : null;
+        this.aesOpsClock = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        this.renderKeyScheduleOverlay();
+    }
+
+    renderKeyScheduleOverlay() {
+        if (!this.svg || this.aesOverlay !== 'keysched' || !this.aesDemo || !window.AESRef) return;
+        const R = window.AESRef;
+        const key = R.hexToBytes(this.aesDemo.demo_vectors.key);
+        if (key.length !== 16) return;
+
+        // Recompute the 44 words exactly as the key schedule does, capturing the
+        // RotWord / SubWord / Rcon derivation for every 4th word.
+        const words = [];
+        const derivations = [];
+        for (let i = 0; i < 4; i += 1) words.push([key[4 * i], key[4 * i + 1], key[4 * i + 2], key[4 * i + 3]]);
+        for (let i = 4; i < 44; i += 1) {
+            const prev = words[i - 1].slice();
+            let t = prev.slice();
+            let rot = null; let sub = null; let rcon = null;
+            if (i % 4 === 0) {
+                rot = [t[1], t[2], t[3], t[0]];
+                sub = rot.map((b) => R.SBOX[b]);
+                rcon = R.RCON[i / 4 - 1];
+                t = sub.slice();
+                t[0] ^= rcon;
+            }
+            const w = words[i - 4].map((v, j) => v ^ t[j]);
+            words.push(w);
+            derivations.push({ i, prev, rot, sub, rcon, base: words[i - 4], out: w, special: i % 4 === 0 });
+        }
+
+        const pin = Number.isInteger(this._aesKeySchedPin) ? this._aesKeySchedPin : null;
+        const shell = this._aesOverlayShell(
+            'AES-128 KEY SCHEDULE · 16-BYTE KEY -> 11 ROUND KEYS (44 WORDS)',
+            pin !== null
+                ? `linked from AddRoundKey: word w${pin} = K${Math.floor(pin / 4)}[col ${pin % 4}] · shown with its parents w${pin - 4} and w${pin - 1} · click grid to resume sweep`
+                : 'each word = word[i-4] XOR word[i-1]; every 4th word first passes RotWord -> SubWord -> XOR Rcon (highlighted)'
+        );
+        const { box, px, py, panelW, panelH } = shell;
+        const gridTop = py + 66;
+        const gridH = panelH - 150;
+        const colW = (panelW - 44) / 11;      // 11 round keys
+        const wordH = gridH / 4;              // 4 words per round key
+        const cellW = colW / 4;               // 4 bytes per word
+
+        this._aesKeySchedGeom = { words, derivations, box, px, py, panelW, gridTop, colW, wordH, cellW };
+
+        // Column (round-key) headers.
+        for (let rk = 0; rk < 11; rk += 1) {
+            box.append('text').attr('x', px + 22 + rk * colW + colW / 2).attr('y', gridTop - 8).attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '8px')
+                .style('fill', rk === 0 ? '#ffcf9a' : '#8fa0b8').text(rk === 0 ? 'KEY' : `K${rk}`);
+        }
+
+        const wordCells = [];
+        for (let wi = 0; wi < 44; wi += 1) {
+            const rk = Math.floor(wi / 4);
+            const wr = wi % 4;
+            const wx = px + 22 + rk * colW;
+            const wy = gridTop + wr * wordH;
+            const isSpecial = wi >= 4 && wi % 4 === 0;
+            const cells = [];
+            for (let bidx = 0; bidx < 4; bidx += 1) {
+                const rect = box.append('rect')
+                    .attr('x', wx + bidx * cellW + 1).attr('y', wy + 1)
+                    .attr('width', cellW - 2).attr('height', wordH - 3).attr('rx', 2)
+                    .style('fill', 'rgba(20,30,45,0.7)')
+                    .style('stroke', isSpecial ? 'rgba(255,170,110,0.5)' : 'rgba(140,165,200,0.22)')
+                    .style('stroke-width', isSpecial ? 0.9 : 0.6);
+                const label = box.append('text')
+                    .attr('x', wx + bidx * cellW + cellW / 2).attr('y', wy + wordH / 2 + 2).attr('text-anchor', 'middle')
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', `${Math.max(6, Math.min(9, cellW * 0.32))}px`)
+                    .style('fill', '#dbe6f5').style('pointer-events', 'none')
+                    .text((words[wi][bidx] & 0xff).toString(16).padStart(2, '0'));
+                cells.push({ rect, label, val: words[wi][bidx] & 0xff });
+            }
+            // Per-word click target: pin/inspect this word (click the pinned word to resume sweep).
+            box.append('rect')
+                .attr('x', wx + 1).attr('y', wy + 1).attr('width', colW - 2).attr('height', wordH - 3)
+                .style('fill', 'transparent').style('cursor', 'pointer')
+                .on('click', () => this.openKeyScheduleOverlay(this._aesKeySchedPin === wi ? null : wi));
+            wordCells.push({ wi, cells, isSpecial });
+        }
+        this._aesKeySchedCells = wordCells;
+
+        // Derivation caption area (updates with the animated cursor).
+        this._aesKeySchedCaption = box.append('text')
+            .attr('x', px + 22).attr('y', py + panelH - 22)
+            .style('font-family', 'Share Tech Mono, monospace').style('font-size', '9px')
+            .style('fill', '#a9c2e6').text('');
+
+        this._startKeySchedAnim();
+    }
+
+    _startKeySchedAnim() {
+        if (this._aesOpsRaf) cancelAnimationFrame(this._aesOpsRaf);
+        const cells = this._aesKeySchedCells;
+        const geom = this._aesKeySchedGeom;
+        if (!cells || !geom) return;
+        const stepMs = 320;
+        const frame = () => {
+            if (this.aesOverlay !== 'keysched' || !this.svg || this.svg.selectAll('.aes-ops-overlay').empty()) {
+                this._aesOpsRaf = null;
+                return;
+            }
+            const now = ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now());
+            const elapsed = now - (this.aesOpsClock || now);
+            // A cursor sweeps word by word (4..43); when pinned it freezes on the
+            // linked word so its derivation stays visible.
+            const pin = Number.isInteger(this._aesKeySchedPin) ? this._aesKeySchedPin : null;
+            const cursor = pin !== null ? pin : (4 + Math.floor(elapsed / stepMs) % 40);
+            const parents = pin !== null ? new Set([pin - 4, pin - 1]) : new Set();
+            cells.forEach((wc) => {
+                const isCursor = wc.wi === cursor;
+                const isParent = parents.has(wc.wi);
+                const revealed = pin !== null ? true : (wc.wi <= cursor || wc.wi < 4);
+                wc.cells.forEach((c) => {
+                    c.rect.style('opacity', revealed ? 1 : 0.18);
+                    c.label.style('opacity', revealed ? 1 : (pin !== null ? 0.5 : 0.18));
+                    if (isCursor) {
+                        const pulse = 0.5 + 0.5 * Math.sin(elapsed * 0.012);
+                        c.rect.style('fill', wc.isSpecial ? 'rgba(255,150,90,0.5)' : 'rgba(90,130,190,0.5)')
+                            .style('stroke', wc.isSpecial ? '#ff9a55' : '#8fdcff').style('stroke-width', 1.4 + pulse);
+                    } else if (isParent) {
+                        c.rect.style('fill', 'rgba(90,180,140,0.35)')
+                            .style('stroke', '#8effc8').style('stroke-width', 1.2);
+                    } else {
+                        c.rect.style('fill', wc.wi < 4 ? 'rgba(60,50,30,0.55)' : 'rgba(20,30,45,0.7)')
+                            .style('stroke', wc.isSpecial ? 'rgba(255,170,110,0.5)' : 'rgba(140,165,200,0.22)')
+                            .style('stroke-width', wc.isSpecial ? 0.9 : 0.6);
+                        if (pin !== null && revealed) c.rect.style('opacity', 0.4);
+                    }
+                });
+            });
+            const der = geom.derivations[cursor - 4];
+            if (der && this._aesKeySchedCaption) {
+                const hex = (arr) => arr.map((b) => (b & 0xff).toString(16).padStart(2, '0')).join(' ');
+                if (der.special) {
+                    this._aesKeySchedCaption.style('fill', '#ffcf9a').text(
+                        `w${der.i}: RotWord(${hex(der.prev)})=${hex(der.rot)} · SubWord=${hex(der.sub)} · XOR Rcon(${der.rcon.toString(16).padStart(2, '0')}) · XOR w${der.i - 4}(${hex(der.base)}) = ${hex(der.out)}`
+                    );
+                } else {
+                    this._aesKeySchedCaption.style('fill', '#a9c2e6').text(
+                        `w${der.i} = w${der.i - 4}(${hex(der.base)}) XOR w${der.i - 1}(${hex(der.prev)}) = ${hex(der.out)}`
+                    );
+                }
+            }
+            this._aesOpsRaf = requestAnimationFrame(frame);
+        };
+        this._aesOpsRaf = requestAnimationFrame(frame);
+    }
+
+    openModeOverlay(mode) {
+        this.aesOverlay = 'mode';
+        this.aesModeKind = mode || 'CTR';
+        this.aesOpsClock = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        this.renderModeOverlay();
+    }
+
+    renderModeOverlay() {
+        if (!this.svg || this.aesOverlay !== 'mode' || !this.aesDemo || !window.AESRef) return;
+        const R = window.AESRef;
+        const key = R.hexToBytes(this.aesDemo.demo_vectors.key);
+        if (key.length !== 16) return;
+        const isGcm = this.aesModeKind === 'GCM';
+
+        const shell = this._aesOverlayShell(
+            isGcm ? 'AES-GCM · COUNTER MODE + GHASH AUTHENTICATION' : 'AES-CTR · BLOCK CIPHER -> KEYSTREAM',
+            isGcm
+                ? 'AES encrypts counter blocks -> keystream XOR plaintext; ciphertext + AAD feed GHASH -> authentication tag'
+                : 'AES encrypts an incrementing counter to make a keystream; keystream XOR plaintext = ciphertext (a stream cipher)'
+        );
+        const { box, px, py, panelW, panelH } = shell;
+
+        // Mode switch buttons inside the overlay.
+        [['CTR', px + panelW - 210], ['GCM', px + panelW - 150]].forEach(([m, bx]) => {
+            const on = (m === this.aesModeKind);
+            const g = box.append('g').style('cursor', 'pointer').on('click', () => this.openModeOverlay(m));
+            g.append('rect').attr('x', bx).attr('y', py + 14).attr('width', 52).attr('height', 20).attr('rx', 4)
+                .style('fill', on ? 'rgba(38,63,98,0.95)' : 'rgba(7,11,17,0.82)')
+                .style('stroke', on ? 'rgba(128,190,255,0.86)' : 'rgba(122,145,176,0.32)');
+            g.append('text').attr('x', bx + 26).attr('y', py + 28).attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '9px')
+                .style('fill', on ? '#d8eaff' : '#9dafc5').text(m);
+        });
+
+        // Build N counter blocks: nonce(12) || counter(4). Encrypt each with real AES.
+        const nBlocks = 4;
+        const nonce = R.hexToBytes('00112233445566778899aabb');
+        const laneY = py + 92;
+        // Reserve room at the bottom for the real GHASH accumulation chain (GCM).
+        const ghashReserve = isGcm ? 132 : 34;
+        const laneH = (py + panelH - 26 - ghashReserve - laneY) / nBlocks;
+        const colCtr = px + 40;
+        const colCipher = px + 40 + (panelW - 80) * 0.20;
+        const colKs = px + 40 + (panelW - 80) * 0.52;
+        const colPt = px + 40 + (panelW - 80) * 0.72;
+        const colOut = px + 40 + (panelW - 80) * 0.9;
+
+        box.append('text').attr('x', colCtr).attr('y', laneY - 12).style('font-family', 'Share Tech Mono, monospace').style('font-size', '8px').style('fill', '#8fdcff').text('COUNTER BLOCK');
+        box.append('text').attr('x', colCipher).attr('y', laneY - 12).style('font-family', 'Share Tech Mono, monospace').style('font-size', '8px').style('fill', '#c9b6ff').text('AES_K( · )');
+        box.append('text').attr('x', colKs).attr('y', laneY - 12).style('font-family', 'Share Tech Mono, monospace').style('font-size', '8px').style('fill', '#ff9a55').text('KEYSTREAM');
+        box.append('text').attr('x', colPt).attr('y', laneY - 12).style('font-family', 'Share Tech Mono, monospace').style('font-size', '8px').style('fill', '#9fb1c8').text('⊕ PLAINTEXT');
+        box.append('text').attr('x', colOut).attr('y', laneY - 12).style('font-family', 'Share Tech Mono, monospace').style('font-size', '8px').style('fill', '#8effc8').text('= CIPHERTEXT');
+
+        const lanes = [];
+        for (let b = 0; b < nBlocks; b += 1) {
+            const ctr = nonce.concat([0, 0, 0, b + 1]);
+            const ks = R.encryptTrace(ctr, key).ciphertext;
+            const pt = [];
+            for (let i = 0; i < 16; i += 1) pt.push((0x40 + b * 16 + i) & 0xff);
+            const ct = ks.map((v, i) => v ^ pt[i]);
+            const y = laneY + b * laneH + laneH / 2;
+            const chip = (x, bytes, color, w) => {
+                const g = box.append('g');
+                g.append('rect').attr('x', x).attr('y', y - 9).attr('width', w).attr('height', 18).attr('rx', 3)
+                    .style('fill', 'rgba(14,20,30,0.9)').style('stroke', color).style('stroke-width', 0.8);
+                const t = g.append('text').attr('x', x + w / 2).attr('y', y + 3).attr('text-anchor', 'middle')
+                    .style('font-family', 'Share Tech Mono, monospace').style('font-size', '7px').style('fill', color)
+                    .text(bytes.slice(0, 4).map((v) => (v & 0xff).toString(16).padStart(2, '0')).join('') + '…');
+                return { g, rect: g.select('rect'), text: t };
+            };
+            const ctrChip = chip(colCtr, ctr, '#8fdcff', (panelW - 80) * 0.17);
+            const ksChip = chip(colKs, ks, '#ff9a55', (panelW - 80) * 0.17);
+            const ptChip = chip(colPt, pt, '#9fb1c8', (panelW - 80) * 0.15);
+            const outChip = chip(colOut, ct, '#8effc8', (panelW - 80) * 0.1);
+            box.append('text').attr('x', colCipher + (panelW - 80) * 0.06).attr('y', y + 3).attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '11px').style('fill', '#c9b6ff').text('AES');
+            box.append('text').attr('x', colKs - 10).attr('y', y + 3).attr('text-anchor', 'middle').style('fill', '#6f8296').style('font-size', '10px').text('→');
+            box.append('text').attr('x', colOut - 8).attr('y', y + 3).attr('text-anchor', 'middle').style('fill', '#6f8296').style('font-size', '10px').text('=');
+            lanes.push({ b, y, ct, ctrChip, ksChip, ptChip, outChip });
+        }
+
+        // Real GHASH authentication (GCM only): H = AES_K(0^128); the tag folds
+        // AAD, every ciphertext block and a length block through GF(2^128), then
+        // masks with AES_K(J0). All arithmetic is the genuine NIST SP 800-38D GHASH.
+        this._aesGhash = null;
+        if (isGcm) {
+            const H = R.encryptTrace(new Array(16).fill(0), key).ciphertext;
+            const aad = R.hexToBytes('6b65726e656c2d61693a67636d2001'); // "kernel-ai:gcm " + 0x01 (15 bytes)
+            while (aad.length < 16) aad.push(0);
+            const cBlocks = lanes.map((ln) => ln.ct);
+            const lenBlock = R.be64(16 * 8).concat(R.be64(cBlocks.length * 16 * 8)); // len(A) || len(C) in bits
+            const absorbed = [{ label: 'AAD', block: aad, kind: 'aad' }]
+                .concat(cBlocks.map((blk, i) => ({ label: `C${i + 1}`, block: blk, kind: 'ct' })))
+                .concat([{ label: 'LEN', block: lenBlock, kind: 'len' }]);
+            const yStates = R.ghashSteps(H, absorbed.map((a) => a.block)); // Y0..Y6
+            const S = yStates[yStates.length - 1];
+            const ekj0 = R.encryptTrace(nonce.concat([0, 0, 0, 1]), key).ciphertext; // AES_K(J0)
+            const tag = S.map((v, j) => v ^ ekj0[j]);
+
+            const gTop = py + panelH - ghashReserve + 4;
+            const hex = (b, n = 16) => b.slice(0, n).map((v) => (v & 0xff).toString(16).padStart(2, '0')).join('');
+            box.append('text').attr('x', px + 22).attr('y', gTop + 2)
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '9px').style('fill', '#d9c2ff')
+                .text(`GHASH over GF(2^128) · H = AES_K(0) = ${hex(H, 8)}… · Y_i = (Y_{i-1} ⊕ block_i) · H`);
+
+            // Accumulation chain: Y0 -> (⊕AAD ×H) -> Y1 -> ... -> S -> (⊕ E(J0)) -> TAG
+            const chainY = gTop + 34;
+            const nSteps = absorbed.length;
+            const usableW = panelW - 44;
+            const stepW = usableW / (nSteps + 1);
+            const nodeW = Math.min(stepW - 10, 86);
+            const stepNodes = [];
+            const yColor = '#c9b6ff';
+            const drawChip = (cx, label, valHex, color, sub) => {
+                const g = box.append('g');
+                g.append('rect').attr('x', cx - nodeW / 2).attr('y', chainY - 12).attr('width', nodeW).attr('height', 24).attr('rx', 3)
+                    .style('fill', 'rgba(14,20,30,0.92)').style('stroke', color).style('stroke-width', 0.9);
+                g.append('text').attr('x', cx).attr('y', chainY - 2).attr('text-anchor', 'middle')
+                    .style('font-family', 'Share Tech Mono, monospace').style('font-size', '7px').style('fill', color).text(label);
+                g.append('text').attr('x', cx).attr('y', chainY + 8).attr('text-anchor', 'middle')
+                    .style('font-family', 'Share Tech Mono, monospace').style('font-size', '6.5px').style('fill', '#9fb1c8').text(valHex + '…');
+                if (sub) {
+                    g.append('text').attr('x', cx).attr('y', chainY + 22).attr('text-anchor', 'middle')
+                        .style('font-family', 'Share Tech Mono, monospace').style('font-size', '6px').style('fill', color).text(sub);
+                }
+                return g;
+            };
+            // Y0 node
+            let prevX = px + 22 + stepW * 0.5;
+            drawChip(prevX, 'Y0 = 0', hex(yStates[0], 6), '#6f8296');
+            for (let s = 0; s < nSteps; s += 1) {
+                const cx = px + 22 + stepW * (s + 1.5);
+                // transition annotation
+                box.append('text').attr('x', (prevX + cx) / 2).attr('y', chainY - 16).attr('text-anchor', 'middle')
+                    .style('font-family', 'Share Tech Mono, monospace').style('font-size', '6.5px').style('fill', '#8fa0b8')
+                    .text(`⊕${absorbed[s].label} ×H`);
+                box.append('text').attr('x', (prevX + cx) / 2).attr('y', chainY + 4).attr('text-anchor', 'middle')
+                    .style('fill', '#5f6f82').style('font-size', '9px').text('→');
+                const isLast = s === nSteps - 1;
+                const g = drawChip(cx, isLast ? 'S (Σ)' : `Y${s + 1}`, hex(yStates[s + 1], 6), yColor);
+                stepNodes.push({ g, rect: g.select('rect'), step: s });
+                prevX = cx;
+            }
+            // Tag node
+            const tagX = Math.min(px + panelW - 24 - nodeW / 2, prevX + stepW);
+            box.append('text').attr('x', (prevX + tagX) / 2).attr('y', chainY - 16).attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '6.5px').style('fill', '#ffcf9a')
+                .text('⊕ E(J0)');
+            const tagG = drawChip(tagX, 'TAG', hex(tag, 8), '#8effc8', '128-bit auth');
+            tagG.select('rect').style('stroke-width', 1.4).style('fill', 'rgba(20,40,32,0.92)');
+
+            this._aesGhash = { stepNodes, tagRect: tagG.select('rect'), nSteps };
+        }
+
+        this._aesModeLanes = lanes;
+        this._startModeAnim();
+    }
+
+    _startModeAnim() {
+        if (this._aesOpsRaf) cancelAnimationFrame(this._aesOpsRaf);
+        const lanes = this._aesModeLanes;
+        if (!lanes) return;
+        const stepMs = 900;
+        const frame = () => {
+            if (this.aesOverlay !== 'mode' || !this.svg || this.svg.selectAll('.aes-ops-overlay').empty()) {
+                this._aesOpsRaf = null;
+                return;
+            }
+            const now = ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now());
+            const elapsed = now - (this.aesOpsClock || now);
+            const active = Math.floor(elapsed / stepMs) % lanes.length;
+            lanes.forEach((ln) => {
+                const on = ln.b === active;
+                const pulse = 0.6 + 0.4 * Math.sin(elapsed * 0.01);
+                [ln.ctrChip, ln.ksChip, ln.ptChip, ln.outChip].forEach((ch) => {
+                    ch.rect.style('stroke-width', on ? 1.6 : 0.8).style('opacity', on ? 1 : 0.55);
+                });
+                ln.ksChip.rect.style('filter', on ? 'url(#crypto-line-glow)' : null).style('stroke-opacity', on ? pulse : 0.6);
+            });
+            // Walk the GHASH accumulation chain (GCM): highlight each block being
+            // absorbed in turn, then flash the final tag.
+            const gh = this._aesGhash;
+            if (gh && gh.stepNodes) {
+                const total = gh.nSteps + 1; // +1 for the tag flash
+                const ghActive = Math.floor(elapsed / 700) % total;
+                const pulse = 0.6 + 0.4 * Math.sin(elapsed * 0.012);
+                gh.stepNodes.forEach((n) => {
+                    const on = n.step === ghActive;
+                    const done = n.step < ghActive;
+                    n.rect.style('stroke-width', on ? 1.8 : 0.9)
+                        .style('opacity', on ? 1 : (done ? 0.9 : 0.4))
+                        .style('filter', on ? 'url(#crypto-line-glow)' : null)
+                        .style('stroke-opacity', on ? pulse : 0.7);
+                });
+                const tagOn = ghActive === gh.nSteps;
+                gh.tagRect.style('filter', tagOn ? 'url(#crypto-line-glow)' : null)
+                    .style('stroke-width', tagOn ? 2 : 1.4)
+                    .style('stroke-opacity', tagOn ? pulse : 1);
+            }
+            this._aesOpsRaf = requestAnimationFrame(frame);
+        };
+        this._aesOpsRaf = requestAnimationFrame(frame);
+    }
+
+    renderAesOpsOverlay() {
+        if (!this.svg || !this.aesOpsRound || !this.aesDemo || !window.AESRef) return;
+        const R = window.AESRef;
+        const aes = this.aesDemo;
+        const pt = R.hexToBytes(aes.demo_vectors.plaintext);
+        const key = R.hexToBytes(aes.demo_vectors.key);
+        const trace = R.encryptTrace(pt, key);
+        const round = Math.max(1, Math.min(10, this.aesOpsRound));
+        const op = trace.ops[round - 1];
+        if (!op) return;
+
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+
+        // Stages of one AES round, each transforming a 4x4 state.
+        const stages = [
+            { key: 'SubBytes', from: op.input, to: op.subBytes, accent: '#ff9a55',
+              note: 'byte substitution via S-box (confusion)' },
+            { key: 'ShiftRows', from: op.subBytes, to: op.shiftRows, accent: '#8fdcff',
+              note: 'cyclic row shifts (inter-column diffusion)' }
+        ];
+        if (op.hasMix) {
+            stages.push({ key: 'MixColumns', from: op.shiftRows, to: op.mixColumns, accent: '#c9b6ff',
+                note: 'GF(2^8) column mixing (intra-column diffusion)' });
+        }
+        stages.push({ key: 'AddRoundKey', from: op.hasMix ? op.mixColumns : op.shiftRows, to: op.addRoundKey,
+            accent: '#8effc8', note: 'XOR with round key (key mixing)' });
+
+        this.svg.selectAll('.aes-ops-overlay').remove();
+        const ov = this.svg.append('g').attr('class', 'aes-ops-overlay').style('cursor', 'default');
+
+        // Scrim (click to close).
+        ov.append('rect')
+            .attr('x', 0).attr('y', 0).attr('width', width).attr('height', height)
+            .style('fill', 'rgba(4, 7, 12, 0.72)')
+            .style('cursor', 'pointer')
+            .on('click', () => this.closeAesOpsOverlay());
+
+        const panelW = Math.min(1120, Math.max(640, width * 0.78));
+        const panelH = Math.min(520, Math.max(360, height * 0.62));
+        const px = (width - panelW) / 2;
+        const py = (height - panelH) / 2;
+        const box = ov.append('g');
+        box.append('rect')
+            .attr('x', px).attr('y', py).attr('width', panelW).attr('height', panelH).attr('rx', 10)
+            .style('fill', 'rgba(6, 10, 16, 0.96)')
+            .style('stroke', 'rgba(150, 180, 220, 0.5)')
+            .style('stroke-width', 1.2);
+        box.append('rect')
+            .attr('x', px).attr('y', py).attr('width', panelW).attr('height', panelH).attr('rx', 10)
+            .style('fill', 'none').style('pointer-events', 'none');
+
+        box.append('text').attr('x', px + 22).attr('y', py + 30)
+            .style('font-family', 'Share Tech Mono, monospace').style('font-size', '14px')
+            .style('letter-spacing', '0.6px').style('fill', '#e6edf8')
+            .text(`AES-128 · ROUND ${round} OF 10 · OPERATION LAYERS`);
+        box.append('text').attr('x', px + 22).attr('y', py + 48)
+            .style('font-family', 'Share Tech Mono, monospace').style('font-size', '9.5px')
+            .style('fill', '#8fa0b8')
+            .text('hover a SubBytes cell to see the S-box lookup · use < / > or the pips to step rounds · click backdrop to close');
+
+        // Round navigation: prev / next arrows.
+        const navArrow = (cxp, label, target) => {
+            const enabled = target >= 1 && target <= 10;
+            const g = box.append('g').style('cursor', enabled ? 'pointer' : 'default')
+                .on('click', enabled ? () => this.openAesOpsOverlay(target) : null);
+            g.append('circle').attr('cx', cxp).attr('cy', py + 24).attr('r', 11)
+                .style('fill', enabled ? 'rgba(90,130,180,0.18)' : 'rgba(60,70,85,0.12)')
+                .style('stroke', enabled ? 'rgba(140,180,230,0.6)' : 'rgba(110,125,145,0.3)');
+            g.append('text').attr('x', cxp).attr('y', py + 28).attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '12px')
+                .style('fill', enabled ? '#cfe1f7' : '#5f6b7d').text(label);
+            return g;
+        };
+        navArrow(px + panelW - 96, '<', round - 1);
+        navArrow(px + panelW - 68, '>', round + 1);
+
+        // Close affordance.
+        const closeG = box.append('g').style('cursor', 'pointer').on('click', () => this.closeAesOpsOverlay());
+        closeG.append('circle').attr('cx', px + panelW - 24).attr('cy', py + 24).attr('r', 11)
+            .style('fill', 'rgba(255,120,90,0.14)').style('stroke', 'rgba(255,140,110,0.6)');
+        closeG.append('text').attr('x', px + panelW - 24).attr('y', py + 28).attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace').style('font-size', '12px').style('fill', '#ffb59a').text('x');
+
+        // Round pips: jump to any of the 10 rounds.
+        const pipsG = box.append('g');
+        const pipW = 15;
+        const pipsTotalW = pipW * 10;
+        const pipStartX = px + panelW - 130 - pipsTotalW;
+        for (let r = 1; r <= 10; r += 1) {
+            const isCur = r === round;
+            const pg = pipsG.append('g').style('cursor', 'pointer').on('click', () => this.openAesOpsOverlay(r));
+            pg.append('rect').attr('x', pipStartX + (r - 1) * pipW).attr('y', py + 18).attr('width', pipW - 3).attr('height', 12).attr('rx', 2)
+                .style('fill', isCur ? 'rgba(143,220,255,0.9)' : 'rgba(120,145,180,0.22)')
+                .style('stroke', isCur ? '#8fdcff' : 'rgba(140,165,200,0.35)').style('stroke-width', 0.7);
+            pg.append('text').attr('x', pipStartX + (r - 1) * pipW + (pipW - 3) / 2).attr('y', py + 27).attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '7px')
+                .style('fill', isCur ? '#06121f' : '#9fb1c8').style('pointer-events', 'none').text(r);
+        }
+
+        const nStages = stages.length;
+        const contentY = py + 74;
+        const contentH = panelH - 118;
+        const colGap = 18;
+        const colW = (panelW - 44 - colGap * (nStages - 1)) / nStages;
+        const gridCells = 4;
+        const cellSize = Math.min((colW - 28) / gridCells, (contentH - 60) / gridCells);
+        const gridW = cellSize * gridCells;
+
+        // Precompute per-stage geometry and store for the animation loop.
+        const stageGeom = stages.map((st, si) => {
+            const cx0 = px + 22 + si * (colW + colGap);
+            const gx = cx0 + (colW - gridW) / 2;
+            const gy = contentY + 30;
+            return { st, si, cx0, gx, gy };
+        });
+
+        const cellCenter = (gx, gy, col, row) => ({
+            x: gx + col * cellSize + cellSize / 2,
+            y: gy + row * cellSize + cellSize / 2
+        });
+
+        stageGeom.forEach((sg) => {
+            const { st, cx0, gx, gy } = sg;
+            box.append('text').attr('x', cx0 + colW / 2).attr('y', contentY + 12).attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '11px')
+                .style('fill', st.accent).text(st.key);
+            box.append('text').attr('x', cx0 + colW / 2).attr('y', gy + gridW + 26).attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '8px')
+                .style('fill', '#7f90a6').text(st.note);
+            // Cells (16 bytes). Column-major AES index = row + 4*col.
+            const cells = [];
+            for (let col = 0; col < 4; col += 1) {
+                for (let row = 0; row < 4; row += 1) {
+                    const idx = row + 4 * col;
+                    const cellG = box.append('g');
+                    const rect = cellG.append('rect')
+                        .attr('x', gx + col * cellSize + 1.5).attr('y', gy + row * cellSize + 1.5)
+                        .attr('width', cellSize - 3).attr('height', cellSize - 3).attr('rx', 3)
+                        .style('stroke', 'rgba(140,165,200,0.28)').style('stroke-width', 0.7);
+                    const label = cellG.append('text')
+                        .attr('x', gx + col * cellSize + cellSize / 2).attr('y', gy + row * cellSize + cellSize / 2 + 3)
+                        .attr('text-anchor', 'middle')
+                        .style('font-family', 'Share Tech Mono, monospace')
+                        .style('font-size', `${Math.max(7, Math.min(11, cellSize * 0.3))}px`)
+                        .style('fill', '#dbe6f5').style('pointer-events', 'none');
+                    cells.push({ idx, col, row, rect, label });
+                }
+            }
+            sg.cells = cells;
+
+            // Per-operation decoration layer (modulated by the animation loop).
+            const decor = box.append('g').style('opacity', 0.35);
+            sg.decor = decor;
+
+            if (st.key === 'ShiftRows') {
+                // Each row r is cyclically shifted left by r bytes.
+                for (let row = 1; row < 4; row += 1) {
+                    const yc = gy + row * cellSize + cellSize / 2;
+                    const xEnd = gx + gridW - cellSize * 0.3;
+                    const xStart = xEnd - row * cellSize;
+                    decor.append('line').attr('x1', xEnd).attr('y1', yc).attr('x2', xStart).attr('y2', yc)
+                        .style('stroke', st.accent).style('stroke-width', 1.4);
+                    decor.append('path')
+                        .attr('d', `M${xStart + 6},${yc - 4} L${xStart},${yc} L${xStart + 6},${yc + 4}`)
+                        .style('fill', 'none').style('stroke', st.accent).style('stroke-width', 1.4);
+                    decor.append('text').attr('x', xEnd + 4).attr('y', yc + 3)
+                        .style('font-family', 'Share Tech Mono, monospace').style('font-size', '8px')
+                        .style('fill', st.accent).text(`«${row}`);
+                }
+            } else if (st.key === 'MixColumns') {
+                // Every output byte in a column depends on all 4 input bytes of that column.
+                for (let col = 0; col < 4; col += 1) {
+                    const xc = gx + col * cellSize + cellSize / 2;
+                    decor.append('line').attr('x1', xc).attr('y1', gy + cellSize * 0.35).attr('x2', xc).attr('y2', gy + gridW - cellSize * 0.35)
+                        .style('stroke', st.accent).style('stroke-width', 1.2).style('stroke-dasharray', '3,2');
+                    for (let row = 0; row < 4; row += 1) {
+                        const cc = cellCenter(gx, gy, col, row);
+                        decor.append('circle').attr('cx', xc).attr('cy', cc.y).attr('r', 2.2).style('fill', st.accent);
+                    }
+                }
+                decor.append('text').attr('x', gx + gridW / 2).attr('y', gy - 4).attr('text-anchor', 'middle')
+                    .style('font-family', 'Share Tech Mono, monospace').style('font-size', '7.5px')
+                    .style('fill', st.accent).text('× [2 3 1 1] per column');
+            } else if (st.key === 'AddRoundKey' && op.roundKey) {
+                // Show the round-key byte XORed into each cell (corner tag). Each
+                // column corresponds to key-schedule word (4*round + col) — click a
+                // cell to open the key schedule with that word pinned.
+                for (let col = 0; col < 4; col += 1) {
+                    const linkedWord = 4 * round + col;
+                    for (let row = 0; row < 4; row += 1) {
+                        const idx = row + 4 * col;
+                        decor.append('text')
+                            .attr('x', gx + col * cellSize + 4).attr('y', gy + row * cellSize + 11)
+                            .style('font-family', 'Share Tech Mono, monospace').style('font-size', '6.5px')
+                            .style('fill', st.accent).style('pointer-events', 'none')
+                            .text(`⊕${(op.roundKey[idx] & 0xff).toString(16).padStart(2, '0')}`);
+                    }
+                    // Column-wide click target -> key schedule word for this column.
+                    box.append('rect')
+                        .attr('x', gx + col * cellSize + 1.5).attr('y', gy + 1.5)
+                        .attr('width', cellSize - 3).attr('height', cellSize * 4 - 3)
+                        .style('fill', 'transparent').style('cursor', 'pointer')
+                        .on('click', () => this.openKeyScheduleOverlay(linkedWord))
+                        .on('mouseenter', (event) => this.showTip([
+                            `AddRoundKey column ${col}`,
+                            `round key K${round} = key-schedule words w${4 * round}..w${4 * round + 3}`,
+                            `this column XORs word w${linkedWord}`,
+                            `click -> open key schedule (word pinned)`
+                        ], event))
+                        .on('mouseleave', () => this.hideHoverCard());
+                }
+            }
+
+            // S-box hover exploration on the SubBytes stage.
+            if (st.key === 'SubBytes') {
+                sg.cells.forEach((c) => {
+                    const inV = op.input[c.idx] & 0xff;
+                    const outV = window.AESRef.SBOX[inV] & 0xff;
+                    c.rect.style('cursor', 'help')
+                        .on('mouseenter', (event) => {
+                            c.rect.style('stroke', '#ffffff').style('stroke-width', 1.4);
+                            this.showTip([
+                                `S-box lookup (SubBytes)`,
+                                `in  : 0x${inV.toString(16).padStart(2, '0')}  (row ${(inV >> 4).toString(16)}, col ${(inV & 0xf).toString(16)})`,
+                                `out : 0x${outV.toString(16).padStart(2, '0')}`,
+                                `nonlinear substitution -> confusion`
+                            ], event);
+                        })
+                        .on('mouseleave', () => {
+                            c.rect.style('stroke', 'rgba(140,165,200,0.28)').style('stroke-width', 0.7);
+                            this.hideHoverCard();
+                        });
+                });
+            }
+        });
+
+        // Flow arrows between stages.
+        stageGeom.forEach((sg, i) => {
+            if (i === 0) return;
+            const prev = stageGeom[i - 1];
+            const ax = prev.cx0 + colW - 4;
+            const ay = contentY + 30 + gridW / 2;
+            box.append('text').attr('x', (ax + sg.cx0) / 2).attr('y', ay + 4).attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '14px')
+                .style('fill', 'rgba(150,175,210,0.5)').text('>');
+        });
+
+        this._aesOpsGeom = stageGeom;
+        this._startAesOpsAnim();
+    }
+
+    _startAesOpsAnim() {
+        if (this._aesOpsRaf) cancelAnimationFrame(this._aesOpsRaf);
+        const R = window.AESRef;
+        const geom = this._aesOpsGeom;
+        if (!geom || !R) return;
+        const stagePeriod = 1500; // ms per stage highlight
+        const heat = (v) => {
+            const x = Math.max(0, Math.min(1, v));
+            if (x < 0.001) return '#12202f';
+            if (x < 0.25) return '#3b4c8f';
+            if (x < 0.5) return '#7b40d8';
+            if (x < 0.75) return '#e05274';
+            return '#ff8a42';
+        };
+        const frame = () => {
+            if (!this.aesOpsRound || !this.svg || this.svg.selectAll('.aes-ops-overlay').empty()) {
+                this._aesOpsRaf = null;
+                return;
+            }
+            const now = ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now());
+            const elapsed = now - (this.aesOpsClock || now);
+            const nStages = geom.length;
+            const activeStage = Math.floor(elapsed / stagePeriod) % nStages;
+            const local = (elapsed % stagePeriod) / stagePeriod; // 0..1 within active stage
+            geom.forEach((sg, si) => {
+                const active = si === activeStage;
+                const morph = active ? local : (si < activeStage ? 1 : 0);
+                sg.cells.forEach((c) => {
+                    const fromV = sg.st.from[c.idx] & 0xff;
+                    const toV = sg.st.to[c.idx] & 0xff;
+                    const changed = fromV !== toV;
+                    // value shown: flips at the midpoint of the active stage morph
+                    const shown = (morph >= 0.5) ? toV : fromV;
+                    c.label.text(shown.toString(16).padStart(2, '0'));
+                    const changedBits = R.popcount(fromV ^ toV) / 8;
+                    let fill = 'rgba(20,30,45,0.6)';
+                    let stroke = 'rgba(140,165,200,0.28)';
+                    if (active) {
+                        const pulse = 0.5 + 0.5 * Math.sin(elapsed * 0.012 + c.idx);
+                        fill = changed ? heat(0.3 + changedBits * 0.7) : 'rgba(40,55,80,0.6)';
+                        stroke = sg.st.accent;
+                        c.rect.style('opacity', 0.7 + 0.3 * (changed ? pulse : 0.4));
+                    } else if (si < activeStage) {
+                        fill = changed ? heat(0.2 + changedBits * 0.5) : 'rgba(28,38,56,0.5)';
+                        c.rect.style('opacity', 0.85);
+                    } else {
+                        c.rect.style('opacity', 0.35);
+                    }
+                    c.rect.style('fill', fill).style('stroke', stroke)
+                        .style('stroke-width', active ? 1.3 : 0.7);
+                });
+                if (sg.decor) {
+                    const decorOpacity = active
+                        ? (0.6 + 0.4 * Math.abs(Math.sin(elapsed * 0.006)))
+                        : (si < activeStage ? 0.4 : 0.16);
+                    sg.decor.style('opacity', decorOpacity);
+                }
+            });
+            this._aesOpsRaf = requestAnimationFrame(frame);
+        };
+        this._aesOpsRaf = requestAnimationFrame(frame);
+    }
+
     drawLinearAnalysisDashboard(layer, payload, width, height, tickId) {
         const model = this.buildLinearAnalysisModel(payload);
+        const aes = (this.aesDemo && this.aesDemo.diffusion) ? this.aesDemo : null;
+        const aesLive = this.computeAesLive(aes);
         const items = Array.isArray(payload?.items) ? payload.items : [];
+        const metaAll = payload?.meta || {};
+        const cpuFlags = metaAll.cpu_flags || {};
+        const cryptoMetrics = metaAll.crypto_metrics || {};
+        const activeAlgorithms = Array.isArray(metaAll.active_algorithms) ? metaAll.active_algorithms : [];
+        const kernelOps = metaAll.kernel_ops || {};
+        const kernelOpsAvail = !!kernelOps.available;
+        const kernelTopOp = (Array.isArray(kernelOps.by_driver) && kernelOps.by_driver.length) ? kernelOps.by_driver[0] : null;
+        const eventLog = Array.isArray(metaAll.event_log) ? metaAll.event_log : [];
+        const entropyCloud = metaAll.entropy_cloud || {};
         const runtimeSources = Array.isArray(payload?.runtime_sources)
             ? payload.runtime_sources
             : (Array.isArray(payload?.meta?.runtime_sources) ? payload.meta.runtime_sources : []);
@@ -2049,7 +2847,26 @@ class CryptoSubsystemVisualization {
             .style('font-family', 'Share Tech Mono, monospace')
             .style('font-size', '10px')
             .style('fill', '#9cabc0')
-            .text(`${algLabel} - ${model.rounds} ROUNDS - LINEAR APPROXIMATION TRACKING`);
+            .text(aes
+                ? `${algLabel} - ${aes.rounds} ROUNDS - REFERENCE COMPUTATION (DEMO VECTORS)`
+                : `${algLabel} - ${model.rounds} ROUNDS - LINEAR APPROXIMATION TRACKING`);
+
+        if (aes) {
+            const explore = [
+                ['KEY SCHEDULE', () => this.openKeyScheduleOverlay()],
+                ['GCM / CTR MODE', () => this.openModeOverlay(this.aesModeKind || 'CTR')]
+            ];
+            explore.forEach(([label, onClick], idx) => {
+                const bw = 118;
+                const bx = margin + 4 + idx * (bw + 8);
+                const g = layer.append('g').style('cursor', 'pointer').on('click', onClick);
+                g.append('rect').attr('x', bx).attr('y', controlsY - 16).attr('width', bw).attr('height', 22).attr('rx', 4)
+                    .style('fill', 'rgba(24, 40, 62, 0.9)').style('stroke', 'rgba(128, 190, 255, 0.6)').style('stroke-width', 1);
+                g.append('text').attr('x', bx + bw / 2).attr('y', controlsY - 1).attr('text-anchor', 'middle')
+                    .style('font-family', 'Share Tech Mono, monospace').style('font-size', '9px')
+                    .style('fill', '#cfe3ff').text(label);
+            });
+        }
 
         this.algorithmModes.forEach((mode, idx) => {
             const isActive = mode === model.request;
@@ -2108,7 +2925,9 @@ class CryptoSubsystemVisualization {
             ['protocol', primary.protocol || 'CRYPTO API'],
             ['algorithm', primary.algorithm || `${model.request}-GCM/SHA256`],
             ['kernel path', model.selectedDriver],
-            ['cpu flags', model.selectedDriver.includes('aes') ? 'AES-NI, PCLMULQDQ' : 'generic/simd']
+            ['cpu flags', (Array.isArray(cpuFlags.display) && cpuFlags.display.length)
+                ? cpuFlags.display.join(', ')
+                : (model.selectedDriver.includes('aes') ? 'AES-NI, PCLMULQDQ' : 'generic/simd')]
         ].forEach(([k, v], idx) => {
             ctx.append('text')
                 .attr('x', margin + 14)
@@ -2147,6 +2966,16 @@ class CryptoSubsystemVisualization {
                     .style('stroke', 'rgba(122, 150, 190, 0.48)');
             }
         });
+        if (kernelOpsAvail && kernelTopOp) {
+            flow.append('text')
+                .attr('x', margin + leftW * 0.5)
+                .attr('y', dataFlowY + dataFlowH - 8)
+                .attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '7.5px')
+                .style('fill', '#9dffca')
+                .text(`live: ${String(kernelTopOp.op || '')} ${Math.round(Number(kernelTopOp.ops_per_sec) || 0)}/s`);
+        }
 
         const map = panel(centerX, topY, centerW, topH, 'BIT CORRELATION MAP (LINEAR APPROXIMATION)');
         const mapLeft = centerX + 72;
@@ -2171,6 +3000,7 @@ class CryptoSubsystemVisualization {
         layerXs.forEach((x, idx) => {
             const bias = model.bestTrail[idx]?.bias || model.baseBias;
             const color = heatColor((bias / Math.max(model.maxBias, 0.001)) - 0.45);
+            const depLayer = aes ? (aes.diffusion.dependency_layers[idx] || null) : null;
             map.append('text').attr('x', x).attr('y', topY + 46).attr('text-anchor', 'middle').style('font-family', 'Share Tech Mono, monospace').style('font-size', '8.5px').style('fill', '#b7c3d3').text(idx % 3 === 0 ? `R${idx}` : (idx % 3 === 1 ? `M${idx}` : `K${idx}`));
             const roundRect = map.append('rect')
                 .attr('x', x - 17)
@@ -2199,18 +3029,25 @@ class CryptoSubsystemVisualization {
                 });
             for (let row = 0; row < bitRows; row += 1) {
                 for (let col = 0; col < 4; col += 1) {
-                    const v = Math.sin((model.seed + idx * 11 + row * 7 + col) * 0.22);
+                    const depVal = depLayer ? Number(depLayer[row][col]) : null;
+                    const v = (depVal != null) ? (depVal * 1.4 - 0.45) : Math.sin((model.seed + idx * 11 + row * 7 + col) * 0.22);
+                    const cellOpacity = (depVal != null) ? (0.2 + depVal * 0.72) : (0.28 + Math.abs(v) * 0.5);
                     const cellRect = map.append('rect')
                         .attr('x', x - 13 + col * 7)
                         .attr('y', bitY(row) - 5)
                         .attr('width', 4)
                         .attr('height', 10)
                         .style('fill', heatColor(v))
-                        .style('opacity', 0.28 + Math.abs(v) * 0.5)
+                        .style('opacity', cellOpacity)
                         .style('cursor', 'crosshair')
                         .on('mouseenter', (event) => {
                             cellRect.style('opacity', 1).style('stroke', '#ffffff').style('stroke-width', 0.5);
-                            showAnalysisTip([
+                            showAnalysisTip((depVal != null) ? [
+                                `diffusion cell : round ${idx}`,
+                                `in byte-group  : ${row}  ->  out byte-group : ${col}`,
+                                `influence      : ${(depVal * 100).toFixed(1)}%`,
+                                `source         : real AES-128 (demo vectors)`
+                            ] : [
                                 `LAT cell    : R${idx} / bit ${row}.${col}`,
                                 `mask value  : ${v >= 0 ? '+' : ''}${v.toFixed(4)}`,
                                 `bias class  : ${Math.abs(v) > 0.72 ? 'hot approximation' : 'low signal'}`,
@@ -2219,7 +3056,7 @@ class CryptoSubsystemVisualization {
                         })
                         .on('mousemove', (event) => this.positionHoverCard(event))
                         .on('mouseleave', () => {
-                            cellRect.style('opacity', 0.28 + Math.abs(v) * 0.5).style('stroke', 'none');
+                            cellRect.style('opacity', cellOpacity).style('stroke', 'none');
                             this.hideHoverCard();
                         });
                 }
@@ -2252,7 +3089,21 @@ class CryptoSubsystemVisualization {
         const biasPanelY = topY + infoH + 8;
         const biasPanelH = Math.max(64, topH - infoH - 8);
         const info = panel(centerX + centerW + gap, topY, rightW, infoH, 'LINEAR APPROXIMATION INFO');
-        [
+        const infoLines = aes ? (() => {
+            const t0 = (aes.lat.top && aes.lat.top[0]) ? aes.lat.top[0] : { in_mask: 0, out_mask: 0, bias: aes.lat.max_bias };
+            const b = aes.lat.max_bias;
+            return [
+                `S-box linear approx:`,
+                `P[a.x = b.S(x)] = ${(0.5 + Math.abs(b)).toFixed(6)}`,
+                `max bias: ${b >= 0 ? '+' : ''}${b.toFixed(6)}`,
+                `correlation: ${(aes.lat.max_correlation).toFixed(6)}`,
+                `best masks (hex):`,
+                `a (in) : 0x${Number(t0.in_mask).toString(16).padStart(2, '0')}`,
+                `b (out): 0x${Number(t0.out_mask).toString(16).padStart(2, '0')}`,
+                `#approx |bias|=${aes.lat.max_abs_lat}/256`,
+                `source: real S-box`
+            ];
+        })() : [
             `approximation:`,
             `P[L(P,K) = L(C)] = ${(0.5 + model.maxBias).toFixed(7)}`,
             `bias: +${model.maxBias.toFixed(7)}`,
@@ -2262,7 +3113,8 @@ class CryptoSubsystemVisualization {
             `C: 0x${((model.seed * 17) & 0xffff).toString(16).padStart(4, '0')}`,
             `rounds: ${model.rounds}/${model.rounds}`,
             `quality: good`
-        ].forEach((line, idx) => {
+        ];
+        infoLines.forEach((line, idx) => {
             info.append('text')
                 .attr('x', centerX + centerW + gap + 12)
                 .attr('y', topY + 42 + idx * 11)
@@ -2271,37 +3123,137 @@ class CryptoSubsystemVisualization {
                 .style('fill', idx === 2 || idx === 8 ? '#8effc8' : '#b3bfd0')
                 .text(line);
         });
-        const biasPanel = panel(centerX + centerW + gap, biasPanelY, rightW, biasPanelH, 'BIAS OVER ROUNDS');
+        const biasPanel = panel(centerX + centerW + gap, biasPanelY, rightW, biasPanelH, aes ? 'AVALANCHE OVER ROUNDS' : 'BIAS OVER ROUNDS', aes ? '% OF STATE BITS FLIPPED' : '');
         const chartX = centerX + centerW + gap + 34;
         const chartY = biasPanelY + 42;
         const chartW = rightW - 58;
         const chartH = Math.max(24, biasPanelH - 56);
         biasPanel.append('line').attr('x1', chartX).attr('x2', chartX + chartW).attr('y1', chartY + chartH / 2).attr('y2', chartY + chartH / 2).style('stroke', 'rgba(116, 138, 170, 0.28)');
         const bp = d3.path();
-        model.bestTrail.forEach((step, idx) => {
-            const x = chartX + (chartW / Math.max(1, model.bestTrail.length - 1)) * idx;
-            const y = chartY + chartH * 0.5 - Math.sin(idx * 0.8 + model.seed) * chartH * 0.2 - (step.bias / model.maxBias) * chartH * 0.28;
-            if (idx === 0) bp.moveTo(x, y);
-            else bp.lineTo(x, y);
-            biasPanel.append('circle').attr('cx', x).attr('cy', y).attr('r', 2).style('fill', idx > model.bestTrail.length * 0.55 ? '#ff9a55' : '#9d55ff');
-        });
-        biasPanel.append('path').attr('d', bp.toString()).style('fill', 'none').style('stroke', '#ff8655').style('stroke-width', 1.5);
+        if (aes) {
+            const curve = (aesLive ? aesLive.curvePct : aes.diffusion.avg_curve_pct) || [];
+            // baseline (50%) reference line
+            biasPanel.append('line').attr('x1', chartX).attr('x2', chartX + chartW)
+                .attr('y1', chartY + chartH * 0.1).attr('y2', chartY + chartH * 0.1)
+                .style('stroke', 'rgba(141, 220, 255, 0.35)').style('stroke-dasharray', '2,2');
+            curve.forEach((pct, idx) => {
+                const x = chartX + (chartW / Math.max(1, curve.length - 1)) * idx;
+                const y = chartY + chartH - (Math.max(0, Math.min(100, pct)) / 100) * chartH * 1.8;
+                if (idx === 0) bp.moveTo(x, y);
+                else bp.lineTo(x, y);
+                biasPanel.append('circle').attr('cx', x).attr('cy', y).attr('r', 2).style('fill', pct >= 45 ? '#8effc8' : '#ff9a55');
+            });
+            biasPanel.append('path').attr('d', bp.toString()).style('fill', 'none').style('stroke', '#8effc8').style('stroke-width', 1.5);
+        } else {
+            model.bestTrail.forEach((step, idx) => {
+                const x = chartX + (chartW / Math.max(1, model.bestTrail.length - 1)) * idx;
+                const y = chartY + chartH * 0.5 - Math.sin(idx * 0.8 + model.seed) * chartH * 0.2 - (step.bias / model.maxBias) * chartH * 0.28;
+                if (idx === 0) bp.moveTo(x, y);
+                else bp.lineTo(x, y);
+                biasPanel.append('circle').attr('cx', x).attr('cy', y).attr('r', 2).style('fill', idx > model.bestTrail.length * 0.55 ? '#ff9a55' : '#9d55ff');
+            });
+            biasPanel.append('path').attr('d', bp.toString()).style('fill', 'none').style('stroke', '#ff8655').style('stroke-width', 1.5);
+        }
 
         const diffW = Math.max(320, width * 0.33);
         const keyW = Math.max(320, width * 0.33);
         const entropyW = width - margin * 2 - diffW - keyW - gap * 2;
-        const diff = panel(margin, midY, diffW, midH, 'DIFFUSION & AVALANCHE VISUALIZATION', 'FLIP 1 BIT IN PLAINTEXT -> OBSERVE PROPAGATION');
+        const diffSubtitle = aesLive
+            ? `CLICK INPUT BYTES TO FLIP BITS · ${aesLive.flippedBits} FLIPPED -> ${aesLive.curve[aesLive.curve.length - 1]}/128 · CLICK A ROUND FOR ITS OPERATIONS`
+            : (aes ? `FLIP 1 BIT IN PLAINTEXT -> ${aes.diffusion.avalanche_curve[aes.diffusion.avalanche_curve.length - 1]}/128 BITS CHANGED` : 'FLIP 1 BIT IN PLAINTEXT -> OBSERVE PROPAGATION');
+        const diff = panel(margin, midY, diffW, midH, 'DIFFUSION & AVALANCHE VISUALIZATION', diffSubtitle);
         const cell = Math.max(5, Math.min(10, (diffW - 58) / 38));
-        for (let round = 0; round < Math.min(10, model.rounds + 1); round += 1) {
+        const roundCap = Math.min(10, model.rounds + 1);
+        const pulse = 0.5 + 0.5 * Math.sin(this.activeAnimationTick * 0.18);
+        for (let round = 0; round < roundCap; round += 1) {
             const gx = margin + 24 + (round % 5) * ((diffW - 48) / 5);
             const gy = midY + 54 + Math.floor(round / 5) * ((midH - 78) / 2);
-            diff.append('text').attr('x', gx).attr('y', gy - 8).style('font-family', 'Share Tech Mono, monospace').style('font-size', '7.5px').style('fill', '#8fa0b8').text(`ROUND ${round}`);
-            for (let a = 0; a < 6; a += 1) {
-                for (let b = 0; b < 6; b += 1) {
-                    const v = Math.abs(Math.sin((model.seed + round * 13 + a * 5 + b) * 0.2));
-                    diff.append('circle').attr('cx', gx + b * cell * 1.6).attr('cy', gy + a * cell * 1.45).attr('r', cell * 0.42).style('fill', heatColor(v - 0.35)).style('opacity', 0.25 + v * 0.65);
+            const grid = aesLive ? (aesLive.grids[round] || null) : (aes ? (aes.diffusion.avalanche_grids[round] || null) : null);
+            const changed = grid ? grid.reduce((s, v) => s + (v > 0 ? 1 : 0), 0) : 0;
+            const isInput = round === 0;
+            const canInspect = aesLive && round >= 1;
+            const labelTxt = grid ? (isInput ? `INPUT Δ · ${changed}/16` : `R${round} · ${changed}/16${canInspect ? ' ›' : ''}`) : `ROUND ${round}`;
+            if (canInspect) {
+                // Transparent hit rect: <text> only registers clicks on painted glyphs.
+                diff.append('rect').attr('x', gx - 4).attr('y', gy - 18).attr('width', 78).attr('height', 16)
+                    .style('fill', 'transparent').style('cursor', 'pointer')
+                    .on('click', () => this.openAesOpsOverlay(round));
+            }
+            diff.append('text').attr('x', gx).attr('y', gy - 8).style('font-family', 'Share Tech Mono, monospace').style('font-size', '7.5px')
+                .style('fill', isInput ? '#ffcf9a' : (canInspect ? '#a9c2e6' : '#8fa0b8'))
+                .style('cursor', canInspect ? 'pointer' : 'default')
+                .style('pointer-events', 'none')
+                .text(labelTxt);
+            if (grid) {
+                // 4x4 AES state rendered as "balls"; radius/heat = bits flipped in that byte (0..8).
+                const stepX = cell * 2.0;
+                const stepY = cell * 1.8;
+                for (let a = 0; a < 4; a += 1) {
+                    for (let b = 0; b < 4; b += 1) {
+                        const idx = a + 4 * b;
+                        const bits = Number(grid[idx]) || 0;
+                        const v = bits / 8;
+                        const cxp = gx + b * stepX + cell * 0.85;
+                        const cyp = gy + a * stepY + cell * 0.8;
+                        const on = bits > 0;
+                        const rBall = on ? (cell * 0.42 + v * cell * 0.5) : cell * 0.3;
+                        const ballOpacity = on ? (0.5 + v * 0.5) * (isInput ? 1 : (0.7 + 0.3 * pulse)) : 0.4;
+                        const ball = diff.append('circle')
+                            .attr('cx', cxp).attr('cy', cyp).attr('r', rBall)
+                            .style('fill', on ? heatColor(v * 1.3 - 0.25) : 'rgba(120,140,170,0.14)')
+                            .style('stroke', on ? 'rgba(255,190,130,0.6)' : 'rgba(120,140,170,0.28)')
+                            .style('stroke-width', on ? 0.7 : 0.5)
+                            .style('opacity', ballOpacity);
+                        // Forgiving transparent hit target so the tiny balls are
+                        // easy to click (the visible circle can be < 3px radius).
+                        const addHit = (handler, enter, leave) => {
+                            diff.append('circle')
+                                .attr('cx', cxp).attr('cy', cyp).attr('r', Math.max(cell, rBall + 3))
+                                .style('fill', 'transparent')
+                                .style('cursor', 'pointer')
+                                .on('click', handler)
+                                .on('mouseenter', enter || null)
+                                .on('mouseleave', leave || null);
+                        };
+                        if (isInput && aesLive) {
+                            addHit(
+                                () => this.toggleAesInputBit(idx),
+                                (event) => {
+                                    ball.style('stroke', '#ffffff').style('stroke-width', 1.2);
+                                    showAnalysisTip([
+                                        `input byte : ${idx} (row ${a}, col ${b})`,
+                                        `flip state : ${on ? 'FLIPPED (1 bit)' : 'unchanged'}`,
+                                        `action     : click to toggle a bit`,
+                                        `then watch : difference diffuses across rounds`
+                                    ], event);
+                                },
+                                () => {
+                                    ball.style('stroke', on ? 'rgba(255,190,130,0.6)' : 'rgba(120,140,170,0.28)').style('stroke-width', on ? 0.7 : 0.5);
+                                    this.hideHoverCard();
+                                }
+                            );
+                        } else if (canInspect) {
+                            addHit(() => this.openAesOpsOverlay(round));
+                        }
+                    }
+                }
+            } else {
+                for (let a = 0; a < 6; a += 1) {
+                    for (let b = 0; b < 6; b += 1) {
+                        const v = Math.abs(Math.sin((model.seed + round * 13 + a * 5 + b) * 0.2));
+                        diff.append('circle').attr('cx', gx + b * cell * 1.6).attr('cy', gy + a * cell * 1.45).attr('r', cell * 0.42).style('fill', heatColor(v - 0.35)).style('opacity', 0.25 + v * 0.65);
+                    }
                 }
             }
+        }
+        if (aesLive) {
+            const resetG = diff.append('g').style('cursor', 'pointer').on('click', () => this.resetAesInputDiff());
+            resetG.append('rect').attr('x', margin + diffW - 78).attr('y', midY + 6).attr('width', 66).attr('height', 16)
+                .style('fill', 'transparent');
+            resetG.append('text').attr('x', margin + diffW - 14).attr('y', midY + 16).attr('text-anchor', 'end')
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '8px')
+                .style('pointer-events', 'none')
+                .style('fill', '#9fb6d4').text('[ reset Δ ]');
         }
 
         const keyX = margin + diffW + gap;
@@ -2314,6 +3266,61 @@ class CryptoSubsystemVisualization {
             x: kcx + keyW * 0.23,
             y: kcy - midH * 0.18
         };
+        if (aes) {
+            const kr = aes.key_recovery;
+            const ranking = Array.isArray(kr.ranking) ? kr.ranking : [];
+            const maxAbs = Math.max(0.01, ...ranking.map((r) => Math.abs(r.corr)));
+            const sx0 = keyX + 26;
+            const sw = keyW - 48;
+            const syTop = midY + 44;
+            const syBot = midY + midH - 62;
+            const sh = Math.max(20, syBot - syTop);
+            key.append('line').attr('x1', sx0).attr('x2', sx0 + sw).attr('y1', syBot).attr('y2', syBot)
+                .style('stroke', 'rgba(116,138,170,0.35)');
+            key.append('text').attr('x', sx0).attr('y', syTop - 6)
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '7.5px')
+                .style('fill', '#8fa0b8').text('|correlation| per key guess (0..255)');
+            let bx = sx0;
+            let by = syBot;
+            ranking.forEach((r) => {
+                const px = sx0 + (Number(r.guess) / 255) * sw;
+                const py = syBot - (Math.abs(Number(r.corr)) / maxAbs) * sh;
+                const isTrue = Number(r.guess) === Number(kr.true_key);
+                if (isTrue) { bx = px; by = py; }
+                key.append('line').attr('x1', px).attr('x2', px).attr('y1', syBot).attr('y2', py)
+                    .style('stroke', isTrue ? 'rgba(255,173,122,0.6)' : 'rgba(126,168,255,0.28)').style('stroke-width', isTrue ? 1.4 : 0.8);
+                key.append('circle').attr('cx', px).attr('cy', py).attr('r', isTrue ? 4 : 2)
+                    .style('fill', isTrue ? '#ffad7a' : '#7ea8ff').style('opacity', isTrue ? 1 : 0.62)
+                    .style('filter', isTrue ? 'url(#crypto-line-glow)' : null);
+            });
+            key.append('text').attr('x', bx + 8).attr('y', by - 8)
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '8.5px')
+                .style('fill', '#ffcf9a').text(`true key ${kr.true_key_hex} · rank #${kr.true_rank}`);
+
+            // Convergence curve: true-key rank vs number of observed messages.
+            const conv = Array.isArray(kr.convergence) ? kr.convergence : [];
+            const cx0 = keyX + 26;
+            const cw = keyW - 48;
+            const cyBot = midY + midH - 16;
+            const chH = 22;
+            key.append('text').attr('x', cx0).attr('y', cyBot - chH - 4)
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '7.5px')
+                .style('fill', '#8fa0b8').text('true-key rank vs messages (converges to #1)');
+            const cp = d3.path();
+            conv.forEach((c, i) => {
+                const px = cx0 + (cw / Math.max(1, conv.length - 1)) * i;
+                const frac = Math.min(1, (Number(c.true_rank) - 1) / 255);
+                const py = (cyBot - chH) + frac * chH;
+                if (i === 0) cp.moveTo(px, py); else cp.lineTo(px, py);
+                key.append('circle').attr('cx', px).attr('cy', py).attr('r', Number(c.true_rank) === 1 ? 2.6 : 1.6)
+                    .style('fill', Number(c.true_rank) === 1 ? '#8effc8' : '#ff9a55');
+                key.append('text').attr('x', px).attr('y', cyBot + 2).attr('text-anchor', 'middle')
+                    .style('font-family', 'Share Tech Mono, monospace').style('font-size', '6px')
+                    .style('fill', '#6f8098').text(c.n);
+            });
+            key.append('path').attr('d', cp.toString()).style('fill', 'none').style('stroke', '#8effc8').style('stroke-width', 1.2);
+        }
+        if (!aes) {
         for (let i = 0; i < 420; i += 1) {
             const h = this.hashText(`${model.seed}-key-${i}`);
             const angle = h * 0.018;
@@ -2403,6 +3410,7 @@ class CryptoSubsystemVisualization {
             .style('stroke-opacity', 0.72);
         key.append('text').attr('x', bestKey.x + 12).attr('y', bestKey.y - 16).style('font-family', 'Share Tech Mono, monospace').style('font-size', '9px').style('fill', '#ffad7a').text('best hypothesis');
         key.append('text').attr('x', bestKey.x + 12).attr('y', bestKey.y - 2).style('font-family', 'Share Tech Mono, monospace').style('font-size', '8.5px').style('fill', '#ffcf9a').text(`rank #1 | bias +${model.maxBias.toFixed(4)}`);
+        }
 
         const entX = keyX + keyW + gap;
         const ent = panel(entX, midY, entropyW, midH, 'ENTROPY COLLAPSE (SPIRAL VIEW)', 'FIBONACCI SPIRAL - ENTROPY REDUCTION OVER ROUNDS');
@@ -2421,6 +3429,18 @@ class CryptoSubsystemVisualization {
         for (let r = 0; r < 7; r += 1) {
             ent.append('circle').attr('cx', ecx).attr('cy', ecy).attr('r', 10 + r * Math.min(entropyW, midH) * 0.055).style('fill', 'none').style('stroke', r < 2 ? '#ff7a44' : '#5968d8').style('stroke-opacity', 0.32);
         }
+        const entPoolBits = Number(cryptoMetrics.entropy_pool_bits ?? entropyCloud.entropy_pool_bits ?? 0);
+        const entPoolSize = Number(cryptoMetrics.entropy_pool_size_bits ?? entropyCloud.entropy_pool_size_bits ?? 256) || 256;
+        const entPct = Math.max(0, Math.min(1, entPoolBits / entPoolSize));
+        const entMaxR = 10 + 6 * Math.min(entropyW, midH) * 0.055;
+        ent.append('circle')
+            .attr('cx', ecx).attr('cy', ecy)
+            .attr('r', 8 + entPct * (entMaxR - 8))
+            .style('fill', 'none')
+            .style('stroke', entPct > 0.5 ? '#8effc8' : '#ffcf7a')
+            .style('stroke-width', 2)
+            .style('stroke-opacity', 0.9)
+            .style('filter', 'url(#crypto-line-glow)');
         [128, 96, 64, 32].forEach((bits, idx) => {
             ent.append('text')
                 .attr('x', entX + entropyW - 48)
@@ -2435,8 +3455,8 @@ class CryptoSubsystemVisualization {
             .attr('y', midY + midH - 16)
             .style('font-family', 'Share Tech Mono, monospace')
             .style('font-size', '8.5px')
-            .style('fill', '#9dafc5')
-            .text(`entropy slope: ${(model.correlationDecay * 100).toFixed(0)}% | rounds ${model.rounds}`);
+            .style('fill', entPct > 0.5 ? '#8effc8' : '#ffcf7a')
+            .text(`live pool: ${Math.round(entPct * 100)}% (${entPoolBits}/${entPoolSize}b) | crng ${String(cryptoMetrics.crng_state || entropyCloud.crng_state || 'n/a')}`);
 
         const bottomPanels = [
             [margin, bottomY, width * 0.56 - margin, bottomH, 'KERNEL CRYPTO METRICS'],
@@ -2444,14 +3464,38 @@ class CryptoSubsystemVisualization {
             [width * 0.78 + gap * 2, bottomY, width * 0.22 - margin * 2, bottomH, 'EVENT LOG (CRYPTO)']
         ];
         const metrics = panel(...bottomPanels[0]);
+        const mPoolBits = Number(cryptoMetrics.entropy_pool_bits ?? entropyCloud.entropy_pool_bits ?? 0);
+        const mPoolSize = Number(cryptoMetrics.entropy_pool_size_bits ?? entropyCloud.entropy_pool_size_bits ?? 256) || 256;
+        const mRngHealth = cryptoMetrics.rng_health || (String(entropyCloud.crng_state || '').toLowerCase() === 'ready' ? 'good' : 'warming');
+        const mAesNi = cryptoMetrics.aes_ni_status || (cpuFlags.aes_ni ? 'available' : 'n/a');
+        const mLatency = (cryptoMetrics.latency_ms != null) ? `${Number(cryptoMetrics.latency_ms).toFixed(2)} ms` : 'n/a';
+        const mNet = (cryptoMetrics.net_mb_s != null) ? `${Number(cryptoMetrics.net_mb_s).toFixed(2)} MB/s` : 'n/a';
+        const mOps = (cryptoMetrics.ops_per_sec ?? metaAll.ops_per_sec);
+        const kOpsAvail = !!cryptoMetrics.kernel_ops_available;
+        const kOps = cryptoMetrics.kernel_ops_per_sec;
+        const kMb = cryptoMetrics.kernel_mb_s;
         const metricItems = [
-            ['entropy pool', '256/256 bits', '#8fdcff'],
-            ['rng health', 'good', '#8effc8'],
-            ['aes-ni usage', `${Math.round(model.confidence * 100)}%`, '#9dffca'],
-            ['avg latency', `${(model.maxBias * 100).toFixed(2)} us`, '#d6e3f4'],
-            ['throughput', `${(items.length * 0.7 + 1.8).toFixed(2)} GB/s`, '#d6e3f4'],
-            ['bias alert', model.maxBias > 0.06 ? 'watch' : 'none', '#ffcf8d']
+            ['entropy pool', `${mPoolBits}/${mPoolSize} b`, '#8fdcff'],
+            ['rng health', mRngHealth, mRngHealth === 'good' ? '#8effc8' : '#ffcf8d'],
+            ['aes-ni', mAesNi, mAesNi === 'active' ? '#9dffca' : (mAesNi === 'available' ? '#8fdcff' : '#d6e3f4')],
+            ['crypto latency', mLatency, kOpsAvail ? '#9dffca' : '#d6e3f4'],
+            [kOpsAvail ? 'kernel throughput' : 'net throughput',
+                (kOpsAvail && kMb != null) ? `${Number(kMb).toFixed(2)} MB/s` : mNet,
+                kOpsAvail ? '#9dffca' : '#d6e3f4'],
+            [kOpsAvail ? 'kernel ops/s' : 'crypto ops/s',
+                (kOpsAvail && kOps != null) ? `${Number(kOps).toFixed(0)}` : ((mOps != null) ? `${Number(mOps).toFixed(0)}` : 'n/a'),
+                '#ffcf8d']
         ];
+        const metricsPanelX = bottomPanels[0][0];
+        const metricsPanelW = bottomPanels[0][2];
+        metrics.append('text')
+            .attr('x', metricsPanelX + metricsPanelW - 12)
+            .attr('y', bottomY + 15)
+            .attr('text-anchor', 'end')
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '8px')
+            .style('fill', kOpsAvail ? '#9dffca' : '#8fa0b8')
+            .text(kOpsAvail ? 'live: kprobe (kernel)' : 'source: heuristic');
         metricItems.forEach((m, idx) => {
             const x = margin + 14 + idx * ((width * 0.56 - 44) / metricItems.length);
             metrics.append('text').attr('x', x).attr('y', bottomY + 38).style('font-family', 'Share Tech Mono, monospace').style('font-size', '8.5px').style('fill', '#8fa0b8').text(m[0]);
@@ -2459,20 +3503,64 @@ class CryptoSubsystemVisualization {
             spark(metrics, x, bottomY + 66, 58, Math.max(12, bottomH - 78), model.seed + idx * 9, m[2]);
         });
         const algos = panel(...bottomPanels[1]);
-        ['AES-GCM', 'ChaCha20-Poly1305', 'SHA256'].forEach((name, idx) => {
-            const isSelected = name.toLowerCase().includes(model.request.toLowerCase().replace('20', ''));
-            algos.append('text').attr('x', width * 0.56 + gap + 14).attr('y', bottomY + 42 + idx * 24).style('font-family', 'Share Tech Mono, monospace').style('font-size', '9px').style('fill', '#d2dce9').text(name);
-            algos.append('text').attr('x', width * 0.56 + gap + width * 0.15).attr('y', bottomY + 42 + idx * 24).style('font-family', 'Share Tech Mono, monospace').style('font-size', '9px').style('fill', isSelected ? '#ffcf7a' : '#8effc8').text(isSelected ? 'selected' : 'active');
+        const algoBaseX = width * 0.56 + gap;
+        const algoPanelW = width * 0.22;
+        const algoRows = activeAlgorithms.length
+            ? activeAlgorithms.slice(0, 3)
+            : [
+                { family: 'AES', driver: 'aesni-intel', status: 'selected', source: 'kernel' },
+                { family: 'ChaCha20', driver: 'chacha20-neon', status: 'selected', source: 'kernel' },
+                { family: 'SHA-2', driver: 'sha256-avx2', status: 'selected', source: 'kernel' }
+            ];
+        algoRows.forEach((a, idx) => {
+            const rowY = bottomY + 40 + idx * Math.max(26, (bottomH - 46) / algoRows.length);
+            const isReal = String(a.source || '') === 'kernel';
+            algos.append('text').attr('x', algoBaseX + 14).attr('y', rowY)
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '9.5px').style('fill', '#d2dce9')
+                .text(String(a.family || '').slice(0, 12));
+            algos.append('text').attr('x', algoBaseX + 14).attr('y', rowY + 12)
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '8px')
+                .style('fill', isReal ? '#86e0c0' : '#8fa0b8')
+                .text(String(a.driver || 'n/a').slice(0, 22));
+            const isExecuting = a.status === 'executing';
+            const statusLabel = isExecuting
+                ? `${Math.round(Number(a.observed_ops_per_sec) || 0)}/s`
+                : String(a.status || 'active');
+            const statusColor = isExecuting ? '#9dffca' : (a.status === 'selected' ? '#ffcf7a' : '#8effc8');
+            algos.append('text').attr('x', algoBaseX + algoPanelW - 12).attr('y', rowY).attr('text-anchor', 'end')
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '8px')
+                .style('fill', statusColor)
+                .text(statusLabel);
+            if (isExecuting) {
+                algos.append('text').attr('x', algoBaseX + algoPanelW - 12).attr('y', rowY + 11).attr('text-anchor', 'end')
+                    .style('font-family', 'Share Tech Mono, monospace').style('font-size', '7px').style('fill', '#6fae92')
+                    .text('executing');
+            }
         });
         const log = panel(...bottomPanels[2]);
-        [
-            `crypto_req ${model.request.toLowerCase()}: init`,
-            `${model.selectedDriver}: setkey`,
-            `best trail locked bias=${model.maxBias.toFixed(5)}`,
-            `runtime sources score=${runtimeQuality}`,
-            `${model.request.toLowerCase()} done (${(model.maxBias * 100).toFixed(2)}us)`
-        ].forEach((line, idx) => {
-            log.append('text').attr('x', width * 0.78 + gap * 2 + 12).attr('y', bottomY + 40 + idx * 17).style('font-family', 'Share Tech Mono, monospace').style('font-size', '8.5px').style('fill', '#9fb0c7').text(`[${idx + 19}:21:3${idx}] ${line}`.slice(0, 42));
+        const logBaseX = width * 0.78 + gap * 2;
+        const tagColor = (tag) => {
+            const t = String(tag || '').toLowerCase();
+            if (t === 'random') return '#8fdcff';
+            if (t === 'flows') return '#ffcf7a';
+            if (t === 'offload') return '#9dffca';
+            if (t === 'aes' || t === 'sha-2' || t === 'chacha20') return '#c9b6ff';
+            return '#9fb0c7';
+        };
+        const logRows = eventLog.length
+            ? eventLog.slice(0, 8)
+            : [
+                { ts: '', tag: 'crypto', msg: 'crypto telemetry online' },
+                { ts: '', tag: model.request.toLowerCase(), msg: `${model.selectedDriver}: selected` }
+            ];
+        const logStep = Math.max(13, Math.min(16, (bottomH - 30) / Math.max(logRows.length, 1)));
+        logRows.forEach((e, idx) => {
+            const prefix = e.ts ? `[${e.ts}] ` : '';
+            const line = `${prefix}${e.tag ? e.tag + ': ' : ''}${e.msg || ''}`;
+            log.append('text').attr('x', logBaseX + 12).attr('y', bottomY + 38 + idx * logStep)
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '8px')
+                .style('fill', tagColor(e.tag))
+                .text(line.slice(0, 46));
         });
     }
 
@@ -2715,6 +3803,7 @@ class CryptoSubsystemVisualization {
             this.lastLinearAnalysisRenderAt = Date.now();
         } else {
             this.linearAnalysisRendered = false;
+            if (this.aesOverlay) this.closeAesOpsOverlay();
         }
 
         const width = window.innerWidth;
@@ -2726,6 +3815,7 @@ class CryptoSubsystemVisualization {
         this.drawGrid(layer, width, height);
         if (this.activeCryptoView === 'LINEAR_ANALYSIS') {
             this.drawLinearAnalysisView(layer, payload, width, height, tickId);
+            if (this.aesOverlay) this.svg.select('.aes-ops-overlay').raise();
             return;
         }
         this.drawProtocolLegend(layer);
@@ -3104,6 +4194,33 @@ class CryptoSubsystemVisualization {
         };
     }
 
+    fetchAesDemo() {
+        // Real AES-128 internals on demo vectors. All AES interactivity (bit
+        // flipping, round overlays, key schedule, modes) is gated on this data,
+        // so it must load reliably. We deliberately avoid 'force-cache': a stale
+        // cached error from an earlier session (before this endpoint existed)
+        // would otherwise permanently disable interactivity. On failure we clear
+        // the in-flight flag so the telemetry loop can retry until it succeeds.
+        if (this.aesDemo || this.aesDemoRequested) return;
+        this.aesDemoRequested = true;
+        window.fetchJson('/api/crypto-aes-demo', { cache: 'no-store' }, {
+            timeoutMs: 8000,
+            suppressToast: true,
+            context: 'crypto-aes-demo'
+        })
+            .then((data) => {
+                if (!data || data.error || !data.demo_vectors) {
+                    this.aesDemoRequested = false;
+                    return;
+                }
+                this.aesDemo = data;
+                if (this.isActive && this.lastPayload) {
+                    this.renderFlowMap(this.lastPayload);
+                }
+            })
+            .catch(() => { this.aesDemoRequested = false; });
+    }
+
     fetchTelemetry() {
         return window.fetchJson('/api/crypto-realtime', { cache: 'no-store' }, {
             timeoutMs: 6000,
@@ -3158,10 +4275,15 @@ class CryptoSubsystemVisualization {
         this.container.style.pointerEvents = 'auto';
 
         this.fetchTelemetry();
+        this.fetchAesDemo();
 
         if (this.telemetryInterval) clearInterval(this.telemetryInterval);
         this.telemetryInterval = setInterval(() => {
-            if (this.isActive) this.fetchTelemetry();
+            if (!this.isActive) return;
+            this.fetchTelemetry();
+            // Retry the (one-shot) AES demo load until it succeeds; without it
+            // the AES INTERNALS view stays in its non-interactive fallback.
+            if (!this.aesDemo) this.fetchAesDemo();
         }, 1200);
     }
 
@@ -3169,6 +4291,7 @@ class CryptoSubsystemVisualization {
         this.isActive = false;
         this.activeAnimationTick += 1;
         this.hideHoverCard();
+        if (this.aesOverlay) this.closeAesOpsOverlay();
 
         if (this.telemetryInterval) {
             clearInterval(this.telemetryInterval);

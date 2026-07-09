@@ -185,13 +185,42 @@ svg {
     max-width: 240px;
     box-shadow: 0 6px 22px rgba(0, 0, 0, 0.35);
 }
-.ns-hud-head {
-    font-size: 10px;
-    letter-spacing: 1.6px;
-    color: #ffffff;
-    padding-bottom: 5px;
+.ns-hud-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+    padding-bottom: 6px;
     margin-bottom: 6px;
     border-bottom: 1px solid rgba(120, 126, 138, 0.35);
+}
+.ns-hud-over {
+    font-size: 7.5px;
+    letter-spacing: 1.8px;
+    color: #7f8794;
+}
+.ns-hud-name {
+    font-size: 13px;
+    letter-spacing: 1.6px;
+    color: #ffffff;
+    line-height: 1.15;
+}
+.ns-hud-pill {
+    flex: none;
+    margin-top: 2px;
+    font-size: 7.5px;
+    letter-spacing: 1px;
+    padding: 2px 7px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    color: #aeb4c0;
+    white-space: nowrap;
+}
+.ns-hud-pill.is-iso {
+    background: rgba(88, 182, 216, 0.16);
+    border-color: rgba(88, 182, 216, 0.7);
+    color: #7fd0ea;
 }
 .ns-hud-desc {
     font-size: 9.5px;
@@ -199,6 +228,7 @@ svg {
     color: #aab0bc;
     margin-bottom: 7px;
 }
+.ns-hud-rows { margin: 6px 0; }
 .ns-hud-row {
     display: flex;
     justify-content: space-between;
@@ -221,12 +251,14 @@ svg {
     background: rgba(88, 182, 216, 0.85);
 }
 .ns-hud-foot {
-    margin-top: 4px;
+    display: flex;
+    justify-content: space-between;
+    margin-top: 5px;
     font-size: 8px;
     letter-spacing: 1.2px;
     color: #7f8794;
-    text-align: right;
 }
+.ns-hud-hint { color: #7fd0ea; }
 
 /* Marker for namespace cells that contain real isolation (unique_count > 1) */
 .ns-isolated-marker {
@@ -253,6 +285,38 @@ svg {
     font-size: 10px;
     letter-spacing: 1.5px;
 }
+.ns-tree-pill rect {
+    fill: rgba(255, 255, 255, 0.08);
+    stroke: rgba(255, 255, 255, 0.24);
+    stroke-width: 1;
+}
+.ns-tree-pill text {
+    fill: #aeb4c0;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 7.5px;
+    letter-spacing: 1px;
+}
+.ns-tree-pill.is-iso rect {
+    fill: rgba(88, 182, 216, 0.18);
+    stroke: rgba(88, 182, 216, 0.7);
+}
+.ns-tree-pill.is-iso text { fill: #7fd0ea; }
+.ns-tree-close {
+    fill: #8b909c;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 15px;
+}
+.ns-tree-close:hover { fill: #ffffff; }
+.ns-tree-track { fill: rgba(255, 255, 255, 0.12); }
+.ns-tree-track-fill { fill: rgba(150, 156, 168, 0.6); }
+.ns-tree-track-fill.is-iso { fill: rgba(88, 182, 216, 0.85); }
+.ns-tree-divider { stroke: rgba(120, 126, 138, 0.3); stroke-width: 1; }
+.ns-tree-foot {
+    fill: rgba(160, 166, 178, 0.7);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 7.5px;
+    letter-spacing: 0.8px;
+}
 .ns-tree-link { stroke: rgba(150, 156, 168, 0.5); stroke-width: 1; fill: none; }
 .ns-tree-root rect {
     fill: rgba(88, 182, 216, 0.9);
@@ -277,6 +341,11 @@ svg {
     font-size: 9px;
     letter-spacing: 1px;
 }
+.ns-tree-branch.is-iso rect {
+    fill: rgba(88, 182, 216, 0.14);
+    stroke: rgba(88, 182, 216, 0.6);
+}
+.ns-tree-branch.is-iso text { fill: #dff0f7; }
 .ns-tree-leaf rect {
     fill: rgba(255, 255, 255, 0.045);
     stroke: rgba(120, 126, 138, 0.42);
@@ -288,6 +357,7 @@ svg {
     font-size: 8.5px;
     letter-spacing: 0.3px;
 }
+.ns-tree-leaf.is-iso rect { stroke: rgba(88, 182, 216, 0.4); }
 
 /* Bezier curve styles - matching connection lines */
 .bezier-curve {

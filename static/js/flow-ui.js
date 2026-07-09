@@ -62,6 +62,104 @@ function drawBezierDecor(width, height, yBase) {
         .attr("stroke-width", 0.9)
         .attr("stroke-linecap", "round");
 
+    // Data-track milestones along the lower rail (reference "genome/timeline"
+    // read): named kernel I/O path stages with live throughput. Amber marks the
+    // busiest layer(s), driven by /api/io-pulse.
+    const AMBER = "198, 120, 28";
+    const INK = "45, 45, 45";
+    const trackHalf = originalRailHalfWidth - 24;
+
+    const fmtRate = (v, unit) => {
+        if (unit === "mb") {
+            if (v >= 1) return v.toFixed(1) + " M/s";
+            if (v > 0) return Math.max(1, Math.round(v * 1024)) + " K/s";
+            return "idle";
+        }
+        if (v >= 10000) return (v / 1000).toFixed(0) + "k/s";
+        if (v >= 1000) return (v / 1000).toFixed(1) + "k/s";
+        if (v > 0) return v + "/s";
+        return "idle";
+    };
+
+    const stages = [
+        { label: "NET",   unit: "mb",  scaleMax: 50,    value: (m) => m.net_mb_s || 0 },
+        { label: "BLOCK", unit: "mb",  scaleMax: 80,    value: (m) => (m.disk_read_mb_s || 0) + (m.disk_write_mb_s || 0) },
+        { label: "MM",    unit: "cnt", scaleMax: 50000, value: (m) => m.pgfault_per_sec || 0 },
+        { label: "SWAP",  unit: "cnt", scaleMax: 5000,  value: (m) => (m.pswpin_per_sec || 0) + (m.pswpout_per_sec || 0) },
+        { label: "IRQ",   unit: "cnt", scaleMax: 25000, value: (m) => m.intr_per_sec || 0 }
+    ];
+
+    const trackNodes = stages.map((st, i) => {
+        const t = stages.length === 1 ? 0.5 : i / (stages.length - 1);
+        const x = centerX - trackHalf + t * (trackHalf * 2);
+
+        const stem = decorGroup.append("line")
+            .attr("x1", x).attr("y1", lowerRailY)
+            .attr("x2", x).attr("y2", lowerRailY - 9)
+            .attr("stroke", `rgba(${INK}, 0.3)`)
+            .attr("stroke-width", 0.8)
+            .attr("stroke-linecap", "round");
+
+        const halo = decorGroup.append("circle")
+            .attr("cx", x).attr("cy", lowerRailY).attr("r", 5)
+            .attr("fill", "none")
+            .attr("stroke", `rgba(${AMBER}, 0.35)`)
+            .attr("stroke-width", 0.8)
+            .attr("opacity", 0);
+
+        const dot = decorGroup.append("circle")
+            .attr("cx", x).attr("cy", lowerRailY).attr("r", 1.8)
+            .attr("fill", `rgba(${INK}, 0.5)`);
+
+        const value = decorGroup.append("text")
+            .attr("x", x).attr("y", lowerRailY - 12)
+            .attr("text-anchor", "middle")
+            .style("font-family", "Share Tech Mono, monospace")
+            .style("font-size", "6.5px")
+            .style("letter-spacing", "0.3px")
+            .style("fill", "rgba(60, 60, 60, 0.5)")
+            .text("—");
+
+        const label = decorGroup.append("text")
+            .attr("x", x).attr("y", lowerRailY - 22)
+            .attr("text-anchor", "middle")
+            .style("font-family", "Share Tech Mono, monospace")
+            .style("font-size", "7px")
+            .style("letter-spacing", "1px")
+            .style("fill", "rgba(55, 55, 55, 0.55)")
+            .text(st.label);
+
+        return { st, x, stem, halo, dot, value, label };
+    });
+
+    const refreshIoTrack = () => {
+        const p = window.fetchJson
+            ? window.fetchJson("/api/io-pulse", { cache: "no-store" }, { timeoutMs: 5000, retries: 0, context: "io-track" })
+            : fetch("/api/io-pulse", { cache: "no-store" }).then((r) => r.json());
+        Promise.resolve(p).then((metrics) => {
+            if (!metrics) return;
+            const rows = trackNodes.map((n) => {
+                const raw = Math.max(0, Number(n.st.value(metrics)) || 0);
+                return { n, raw, intensity: Math.min(1, raw / n.st.scaleMax) };
+            });
+            const maxI = rows.reduce((m, r) => Math.max(m, r.intensity), 0);
+            rows.forEach((r) => {
+                const hot = maxI > 0 && r.raw > 0 && r.intensity >= maxI * 0.7;
+                r.n.dot.attr("r", hot ? 2.6 : 1.8).attr("fill", hot ? `rgb(${AMBER})` : `rgba(${INK}, 0.5)`);
+                r.n.halo.attr("opacity", hot ? 1 : 0);
+                r.n.stem.attr("stroke", hot ? `rgba(${AMBER}, 0.55)` : `rgba(${INK}, 0.3)`);
+                r.n.label.style("fill", hot ? `rgba(${AMBER}, 0.95)` : "rgba(55, 55, 55, 0.55)");
+                r.n.value
+                    .style("fill", hot ? `rgba(${AMBER}, 0.95)` : "rgba(60, 60, 60, 0.5)")
+                    .text(fmtRate(r.raw, r.n.st.unit));
+            });
+        }).catch(() => {});
+    };
+
+    if (window.__ioTrackTimer) clearInterval(window.__ioTrackTimer);
+    refreshIoTrack();
+    window.__ioTrackTimer = setInterval(refreshIoTrack, 3000);
+
     // Marker dots and tiny ticks (echoing the diegetic control language).
     const markers = 9;
     for (let i = 0; i < markers; i++) {
