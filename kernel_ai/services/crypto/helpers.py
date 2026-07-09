@@ -2,7 +2,43 @@
 
 from __future__ import annotations
 
+import json
+import os
+import time
 from pathlib import Path
+
+KERNEL_OPS_PATH = os.environ.get("CRYPTO_OPS_OUT", "/run/kernel-ai/crypto_ops.json")
+KERNEL_OPS_MAX_AGE_S = 15.0
+
+
+def read_kernel_crypto_ops(path=None, max_age_s=KERNEL_OPS_MAX_AGE_S):
+    """Read the real kernel crypto operations snapshot written by the kprobe collector.
+
+    Returns a dict with ``available`` flag; when the collector is not running (or the
+    snapshot is stale) ``available`` is False and callers fall back to heuristics.
+    """
+    snapshot_path = path or KERNEL_OPS_PATH
+    try:
+        raw_mtime = os.path.getmtime(snapshot_path)
+    except OSError:
+        return {"available": False, "reason": "no-collector"}
+
+    age = max(0.0, time.time() - raw_mtime)
+    if age > max_age_s:
+        return {"available": False, "reason": "stale", "age_s": round(age, 1)}
+
+    try:
+        with open(snapshot_path, "r", encoding="utf-8", errors="ignore") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {"available": False, "reason": "unreadable"}
+
+    if not isinstance(data, dict):
+        return {"available": False, "reason": "malformed"}
+
+    data["available"] = True
+    data["age_s"] = round(age, 1)
+    return data
 
 
 def _read_text(path):
@@ -74,6 +110,56 @@ def infer_tls_terminator(process_name, local_port, protocol, tls_listener_names)
     if int(local_port or 0) in {443, 8443, 9443, 6443}:
         return "unknown"
     return "upstream-or-external-lb"
+
+
+_CPU_CRYPTO_FLAGS = [
+    "aes",
+    "pclmulqdq",
+    "sha_ni",
+    "vaes",
+    "vpclmulqdq",
+    "gfni",
+    "avx",
+    "avx2",
+    "avx512f",
+    "rdrand",
+    "rdseed",
+    # ARM feature names (lower-cased by the kernel in /proc/cpuinfo Features)
+    "aes",
+    "pmull",
+    "sha1",
+    "sha2",
+]
+
+
+def read_cpu_crypto_flags():
+    """Read crypto-relevant CPU flags from /proc/cpuinfo (x86 'flags' or ARM 'Features')."""
+    text = _read_text("/proc/cpuinfo")
+    flags_line = ""
+    for line in text.splitlines():
+        low = line.lower()
+        if (low.startswith("flags") or low.startswith("features")) and ":" in line:
+            flags_line = line.split(":", 1)[1]
+            break
+    present = set(flags_line.lower().split())
+    detected = []
+    seen = set()
+    for flag in _CPU_CRYPTO_FLAGS:
+        if flag in seen:
+            continue
+        seen.add(flag)
+        if flag in present:
+            detected.append(flag)
+    display = [f.upper().replace("_", "-") for f in detected]
+    return {
+        "detected": detected,
+        "display": display,
+        "aes_ni": "aes" in present,
+        "pclmulqdq": "pclmulqdq" in present or "pmull" in present,
+        "sha_ni": "sha_ni" in present or "sha2" in present or "sha256" in present,
+        "vaes": "vaes" in present,
+        "source": "procfs" if flags_line else "unavailable",
+    }
 
 
 def parse_proc_crypto_entries():

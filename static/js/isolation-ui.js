@@ -108,8 +108,6 @@ function drawNamespaceShell(centerX, centerY, namespaces) {
         cells.forEach(c => {
             c.segment.attr('opacity', 1);
             c.halo.attr('opacity', 0);
-            c.label.attr('opacity', 1).style('fill', `rgb(${INK})`);
-            if (c.count) c.count.attr('opacity', 1);
         });
     };
 
@@ -118,10 +116,6 @@ function drawNamespaceShell(centerX, centerY, namespaces) {
             const focused = j === idx;
             c.segment.attr('opacity', focused ? 1 : 0.22);
             c.halo.attr('opacity', focused ? 1 : 0);
-            c.label
-                .attr('opacity', focused ? 1 : 0.22)
-                .style('fill', focused ? '#1f2228' : `rgb(${INK})`);
-            if (c.count) c.count.attr('opacity', focused ? 1 : 0.22);
         });
     };
 
@@ -157,6 +151,7 @@ function drawNamespaceShell(centerX, centerY, namespaces) {
         // (containers / sandboxes) — the most security-relevant signal.
         const isolated = !!ns.isolated || Number(ns.unique_count || 0) > 1;
         const ACCENT = '88, 182, 216';
+        const kind = NS_KIND[ns.id] || 'nsproxy';
 
         // Soft focus halo behind the segment (hidden until hover).
         const halo = shellGroup.append('path')
@@ -181,35 +176,6 @@ function drawNamespaceShell(centerX, centerY, namespaces) {
             .style('cursor', 'pointer');
 
         const mid = (startAngle + endAngle) / 2;
-        const labelR = ringOuter - 13;
-        const lx = centerX + Math.cos(mid - Math.PI / 2) * labelR;
-        const ly = centerY + Math.sin(mid - Math.PI / 2) * labelR;
-        const label = shellGroup.append('text')
-            .attr('x', lx)
-            .attr('y', ly)
-            .attr('text-anchor', 'middle')
-            .style('font-family', 'Share Tech Mono, monospace')
-            .style('font-size', '8.5px')
-            .style('letter-spacing', '1.2px')
-            .style('fill', `rgb(${INK})`)
-            .style('pointer-events', 'none')
-            .text(nsName.toUpperCase());
-
-        // Always-visible live count near the inner edge.
-        const countR = ringInner + 12;
-        const cx = centerX + Math.cos(mid - Math.PI / 2) * countR;
-        const cy = centerY + Math.sin(mid - Math.PI / 2) * countR;
-        const count = shellGroup.append('text')
-            .attr('x', cx)
-            .attr('y', cy)
-            .attr('text-anchor', 'middle')
-            .style('font-family', 'Share Tech Mono, monospace')
-            .style('font-size', '9px')
-            .style('font-weight', '600')
-            .style('letter-spacing', '0.3px')
-            .style('fill', isolated ? `rgb(${ACCENT})` : `rgba(${INK}, 0.72)`)
-            .style('pointer-events', 'none')
-            .text(String(ns.unique_count || 0));
 
         // Pulsing marker flags cells that actually contain isolation.
         if (isolated) {
@@ -224,7 +190,7 @@ function drawNamespaceShell(centerX, centerY, namespaces) {
         }
 
         const idx = cells.length;
-        cells.push({ segment, halo, label, count });
+        cells.push({ segment, halo });
 
         segment
             .on('mouseenter', (event) => {
@@ -236,13 +202,22 @@ function drawNamespaceShell(centerX, centerY, namespaces) {
                     .style('left', `${event.pageX + 14}px`)
                     .style('top', `${event.pageY - 10}px`)
                     .html(`
-                        <div class="ns-hud-head">NAMESPACE · ${nsName.toUpperCase()}</div>
+                        <div class="ns-hud-top">
+                            <div>
+                                <div class="ns-hud-over">NAMESPACE</div>
+                                <div class="ns-hud-name">${nsName.toUpperCase()}</div>
+                            </div>
+                            <div class="ns-hud-pill ${isolated ? 'is-iso' : ''}">${isolated ? 'ISOLATED' : 'SINGLE'}</div>
+                        </div>
                         <div class="ns-hud-desc">${meta.isolates || 'Resource isolation'}</div>
-                        <div class="ns-hud-row"><span>UNIQUE</span><b>${ns.unique_count || 0}</b></div>
-                        <div class="ns-hud-row"><span>DOMINANT</span><b>${ns.dominant_count || 0} procs</b></div>
-                        <div class="ns-hud-row"><span>INODE</span><b>${ns.dominant_inode || 'n/a'}</b></div>
+                        <div class="ns-hud-rows">
+                            <div class="ns-hud-row"><span>WORLDS</span><b>${ns.unique_count || 0}</b></div>
+                            <div class="ns-hud-row"><span>DOMINANT</span><b>${ns.dominant_count || 0} procs</b></div>
+                            <div class="ns-hud-row"><span>INODE</span><b>${ns.dominant_inode || 'n/a'}</b></div>
+                            <div class="ns-hud-row"><span>VIA</span><b>${kind}</b></div>
+                        </div>
                         <div class="ns-hud-bar"><i style="width:${Math.round(activity * 100)}%"></i></div>
-                        <div class="ns-hud-foot">ACTIVITY ${Math.round(activity * 100)}%</div>
+                        <div class="ns-hud-foot"><span>ACTIVITY ${Math.round(activity * 100)}%</span><span class="ns-hud-hint">click to unfold ▸</span></div>
                     `);
             })
             .on('mousemove', (event) => {
@@ -307,6 +282,7 @@ function expandNamespaceTree(ns, meta, nsName, cx, cy, mid) {
 
     // Build the tree: identity + live isolated worlds + kernel facets.
     const kind = NS_KIND[ns.id] || 'nsproxy';
+    const isolated = !!ns.isolated || Number(ns.unique_count || 0) > 1;
     const clip = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
     const worlds = Array.isArray(ns.worlds) ? ns.worlds : [];
     const worldLeaves = worlds.length
@@ -328,21 +304,22 @@ function expandNamespaceTree(ns, meta, nsName, cx, cy, mid) {
 
     // Panel geometry (local content coords).
     const rowH = 24;
-    const headerH = 26;
+    const headerH = 40;
+    const footerH = 16;
     const padX = 14;
     const col0 = padX;        // root chip
-    const rootW = 54;
-    const col1 = padX + 74;   // branch chips
-    const branchW = 96;
-    const col2 = padX + 190;  // leaf chips
-    const leafW = 150;
+    const rootW = 56;
+    const col1 = padX + 78;   // branch chips
+    const branchW = 100;
+    const col2 = padX + 196;  // leaf chips
+    const leafW = 152;
     const panelW = col2 + leafW + padX;
     const totalLeaves = branches.reduce((s, b) => s + b.leaves.length, 0);
-    const panelH = headerH + 10 + totalLeaves * rowH + 12;
+    const contentTop = headerH + 8;
+    const panelH = contentTop + totalLeaves * rowH + footerH;
 
     // Assign rows: leaves stack, branch = mean of its leaves, root = mean of branches.
     let row = 0;
-    const contentTop = headerH + 10;
     const laidBranches = branches.map((br) => {
         const leafYs = br.leaves.map(() => contentTop + (row++) * rowH + rowH / 2);
         const by = leafYs.reduce((s, v) => s + v, 0) / leafYs.length;
@@ -380,15 +357,32 @@ function expandNamespaceTree(ns, meta, nsName, cx, cy, mid) {
         .attr('class', 'ns-tree-frame')
         .attr('width', panelW).attr('height', panelH).attr('rx', 4)
         .attr('transform', `translate(0, ${panelH / 2}) scale(1, 0.02)`)
-        .transition().delay(160).duration(220).ease(d3.easeCubicOut)
+        .transition().delay(140).duration(220).ease(d3.easeCubicOut)
         .attr('transform', 'translate(0,0) scale(1,1)');
 
-    panel.append('text')
+    // Header: name + status pill + activity track + close affordance.
+    const header = panel.append('g').attr('class', 'ns-tree-header').style('opacity', 0);
+    header.transition().delay(280).duration(200).style('opacity', 1);
+
+    header.append('text')
         .attr('class', 'ns-tree-title')
-        .attr('x', padX).attr('y', 17)
-        .style('opacity', 0)
-        .text(`NAMESPACE · ${nsName.toUpperCase()}`)
-        .transition().delay(300).duration(200).style('opacity', 1);
+        .attr('x', padX).attr('y', 16)
+        .text(`NAMESPACE · ${nsName.toUpperCase()}`);
+
+    const pct = Math.round((ns.activity || 0) * 100);
+    const trackX = padX, trackY = 26, trackW = panelW - padX * 2;
+    header.append('rect')
+        .attr('class', 'ns-tree-track')
+        .attr('x', trackX).attr('y', trackY).attr('width', trackW).attr('height', 3).attr('rx', 1.5);
+    header.append('rect')
+        .attr('class', isolated ? 'ns-tree-track-fill is-iso' : 'ns-tree-track-fill')
+        .attr('x', trackX).attr('y', trackY).attr('width', 0).attr('height', 3).attr('rx', 1.5)
+        .transition().delay(340).duration(320).ease(d3.easeCubicOut)
+        .attr('width', Math.max(2, trackW * (pct / 100)));
+
+    header.append('line')
+        .attr('class', 'ns-tree-divider')
+        .attr('x1', padX).attr('y1', headerH - 4).attr('x2', panelW - padX).attr('y2', headerH - 4);
 
     const linksG = panel.append('g').attr('class', 'ns-tree-links');
     const nodesG = panel.append('g').attr('class', 'ns-tree-nodes');
@@ -397,13 +391,15 @@ function expandNamespaceTree(ns, meta, nsName, cx, cy, mid) {
         const mx = (sx + tx) / 2;
         return `M ${sx},${sy} H ${mx} V ${ty} H ${tx}`;
     };
+    // Links draw like a circuit trace (stroke-dashoffset), timed to the chips.
     const addLink = (sx, sy, tx, ty, delay) => {
-        linksG.append('path')
+        const path = linksG.append('path')
             .attr('class', 'ns-tree-link')
-            .attr('d', elbow(sx, sy, tx, ty))
-            .style('opacity', 0)
-            .transition().delay(delay).duration(200)
-            .style('opacity', 1);
+            .attr('d', elbow(sx, sy, tx, ty));
+        const len = path.node().getTotalLength();
+        path.attr('stroke-dasharray', len).attr('stroke-dashoffset', len)
+            .transition().delay(delay).duration(260).ease(d3.easeCubicOut)
+            .attr('stroke-dashoffset', 0);
     };
     const addChip = (fromX, fromY, x, y, w, label, cls, delay, title) => {
         const g = nodesG.append('g')
@@ -416,7 +412,7 @@ function expandNamespaceTree(ns, meta, nsName, cx, cy, mid) {
         g.append('rect')
             .attr('x', 0).attr('y', -9).attr('width', w).attr('height', 18).attr('rx', 3);
         g.append('text')
-            .attr('x', 8).attr('y', 4)
+            .attr('x', 9).attr('y', 4)
             .text(label);
         g.transition().delay(delay).duration(260).ease(d3.easeBackOut.overshoot(1.5))
             .attr('transform', `translate(${x}, ${y}) scale(1)`)
@@ -424,20 +420,23 @@ function expandNamespaceTree(ns, meta, nsName, cx, cy, mid) {
         return g;
     };
 
-    // Root chip.
-    addChip(col0, rootY, col0, rootY, rootW, nsName.toUpperCase(), 'ns-tree-root', 120);
+    // Root chip (accent when the namespace holds real isolation).
+    addChip(col0, rootY, col0, rootY, rootW, nsName.toUpperCase(), isolated ? 'ns-tree-root is-iso' : 'ns-tree-root', 120);
 
     // Branches + leaves.
     let leafSeq = 0;
     laidBranches.forEach((br, bi) => {
         const branchDelay = 260 + bi * 90;
+        const isWorlds = /^WORLDS/.test(br.label);
+        const branchCls = (isWorlds && isolated) ? 'ns-tree-branch is-iso' : 'ns-tree-branch';
         addLink(col0 + rootW, rootY, col1, br.by, branchDelay - 40);
-        addChip(col0 + rootW, rootY, col1, br.by, branchW, br.label, 'ns-tree-branch', branchDelay);
+        addChip(col0 + rootW, rootY, col1, br.by, branchW, br.label, branchCls, branchDelay);
         br.leaves.forEach((lf, li) => {
             const leafDelay = 430 + leafSeq * 55;
             leafSeq += 1;
+            const leafCls = (isWorlds && isolated) ? 'ns-tree-leaf is-iso' : 'ns-tree-leaf';
             addLink(col1 + branchW, br.by, col2, br.leafYs[li], leafDelay - 40);
-            addChip(col1 + branchW, br.by, col2, br.leafYs[li], leafW, lf.label, 'ns-tree-leaf', leafDelay, lf.title);
+            addChip(col1 + branchW, br.by, col2, br.leafYs[li], leafW, lf.label, leafCls, leafDelay, lf.title);
         });
     });
 

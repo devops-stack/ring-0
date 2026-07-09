@@ -7,6 +7,7 @@ import subprocess
 
 import psutil
 
+from kernel_ai.services.crypto import aes_math as _aes_math
 from kernel_ai.services.crypto import crypto_pipeline as _crypto_pipeline
 from kernel_ai.services.crypto import entropy as _entropy_service
 from kernel_ai.services.crypto import helpers as _helpers
@@ -19,6 +20,8 @@ __all__ = [
     "is_likely_crypto_actor",
     "infer_tls_terminator",
     "parse_proc_crypto_entries",
+    "read_cpu_crypto_flags",
+    "read_kernel_crypto_ops",
     "collect_algorithm_competition",
     "collect_kernel_crypto_clients",
     "collect_sync_async_queue",
@@ -31,6 +34,7 @@ __all__ = [
     "collect_entropy_cloud_status",
     "collect_crypto_realtime",
     "collect_security_realtime",
+    "collect_aes_demo",
 ]
 
 # Re-export helpers for backward compatibility and callback injection.
@@ -38,6 +42,8 @@ infer_crypto_protocol = _helpers.infer_crypto_protocol
 is_likely_crypto_actor = _helpers.is_likely_crypto_actor
 infer_tls_terminator = _helpers.infer_tls_terminator
 parse_proc_crypto_entries = _helpers.parse_proc_crypto_entries
+read_cpu_crypto_flags = _helpers.read_cpu_crypto_flags
+read_kernel_crypto_ops = _helpers.read_kernel_crypto_ops
 collect_algorithm_competition = _helpers.collect_algorithm_competition
 collect_kernel_crypto_clients = _helpers.collect_kernel_crypto_clients
 collect_sync_async_queue = _helpers.collect_sync_async_queue
@@ -74,6 +80,8 @@ def collect_crypto_realtime(crypto_prev, entropy_prev=None, callbacks=None):
         "infer_tls_terminator": infer_tls_terminator,
         "collect_algorithm_competition": collect_algorithm_competition,
         "parse_proc_crypto_entries": parse_proc_crypto_entries,
+        "read_cpu_crypto_flags": read_cpu_crypto_flags,
+        "read_kernel_crypto_ops": read_kernel_crypto_ops,
         "collect_kernel_crypto_clients": collect_kernel_crypto_clients,
         "collect_hw_offload_status": collect_hw_offload_status,
         "collect_sync_async_queue": collect_sync_async_queue,
@@ -91,6 +99,11 @@ def collect_crypto_realtime(crypto_prev, entropy_prev=None, callbacks=None):
         psutil_module=psutil,
         logger=logger,
     )
+
+
+def collect_aes_demo():
+    """Real AES-128 internals on demo vectors for the crypto visualisation."""
+    return _aes_math.build_aes_demo()
 
 
 def collect_security_realtime(security_prev):

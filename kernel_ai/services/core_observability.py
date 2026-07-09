@@ -13,8 +13,8 @@ from kernel_ai.logging_helpers import log_event
 
 logger = logging.getLogger(__name__)
 
-# Cached counters for per-second I/O pulse deltas (vmstat + disk_io).
-_IO_PULSE_PREV = {"ts": None, "vmstat": {}, "disk": None}
+# Cached counters for per-second I/O pulse deltas (vmstat + disk_io + net + irq).
+_IO_PULSE_PREV = {"ts": None, "vmstat": {}, "disk": None, "net": None, "intr": None}
 
 
 def get_system_info():
@@ -180,6 +180,18 @@ def _read_vmstat():
     return out
 
 
+def _read_intr_total():
+    """Total hardware interrupts serviced since boot (from /proc/stat)."""
+    try:
+        with open("/proc/stat", "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if line.startswith("intr "):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
 def _io_pulse_zero():
     return {
         "pgfault_per_sec": 0,
@@ -190,6 +202,8 @@ def _io_pulse_zero():
         "disk_write_mb_s": 0.0,
         "disk_read_iops": 0,
         "disk_write_iops": 0,
+        "net_mb_s": 0.0,
+        "intr_per_sec": 0,
     }
 
 
@@ -208,16 +222,25 @@ def get_io_pulse():
             disk = psutil.disk_io_counters()
         except (psutil.Error, OSError):
             disk = None
+        try:
+            net = psutil.net_io_counters()
+        except (psutil.Error, OSError):
+            net = None
+        intr = _read_intr_total()
 
         prev = _IO_PULSE_PREV
         prev_ts = prev.get("ts")
         prev_vm = prev.get("vmstat") or {}
         prev_disk = prev.get("disk")
+        prev_net = prev.get("net")
+        prev_intr = prev.get("intr")
 
         # Update cache for next call.
         _IO_PULSE_PREV["ts"] = now
         _IO_PULSE_PREV["vmstat"] = vmstat
         _IO_PULSE_PREV["disk"] = disk
+        _IO_PULSE_PREV["net"] = net
+        _IO_PULSE_PREV["intr"] = intr
 
         if prev_ts is None:
             return _io_pulse_zero()
@@ -244,6 +267,13 @@ def get_io_pulse():
             result["disk_write_mb_s"] = round(max(0.0, (disk.write_bytes - prev_disk.write_bytes) / dt) / (1024 * 1024), 3)
             result["disk_read_iops"] = max(0, int((disk.read_count - prev_disk.read_count) / dt))
             result["disk_write_iops"] = max(0, int((disk.write_count - prev_disk.write_count) / dt))
+
+        if net is not None and prev_net is not None:
+            net_delta = (net.bytes_sent - prev_net.bytes_sent) + (net.bytes_recv - prev_net.bytes_recv)
+            result["net_mb_s"] = round(max(0.0, net_delta / dt) / (1024 * 1024), 3)
+
+        if prev_intr is not None:
+            result["intr_per_sec"] = max(0, int((intr - prev_intr) / dt))
 
         return result
     except (OSError, ValueError, psutil.Error) as exc:

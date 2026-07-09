@@ -27,6 +27,10 @@ def crypto_realtime():
     )
 
 
+def crypto_aes_demo():
+    return api_json(lambda: _crypto_security_service.collect_aes_demo())
+
+
 def security_realtime():
     state = get_state_container(current_app)
     return api_json(
