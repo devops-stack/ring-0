@@ -58,3 +58,19 @@ def filesystem_blocks():
 
 def isolation_context():
     return api_json(_system_view_service.get_isolation_context)
+
+
+def ext4_anatomy():
+    return api_json(lambda: _system_view_service.get_ext4_file_anatomy(request.args.get("path")))
+
+
+def ext4_journal():
+    return api_json(_system_view_service.get_ext4_journal)
+
+
+def hot_files():
+    return api_json(_system_view_service.get_hot_files)
+
+
+def path_walk():
+    return api_json(lambda: _system_view_service.get_path_walk(request.args.get("path")))

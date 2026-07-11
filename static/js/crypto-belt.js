@@ -2336,6 +2336,7 @@ class CryptoSubsystemVisualization {
             // Y0 node
             let prevX = px + 22 + stepW * 0.5;
             drawChip(prevX, 'Y0 = 0', hex(yStates[0], 6), '#6f8296');
+            const gfSteps = [];
             for (let s = 0; s < nSteps; s += 1) {
                 const cx = px + 22 + stepW * (s + 1.5);
                 // transition annotation
@@ -2346,9 +2347,18 @@ class CryptoSubsystemVisualization {
                     .style('fill', '#5f6f82').style('font-size', '9px').text('→');
                 const isLast = s === nSteps - 1;
                 const g = drawChip(cx, isLast ? 'S (Σ)' : `Y${s + 1}`, hex(yStates[s + 1], 6), yColor);
+                // Drill-down: this step is Y_{s+1} = (Y_s ⊕ block_{s+1}) · H in GF(2^128).
+                const Xin = yStates[s].map((v, j) => v ^ (absorbed[s].block[j] & 0xff));
+                gfSteps.push({ label: absorbed[s].label, X: Xin, H, prevY: yStates[s], block: absorbed[s].block, resultY: yStates[s + 1] });
+                g.style('cursor', 'pointer').on('click', () => this.openGfMulOverlay(s));
                 stepNodes.push({ g, rect: g.select('rect'), step: s });
                 prevX = cx;
             }
+            this._aesGfSteps = gfSteps;
+            // Hint that the chain is drill-downable.
+            box.append('text').attr('x', px + 22).attr('y', chainY + 46)
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '7px').style('fill', '#8a7fce')
+                .text('click any Y-node to watch its (Y ⊕ block) · H carry-less multiply in GF(2^128)');
             // Tag node
             const tagX = Math.min(px + panelW - 24 - nodeW / 2, prevX + stepW);
             box.append('text').attr('x', (prevX + tagX) / 2).attr('y', chainY - 16).attr('text-anchor', 'middle')
@@ -2404,6 +2414,217 @@ class CryptoSubsystemVisualization {
                 gh.tagRect.style('filter', tagOn ? 'url(#crypto-line-glow)' : null)
                     .style('stroke-width', tagOn ? 2 : 1.4)
                     .style('stroke-opacity', tagOn ? pulse : 1);
+            }
+            this._aesOpsRaf = requestAnimationFrame(frame);
+        };
+        this._aesOpsRaf = requestAnimationFrame(frame);
+    }
+
+    // Pure math for the GCM demo (CTR lanes + GHASH accumulation). Shared by the
+    // GCM overlay and the standalone GHASH-multiply entry so the two never drift.
+    _computeGcmDemo() {
+        const R = window.AESRef;
+        if (!this.aesDemo || !R) return null;
+        const key = R.hexToBytes(this.aesDemo.demo_vectors.key);
+        if (key.length !== 16) return null;
+        const nonce = R.hexToBytes('00112233445566778899aabb');
+        const lanes = [];
+        for (let b = 0; b < 4; b += 1) {
+            const ctr = nonce.concat([0, 0, 0, b + 1]);
+            const ks = R.encryptTrace(ctr, key).ciphertext;
+            const pt = [];
+            for (let i = 0; i < 16; i += 1) pt.push((0x40 + b * 16 + i) & 0xff);
+            const ct = ks.map((v, i) => v ^ pt[i]);
+            lanes.push({ b, ctr, ks, pt, ct });
+        }
+        const H = R.encryptTrace(new Array(16).fill(0), key).ciphertext;
+        const aad = R.hexToBytes('6b65726e656c2d61693a67636d2001');
+        while (aad.length < 16) aad.push(0);
+        const cBlocks = lanes.map((ln) => ln.ct);
+        const lenBlock = R.be64(16 * 8).concat(R.be64(cBlocks.length * 16 * 8));
+        const absorbed = [{ label: 'AAD', block: aad, kind: 'aad' }]
+            .concat(cBlocks.map((blk, i) => ({ label: `C${i + 1}`, block: blk, kind: 'ct' })))
+            .concat([{ label: 'LEN', block: lenBlock, kind: 'len' }]);
+        const yStates = R.ghashSteps(H, absorbed.map((a) => a.block));
+        const gfSteps = absorbed.map((a, s) => ({
+            label: a.label,
+            X: yStates[s].map((v, j) => v ^ (a.block[j] & 0xff)),
+            H,
+            prevY: yStates[s],
+            block: a.block,
+            resultY: yStates[s + 1]
+        }));
+        return { key, nonce, lanes, H, aad, absorbed, yStates, gfSteps };
+    }
+
+    // Direct entry: open the GF(2^128) multiply without going through GCM first.
+    openGhashMul(stepIndex = 1) {
+        if (!this._aesGfSteps || !this._aesGfSteps.length) {
+            const gcm = this._computeGcmDemo();
+            if (!gcm) return;
+            this._aesGfSteps = gcm.gfSteps;
+        }
+        this.openGfMulOverlay(Math.min(Math.max(stepIndex, 0), this._aesGfSteps.length - 1));
+    }
+
+    openGfMulOverlay(stepIndex) {
+        if (!this._aesGfSteps || !this._aesGfSteps[stepIndex]) return;
+        this.aesOverlay = 'gfmul';
+        this._aesGfIndex = stepIndex;
+        this.aesOpsClock = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        this.renderGfMulOverlay();
+    }
+
+    renderGfMulOverlay() {
+        if (!this.svg || this.aesOverlay !== 'gfmul' || !window.AESRef) return;
+        const R = window.AESRef;
+        const step = (this._aesGfSteps || [])[this._aesGfIndex];
+        if (!step) return;
+        const trace = R.gfmul128Trace(step.X, step.H);
+        const hex = (b, n = 16) => b.slice(0, n).map((v) => (v & 0xff).toString(16).padStart(2, '0')).join('');
+
+        const shell = this._aesOverlayShell(
+            `GHASH MULTIPLY · (Y_prev ⊕ ${step.label}) · H  in GF(2^128)`,
+            'carry-less (XOR) multiply with reduction by x^128 + x^7 + x^2 + x + 1 · 128 shift-and-add steps'
+        );
+        const { box, px, py, panelW, panelH } = shell;
+
+        // Back-to-GCM affordance (× / backdrop still fully close).
+        const backG = box.append('g').style('cursor', 'pointer').on('click', () => this.openModeOverlay('GCM'));
+        backG.append('rect').attr('x', px + panelW - 320).attr('y', py + 14).attr('width', 108).attr('height', 20).attr('rx', 4)
+            .style('fill', 'rgba(7,11,17,0.82)').style('stroke', 'rgba(122,145,176,0.5)');
+        backG.append('text').attr('x', px + panelW - 266).attr('y', py + 28).attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace').style('font-size', '9px').style('fill', '#cfe3ff').text('‹ BACK TO GCM');
+
+        // Block navigation: browse every GHASH multiply (AAD, C1..Cn, LEN).
+        const steps = this._aesGfSteps || [];
+        const idx = this._aesGfIndex;
+        const navY = py + 52;
+        const goTo = (i) => { if (i >= 0 && i < steps.length) this.openGfMulOverlay(i); };
+        box.append('text').attr('x', px + 22).attr('y', navY + 14)
+            .style('font-family', 'Share Tech Mono, monospace').style('font-size', '8px').style('fill', '#7f8ea3').text('BLOCK');
+        let nx = px + 22 + 40;
+        const mkArrow = (label, i) => {
+            const on = i >= 0 && i < steps.length;
+            const g = box.append('g').style('cursor', on ? 'pointer' : 'default');
+            if (on) g.on('click', () => goTo(i));
+            g.append('rect').attr('x', nx).attr('y', navY).attr('width', 20).attr('height', 20).attr('rx', 4)
+                .style('fill', 'rgba(7,11,17,0.82)').style('stroke', on ? 'rgba(122,145,176,0.5)' : 'rgba(122,145,176,0.16)');
+            g.append('text').attr('x', nx + 10).attr('y', navY + 14).attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '11px').style('fill', on ? '#cfe3ff' : '#46525f').text(label);
+            nx += 24;
+        };
+        mkArrow('‹', idx - 1);
+        steps.forEach((st, i) => {
+            const on = i === idx;
+            const bw = 34;
+            const g = box.append('g').style('cursor', 'pointer').on('click', () => goTo(i));
+            g.append('rect').attr('x', nx).attr('y', navY).attr('width', bw).attr('height', 20).attr('rx', 4)
+                .style('fill', on ? 'rgba(38,63,98,0.95)' : 'rgba(7,11,17,0.82)')
+                .style('stroke', on ? 'rgba(128,190,255,0.86)' : 'rgba(122,145,176,0.32)');
+            g.append('text').attr('x', nx + bw / 2).attr('y', navY + 14).attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '8px')
+                .style('fill', on ? '#d8eaff' : '#9dafc5').text(st.label);
+            nx += bw + 4;
+        });
+        mkArrow('›', idx + 1);
+
+        // Operand readouts.
+        const opY = py + 96;
+        const opText = (x, label, val, color) => {
+            box.append('text').attr('x', x).attr('y', opY).style('font-family', 'Share Tech Mono, monospace').style('font-size', '8px').style('fill', color).text(label);
+            box.append('text').attr('x', x).attr('y', opY + 13).style('font-family', 'Share Tech Mono, monospace').style('font-size', '8px').style('fill', '#c5d0df').text(hex(val));
+        };
+        opText(px + 22, `X = Y_prev ⊕ ${step.label}  (multiplier)`, step.X, '#8fdcff');
+        opText(px + 22 + (panelW - 44) * 0.52, 'H = AES_K(0)  (multiplicand)', step.H, '#d9c2ff');
+
+        // Three 16×8 bit grids: X (multiplier), V (running H·x^i), Z (accumulator).
+        const cols = 16, rows = 8;
+        const gap = 26;
+        const gridW = Math.min((panelW - 44 - gap * 2) / 3, 300);
+        const cs = Math.min(gridW / cols, 15);
+        const gy0 = py + 130;
+        const mkGrid = (gx, title, color) => {
+            box.append('text').attr('x', gx).attr('y', gy0 - 7).style('font-family', 'Share Tech Mono, monospace').style('font-size', '8px').style('fill', color).text(title);
+            const cells = [];
+            for (let i = 0; i < 128; i += 1) {
+                const c = i % cols, r = (i / cols) | 0;
+                cells.push(box.append('rect')
+                    .attr('x', gx + c * cs).attr('y', gy0 + r * cs).attr('width', cs - 1.6).attr('height', cs - 1.6).attr('rx', 1.5)
+                    .style('fill', 'rgba(40,52,74,0.5)'));
+            }
+            return cells;
+        };
+        const xCells = mkGrid(px + 22, 'X bits (MSB→LSB, consumed left→right)', '#8fdcff');
+        const vCells = mkGrid(px + 22 + gridW + gap, 'V = H·xⁱ (shift + reduce)', '#d9c2ff');
+        const zCells = mkGrid(px + 22 + 2 * (gridW + gap), 'Z accumulator → product', '#8effc8');
+
+        const annoY = gy0 + rows * cs + 26;
+        const anno = box.append('text').attr('x', px + 22).attr('y', annoY)
+            .style('font-family', 'Share Tech Mono, monospace').style('font-size', '9px').style('fill', '#e6edf8');
+        const counter = box.append('text').attr('x', px + panelW - 24).attr('y', annoY).attr('text-anchor', 'end')
+            .style('font-family', 'Share Tech Mono, monospace').style('font-size', '9px').style('fill', '#9fb1c8');
+        const barY = annoY + 10;
+        box.append('rect').attr('x', px + 22).attr('y', barY).attr('width', panelW - 44).attr('height', 4).attr('rx', 2).style('fill', 'rgba(40,52,74,0.6)');
+        const barFill = box.append('rect').attr('x', px + 22).attr('y', barY).attr('width', 0).attr('height', 4).attr('rx', 2).style('fill', '#8effc8');
+        const resultText = box.append('text').attr('x', px + 22).attr('y', barY + 24)
+            .style('font-family', 'Share Tech Mono, monospace').style('font-size', '9px').style('fill', '#8effc8');
+
+        this._aesGfViz = { trace, X: step.X, H: step.H, xCells, vCells, zCells, anno, counter, barFill, resultText, resultY: step.resultY, hex, barW: panelW - 44 };
+        this._startGfMulAnim();
+    }
+
+    _startGfMulAnim() {
+        if (this._aesOpsRaf) cancelAnimationFrame(this._aesOpsRaf);
+        const viz = this._aesGfViz;
+        if (!viz) return;
+        const steps = viz.trace.steps;
+        const N = steps.length;
+        const stepMs = 42, holdMs = 1600;
+        const cycle = N * stepMs + holdMs;
+        const dim = 'rgba(40,52,74,0.5)';
+        const bitOf = (arr, i) => (arr[i >> 3] >> (7 - (i & 7))) & 1;
+        let lastK = -2;
+        const frame = () => {
+            if (this.aesOverlay !== 'gfmul' || !this.svg || this.svg.selectAll('.aes-ops-overlay').empty()) {
+                this._aesOpsRaf = null;
+                return;
+            }
+            const now = ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now());
+            const elapsed = (now - (this.aesOpsClock || now)) % cycle;
+            let k = Math.floor(elapsed / stepMs);
+            const done = k >= N;
+            if (k >= N) k = N - 1;
+            if (k !== lastK) {
+                lastK = k;
+                const st = steps[k];
+                const vBefore = k === 0 ? viz.H : steps[k - 1].v; // value that is XORed at step k
+                viz.xCells.forEach((cell, i) => {
+                    const b = bitOf(viz.X, i);
+                    if (i === k && !done) cell.style('fill', '#ffffff').style('opacity', 1);
+                    else if (i < k || done) cell.style('fill', b ? 'rgba(120,200,255,0.55)' : 'rgba(40,52,74,0.32)').style('opacity', 0.85);
+                    else cell.style('fill', b ? '#8fdcff' : dim).style('opacity', b ? 0.9 : 0.4);
+                });
+                viz.vCells.forEach((cell, i) => {
+                    const b = bitOf(vBefore, i);
+                    cell.style('fill', b ? '#d9c2ff' : dim).style('opacity', b ? 0.9 : 0.4);
+                });
+                viz.zCells.forEach((cell, i) => {
+                    const b = bitOf(done ? viz.resultY : st.z, i);
+                    cell.style('fill', b ? '#8effc8' : dim).style('opacity', b ? 0.95 : 0.4);
+                });
+                viz.anno.text(done
+                    ? 'complete · Z is the product (Y ⊕ block)·H'
+                    : `bit ${k} of X = ${st.bit}  →  ${st.bit ? 'Z ^= V' : 'skip (bit is 0)'}   ·   then V = V·x${st.reduced ? '  ⊕ R  (reduction fired)' : ''}`);
+                viz.counter.text(`${done ? N : k + 1} / ${N}`);
+                viz.barFill.attr('width', ((done ? N : k + 1) / N) * viz.barW);
+                if (done) {
+                    const ok = viz.hex(viz.trace.result) === viz.hex(viz.resultY);
+                    viz.resultText.style('fill', ok ? '#8effc8' : '#ff9a9a')
+                        .text(`Z = ${viz.hex(viz.trace.result)}  ${ok ? '✓ equals the Y-node in the GHASH chain' : '⚠ mismatch'}`);
+                } else {
+                    viz.resultText.text('');
+                }
             }
             this._aesOpsRaf = requestAnimationFrame(frame);
         };
@@ -2854,7 +3075,8 @@ class CryptoSubsystemVisualization {
         if (aes) {
             const explore = [
                 ['KEY SCHEDULE', () => this.openKeyScheduleOverlay()],
-                ['GCM / CTR MODE', () => this.openModeOverlay(this.aesModeKind || 'CTR')]
+                ['GCM / CTR MODE', () => this.openModeOverlay(this.aesModeKind || 'CTR')],
+                ['GHASH ⊗ GF(2¹²⁸)', () => this.openGhashMul(1)]
             ];
             explore.forEach(([label, onClick], idx) => {
                 const bw = 118;

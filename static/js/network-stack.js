@@ -248,6 +248,14 @@ class NetworkStackVisualization {
 
         this.mouseMoveHandler = (event) => this.onMouseMove(event);
         this.renderer.domElement.addEventListener('mousemove', this.mouseMoveHandler);
+        this.clickHandler = (event) => this.onCanvasClick(event);
+        this.renderer.domElement.addEventListener('click', this.clickHandler);
+        this.keyHandler = (event) => {
+            if (event.key !== 'Escape') return;
+            if (this.bbrOpen) this.closeBbrOverlay();
+            else if (this.drillLayerId) this.closeLayerDrilldown();
+        };
+        window.addEventListener('keydown', this.keyHandler);
 
         this.resizeHandler = () => this.onResize();
         window.addEventListener('resize', this.resizeHandler);
@@ -1040,70 +1048,11 @@ class NetworkStackVisualization {
         arrayCard.appendChild(matrix);
         kpiBar.appendChild(arrayCard);
 
-        // Top-left reference header: "ARRAY OUTPUT PATTERN BIAS / PANEL" with an
-        // A-badge and a compact pattern matrix of code tiles that light up with
-        // live stack activity (a sweeping scan column + activity-locked tiles).
-        const header = document.createElement('div');
-        header.style.cssText = `
-            position: absolute;
-            left: 14px;
-            top: 14px;
-            z-index: 1001;
-            pointer-events: none;
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-            background: rgba(13, 18, 28, 0.86);
-            border: 1px solid rgba(108, 122, 142, 0.34);
-            border-radius: 6px;
-            padding: 7px 9px 8px;
-            box-shadow: 0 3px 12px rgba(0, 0, 0, 0.28);
-            font-family: 'Share Tech Mono', monospace;
-        `;
-        this.container.appendChild(header);
-        this.overlayNodes.push(header);
-        this.patternHeaderNode = header;
-
-        const hTop = document.createElement('div');
-        hTop.style.cssText = 'display:flex; align-items:flex-start; gap:8px;';
-        const hTitle = document.createElement('div');
-        hTitle.style.cssText = 'display:flex; flex-direction:column; gap:1px;';
-        const hMicro = document.createElement('div');
-        hMicro.style.cssText = 'font-size:7px; letter-spacing:0.6px; color:#5f7484;';
-        hMicro.textContent = 'OBS.06';
-        const hMain = document.createElement('div');
-        hMain.style.cssText = 'font-size:11px; letter-spacing:0.55px; color:#cdd6e0;';
-        hMain.textContent = 'ARRAY OUTPUT PATTERN BIAS';
-        const hSub = document.createElement('div');
-        hSub.style.cssText = 'font-size:8px; letter-spacing:0.5px; color:#7f8fa2;';
-        hSub.textContent = 'PANEL 06 · INDUCTION PATTERN GROUP 43-65';
-        hTitle.appendChild(hMicro);
-        hTitle.appendChild(hMain);
-        hTitle.appendChild(hSub);
-        const hBadge = document.createElement('div');
-        hBadge.style.cssText = 'flex:none; margin-left:auto; padding:3px 7px; background:rgba(103,190,224,0.16); border:1px solid rgba(103,190,224,0.5); border-radius:3px; color:#9bd4f2; font-size:14px; letter-spacing:1px;';
-        hBadge.textContent = 'A7';
-        hTop.appendChild(hTitle);
-        hTop.appendChild(hBadge);
-
-        const PAT_CODES = [
-            'MTN', 'NEL', 'SIN', 'DSP', 'DIL', 'LAW', 'BAB', 'SCI', 'COM', 'LNK', 'GAP', 'COL',
-            'GET', 'VPM', 'JET', 'IDU', 'SUB', 'DMP', 'DWN', 'RUN', 'SYN', 'HEP', 'NET', 'BUF'
-        ];
-        const PAT_COLS = 12;
-        const patGrid = document.createElement('div');
-        patGrid.style.cssText = `display:grid; grid-template-columns: repeat(${PAT_COLS}, 1fr); gap:2px;`;
+        // NOTE: the old top-left "ARRAY OUTPUT PATTERN BIAS" panel was removed —
+        // it rendered synthetic code tiles (not real telemetry) and only added
+        // visual noise. References are nulled so updatePatternMatrix() no-ops.
+        this.patternHeaderNode = null;
         this.patternTiles = [];
-        PAT_CODES.forEach((code) => {
-            const tile = document.createElement('div');
-            tile.style.cssText = 'font-size:6.5px; letter-spacing:0.2px; text-align:center; color:#7b8a9a; background:rgba(34,44,56,0.6); border:1px solid rgba(80,96,112,0.28); border-radius:1px; padding:2px 1px; transition:background 180ms ease, color 180ms ease;';
-            tile.textContent = code;
-            patGrid.appendChild(tile);
-            this.patternTiles.push(tile);
-        });
-
-        header.appendChild(hTop);
-        header.appendChild(patGrid);
 
         // One aligned stack axis: each layer is a single row spanning the scene —
         // [health dot + name] on the left, the live lane in the middle, and the
@@ -1195,6 +1144,10 @@ class NetworkStackVisualization {
             mainline.appendChild(name);
             row.appendChild(code);
             row.appendChild(mainline);
+            row.style.pointerEvents = 'auto';
+            row.style.cursor = 'pointer';
+            row.title = 'Click to inspect layer';
+            row.addEventListener('click', () => this.openLayerDrilldown(spec.id));
             layersPanel.appendChild(row);
             this.layerRows[spec.id] = { row, dot, name };
         });
@@ -1269,11 +1222,8 @@ class NetworkStackVisualization {
         this.layerSpectra = {};
         this.chainModules = {};
         this.layerHeadline = {};
-        this.chainWidth = 452;
-        this.chainRight = 20;
-        const SPEC_W = 78;
-        const SPEC_H = 40;
-        const SPEC_N = 22;
+        this.chainWidth = 158;
+        this.chainRight = 22;
 
         // Small cyan "›" connector glyph placed between chain modules.
         const makeSep = () => {
@@ -1315,129 +1265,44 @@ class NetworkStackVisualization {
                 nic: 'rx+tx errors'
             };
             const numBlock = document.createElement('div');
-            numBlock.style.cssText = 'flex:none; width:70px; display:flex; flex-direction:column; gap:0;';
+            numBlock.style.cssText = 'flex:none; width:96px; display:flex; flex-direction:column; gap:1px;';
             const numCap = document.createElement('div');
-            numCap.style.cssText = 'font-size:7px; letter-spacing:0.5px; color:#6f8597; white-space:nowrap;';
-            numCap.textContent = `ARRAY 0${idx + 1}`;
+            numCap.style.cssText = 'font-size:7px; letter-spacing:0.6px; color:#6f8597; white-space:nowrap;';
+            numCap.textContent = spec.name;
             const numVal = document.createElement('div');
-            numVal.style.cssText = 'font-size:16px; line-height:1.05; letter-spacing:0.3px; color:#cfe6f2; white-space:nowrap;';
+            numVal.style.cssText = 'font-size:19px; line-height:1.05; letter-spacing:0.3px; color:#cfe6f2; white-space:nowrap;';
             numVal.textContent = '--';
             const numSub = document.createElement('div');
-            numSub.style.cssText = 'font-size:6.5px; letter-spacing:0.3px; color:#728697; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;';
+            numSub.style.cssText = 'font-size:8px; letter-spacing:0.3px; color:#8ba0b2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;';
             numSub.textContent = metricCaption[spec.id] || '';
             numBlock.appendChild(numCap);
             numBlock.appendChild(numVal);
             numBlock.appendChild(numSub);
 
-            // 2) EQ + spectrogram block.
-            const eqBlock = document.createElement('div');
-            eqBlock.style.cssText = 'flex:none; display:flex; align-items:stretch; gap:3px; background:rgba(13,18,28,0.78); border:1px solid rgba(96,110,128,0.34); border-radius:2px; padding:2px;';
-            const eqLabel = document.createElement('div');
-            eqLabel.style.cssText = 'font-size:7px; letter-spacing:0.5px; color:#8391a1; writing-mode:vertical-rl; text-orientation:mixed; transform:rotate(180deg); align-self:center;';
-            eqLabel.textContent = 'EQ';
-            const eqCol = document.createElement('div');
-            eqCol.style.cssText = 'display:flex; flex-direction:column; gap:1px;';
-            const spectro = document.createElementNS(svgNS, 'svg');
-            spectro.setAttribute('width', String(SPEC_W));
-            spectro.setAttribute('height', String(SPEC_H));
-            // Explicit inline px size overrides the global `svg { width:100%; height:100vh }`
-            // rule in main.css; without this the SVG would blow up to full screen.
-            spectro.style.cssText = `display:block; width:${SPEC_W}px; height:${SPEC_H}px; flex:none; background:rgba(6,10,16,0.85);`;
-            const bars = [];
-            const barW = SPEC_W / SPEC_N;
-            for (let i = 0; i < SPEC_N; i++) {
-                const r = document.createElementNS(svgNS, 'rect');
-                r.setAttribute('x', (i * barW).toFixed(2));
-                r.setAttribute('width', Math.max(1, barW - 0.8).toFixed(2));
-                r.setAttribute('y', String(SPEC_H - 1));
-                r.setAttribute('height', '1');
-                r.setAttribute('fill', 'rgba(103, 190, 224, 0.55)');
-                spectro.appendChild(r);
-                bars.push(r);
-            }
-            const eqFoot = document.createElement('div');
-            eqFoot.style.cssText = 'display:flex; justify-content:space-between; font-size:7px; color:#5f7484; letter-spacing:1px;';
-            eqFoot.innerHTML = '<span>‹</span><span>›</span>';
-            eqCol.appendChild(spectro);
-            eqCol.appendChild(eqFoot);
-            eqBlock.appendChild(eqLabel);
-            eqBlock.appendChild(eqCol);
-
-            // 3) INTENSITY — big number on a circular dial.
+            // 2) INTENSITY — big number on a circular dial (real layer activity).
             const intBlock = document.createElement('div');
             intBlock.style.cssText = 'flex:none; display:flex; flex-direction:column; align-items:center;';
-            intBlock.appendChild(makeHeader('INTENSITY'));
+            intBlock.appendChild(makeHeader('ACTIVITY'));
             const dial = document.createElement('div');
-            dial.style.cssText = 'position:relative; width:34px; height:34px; border-radius:50%; background:conic-gradient(rgba(103,190,224,0.85) 40deg, rgba(34,44,56,0.7) 0); box-shadow:0 0 0 1px rgba(96,110,128,0.4) inset; display:flex; align-items:center; justify-content:center;';
+            dial.style.cssText = 'position:relative; width:38px; height:38px; border-radius:50%; background:conic-gradient(rgba(103,190,224,0.85) 40deg, rgba(34,44,56,0.7) 0); box-shadow:0 0 0 1px rgba(96,110,128,0.4) inset; display:flex; align-items:center; justify-content:center;';
             const dialNum = document.createElement('div');
-            dialNum.style.cssText = 'font-size:12px; color:#dbe7f0; letter-spacing:0.3px;';
+            dialNum.style.cssText = 'font-size:13px; color:#dbe7f0; letter-spacing:0.3px;';
             dialNum.textContent = '0';
             dial.appendChild(dialNum);
             intBlock.appendChild(dial);
 
-            // 4) LF BIAS ×2 — Lissajous "woven" pattern boxes that morph with load.
-            const biasPaths = [];
-            const makeBias = () => {
-                const col = document.createElement('div');
-                col.style.cssText = 'flex:none; display:flex; flex-direction:column; align-items:center;';
-                col.appendChild(makeHeader('LF BIAS'));
-                const svg = document.createElementNS(svgNS, 'svg');
-                svg.setAttribute('width', '32');
-                svg.setAttribute('height', '32');
-                svg.setAttribute('viewBox', '0 0 32 32');
-                svg.style.cssText = 'display:block; width:32px; height:32px; flex:none; background:rgba(10,14,22,0.7); border:1px solid rgba(96,110,128,0.3);';
-                const p = document.createElementNS(svgNS, 'path');
-                p.setAttribute('fill', 'none');
-                p.setAttribute('stroke', 'rgba(168,200,214,0.7)');
-                p.setAttribute('stroke-width', '0.8');
-                svg.appendChild(p);
-                col.appendChild(svg);
-                biasPaths.push(p);
-                return col;
-            };
-            const bias1 = makeBias();
-            const bias2 = makeBias();
-
-            // 5) INDUCTION RESPONSE — labelled horizontal bars (CT/HT/AM/FR style).
-            const respBlock = document.createElement('div');
-            respBlock.style.cssText = 'flex:1 1 auto; min-width:84px; display:flex; flex-direction:column;';
-            respBlock.appendChild(makeHeader('INDUCTION RESPONSE'));
-            const respBars = [];
-            const respLabels = ['CT', 'HT', 'AM', 'FR'];
-            respLabels.forEach((rl) => {
-                const r = document.createElement('div');
-                r.style.cssText = 'display:flex; align-items:center; gap:4px; margin-bottom:1px;';
-                const lab = document.createElement('div');
-                lab.style.cssText = 'font-size:6.5px; color:#6f8597; width:13px; flex:none;';
-                lab.textContent = rl;
-                const track = document.createElement('div');
-                track.style.cssText = 'position:relative; flex:1 1 auto; height:3px; background:rgba(40,52,64,0.5);';
-                const fill = document.createElement('div');
-                fill.style.cssText = 'position:absolute; left:0; top:0; bottom:0; width:20%; background:rgba(103,190,224,0.7); transition:width 220ms ease, background 220ms ease;';
-                track.appendChild(fill);
-                r.appendChild(lab);
-                r.appendChild(track);
-                respBlock.appendChild(r);
-                respBars.push(fill);
-            });
-
+            // Clean per-layer readout: real metric number + one activity dial.
+            chain.style.pointerEvents = 'auto';
+            chain.style.cursor = 'pointer';
+            chain.title = 'Click to inspect layer';
+            chain.addEventListener('click', () => this.openLayerDrilldown(spec.id));
             chain.appendChild(numBlock);
             chain.appendChild(makeSep());
-            chain.appendChild(eqBlock);
-            chain.appendChild(makeSep());
             chain.appendChild(intBlock);
-            chain.appendChild(makeSep());
-            chain.appendChild(bias1);
-            chain.appendChild(bias2);
-            chain.appendChild(makeSep());
-            chain.appendChild(respBlock);
             chipLayer.appendChild(chain);
 
-            // metricChips is still read by setMetricChip(); point it at numVal so
-            // the headline updates and the left-row health dot keeps working.
             this.metricChips[spec.id] = null;
-            this.chainModules[spec.id] = { numCap, numVal, dialArc: dial, dialNum, biasPaths, respBars };
-            this.layerSpectra[spec.id] = { bars, hist: new Array(SPEC_N).fill(0), h: SPEC_H };
+            this.chainModules[spec.id] = { numCap, numVal, dialArc: dial, dialNum };
         });
 
         // Left operation-mode rail (reference style). The active cell follows the
@@ -1654,6 +1519,92 @@ class NetworkStackVisualization {
         this.container.appendChild(layerTip);
         this.overlayNodes.push(layerTip);
         this.layerTooltipNode = layerTip;
+
+        // ---- Per-layer drill-down overlay (click a layer to inspect) ----------
+        // A centered modal with a scrim: real metrics for the layer + a short
+        // "what this layer does" explainer, mirroring the crypto/scheduler
+        // overlays so the whole site reads consistently.
+        const drillScrim = document.createElement('div');
+        drillScrim.style.cssText = `
+            position: absolute;
+            inset: 0;
+            z-index: 1200;
+            display: none;
+            pointer-events: auto;
+            background: radial-gradient(ellipse at 50% 46%, rgba(8,12,20,0.62) 0%, rgba(6,9,15,0.86) 62%, rgba(4,6,11,0.94) 100%);
+            backdrop-filter: blur(1.5px);
+            font-family: 'Share Tech Mono', monospace;
+        `;
+        const drillPanel = document.createElement('div');
+        drillPanel.style.cssText = `
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            width: min(680px, 78vw);
+            background: rgba(11, 16, 26, 0.96);
+            border: 1px solid rgba(103, 190, 224, 0.4);
+            border-radius: 8px;
+            box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+            color: #cdd6e0;
+            padding: 0;
+            overflow: hidden;
+        `;
+        drillScrim.appendChild(drillPanel);
+        this.container.appendChild(drillScrim);
+        this.overlayNodes.push(drillScrim);
+        this.drillScrim = drillScrim;
+        this.drillPanel = drillPanel;
+        // Click on the scrim (outside the panel) closes the overlay.
+        drillScrim.addEventListener('click', (e) => {
+            if (e.target === drillScrim) this.closeLayerDrilldown();
+        });
+
+        // ---- TCP BBR path-model overlay --------------------------------------
+        const bbrScrim = document.createElement('div');
+        bbrScrim.style.cssText = drillScrim.style.cssText;
+        bbrScrim.style.display = 'none';
+        const bbrPanel = document.createElement('div');
+        bbrPanel.style.cssText = drillPanel.style.cssText;
+        bbrPanel.style.width = 'min(880px, 88vw)';
+        bbrScrim.appendChild(bbrPanel);
+        this.container.appendChild(bbrScrim);
+        this.overlayNodes.push(bbrScrim);
+        this.bbrScrim = bbrScrim;
+        this.bbrPanel = bbrPanel;
+        bbrScrim.addEventListener('click', (e) => {
+            if (e.target === bbrScrim) this.closeBbrOverlay();
+        });
+
+        // Entry pill for the BBR model, sitting under the flow header.
+        const bbrPill = document.createElement('div');
+        bbrPill.style.cssText = `
+            position: absolute;
+            left: 50%;
+            top: 138px;
+            transform: translateX(-50%);
+            z-index: 1002;
+            cursor: pointer;
+            pointer-events: auto;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 10px;
+            letter-spacing: 1px;
+            color: #a9d4e8;
+            background: rgba(103,190,224,0.12);
+            border: 1px solid rgba(103,190,224,0.45);
+            border-radius: 14px;
+            padding: 4px 14px;
+            white-space: nowrap;
+            transition: background 160ms ease;
+        `;
+        bbrPill.textContent = '▸ TCP BBR · PATH MODEL';
+        bbrPill.title = 'Open the BBR bottleneck-bandwidth + min-RTT model';
+        bbrPill.addEventListener('mouseenter', () => { bbrPill.style.background = 'rgba(103,190,224,0.22)'; });
+        bbrPill.addEventListener('mouseleave', () => { bbrPill.style.background = 'rgba(103,190,224,0.12)'; });
+        bbrPill.addEventListener('click', () => this.openBbrOverlay());
+        this.container.appendChild(bbrPill);
+        this.overlayNodes.push(bbrPill);
+        this.bbrPillNode = bbrPill;
 
         // Grouped "VIEW" control rail: the four view toggles live in one compact
         // card (clearly a control surface, distinct from the read-only metric
@@ -2242,7 +2193,9 @@ class NetworkStackVisualization {
             if (window.kernelContextMenu) {
                 window.kernelContextMenu.deactivateViews();
             } else {
-                this.deactivate();
+                // Standalone page (e.g. /linux-network-subsystem): go home like
+                // the other subsystem pages instead of leaving a blank view.
+                window.location.assign('/');
             }
         };
         this.container.appendChild(exitBtn);
@@ -2455,13 +2408,13 @@ class NetworkStackVisualization {
         // Headline numbers shown on each chain's NUMBER block (the beam target):
         // the single most representative live figure for that layer.
         this.layerHeadline = {
-            userspace: `${m.userspace?.active_processes ?? 0}p`,
+            userspace: `${m.userspace?.active_processes ?? 0}`,
             socket: `${m.socket_api?.established ?? 0}`,
-            tcp: `${rttMs.toFixed(0)}ms`,
+            tcp: `${rttMs.toFixed(1)} ms`,
             ip: `${(safeNum(m.ip?.in_packets_per_sec ?? 0) + safeNum(m.ip?.out_packets_per_sec ?? 0)).toFixed(0)}/s`,
             netfilter: `${dropPerSec.toFixed(0)}/s`,
-            driver: `${driverTxQ}q`,
-            nic: `${nicErrTotal}e`
+            driver: `${driverTxQ}`,
+            nic: `${nicErrTotal}`
         };
 
         if (this.modeStatValue) {
@@ -2624,6 +2577,9 @@ class NetworkStackVisualization {
                 this.packetSpeed = Math.max(1.1, Math.min(5.2, Number(data.signals?.packet_speed ?? 2.2)));
                 this.updatePacketColorByFlow();
                 this.updateTelemetryUI();
+                this.recordBbrSample();
+                if (this.drillLayerId) this.openLayerDrilldown(this.drillLayerId);
+                if (this.bbrOpen) this.openBbrOverlay();
                 if (this.telemetryErrorNode) {
                     this.telemetryErrorNode.textContent = '';
                 }
@@ -2862,7 +2818,7 @@ class NetworkStackVisualization {
             ).replace('\n', ' ')).join(' | ')
             : '';
         const appendSignals = (body) => (
-            `${body}${signalLine ? `<br><span style="color:#90a8bc">branches: ${signalLine}</span>` : ''}`
+            `${body}${signalLine ? `<br><span style="color:#90a8bc">branches: ${signalLine}</span>` : ''}<br><span style="color:#6f8597; font-size:9px; letter-spacing:0.5px;">click to inspect →</span>`
         );
 
         if (layerId === 'userspace') {
@@ -2887,6 +2843,350 @@ class NetworkStackVisualization {
             return appendSignals(`<strong>NIC</strong><br>iface: ${m.nic?.iface ?? 'n/a'}<br>errors rx/tx: ${m.nic?.rx_errors ?? 0}/${m.nic?.tx_errors ?? 0}`);
         }
         return appendSignals(`<strong>${layerId}</strong>`);
+    }
+
+    // Static, teachable explainer for each stack layer (English).
+    getLayerDrillInfo(layerId) {
+        const info = {
+            userspace: {
+                title: 'USERSPACE',
+                role: 'process → syscall',
+                what: 'Applications talk to the network through socket syscalls (send/recv, sendmsg, epoll/poll). The kernel copies bytes between user-space buffers and the socket queues, then wakes the process when data is ready.',
+                watch: 'Many processes with rising downstream RTT usually means apps are blocked on the network, not the CPU.',
+                subsystems: ['socket() / connect()', 'epoll / poll', 'sendmsg / recvmsg', 'SO_* options']
+            },
+            socket: {
+                title: 'SOCKET API',
+                role: 'socket layer',
+                what: 'The socket layer maps a file descriptor to a protocol socket (struct sock). It owns the accept queue for listeners and the send/receive buffers, applying backpressure when buffers fill.',
+                watch: 'Accept-queue overflow and buffer exhaustion surface as connection resets and retransmits.',
+                subsystems: ['struct sock / sk_buff', 'accept backlog', 'sndbuf / rcvbuf', 'SO_REUSEPORT']
+            },
+            tcp: {
+                title: 'TCP / UDP',
+                role: 'transport',
+                what: 'TCP keeps a congestion window (cwnd) and estimates RTT to pace how fast it sends; lost or reordered segments trigger retransmission and window reduction. UDP is stateless — no cwnd, no retransmit.',
+                watch: 'cwnd collapsing while RTT and retrans/s climb is the classic signature of congestion or loss on the path — see the BBR model view.',
+                subsystems: ['cwnd / ssthresh', 'RTT / RTO estimator', 'SACK / reordering', 'congestion control']
+            },
+            ip: {
+                title: 'IP',
+                role: 'network layer',
+                what: 'The IP layer makes the routing decision (FIB lookup), handles fragmentation/reassembly and TTL for every datagram before passing it up or down the stack.',
+                watch: 'in/out packets per second is the raw forwarding load; InDiscards point at routing or buffer problems.',
+                subsystems: ['FIB / routing table', 'fragmentation / TTL', 'ICMP', 'IPv4 / IPv6']
+            },
+            netfilter: {
+                title: 'NETFILTER',
+                role: 'firewall / NAT',
+                what: 'Netfilter hooks run at PREROUTING…POSTROUTING to filter (firewall), rewrite (NAT) and track connections (conntrack). Stateful policy decisions and drops happen here.',
+                watch: 'Rising drop/s and drop-ratio means packets are being filtered or conntrack is saturating.',
+                subsystems: ['iptables / nftables', 'conntrack (NEW/ESTABLISHED)', 'NAT / masquerade', 'hook chains']
+            },
+            driver: {
+                title: 'DRIVER',
+                role: 'device driver',
+                what: 'The NIC driver moves packets between the kernel and hardware over DMA ring buffers and TX queues. Incoming frames raise an IRQ, then NAPI/softirq polls the ring to drain them in batches.',
+                watch: 'A growing TX queue or driver drops means the hardware / qdisc can’t keep up with the send rate.',
+                subsystems: ['DMA rings', 'NAPI / softirq', 'TX queue / qdisc', 'GRO / GSO offload']
+            },
+            nic: {
+                title: 'NIC',
+                role: 'wire / PHY',
+                what: 'The physical (or virtio) interface serializes frames onto the wire and receives them back. Hardware-level CRC / RX / TX errors and drops are counted here.',
+                watch: 'Non-zero rx/tx errors point at cabling, duplex mismatch or a struggling virtual NIC — below the software stack.',
+                subsystems: ['PHY / MAC', 'link speed / duplex', 'RX/TX error counters', 'virtio-net (cloud)']
+            }
+        };
+        return info[layerId] || null;
+    }
+
+    // Real live metrics for the layer, pulled from the latest telemetry frame.
+    getLayerDrillMetrics(layerId) {
+        const m = this.telemetryData?.layer_metrics || {};
+        const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+        const rows = {
+            userspace: () => [['active processes', n(m.userspace?.active_processes)]],
+            socket: () => [
+                ['established', n(m.socket_api?.established)],
+                ['active sockets', n(m.socket_api?.active_sockets)],
+                ['retransmits/s', n(m.socket_api?.retransmits_per_sec)]
+            ],
+            tcp: () => [
+                ['cwnd (segments)', n(m.tcp_udp?.cwnd)],
+                ['rtt', `${n(m.tcp_udp?.rtt_ms).toFixed(1)} ms`],
+                ['retrans/s', n(m.tcp_udp?.retrans_per_sec)],
+                ['tx queue', n(m.tcp_udp?.tx_queue)]
+            ],
+            ip: () => [
+                ['packets in/s', n(m.ip?.in_packets_per_sec).toFixed(0)],
+                ['packets out/s', n(m.ip?.out_packets_per_sec).toFixed(0)],
+                ['drop/s', n(m.ip?.drop_per_sec)],
+                ['drop ratio', `${(n(m.ip?.drop_ratio) * 100).toFixed(2)}%`]
+            ],
+            netfilter: () => [
+                ['drop/s', n(m.netfilter?.drop_per_sec)],
+                ['drop ratio', `${(n(m.netfilter?.drop_ratio) * 100).toFixed(2)}%`]
+            ],
+            driver: () => [
+                ['iface', m.driver?.iface ?? 'n/a'],
+                ['tx queue', n(m.driver?.tx_queue)],
+                ['drops/s', n(m.driver?.drops_per_sec)],
+                ['rx', `${n(m.driver?.rx_mb_s).toFixed(2)} MB/s`],
+                ['tx', `${n(m.driver?.tx_mb_s).toFixed(2)} MB/s`]
+            ],
+            nic: () => [
+                ['iface', m.nic?.iface ?? 'n/a'],
+                ['rx errors', n(m.nic?.rx_errors)],
+                ['tx errors', n(m.nic?.tx_errors)],
+                ['drops total', n(m.nic?.drops_total)]
+            ]
+        };
+        return (rows[layerId] || (() => []))();
+    }
+
+    openLayerDrilldown(layerId) {
+        if (!this.drillScrim || !this.drillPanel) return;
+        const info = this.getLayerDrillInfo(layerId);
+        if (!info) return;
+        this.drillLayerId = layerId;
+        const act = Math.round(Math.max(0, Math.min(1, Number(this.layerActivity[layerId] ?? 0))) * 100);
+        const actCol = act > 80 ? 'rgba(232,96,104,0.95)' : (act > 55 ? 'rgba(230,193,90,0.95)' : 'rgba(103,190,224,0.95)');
+        const metrics = this.getLayerDrillMetrics(layerId);
+        const metricCells = metrics.map(([k, v]) => `
+            <div style="background:rgba(8,12,20,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">
+                <div style="font-size:8.5px; letter-spacing:0.6px; color:#7f93a6; text-transform:uppercase;">${k}</div>
+                <div style="font-size:20px; color:#e2edf5; line-height:1.15; margin-top:2px;">${v}</div>
+            </div>`).join('');
+        const subs = info.subsystems.map(s =>
+            `<span style="display:inline-block; margin:2px 4px 2px 0; padding:2px 7px; background:rgba(103,190,224,0.12); border:1px solid rgba(103,190,224,0.34); border-radius:10px; font-size:9px; color:#a9d4e8;">${s}</span>`
+        ).join('');
+        const html = `
+            <div style="display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid rgba(103,190,224,0.25); background:linear-gradient(90deg, rgba(103,190,224,0.10), rgba(103,190,224,0));">
+                <div style="flex:1 1 auto;">
+                    <div style="font-size:8px; letter-spacing:1.4px; color:#6f8597;">STACK LAYER · ${info.role.toUpperCase()}</div>
+                    <div style="font-size:20px; letter-spacing:1.2px; color:#e8f2f9;">${info.title}</div>
+                </div>
+                <div style="flex:none; text-align:right;">
+                    <div style="font-size:8px; letter-spacing:1px; color:#6f8597;">LIVE ACTIVITY</div>
+                    <div style="font-size:22px; color:${actCol};">${act}<span style="font-size:11px; color:#7f93a6;">%</span></div>
+                </div>
+                <div class="ns-ov-close" style="flex:none; cursor:pointer; width:26px; height:26px; border:1px solid rgba(160,170,190,0.4); border-radius:4px; display:flex; align-items:center; justify-content:center; color:#c8ccd4; font-size:14px;">✕</div>
+            </div>
+            <div style="padding:14px 18px 16px;">
+                <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin-bottom:14px;">${metricCells}</div>
+                <div style="font-size:11.5px; line-height:1.6; color:#c2cede;">${info.what}</div>
+                <div style="margin-top:10px; font-size:10.5px; line-height:1.55; color:#9db6c8; border-left:2px solid rgba(230,193,90,0.6); padding-left:9px;"><span style="color:#e6c15a; letter-spacing:0.5px;">WATCH · </span>${info.watch}</div>
+                <div style="margin-top:12px;">
+                    <div style="font-size:8px; letter-spacing:1px; color:#6f8597; margin-bottom:4px;">KEY SUBSYSTEMS</div>
+                    ${subs}
+                </div>
+                ${layerId === 'tcp' ? `<div class="ns-drill-bbr" style="margin-top:14px; display:inline-block; cursor:pointer; font-size:10px; letter-spacing:0.8px; color:#a9d4e8; background:rgba(103,190,224,0.12); border:1px solid rgba(103,190,224,0.45); border-radius:14px; padding:5px 14px;">▸ OPEN TCP BBR PATH MODEL</div>` : ''}
+            </div>`;
+        window.setSafeHtml(this.drillPanel, html);
+        const closeBtn = this.drillPanel.querySelector('.ns-ov-close');
+        if (closeBtn) closeBtn.addEventListener('click', () => this.closeLayerDrilldown());
+        const bbrBtn = this.drillPanel.querySelector('.ns-drill-bbr');
+        if (bbrBtn) bbrBtn.addEventListener('click', () => { this.closeLayerDrilldown(); this.openBbrOverlay(); });
+        this.drillScrim.style.display = 'block';
+        if (this.layerTooltipNode) this.layerTooltipNode.style.display = 'none';
+    }
+
+    closeLayerDrilldown() {
+        this.drillLayerId = null;
+        if (this.drillScrim) this.drillScrim.style.display = 'none';
+    }
+
+    // Push the latest BBR sample into a rolling window (used to estimate the
+    // max-bandwidth and min-RTT filters when the CC isn't BBR itself).
+    recordBbrSample() {
+        const b = this.telemetryData?.bbr;
+        if (!b) return;
+        if (!this.bbrHist) this.bbrHist = [];
+        this.bbrHist.push({
+            t: Date.now(),
+            rtt: Number(b.rtt_ms) || 0,
+            dr: Number(b.delivery_rate_mbps) || 0
+        });
+        if (this.bbrHist.length > 160) this.bbrHist.shift();
+    }
+
+    // Build the BBR path model: RTprop (min RTT), BtlBw (max delivery rate),
+    // BDP and inflight. Uses the kernel's real minrtt + a windowed max of the
+    // observed delivery rate (or BBR's own bw/mrtt when BBR is the CC).
+    computeBbrModel() {
+        const b = this.telemetryData?.bbr || {};
+        const hist = this.bbrHist || [];
+        const now = Date.now();
+        // RTprop over a ~10s window (BBR's min-RTT filter horizon).
+        const recentR = hist.filter(s => now - s.t <= 10000).map(s => s.rtt).filter(v => v > 0);
+        const histMinRtt = recentR.length ? Math.min(...recentR) : 0;
+        // BtlBw over a shorter window (BBR's max-bw filter ≈ 10 RTTs).
+        const recentD = hist.slice(-40).map(s => s.dr).filter(v => v > 0);
+        const histMaxBw = recentD.length ? Math.max(...recentD) : 0;
+        const active = !!b.bbr_active;
+        const rtprop = active ? (Number(b.bbr_mrtt_ms) || 0)
+            : Math.min(...[Number(b.min_rtt_ms) || Infinity, histMinRtt || Infinity].filter(isFinite)) || (Number(b.rtt_ms) || 0);
+        const btlbw = active ? (Number(b.bbr_bw_mbps) || 0)
+            : Math.max(Number(b.delivery_rate_mbps) || 0, histMaxBw);
+        const mss = Number(b.mss) || 1448;
+        const cwnd = Number(b.cwnd) || 0;
+        const inflightBytes = cwnd * mss;
+        const bdpBytes = btlbw * rtprop * 125; // Mbps × ms × 125 = bytes
+        return {
+            cc: b.cc || 'unknown',
+            active,
+            rtprop,
+            btlbw,
+            curRtt: Number(b.rtt_ms) || 0,
+            curDr: Number(b.delivery_rate_mbps) || 0,
+            cwnd,
+            mss,
+            inflightBytes,
+            bdpBytes
+        };
+    }
+
+    bbrPlaneSvg(model) {
+        const W = 480;
+        const H = 300;
+        const padL = 46;
+        const padR = 18;
+        const padT = 22;
+        const padB = 34;
+        const plotW = W - padL - padR;
+        const plotH = H - padT - padB;
+        const xMax = Math.max(model.curRtt * 1.35, model.rtprop * 3.2, 4);
+        const yMax = Math.max(model.btlbw * 1.35, model.curDr * 1.3, 0.001);
+        const px = (rtt) => padL + Math.min(1, rtt / xMax) * plotW;
+        const py = (dr) => padT + plotH - Math.min(1, dr / yMax) * plotH;
+        const kneeX = px(model.rtprop);
+        const kneeY = py(model.btlbw);
+
+        let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="display:block;width:${W}px;height:${H}px;max-width:100%;background:rgba(6,10,16,0.6);border:1px solid rgba(96,110,128,0.3);border-radius:4px;">`;
+        // Buffer-filling zone (right of RTprop): where loss-based CC bloats RTT.
+        s += `<rect x="${kneeX.toFixed(1)}" y="${padT}" width="${(padL + plotW - kneeX).toFixed(1)}" height="${plotH}" fill="rgba(232,96,104,0.06)"/>`;
+        // Axes.
+        s += `<line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT + plotH}" stroke="rgba(140,160,180,0.5)" stroke-width="1"/>`;
+        s += `<line x1="${padL}" y1="${padT + plotH}" x2="${padL + plotW}" y2="${padT + plotH}" stroke="rgba(140,160,180,0.5)" stroke-width="1"/>`;
+        // BtlBw ceiling (max bandwidth).
+        s += `<line x1="${padL}" y1="${kneeY.toFixed(1)}" x2="${padL + plotW}" y2="${kneeY.toFixed(1)}" stroke="rgba(230,193,90,0.85)" stroke-width="1.2" stroke-dasharray="5 3"/>`;
+        s += `<text x="${padL + 4}" y="${(kneeY - 5).toFixed(1)}" fill="rgba(230,193,90,0.95)" font-size="9" font-family="'Share Tech Mono',monospace">BtlBw · max bandwidth</text>`;
+        // RTprop vertical (min RTT).
+        s += `<line x1="${kneeX.toFixed(1)}" y1="${padT}" x2="${kneeX.toFixed(1)}" y2="${padT + plotH}" stroke="rgba(103,190,224,0.85)" stroke-width="1.2" stroke-dasharray="5 3"/>`;
+        s += `<text x="${(kneeX + 4).toFixed(1)}" y="${padT + 10}" fill="rgba(150,200,230,0.95)" font-size="9" font-family="'Share Tech Mono',monospace">RTprop · min RTT</text>`;
+        // History trail.
+        const hist = (this.bbrHist || []).slice(-40).filter(s2 => s2.rtt > 0);
+        if (hist.length >= 2) {
+            let d = '';
+            hist.forEach((pt, i) => { d += `${i === 0 ? 'M' : 'L'} ${px(pt.rtt).toFixed(1)} ${py(pt.dr).toFixed(1)} `; });
+            s += `<path d="${d}" fill="none" stroke="rgba(168,200,214,0.35)" stroke-width="1"/>`;
+            hist.forEach((pt) => { s += `<circle cx="${px(pt.rtt).toFixed(1)}" cy="${py(pt.dr).toFixed(1)}" r="1.5" fill="rgba(168,200,214,0.45)"/>`; });
+        }
+        // Optimal operating point (the BDP knee).
+        s += `<circle cx="${kneeX.toFixed(1)}" cy="${kneeY.toFixed(1)}" r="7" fill="none" stroke="rgba(150,255,190,0.9)" stroke-width="1.5"/>`;
+        s += `<circle cx="${kneeX.toFixed(1)}" cy="${kneeY.toFixed(1)}" r="2.5" fill="rgba(150,255,190,0.95)"/>`;
+        s += `<text x="${(kneeX + 9).toFixed(1)}" y="${(kneeY + 13).toFixed(1)}" fill="rgba(150,255,190,0.9)" font-size="8.5" font-family="'Share Tech Mono',monospace">optimal (BDP)</text>`;
+        // Current operating point.
+        const cx = px(model.curRtt);
+        const cy = py(model.curDr);
+        s += `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="9" fill="rgba(232,96,104,0.14)"/>`;
+        s += `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="3.5" fill="rgba(232,96,104,0.95)"/>`;
+        s += `<text x="${(cx + 8).toFixed(1)}" y="${(cy - 6).toFixed(1)}" fill="rgba(240,150,155,0.95)" font-size="8.5" font-family="'Share Tech Mono',monospace">now (${model.cc})</text>`;
+        // Axis captions.
+        s += `<text x="${padL + plotW}" y="${padT + plotH + 22}" text-anchor="end" fill="rgba(140,160,180,0.7)" font-size="8.5" font-family="'Share Tech Mono',monospace">round-trip time (ms) →</text>`;
+        s += `<text x="${padL - 4}" y="${padT - 8}" fill="rgba(140,160,180,0.7)" font-size="8.5" font-family="'Share Tech Mono',monospace">delivery rate (Mbps) ↑</text>`;
+        s += `</svg>`;
+        return s;
+    }
+
+    openBbrOverlay() {
+        if (!this.bbrScrim || !this.bbrPanel) return;
+        const m = this.computeBbrModel();
+        this.bbrOpen = true;
+        const fmtBytes = (b) => (b >= 1024 * 1024 ? `${(b / 1048576).toFixed(2)} MB` : `${(b / 1024).toFixed(1)} KB`);
+        const ratio = m.bdpBytes > 0 ? (m.inflightBytes / m.bdpBytes) : 0;
+        const ratioPct = Math.round(ratio * 100);
+        const ratioCol = ratio > 1.25 ? 'rgba(232,96,104,0.95)' : (ratio < 0.6 ? 'rgba(230,193,90,0.95)' : 'rgba(150,255,190,0.95)');
+        const card = (k, v, sub) => `
+            <div style="background:rgba(8,12,20,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">
+                <div style="font-size:8.5px; letter-spacing:0.6px; color:#7f93a6; text-transform:uppercase;">${k}</div>
+                <div style="font-size:18px; color:#e2edf5; line-height:1.15; margin-top:2px;">${v}</div>
+                ${sub ? `<div style="font-size:8px; color:#728697; margin-top:1px;">${sub}</div>` : ''}
+            </div>`;
+        const modeNote = m.active
+            ? `This connection runs <b style="color:#a9d4e8">BBR</b> — the values below are the kernel's own BtlBw / RTprop estimates.`
+            : `This connection runs <b style="color:#e6c15a">${m.cc}</b> (loss-based). BtlBw / RTprop below are the same model BBR would build, estimated from the observed delivery rate (max) and min RTT.`;
+        const html = `
+            <div style="display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid rgba(103,190,224,0.25); background:linear-gradient(90deg, rgba(103,190,224,0.10), rgba(103,190,224,0));">
+                <div style="flex:1 1 auto;">
+                    <div style="font-size:8px; letter-spacing:1.4px; color:#6f8597;">CONGESTION CONTROL · LEARNED PATH MODEL</div>
+                    <div style="font-size:20px; letter-spacing:1.2px; color:#e8f2f9;">TCP BBR — BOTTLENECK BW × MIN RTT</div>
+                </div>
+                <div class="ns-ov-close" style="flex:none; cursor:pointer; width:26px; height:26px; border:1px solid rgba(160,170,190,0.4); border-radius:4px; display:flex; align-items:center; justify-content:center; color:#c8ccd4; font-size:14px;">✕</div>
+            </div>
+            <div style="display:flex; gap:16px; padding:14px 18px 16px; flex-wrap:wrap;">
+                <div class="ns-bbr-plane" style="flex:1 1 420px; min-width:320px;"></div>
+                <div style="flex:1 1 300px; min-width:260px; display:flex; flex-direction:column; gap:8px;">
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                        ${card('RTprop', `${m.rtprop.toFixed(2)} <span style="font-size:10px;color:#7f93a6">ms</span>`, 'min RTT · propagation')}
+                        ${card('BtlBw', `${m.btlbw.toFixed(2)} <span style="font-size:10px;color:#7f93a6">Mbps</span>`, 'max delivery rate')}
+                        ${card('BDP', fmtBytes(m.bdpBytes), 'BtlBw × RTprop')}
+                        ${card('inflight', fmtBytes(m.inflightBytes), `cwnd ${m.cwnd} × mss ${m.mss}`)}
+                    </div>
+                    <div style="background:rgba(8,12,20,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">
+                        <div style="display:flex; justify-content:space-between; font-size:8.5px; letter-spacing:0.6px; color:#7f93a6;"><span>INFLIGHT vs BDP</span><span style="color:${ratioCol}">${ratioPct}%</span></div>
+                        <div style="position:relative; height:8px; margin-top:5px; background:rgba(40,52,64,0.6); border-radius:4px; overflow:hidden;">
+                            <div style="position:absolute; left:0; top:0; bottom:0; width:${Math.min(100, ratioPct)}%; background:${ratioCol};"></div>
+                            <div style="position:absolute; left:100%; top:-2px; bottom:-2px; width:1px; background:rgba(150,255,190,0.9);"></div>
+                        </div>
+                        <div style="font-size:8px; color:#728697; margin-top:3px;">green line = BDP target · over 100% = queueing (bufferbloat)</div>
+                    </div>
+                    <div style="font-size:8.5px; letter-spacing:0.6px; color:#7f93a6;">CC ALGORITHM: <span style="color:#cfe6f2">${m.cc}</span> ${m.active ? '· <span style="color:#96ffbe">BBR live</span>' : '· <span style="color:#e6c15a">modeled</span>'}</div>
+                </div>
+            </div>
+            <div style="padding:0 18px 16px;">
+                <div style="font-size:11.5px; line-height:1.6; color:#c2cede;">BBR continuously measures two things about the path: the maximum delivery rate it has seen (<b style="color:#e6c15a">BtlBw</b>) and the minimum round-trip time (<b style="color:#a9d4e8">RTprop</b>). Their product is the bandwidth-delay product (<b style="color:#96ffbe">BDP</b>) — the amount of data in flight that keeps the pipe exactly full without queueing. BBR paces sending at BtlBw and caps inflight near BDP, avoiding the bufferbloat that loss-based CUBIC causes by filling router buffers until packets drop.</div>
+                <div style="margin-top:9px; font-size:10.5px; line-height:1.55; color:#9db6c8; border-left:2px solid rgba(230,193,90,0.6); padding-left:9px;"><span style="color:#e6c15a;">MODEL · </span>${modeNote} It's control theory, not machine learning — but it's a model of the environment learned online from the traffic itself (the same EWMA-style filtering used in Kernel DNA).</div>
+            </div>`;
+        window.setSafeHtml(this.bbrPanel, html);
+        // The SVG plane must be mounted directly (the HTML sanitizer strips SVG
+        // shape elements), so parse + import it into its placeholder host.
+        const planeHost = this.bbrPanel.querySelector('.ns-bbr-plane');
+        if (planeHost) {
+            try {
+                const doc = new DOMParser().parseFromString(this.bbrPlaneSvg(m), 'image/svg+xml');
+                if (doc.documentElement && doc.documentElement.nodeName.toLowerCase() === 'svg') {
+                    planeHost.appendChild(document.importNode(doc.documentElement, true));
+                }
+            } catch (e) { /* plane is decorative; ignore parse failures */ }
+        }
+        const closeBtn = this.bbrPanel.querySelector('.ns-ov-close');
+        if (closeBtn) closeBtn.addEventListener('click', () => this.closeBbrOverlay());
+        this.bbrScrim.style.display = 'block';
+        if (this.layerTooltipNode) this.layerTooltipNode.style.display = 'none';
+    }
+
+    closeBbrOverlay() {
+        this.bbrOpen = false;
+        if (this.bbrScrim) this.bbrScrim.style.display = 'none';
+    }
+
+    // Resolve which layer sits under the pointer via the tower raycast.
+    layerIdAtPointer(event) {
+        if (!this.raycaster || !this.camera || !this.renderer) return null;
+        const rect = this.renderer.domElement.getBoundingClientRect();
+        this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+        this.raycaster.setFromCamera(this.mouse, this.camera);
+        const hits = this.raycaster.intersectObjects(this.layerMeshes, false);
+        return hits.length ? (hits[0].object?.userData?.layerId || null) : null;
+    }
+
+    onCanvasClick(event) {
+        if (!this.isActive) return;
+        const layerId = this.hoveredLayerId || this.layerIdAtPointer(event);
+        if (layerId) this.openLayerDrilldown(layerId);
     }
 
     onMouseMove(event) {
@@ -3215,6 +3515,8 @@ class NetworkStackVisualization {
         if (this.layerTooltipNode) {
             this.layerTooltipNode.style.display = 'none';
         }
+        this.closeLayerDrilldown();
+        this.closeBbrOverlay();
         if (this.container) {
             this.container.style.display = 'none';
             this.container.style.visibility = 'hidden';

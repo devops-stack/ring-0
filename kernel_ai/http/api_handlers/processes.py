@@ -7,6 +7,7 @@ from kernel_ai.http.common import api_json
 from kernel_ai.services import process_inspect as _process_inspect_service
 from kernel_ai.services import process_timeline as _process_timeline_service
 from kernel_ai.services import processes as _processes_service
+from kernel_ai.services import scheduler_pelt as _scheduler_pelt_service
 
 
 def get_processes():
@@ -74,6 +75,10 @@ def get_proc_timeline_branches():
 
 def processes_realtime():
     return api_json(_processes_service.collect_processes_realtime)
+
+
+def scheduler_pelt():
+    return api_json(_scheduler_pelt_service.collect_scheduler_pelt)
 
 
 def get_proc_graph():

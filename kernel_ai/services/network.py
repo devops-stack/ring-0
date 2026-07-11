@@ -212,11 +212,16 @@ def _get_ss_tcp_metrics():
     except (subprocess.TimeoutExpired, OSError):
         return {}
 
+    fallback = {}
     for idx, line in enumerate(lines):
         if not line.strip().startswith("ESTAB"):
             continue
         metrics = {}
         parts = line.split()
+        # Prefer a real remote peer over loopback/internal so the BBR model
+        # reflects an actual path, not the ~0.02ms/4Gbps loopback socket.
+        peer = parts[4] if len(parts) >= 5 else ""
+        is_local = peer.startswith("127.") or peer.startswith("[::1]") or peer.startswith("0.0.0.0")
         if len(parts) >= 4:
             try:
                 metrics["tx_queue"] = int(parts[2])
@@ -234,9 +239,47 @@ def _get_ss_tcp_metrics():
             metrics["cwnd"] = int(cwnd_match.group(1))
         if retrans_match:
             metrics["retrans_now"] = int(retrans_match.group(1))
+        mss_match = re.search(r"\bmss:(\d+)", details)
+        if mss_match:
+            metrics["mss"] = int(mss_match.group(1))
+
+        # Congestion-control algorithm (first token of the info line), plus the
+        # BBR model ingredients: delivery rate (BtlBw estimate), min RTT
+        # (RTprop), pacing rate, and — when BBR is the CC — its own bw/mrtt.
+        stripped = details.strip()
+        if stripped:
+            cc = stripped.split(" ", 1)[0]
+            if cc and re.match(r"^[a-z][a-z0-9_]+$", cc):
+                metrics["cc"] = cc
+        dr = re.search(r"delivery_rate\s+([\d.]+)([KMG]?)bps", details)
+        if dr:
+            metrics["delivery_rate_mbps"] = round(_rate_to_mbps(dr.group(1), dr.group(2)), 4)
+        pr = re.search(r"pacing_rate\s+([\d.]+)([KMG]?)bps", details)
+        if pr:
+            metrics["pacing_rate_mbps"] = round(_rate_to_mbps(pr.group(1), pr.group(2)), 4)
+        minrtt = re.search(r"minrtt:([\d.]+)", details)
+        if minrtt:
+            metrics["min_rtt_ms"] = float(minrtt.group(1))
+        bbr = re.search(r"bbr:\(bw:([\d.]+)([KMG]?)bps,mrtt:([\d.]+)", details)
+        if bbr:
+            metrics["bbr_bw_mbps"] = round(_rate_to_mbps(bbr.group(1), bbr.group(2)), 4)
+            metrics["bbr_mrtt_ms"] = float(bbr.group(3))
         if metrics:
-            return metrics
-    return {}
+            if not is_local:
+                return metrics
+            if not fallback:
+                fallback = metrics
+    return fallback
+
+
+def _rate_to_mbps(value, unit):
+    """Convert an ss rate (e.g. 12.3 with unit 'M') to Mbit/s."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    scale = {"": 1e-6, "K": 1e-3, "M": 1.0, "G": 1e3}.get((unit or "").upper(), 1.0)
+    return v * scale
 
 
 def get_network_stack_realtime(network_stack_prev=None):
@@ -339,6 +382,9 @@ def get_network_stack_realtime(network_stack_prev=None):
                 "cwnd": int(ss_metrics.get("cwnd", 0)),
                 "rtt_ms": round(float(ss_metrics.get("rtt_ms", 0.0)), 2),
                 "tx_queue": int(ss_metrics.get("tx_queue", 0)),
+                "cc": ss_metrics.get("cc", "unknown"),
+                "delivery_rate_mbps": ss_metrics.get("delivery_rate_mbps", 0.0),
+                "min_rtt_ms": round(float(ss_metrics.get("min_rtt_ms", ss_metrics.get("rtt_ms", 0.0))), 3),
             },
             "ip": {
                 "in_packets_per_sec": round(ip_in_per_sec, 2),
@@ -374,6 +420,18 @@ def get_network_stack_realtime(network_stack_prev=None):
             "drop_probability": round(drop_prob, 4),
             "retransmit_probability": round(retrans_prob, 4),
             "packet_speed": round(packet_speed, 3),
+        },
+        "bbr": {
+            "cc": ss_metrics.get("cc", "unknown"),
+            "bbr_active": "bbr_bw_mbps" in ss_metrics,
+            "rtt_ms": round(float(ss_metrics.get("rtt_ms", 0.0)), 3),
+            "min_rtt_ms": round(float(ss_metrics.get("min_rtt_ms", ss_metrics.get("rtt_ms", 0.0))), 3),
+            "cwnd": int(ss_metrics.get("cwnd", 0)),
+            "mss": int(ss_metrics.get("mss", 1448)),
+            "delivery_rate_mbps": ss_metrics.get("delivery_rate_mbps", 0.0),
+            "pacing_rate_mbps": ss_metrics.get("pacing_rate_mbps", 0.0),
+            "bbr_bw_mbps": ss_metrics.get("bbr_bw_mbps"),
+            "bbr_mrtt_ms": ss_metrics.get("bbr_mrtt_ms"),
         },
         "throughput_mb_s": round(throughput_mb_s, 3),
         "tcp_counters": {

@@ -157,6 +157,25 @@
         return Z;
     }
 
+    // Same GF(2^128) multiply, but records every one of the 128 shift-and-XOR
+    // iterations so the UI can animate the "school-book" carry-less multiplication
+    // with reduction. steps[i] = state AFTER processing bit i of X.
+    function gfmul128Trace(X, Y) {
+        const Z = new Array(16).fill(0);
+        const V = Y.slice(0, 16);
+        const steps = [];
+        for (let i = 0; i < 128; i += 1) {
+            const bit = (X[i >> 3] >> (7 - (i & 7))) & 1;
+            if (bit) for (let j = 0; j < 16; j += 1) Z[j] ^= V[j];
+            const lsb = V[15] & 1;
+            for (let j = 15; j > 0; j -= 1) V[j] = ((V[j] >> 1) | ((V[j - 1] & 1) << 7)) & 0xff;
+            V[0] = (V[0] >> 1) & 0xff;
+            if (lsb) V[0] ^= 0xe1; // reduction by x^128 + x^7 + x^2 + x + 1
+            steps.push({ i, bit, xored: !!bit, reduced: !!lsb, z: Z.slice(), v: V.slice() });
+        }
+        return { steps, result: Z.slice() };
+    }
+
     // GHASH_H(blocks): Y_0 = 0; Y_i = (Y_{i-1} XOR block_i) . H. Returns the list
     // of intermediate Y states (including Y_0) so the UI can animate accumulation.
     function ghashSteps(H, blocks) {
@@ -192,6 +211,7 @@
         bytesToHex,
         popcount,
         gfmul128,
+        gfmul128Trace,
         ghashSteps,
         be64
     };

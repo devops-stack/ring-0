@@ -60,6 +60,18 @@ def linux_memory_subsystem_html():
     return redirect("/linux-memory-subsystem", code=301)
 
 
+def linux_network_subsystem_page():
+    return render_template("linux-network-subsystem.html")
+
+
+def network_page_legacy():
+    return redirect("/linux-network-subsystem", code=301)
+
+
+def linux_network_subsystem_html():
+    return redirect("/linux-network-subsystem", code=301)
+
+
 def health_check():
     return jsonify(
         {
