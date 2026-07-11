@@ -17,6 +17,9 @@ _PAGE_ROUTES = [
     ("/linux-processes-subsystem.html", "linux_processes_subsystem_html", h.linux_processes_subsystem_html),
     ("/linux-memory-subsystem", "linux_memory_subsystem_page", h.linux_memory_subsystem_page),
     ("/linux-memory-subsystem.html", "linux_memory_subsystem_html", h.linux_memory_subsystem_html),
+    ("/linux-network-subsystem", "linux_network_subsystem_page", h.linux_network_subsystem_page),
+    ("/network", "network_page_legacy", h.network_page_legacy),
+    ("/linux-network-subsystem.html", "linux_network_subsystem_html", h.linux_network_subsystem_html),
     ("/health", "health_check", h.health_check),
 ]
 

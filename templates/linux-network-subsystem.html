@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Linux Network Stack Kernel Subsystem - TCP/IP, BBR, Netfilter Visualization</title>
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/images/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/images/favicon-16x16.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/images/apple-touch-icon.png">
+    <meta name="description" content="Interactive Linux network stack visualization: the packet path from userspace socket syscalls through TCP/UDP, IP, Netfilter, the NIC driver and the wire, with a live TCP BBR bottleneck-bandwidth and min-RTT model.">
+    <meta name="keywords" content="
+linux network stack,
+linux network subsystem,
+tcp ip stack linux,
+tcp bbr congestion control,
+bottleneck bandwidth min rtt,
+netfilter conntrack,
+sk_buff napi softirq,
+linux socket api,
+linux packet path visualization,
+linux kernel networking
+">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="/linux-network-subsystem">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="/linux-network-subsystem">
+    <meta property="og:title" content="Linux Network Stack Kernel Subsystem Visualization">
+    <meta property="og:description" content="The Linux packet path visualized: socket syscalls, TCP/UDP congestion control (BBR), IP routing, Netfilter/conntrack, the NIC driver and the wire — in real time.">
+    <meta property="og:image" content="/static/images/009.png">
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="/linux-network-subsystem">
+    <meta property="twitter:title" content="Linux Network Stack Kernel Subsystem Visualization">
+    <meta property="twitter:description" content="How a packet travels the Linux kernel network stack, plus a live TCP BBR path model (bottleneck bandwidth × min RTT).">
+    <meta property="twitter:image" content="/static/images/009.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "WebPage",
+        "name": "Linux Network Stack Kernel Subsystem Visualization",
+        "url": "https://ring-0.sh/linux-network-subsystem",
+        "description": "Interactive visualization of the Linux kernel network stack: the packet path from userspace socket syscalls through TCP/UDP, IP, Netfilter, the NIC driver and the wire, with a live TCP BBR bottleneck-bandwidth and min-RTT model.",
+        "about": [
+            {"@type": "Thing", "name": "Linux kernel network stack"},
+            {"@type": "Thing", "name": "TCP BBR congestion control"},
+            {"@type": "Thing", "name": "Netfilter"}
+        ],
+        "isPartOf": {"@type": "WebSite", "name": "ring-0.sh", "url": "https://ring-0.sh/"}
+    }
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/main.css?v=3">
+    <style>
+        body {
+            margin: 0;
+            background: #0E1114;
+            color: #d4dbe8;
+            font-family: "Share Tech Mono", monospace;
+        }
+        .seo-network {
+            position: absolute;
+            left: -10000px;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body>
+    <h1 class="seo-network">Linux Network Stack Kernel Subsystem</h1>
+    <section class="seo-network">
+        <h2>The Packet Path Through the Linux Kernel</h2>
+        <p>
+            This page visualizes the Linux network stack as a layered funnel from userspace to
+            the wire. A packet leaves an application through a socket syscall, is buffered by the
+            socket layer, paced by the transport layer (TCP with a congestion window and RTT
+            estimate, or connectionless UDP), routed by the IP layer, inspected by Netfilter and
+            connection tracking, handed to the NIC driver over DMA rings and NAPI/softirq polling,
+            and finally serialized onto the wire by the network interface.
+        </p>
+        <h2>Stack Layers</h2>
+        <ul>
+            <li><strong>Userspace</strong> &mdash; socket(), connect(), sendmsg/recvmsg, epoll and poll.</li>
+            <li><strong>Socket API</strong> &mdash; struct sock, accept backlog, send/receive buffers and backpressure.</li>
+            <li><strong>TCP / UDP</strong> &mdash; congestion window (cwnd), RTT/RTO estimation, retransmission, SACK.</li>
+            <li><strong>IP</strong> &mdash; FIB routing lookup, fragmentation, TTL, ICMP, IPv4 and IPv6.</li>
+            <li><strong>Netfilter</strong> &mdash; iptables/nftables hooks, NAT and conntrack state (NEW/ESTABLISHED).</li>
+            <li><strong>Driver</strong> &mdash; DMA ring buffers, TX queue/qdisc, NAPI and softirq, GRO/GSO offload.</li>
+            <li><strong>NIC</strong> &mdash; PHY/MAC, link speed and duplex, RX/TX error counters, virtio-net in cloud.</li>
+        </ul>
+        <h2>TCP BBR Path Model</h2>
+        <p>
+            The page includes a live TCP BBR model. BBR (Bottleneck Bandwidth and Round-trip
+            propagation time) continuously measures the maximum delivery rate it has seen (BtlBw)
+            and the minimum round-trip time (RTprop). Their product is the bandwidth-delay product
+            (BDP) &mdash; the amount of data in flight that keeps the path full without queueing.
+            BBR paces sending at BtlBw and caps inflight near BDP, avoiding the bufferbloat that
+            loss-based CUBIC creates by filling router buffers until packets drop. It is control
+            theory rather than machine learning, but it is a model of the network path learned
+            online from the traffic itself.
+        </p>
+    </section>
+    <script src="/static/js/safe-utils.js?v=2"></script>
+    <script src="/static/js/frontend-logger.js?v=2"></script>
+    <script src="/static/js/network-stack.js?v=41"></script>
+    <script>
+        (function startNetworkPage() {
+            if (typeof window.NetworkStackVisualization !== 'function') {
+                console.error('NetworkStackVisualization is not available');
+                return;
+            }
+            const viz = new window.NetworkStackVisualization();
+            const ok = viz.init('network-stack-container');
+            if (ok === false) return;
+            viz.activate();
+        })();
+    </script>
+</body>
+</html>

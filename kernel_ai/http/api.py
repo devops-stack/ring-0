@@ -16,9 +16,13 @@ from kernel_ai.http.api_handlers.kernel import (
 from kernel_ai.http.api_handlers.network_system import (
     active_connections,
     devices_realtime,
+    ext4_anatomy,
+    ext4_journal,
     filesystem_blocks,
+    hot_files,
     isolation_context,
     network_stack_realtime,
+    path_walk,
     traceroute_info,
 )
 from kernel_ai.http.api_handlers.processes import (
@@ -34,6 +38,7 @@ from kernel_ai.http.api_handlers.processes import (
     get_processes,
     get_processes_detailed,
     processes_realtime,
+    scheduler_pelt,
 )
 from kernel_ai.http.api_handlers.security_logs import (
     crypto_aes_demo,
@@ -47,7 +52,11 @@ __all__ = [
     "crypto_aes_demo",
     "crypto_realtime",
     "devices_realtime",
+    "ext4_anatomy",
+    "ext4_journal",
     "filesystem_blocks",
+    "hot_files",
+    "path_walk",
     "get_execution_context",
     "get_ipc_links",
     "get_proc_graph",
@@ -73,6 +82,7 @@ __all__ = [
     "nginx_files",
     "process_kernel_map",
     "processes_realtime",
+    "scheduler_pelt",
     "security_realtime",
     "sentry_test",
     "syscalls_realtime",

@@ -98,12 +98,16 @@ class RightSemicircleMenuManager {
             window.location.assign('/linux-memory-subsystem');
             return;
         }
+        if (itemId === 'network') {
+            // Force hard navigation to dedicated SEO page (same as the other
+            // subsystems), instead of opening the in-page overlay view.
+            window.location.assign('/linux-network-subsystem');
+            return;
+        }
         if (!window.kernelContextMenu) return;
         if (itemId === 'kernel') {
             window.kernelContextMenu.activateDNAView();
             return;
-        } else if (itemId === 'network') {
-            window.kernelContextMenu.activateNetworkView();
         } else if (itemId === 'devices') {
             window.kernelContextMenu.activateDevicesView();
         } else if (itemId === 'files') {

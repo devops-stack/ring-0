@@ -30,6 +30,8 @@ DEVICES_PREV = {
 FILESYSTEM_PREV = {
     "timestamp": None,
     "write_bytes": None,
+    "read_bytes": None,
+    "per_disk": {},
 }
 CRYPTO_PREV = {
     "timestamp": None,

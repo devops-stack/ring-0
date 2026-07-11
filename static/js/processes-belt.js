@@ -1,7 +1,7 @@
 // Processes Subsystem Visualization
-// Version: 34 — removed FLOW mode
+// Version: 39 — SCHEDULER default mode, removed RADIAL, observed history vs projection
 
-debugLog('🧠 processes-belt.js v34: Script loading...');
+debugLog('🧠 processes-belt.js v39: Script loading...');
 
 class ProcessesSubsystemVisualization {
     constructor() {
@@ -15,7 +15,7 @@ class ProcessesSubsystemVisualization {
         this.telemetry = null;
         this.tick = 0;
         this.nodeLayout = new Map();
-        this.layoutMode = 'microscope';
+        this.layoutMode = 'scheduler';
         this.modeButtons = new Map();
         this.edgeFilter = 'all';
         this.filterButtons = new Map();
@@ -32,6 +32,18 @@ class ProcessesSubsystemVisualization {
         this.processHistoryMaxPoints = 90;
         this.mouseMoveHandler = null;
         this.clickHandler = null;
+        // SCHEDULER (EEVDF + PELT) mode state.
+        this.schedulerData = null;
+        this.schedulerInterval = null;
+        this.schedSelectedPid = null;
+        this.schedHoverPid = null;
+        this.schedHistory = new Map();   // pid -> [{util, load}]
+        this.schedHistoryMax = 80;
+        this.schedRectHits = [];
+        this.schedOverlayPid = null;     // task drill-down overlay
+        this.schedOverlayHits = [];
+        this._schedOverlayPanel = null;
+        this._schedT0 = Date.now();      // wall-clock base for overlay animation
     }
 
     init(containerId = 'processes-belt-container') {
@@ -83,9 +95,9 @@ class ProcessesSubsystemVisualization {
             position:absolute;top:18px;left:18px;display:flex;gap:8px;z-index:1001;
         `;
         const modes = [
+            { key: 'scheduler', label: 'SCHEDULER' },
             { key: 'microscope', label: 'MICROSCOPE' },
             { key: 'temporal', label: '3-LAYER GRAPH' },
-            { key: 'radial', label: 'RADIAL GRAPH' },
             { key: 'wireframe', label: 'WIREFRAME PROC' }
         ];
         modes.forEach((m) => {
@@ -107,7 +119,7 @@ class ProcessesSubsystemVisualization {
     }
 
     setLayoutMode(modeKey) {
-        this.layoutMode = ['temporal', 'radial', 'microscope', 'wireframe'].includes(modeKey) ? modeKey : 'microscope';
+        this.layoutMode = ['temporal', 'microscope', 'wireframe', 'scheduler'].includes(modeKey) ? modeKey : 'scheduler';
         this.modeButtons.forEach((btn, key) => {
             const active = key === this.layoutMode;
             btn.style.background = active ? 'rgba(32, 52, 81, 0.92)' : 'rgba(8,12,18,0.86)';
@@ -115,6 +127,48 @@ class ProcessesSubsystemVisualization {
             btn.style.color = active ? '#d9ecff' : '#bcc8db';
         });
         this.updateAutoFocusButtonState();
+        this.updateSchedulerPolling();
+    }
+
+    updateSchedulerPolling() {
+        const on = this.layoutMode === 'scheduler';
+        if (on && !this.schedulerInterval) {
+            this.fetchSchedulerData();
+            this.schedulerInterval = setInterval(() => {
+                if (this.isActive && this.layoutMode === 'scheduler') this.fetchSchedulerData();
+            }, 1500);
+        } else if (!on && this.schedulerInterval) {
+            clearInterval(this.schedulerInterval);
+            this.schedulerInterval = null;
+            this.schedOverlayPid = null;
+        }
+    }
+
+    fetchSchedulerData() {
+        return fetch('/api/scheduler-pelt', { cache: 'no-store' })
+            .then((res) => res.json())
+            .then((data) => {
+                if (!data || data.error) throw new Error(data?.error || 'no data');
+                this.schedulerData = data;
+                this.updateSchedHistory(data);
+            })
+            .catch(() => { /* keep last good frame */ });
+    }
+
+    updateSchedHistory(data) {
+        const tasks = Array.isArray(data?.tasks) ? data.tasks : [];
+        const keep = new Set();
+        tasks.forEach((t) => {
+            const pid = Number(t.pid || 0);
+            if (pid <= 0) return;
+            keep.add(pid);
+            const arr = this.schedHistory.get(pid) || [];
+            arr.push({ util: Number(t.util_avg || 0), load: Number(t.load_avg || 0) });
+            this.schedHistory.set(pid, arr.slice(-this.schedHistoryMax));
+        });
+        for (const pid of this.schedHistory.keys()) {
+            if (!keep.has(pid) && pid !== this.schedSelectedPid) this.schedHistory.delete(pid);
+        }
     }
 
     createAutoFocusToggle() {
@@ -154,6 +208,30 @@ class ProcessesSubsystemVisualization {
         const rect = this.canvas.getBoundingClientRect();
         const x = event.clientX - rect.left;
         const y = event.clientY - rect.top;
+        if (this.layoutMode === 'scheduler') {
+            if (this.schedOverlayPid !== null) {
+                for (const hit of this.schedOverlayHits) {
+                    if (x >= hit.x && x <= hit.x + hit.w && y >= hit.y && y <= hit.y + hit.h) {
+                        if (hit.kind === 'close') this.schedOverlayPid = null;
+                        return;
+                    }
+                }
+                const p = this._schedOverlayPanel;
+                if (p && (x < p.x || x > p.x + p.w || y < p.y || y > p.y + p.h)) {
+                    this.schedOverlayPid = null;
+                }
+                return;
+            }
+            for (const hit of this.schedRectHits) {
+                if (x >= hit.x && x <= hit.x + hit.w && y >= hit.y && y <= hit.y + hit.h) {
+                    this.schedSelectedPid = hit.pid;
+                    this.schedOverlayPid = hit.pid;
+                    this._schedT0 = Date.now();
+                    return;
+                }
+            }
+            return;
+        }
         for (const hit of this.nodeHitAreas) {
             const dx = x - hit.x;
             const dy = y - hit.y;
@@ -212,6 +290,15 @@ class ProcessesSubsystemVisualization {
         const rect = this.canvas.getBoundingClientRect();
         const x = event.clientX - rect.left;
         const y = event.clientY - rect.top;
+        if (this.layoutMode === 'scheduler') {
+            let hv = null;
+            for (const hit of this.schedRectHits) {
+                if (x >= hit.x && x <= hit.x + hit.w && y >= hit.y && y <= hit.y + hit.h) { hv = hit.pid; break; }
+            }
+            this.schedHoverPid = hv;
+            this.canvas.style.cursor = hv ? 'pointer' : 'default';
+            return;
+        }
         let hovered = null;
         for (const n of this.nodeHitAreas) {
             const dx = x - n.x;
@@ -2179,6 +2266,698 @@ class ProcessesSubsystemVisualization {
         this.ctx.stroke();
     }
 
+    schedUtilColor(frac) {
+        const f = Math.max(0, Math.min(1, frac));
+        if (f < 0.33) return `rgba(110,180,245,${0.55 + f})`;
+        if (f < 0.66) return 'rgba(120,235,220,0.95)';
+        if (f < 0.85) return 'rgba(255,205,120,0.95)';
+        return 'rgba(255,140,120,0.98)';
+    }
+
+    drawSchedulerView(x, y, w, h) {
+        this.schedRectHits = [];
+        const ctx = this.ctx;
+        const d = this.schedulerData;
+
+        // Header strip.
+        const headH = 46;
+        this.drawPanel(x, y, w, headH, '', { alpha: 0.7, showTitle: false });
+        ctx.fillStyle = 'rgba(210,235,255,0.95)';
+        ctx.font = '13px "Share Tech Mono", monospace';
+        ctx.fillText(`CPU SCHEDULER · ${d?.scheduler || '…'} + PELT`, x + 16, y + 20);
+        ctx.font = '9px "Share Tech Mono", monospace';
+        ctx.fillStyle = 'rgba(150,194,225,0.82)';
+        if (!d) {
+            ctx.fillText('loading /api/scheduler-pelt …', x + 16, y + 36);
+            return;
+        }
+        const la = (d.loadavg || []).map((v) => v.toFixed(2)).join(' ');
+        const src = d.eevdf?.source === 'kernel' ? 'sched_debug' : 'computed';
+        ctx.fillText(
+            `cpus ${d.cpus} · loadavg ${la} · tasks ${d.task_count} · y=${d.pelt.y} · half-life ${d.pelt.half_life_ms}ms · util,load ∈ [0,${d.pelt.capacity}] · EEVDF:${src}`,
+            x + 16, y + 36
+        );
+
+        const bodyY = y + headH + 12;
+        const bodyH = h - headH - 12;
+        const leftW = Math.min(440, w * 0.4);
+        const rightX = x + leftW + 14;
+        const rightW = w - leftW - 14;
+
+        const kernelH = Math.min(220, bodyH * 0.5);
+        this.drawPeltDecayKernel(x, bodyY, leftW, kernelH, d);
+        this.drawPeltSelfCheck(x, bodyY + kernelH + 12, leftW, bodyH - kernelH - 12, d);
+        this.drawSchedTasks(rightX, bodyY, rightW, bodyH, d);
+
+        if (this.schedOverlayPid !== null) this.drawSchedOverlay(d);
+    }
+
+    drawPeltDecayKernel(x, y, w, h, d) {
+        const ctx = this.ctx;
+        this.drawPanel(x, y, w, h, 'PELT DECAY KERNEL', { alpha: 0.82 });
+        ctx.fillStyle = 'rgba(150,194,225,0.82)';
+        ctx.font = '9px "Share Tech Mono", monospace';
+        ctx.fillText('util_avg = Σ activityₖ · yᵏ   —  same EWMA as the Kernel DNA z-score', x + 14, y + 34);
+
+        const weights = Array.isArray(d.pelt.kernel_weights) ? d.pelt.kernel_weights : [];
+        const n = weights.length;
+        if (!n) return;
+        const plotX = x + 16;
+        const plotY = y + 46;
+        const plotW = w - 32;
+        const plotH = h - 70;
+        const bw = plotW / n;
+        const sweep = (this.tick * 0.5) % n;
+        weights.forEach((wgt, i) => {
+            const bh = wgt * plotH;
+            const bx = plotX + i * bw;
+            const by = plotY + plotH - bh;
+            const near = Math.abs(i - sweep) < 2.5;
+            ctx.fillStyle = near ? 'rgba(150,225,255,0.98)' : `rgba(110,175,240,${0.28 + 0.5 * wgt})`;
+            ctx.fillRect(bx, by, Math.max(1, bw - 0.7), bh);
+        });
+
+        // Half-life marker at k = 32 periods (~32 ms).
+        const hlX = plotX + 32 * bw;
+        ctx.strokeStyle = 'rgba(255,180,120,0.85)';
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(hlX, plotY);
+        ctx.lineTo(hlX, plotY + plotH);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(255,195,150,0.95)';
+        ctx.font = '8px "Share Tech Mono", monospace';
+        ctx.fillText('½ · 32 ms', hlX + 4, plotY + 10);
+
+        ctx.fillStyle = 'rgba(150,194,225,0.7)';
+        ctx.fillText('now', plotX, plotY + plotH + 13);
+        ctx.textAlign = 'right';
+        ctx.fillText(`${n} ms ago`, plotX + plotW, plotY + plotH + 13);
+        ctx.textAlign = 'left';
+    }
+
+    drawPeltSelfCheck(x, y, w, h, d) {
+        const ctx = this.ctx;
+        this.drawPanel(x, y, w, h, 'PELT NORMALISATION · OUR MATH vs KERNEL', { alpha: 0.82 });
+        const tasks = Array.isArray(d.tasks) ? d.tasks : [];
+        const task = tasks.find((t) => t.pid === this.schedSelectedPid) || tasks[0];
+        if (!task) {
+            ctx.fillStyle = 'rgba(196,207,224,0.7)';
+            ctx.font = '10px "Share Tech Mono", monospace';
+            ctx.fillText('no task data', x + 16, y + 40);
+            return;
+        }
+        const maxv = d.pelt.load_avg_max;
+        const cap = d.pelt.capacity;
+        const ourUtil = task.util_sum / maxv;
+        const kern = task.util_avg;
+        const matchPct = kern > 0
+            ? Math.max(0, 100 - Math.abs(ourUtil - kern) / kern * 100)
+            : (ourUtil < 1 ? 100 : 0);
+
+        ctx.font = '10px "Share Tech Mono", monospace';
+        const tag = task.pid === this.schedSelectedPid ? '[selected]' : '[top]';
+        const lines = [
+            [`task            ${task.pid} ${task.comm}  ${tag}`, 'rgba(210,235,255,0.95)'],
+            [`util_sum (Σ)    = ${task.util_sum.toLocaleString()}`, 'rgba(150,194,225,0.9)'],
+            [`LOAD_AVG_MAX    = ${maxv}`, 'rgba(150,194,225,0.9)'],
+            [`our util_avg    = util_sum / LOAD_AVG_MAX ≈ ${ourUtil.toFixed(1)}`, 'rgba(150,225,255,0.95)'],
+            [`kernel util_avg = ${kern}`, 'rgba(150,255,190,0.95)'],
+            [`match           = ${matchPct.toFixed(1)}%`, matchPct > 92 ? 'rgba(150,255,190,0.98)' : 'rgba(255,205,120,0.95)']
+        ];
+        let ly = y + 40;
+        lines.forEach(([txt, col]) => {
+            ctx.fillStyle = col;
+            ctx.fillText(txt, x + 16, ly);
+            ly += 16;
+        });
+
+        // Two comparison bars (our vs kernel), 0..cap.
+        const barX = x + 16;
+        const barW = w - 32;
+        const drawBar = (by, val, col, label) => {
+            ctx.fillStyle = 'rgba(60,80,110,0.5)';
+            ctx.fillRect(barX, by, barW, 9);
+            ctx.fillStyle = col;
+            ctx.fillRect(barX, by, Math.min(1, val / cap) * barW, 9);
+            ctx.fillStyle = 'rgba(196,207,224,0.8)';
+            ctx.font = '8px "Share Tech Mono", monospace';
+            ctx.fillText(label, barX, by - 2);
+        };
+        if (ly + 40 < y + h) {
+            drawBar(ly + 6, ourUtil, 'rgba(120,200,255,0.9)', 'our util_avg (from util_sum)');
+            drawBar(ly + 30, kern, 'rgba(150,255,190,0.9)', 'kernel util_avg');
+            ctx.fillStyle = 'rgba(150,194,225,0.62)';
+            ctx.font = '8px "Share Tech Mono", monospace';
+            ctx.fillText('the few-% gap = the current partial 1 ms period in the kernel divider', barX, ly + 52);
+        }
+    }
+
+    drawSchedTasks(x, y, w, h, d) {
+        const ctx = this.ctx;
+        this.drawPanel(x, y, w, h, 'RUNQUEUE · TOP TASKS BY PELT util  ·  click a task to inspect', { alpha: 0.82 });
+        const tasks = Array.isArray(d.tasks) ? d.tasks : [];
+        const cap = d.pelt.capacity;
+
+        // Column header.
+        ctx.font = '8px "Share Tech Mono", monospace';
+        ctx.fillStyle = 'rgba(150,194,225,0.7)';
+        const colGaugeX = x + w * 0.40;
+        const colGaugeW = w * 0.24;
+        const colSparkX = x + w * 0.68;
+        const colSparkW = w * 0.16;
+        ctx.fillText('pid · comm', x + 16, y + 34);
+        ctx.fillText('util / load (0..1024)', colGaugeX, y + 34);
+        ctx.fillText('util history', colSparkX, y + 34);
+        ctx.fillText('vrt · nice · sw', x + w * 0.86, y + 34);
+
+        const rowsY = y + 42;
+        const footH = 30;
+        const rowH = Math.max(20, Math.min(34, (h - (rowsY - y) - footH) / Math.max(1, tasks.length)));
+        tasks.forEach((t, i) => {
+            const ry = rowsY + i * rowH;
+            const selected = t.pid === this.schedSelectedPid;
+            const hover = t.pid === this.schedHoverPid;
+            if (selected || hover) {
+                ctx.fillStyle = selected ? 'rgba(40,70,110,0.5)' : 'rgba(30,50,80,0.32)';
+                ctx.fillRect(x + 8, ry - 2, w - 16, rowH - 2);
+            }
+            this.schedRectHits.push({ x: x + 8, y: ry - 2, w: w - 16, h: rowH - 2, pid: t.pid });
+
+            // pid + comm (▶ marks a currently runnable task).
+            ctx.font = '10px "Share Tech Mono", monospace';
+            ctx.fillStyle = t.runnable ? 'rgba(150,255,190,0.98)' : 'rgba(206,232,255,0.92)';
+            const label = `${t.runnable ? '▶ ' : '   '}${t.pid} ${t.comm}`;
+            ctx.fillText(label.slice(0, 24), x + 14, ry + 12);
+
+            // util gauge (thick) + load gauge (thin) sharing the column.
+            ctx.fillStyle = 'rgba(60,80,110,0.45)';
+            ctx.fillRect(colGaugeX, ry + 2, colGaugeW, 8);
+            ctx.fillStyle = this.schedUtilColor(t.util_avg / cap);
+            ctx.fillRect(colGaugeX, ry + 2, Math.min(1, t.util_avg / cap) * colGaugeW, 8);
+            ctx.fillStyle = 'rgba(150,180,255,0.7)';
+            ctx.fillRect(colGaugeX, ry + 12, Math.min(1, t.load_avg / cap) * colGaugeW, 3);
+
+            // util sparkline.
+            const hist = this.schedHistory.get(t.pid) || [];
+            if (hist.length > 1) {
+                ctx.strokeStyle = 'rgba(140,215,255,0.85)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                hist.forEach((pt, k) => {
+                    const px = colSparkX + (k / (this.schedHistoryMax - 1)) * colSparkW;
+                    const py = ry + 12 - Math.min(1, pt.util / cap) * 12;
+                    if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+                });
+                ctx.stroke();
+            }
+
+            // right meta: util, nice, virtual-deadline offset (= virtual slice).
+            ctx.font = '8px "Share Tech Mono", monospace';
+            ctx.fillStyle = 'rgba(180,200,224,0.85)';
+            let meta = `u${Math.round(t.util_avg)} n${t.nice} vd+${(t.vslice_ms || 0).toFixed(3)}ms`;
+            ctx.fillText(meta, x + w * 0.86, ry + 8);
+            if (t.eligible !== undefined && t.runnable) {
+                ctx.fillStyle = t.eligible ? 'rgba(150,255,190,0.9)' : 'rgba(255,180,120,0.9)';
+                ctx.fillText(`${t.eligible ? 'E' : 'N'} lag ${Number(t.vlag_ms || 0).toFixed(2)}`, x + w * 0.86, ry + 18);
+            }
+        });
+
+        // EEVDF explainer footer.
+        ctx.font = '8px "Share Tech Mono", monospace';
+        ctx.fillStyle = 'rgba(150,194,225,0.66)';
+        ctx.fillText(
+            '▶ = runnable (state R). EEVDF runs the eligible task with the smallest virtual deadline; vruntime advances slower for higher-weight (lower nice) tasks.',
+            x + 16, y + h - 12
+        );
+    }
+
+    drawSchedOverlay(d) {
+        const ctx = this.ctx;
+        const W = window.innerWidth;
+        const H = window.innerHeight;
+        const task = (d.tasks || []).find((t) => t.pid === this.schedOverlayPid);
+        if (!task) { this.schedOverlayPid = null; return; }
+
+        ctx.fillStyle = 'rgba(4,8,14,0.82)';
+        ctx.fillRect(0, 0, W, H);
+
+        const pad = Math.min(64, W * 0.05);
+        const px = pad;
+        const py = 80;
+        const pw = W - pad * 2;
+        const ph = H - py - 40;
+        this._schedOverlayPanel = { x: px, y: py, w: pw, h: ph };
+        this.drawPanel(px, py, pw, ph, '', { alpha: 0.97, showTitle: false });
+
+        ctx.fillStyle = 'rgba(215,238,255,0.98)';
+        ctx.font = '15px "Share Tech Mono", monospace';
+        ctx.fillText(`TASK ${task.pid} · ${task.comm}  —  EEVDF + PELT`, px + 22, py + 28);
+        ctx.font = '9px "Share Tech Mono", monospace';
+        ctx.fillStyle = 'rgba(150,194,225,0.82)';
+        ctx.fillText(
+            `nice ${task.nice} · weight ${task.weight} · slice ${task.slice_ms}ms · state ${task.state}${task.runnable ? ' (runnable)' : ''}`,
+            px + 22, py + 46
+        );
+
+        // Close button.
+        const cb = { kind: 'close', x: px + pw - 36, y: py + 14, w: 24, h: 24 };
+        ctx.strokeStyle = 'rgba(200,220,245,0.75)';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(cb.x + 6, cb.y + 6); ctx.lineTo(cb.x + 18, cb.y + 18);
+        ctx.moveTo(cb.x + 18, cb.y + 6); ctx.lineTo(cb.x + 6, cb.y + 18);
+        ctx.stroke();
+        this.schedOverlayHits = [cb];
+
+        const colY = py + 64;
+        const colH = ph - 84;
+        const colGap = 16;
+        const colW = (pw - 44 - colGap * 2) / 3;
+        const c1 = px + 22;
+        const c2 = c1 + colW + colGap;
+        const c3 = c2 + colW + colGap;
+        this.drawOvPeltTrajectory(c1, colY, colW, colH, d, task);
+        this.drawOvEevdf(c2, colY, colW, colH, d, task);
+        this.drawOvReducer(c3, colY, colW, colH, d, task);
+
+        ctx.fillStyle = 'rgba(150,194,225,0.58)';
+        ctx.font = '8px "Share Tech Mono", monospace';
+        ctx.fillText('click outside · × to close', px + 22, py + ph - 12);
+    }
+
+    drawOvPeltTrajectory(x, y, w, h, d, task) {
+        const ctx = this.ctx;
+        this.drawPanel(x, y, w, h, 'PELT TRAJECTORY', { alpha: 0.9 });
+        ctx.fillStyle = 'rgba(150,194,225,0.8)';
+        ctx.font = '8px "Share Tech Mono", monospace';
+        ctx.fillText('util (cyan) & load (blue) history · kernel 1 ms-period EWMA, sampled ~1.5 s', x + 12, y + 30);
+
+        const cap = d.pelt.capacity;
+        const hist = this.schedHistory.get(task.pid) || [];
+        const plotX = x + 16;
+        const plotY = y + 42;
+        const plotW = w - 40;
+        const plotH = 150;
+
+        // Grid + capacity reference lines (¼, ½, ¾, full CPU).
+        ctx.strokeStyle = 'rgba(120,160,210,0.14)';
+        ctx.lineWidth = 1;
+        [0, 0.25, 0.5, 0.75, 1].forEach((f) => {
+            const gy = plotY + plotH - f * plotH;
+            ctx.beginPath();
+            ctx.moveTo(plotX, gy);
+            ctx.lineTo(plotX + plotW, gy);
+            ctx.stroke();
+            ctx.fillStyle = 'rgba(140,175,215,0.55)';
+            ctx.fillText(`${Math.round(f * cap)}`, plotX + plotW + 3, gy + 3);
+        });
+
+        const drawSeries = (key, color, fill) => {
+            if (hist.length < 2) return;
+            ctx.beginPath();
+            hist.forEach((pt, k) => {
+                const sx = plotX + (k / (this.schedHistoryMax - 1)) * plotW;
+                const sy = plotY + plotH - Math.min(1, (pt[key] || 0) / cap) * plotH;
+                if (k === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+            });
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+            if (fill) {
+                const lastX = plotX + ((hist.length - 1) / (this.schedHistoryMax - 1)) * plotW;
+                ctx.lineTo(lastX, plotY + plotH);
+                ctx.lineTo(plotX, plotY + plotH);
+                ctx.closePath();
+                ctx.fillStyle = fill;
+                ctx.fill();
+            }
+        };
+        drawSeries('load', 'rgba(140,170,255,0.85)', null);
+        drawSeries('util', 'rgba(140,225,255,0.95)', 'rgba(120,220,255,0.10)');
+
+        // Estimated-util clamp band (util_est is the boosted running estimate).
+        const estY = plotY + plotH - Math.min(1, (task.util_est || 0) / cap) * plotH;
+        ctx.strokeStyle = 'rgba(255,205,120,0.6)';
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(plotX, estY);
+        ctx.lineTo(plotX + plotW, estY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(255,205,120,0.85)';
+        ctx.fillText('util_est', plotX + 2, estY - 3);
+
+        ctx.fillStyle = 'rgba(150,194,225,0.6)';
+        ctx.fillText('now', plotX + plotW - 18, plotY + plotH + 12);
+
+        // --- PELT decay / recovery projection (real y, millisecond scale) ---
+        this.drawOvPeltProjection(x, plotY + plotH + 26, w, 180, d, task, cap);
+
+        // Current values.
+        let ny = plotY + plotH + 26 + 180 + 20;
+        const rows = [
+            [`util_avg      ${task.util_avg}`, 'rgba(140,225,255,0.95)'],
+            [`load_avg      ${task.load_avg}`, 'rgba(140,170,255,0.9)'],
+            [`runnable_avg  ${task.runnable_avg}`, 'rgba(150,210,235,0.9)'],
+            [`util_est      ${task.util_est}`, 'rgba(255,205,120,0.9)'],
+            [`sum_exec      ${task.sum_exec_ms} ms`, 'rgba(180,200,224,0.85)']
+        ];
+        ctx.font = '9px "Share Tech Mono", monospace';
+        rows.forEach(([txt, col]) => {
+            ctx.fillStyle = col;
+            ctx.fillText(txt, x + 14, ny);
+            ny += 15;
+        });
+    }
+
+    drawOvPeltProjection(x, y, w, h, d, task, cap) {
+        const ctx = this.ctx;
+        const y0 = d.pelt.y;               // real per-1ms-period decay factor
+        const halfLife = d.pelt.half_life_ms;
+        const cur = task.util_avg;
+        const spanMs = Math.max(96, halfLife * 3);   // ~3 half-lives
+
+        ctx.fillStyle = 'rgba(150,194,225,0.8)';
+        ctx.font = '8px "Share Tech Mono", monospace';
+        ctx.fillText(`PROJECTION · observed past → now → decay(idle)/recover(busy)  (y=${y0})`, x + 12, y);
+
+        const plotX = x + 16;
+        const plotY = y + 10;
+        const plotW = w - 40;
+        const plotH = h - 40;
+
+        // "now" splits the panel: left = real observed samples (coarse, ~1.5s),
+        // right = the millisecond-scale projection. Both share the util y-axis
+        // and meet at the current util value, so the real trajectory flows
+        // straight into the two hypothetical futures.
+        const nowFrac = 0.42;
+        const nowX = plotX + plotW * nowFrac;
+        const projW = plotW * (1 - nowFrac);
+
+        ctx.strokeStyle = 'rgba(120,160,210,0.14)';
+        ctx.lineWidth = 1;
+        [0, 0.5, 1].forEach((f) => {
+            const gy = plotY + plotH - f * plotH;
+            ctx.beginPath();
+            ctx.moveTo(plotX, gy);
+            ctx.lineTo(plotX + plotW, gy);
+            ctx.stroke();
+        });
+
+        const mapY = (u) => plotY + plotH - Math.min(1, u / cap) * plotH;
+        const mapXp = (tms) => nowX + (tms / spanMs) * projW;   // future (ms)
+
+        // --- Observed past: real util samples flowing into "now". ---
+        const hist = this.schedHistory.get(task.pid) || [];
+        const M = Math.min(hist.length, 28);
+        if (M >= 2) {
+            const recent = hist.slice(-M);
+            const leftW = nowX - plotX;
+            ctx.strokeStyle = 'rgba(200,225,250,0.9)';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            recent.forEach((pt, k) => {
+                const sx = plotX + (k / (M - 1)) * leftW;
+                const sy = mapY(pt.util || 0);
+                if (k === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+            });
+            ctx.stroke();
+            // Sample dots.
+            ctx.fillStyle = 'rgba(200,225,250,0.65)';
+            recent.forEach((pt, k) => {
+                const sx = plotX + (k / (M - 1)) * leftW;
+                ctx.beginPath();
+                ctx.arc(sx, mapY(pt.util || 0), 1.6, 0, Math.PI * 2);
+                ctx.fill();
+            });
+        }
+
+        // --- Future decay: u(t) = cur * y^t (task goes idle now). ---
+        ctx.strokeStyle = 'rgba(140,225,255,0.95)';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        for (let tms = 0; tms <= spanMs; tms += 1) {
+            const u = cur * Math.pow(y0, tms);
+            if (tms === 0) ctx.moveTo(mapXp(tms), mapY(u)); else ctx.lineTo(mapXp(tms), mapY(u));
+        }
+        ctx.stroke();
+
+        // --- Future recovery: u(t) = cap - (cap - cur) * y^t (runs full-tilt). ---
+        ctx.strokeStyle = 'rgba(150,255,190,0.9)';
+        ctx.beginPath();
+        for (let tms = 0; tms <= spanMs; tms += 1) {
+            const u = cap - (cap - cur) * Math.pow(y0, tms);
+            if (tms === 0) ctx.moveTo(mapXp(tms), mapY(u)); else ctx.lineTo(mapXp(tms), mapY(u));
+        }
+        ctx.stroke();
+
+        // Half-life markers (right/future region).
+        ctx.strokeStyle = 'rgba(255,180,120,0.7)';
+        ctx.setLineDash([3, 3]);
+        [1, 2, 3].forEach((k) => {
+            const hx = mapXp(halfLife * k);
+            if (hx > plotX + plotW) return;
+            ctx.beginPath();
+            ctx.moveTo(hx, plotY);
+            ctx.lineTo(hx, plotY + plotH);
+            ctx.stroke();
+            ctx.fillStyle = 'rgba(255,195,150,0.8)';
+            ctx.fillText(`${halfLife * k}ms`, hx + 2, plotY + plotH + 11);
+        });
+        ctx.setLineDash([]);
+
+        // "now" divider.
+        ctx.strokeStyle = 'rgba(215,238,255,0.5)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(nowX, plotY - 2);
+        ctx.lineTo(nowX, plotY + plotH + 2);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(215,238,255,0.85)';
+        ctx.fillText('now', nowX - 8, plotY - 4);
+
+        // Animated marker sweeping along the decay curve.
+        const t = (Date.now() - this._schedT0) / 1000;
+        const sweepMs = (t * 24) % spanMs;   // ~24 ms/s sweep
+        ctx.fillStyle = 'rgba(150,225,255,0.98)';
+        ctx.beginPath();
+        ctx.arc(mapXp(sweepMs), mapY(cur * Math.pow(y0, sweepMs)), 3.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        // "now" point at current util.
+        ctx.fillStyle = 'rgba(215,238,255,0.95)';
+        ctx.beginPath();
+        ctx.arc(nowX, mapY(cur), 3, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Axis captions + legend.
+        ctx.font = '8px "Share Tech Mono", monospace';
+        ctx.fillStyle = 'rgba(150,194,225,0.6)';
+        ctx.fillText('observed (~1.5s/sample)', plotX, plotY + plotH + 24);
+        ctx.fillStyle = 'rgba(140,225,255,0.9)';
+        ctx.fillText('— decay(idle)', plotX + plotW - 150, plotY + 10);
+        ctx.fillStyle = 'rgba(150,255,190,0.9)';
+        ctx.fillText('— recover(busy)', plotX + plotW - 150, plotY + 22);
+    }
+
+    drawOvEevdf(x, y, w, h, d, task) {
+        const ctx = this.ctx;
+        this.drawPanel(x, y, w, h, 'EEVDF · VIRTUAL DEADLINE & LAG', { alpha: 0.9 });
+        const kernel = d.eevdf?.source === 'kernel' && task.eligible !== undefined;
+
+        const v = task.vruntime;
+        const vd = task.deadline_v;         // v + virtual slice (computed)
+        const V = kernel ? task.avg_vruntime : null;
+        // Only fold V into the axis window when it is close enough to v to be
+        // meaningful (i.e. the task is actually competing). For long-sleeping
+        // tasks V is far away and would collapse v/vd to a single pixel — we
+        // then draw V as an off-axis arrow instead.
+        const vNear = (V !== null && V !== undefined)
+            && Math.abs(V - v) <= Math.max(50, task.vslice_ms * 40);
+        const vals = [v, vd];
+        if (vNear) vals.push(V);
+        let lo = Math.min(...vals);
+        let hi = Math.max(...vals);
+        const span = Math.max(hi - lo, task.vslice_ms * 1.5, 0.02);
+        lo -= span * 0.25;
+        hi += span * 0.35;
+        const axX = x + 18;
+        const axW = w - 36;
+        const axY = y + 74;
+        const mapX = (val) => axX + ((val - lo) / (hi - lo)) * axW;
+
+        // Axis.
+        ctx.strokeStyle = 'rgba(150,180,220,0.5)';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(axX, axY);
+        ctx.lineTo(axX + axW, axY);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(150,194,225,0.7)';
+        ctx.font = '8px "Share Tech Mono", monospace';
+        ctx.fillText('virtual time (ms) →', axX, axY + 26);
+
+        const marker = (val, color, label, up) => {
+            const mx = mapX(val);
+            const y1 = up ? axY - 30 : axY + 4;
+            const y2 = up ? axY : axY + 14;
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1.6;
+            ctx.beginPath();
+            ctx.moveTo(mx, y1);
+            ctx.lineTo(mx, y2);
+            ctx.stroke();
+            ctx.fillStyle = color;
+            ctx.fillText(label, mx - 6, up ? y1 - 3 : y2 + 10);
+        };
+
+        // Virtual slice bracket v -> vd.
+        ctx.fillStyle = 'rgba(120,220,255,0.14)';
+        ctx.fillRect(mapX(v), axY - 8, mapX(vd) - mapX(v), 16);
+        marker(v, 'rgba(140,225,255,0.95)', 'v', true);
+        marker(vd, 'rgba(150,255,190,0.95)', 'vd', false);
+        if (vNear) {
+            marker(V, 'rgba(255,205,120,0.95)', 'V', true);
+        } else if (V !== null && V !== undefined) {
+            // V is off-window: draw an arrow at the edge toward it.
+            const rightward = V > v;
+            const ex = rightward ? axX + axW - 2 : axX + 2;
+            ctx.fillStyle = 'rgba(255,205,120,0.9)';
+            ctx.font = '9px "Share Tech Mono", monospace';
+            ctx.fillText(rightward ? 'V →' : '← V', rightward ? ex - 22 : ex, axY - 20);
+        }
+
+        ctx.font = '9px "Share Tech Mono", monospace';
+        let ny = axY + 52;
+        const line = (txt, col) => { ctx.fillStyle = col; ctx.fillText(txt, x + 14, ny); ny += 15; };
+        line(`vruntime v   = ${v.toFixed(3)} ms`, 'rgba(140,225,255,0.95)');
+        line(`virtual slice = slice·1024/w = ${task.vslice_ms.toFixed(4)} ms`, 'rgba(180,200,224,0.88)');
+        line(`deadline  vd = v + vslice = ${vd.toFixed(3)} ms`, 'rgba(150,255,190,0.95)');
+        if (kernel) {
+            const elig = task.eligible;
+            line(`avg_vruntime V = ${Number(V).toFixed(3)} ms`, 'rgba(255,205,120,0.95)');
+            line(`lag = V - v   = ${Number(task.vlag_ms).toFixed(3)} ms`, 'rgba(210,225,245,0.9)');
+            ny += 4;
+            ctx.fillStyle = elig ? 'rgba(150,255,190,0.98)' : 'rgba(255,180,120,0.98)';
+            ctx.font = '11px "Share Tech Mono", monospace';
+            ctx.fillText(elig ? '● ELIGIBLE  (lag ≥ 0, v ≤ V)' : '○ NOT ELIGIBLE  (lag < 0)', x + 14, ny);
+            ny += 18;
+            if (!task.runnable) {
+                ctx.fillStyle = 'rgba(150,194,225,0.6)';
+                ctx.font = '8px "Share Tech Mono", monospace';
+                ctx.fillText('(sleeping — lag/eligibility apply while runnable)', x + 14, ny);
+                ny += 14;
+            }
+        } else {
+            ny += 4;
+            ctx.fillStyle = 'rgba(255,205,120,0.9)';
+            ctx.font = '8px "Share Tech Mono", monospace';
+            ctx.fillText('lag & eligibility need cfs_rq avg_vruntime (V),', x + 14, ny); ny += 12;
+            ctx.fillText('which lives in root-only sched_debug.', x + 14, ny); ny += 12;
+            ctx.fillText('→ enable the sched_debug collector for kernel-exact V.', x + 14, ny); ny += 16;
+        }
+
+        ctx.fillStyle = 'rgba(150,194,225,0.62)';
+        ctx.font = '8px "Share Tech Mono", monospace';
+        this._wrapText(
+            'EEVDF runs the eligible task (lag ≥ 0) with the earliest virtual deadline. Bigger weight ⇒ smaller virtual slice ⇒ earlier deadline ⇒ scheduled sooner.',
+            x + 14, ny + 4, w - 28, 11
+        );
+    }
+
+    drawOvReducer(x, y, w, h, d, task) {
+        const ctx = this.ctx;
+        this.drawPanel(x, y, w, h, 'nice → weight → vruntime SPEED', { alpha: 0.9 });
+        const weight = task.weight || 1024;
+        const rate = 1024 / weight;   // virtual ms accrued per real ms of CPU
+        const cx = x + 16;
+        let ny = y + 36;
+
+        ctx.font = '9px "Share Tech Mono", monospace';
+        const stage = (label, val, col) => {
+            ctx.fillStyle = 'rgba(150,194,225,0.7)';
+            ctx.fillText(label, cx, ny);
+            ctx.fillStyle = col;
+            ctx.fillText(val, cx + 92, ny);
+            ny += 14;
+        };
+        stage('nice', `${task.nice}`, 'rgba(215,238,255,0.95)');
+        stage('→ weight', `${weight}`, 'rgba(140,225,255,0.95)');
+        stage('→ vruntime ×', `${rate.toFixed(4)} /ns`, 'rgba(150,255,190,0.95)');
+        ny += 6;
+
+        // Two vruntime tracks: nice-0 reference vs this task, animated.
+        const t = (Date.now() - this._schedT0) / 1000;
+        const trackX = cx;
+        const trackW = w - 32;
+        const baseSpeed = 0.18; // fraction of track per second for the reference
+        const drawTrack = (ty, speed, color, label) => {
+            ctx.strokeStyle = 'rgba(120,160,210,0.25)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(trackX, ty);
+            ctx.lineTo(trackX + trackW, ty);
+            ctx.stroke();
+            const pos = ((t * speed) % 1) * trackW;
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(trackX + pos, ty, 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = 'rgba(180,200,224,0.82)';
+            ctx.font = '8px "Share Tech Mono", monospace';
+            ctx.fillText(label, trackX, ty - 7);
+        };
+        drawTrack(ny + 14, baseSpeed, 'rgba(160,180,210,0.85)', 'nice 0 (weight 1024) — reference vruntime');
+        drawTrack(ny + 44, baseSpeed * rate, 'rgba(150,255,190,0.95)', `nice ${task.nice} (weight ${weight}) — this task`);
+        ny += 64;
+
+        // Comparison bar: how fast this task's vruntime moves vs nice-0.
+        ny += 8;
+        const barX = cx;
+        const barW = w - 32;
+        const norm = Math.max(0, Math.min(1, Math.log2(rate * 16 + 1) / Math.log2(16 * 68 + 1)));
+        ctx.fillStyle = 'rgba(60,80,110,0.5)';
+        ctx.fillRect(barX, ny, barW, 9);
+        ctx.fillStyle = rate < 1 ? 'rgba(140,225,255,0.9)' : 'rgba(255,180,120,0.9)';
+        ctx.fillRect(barX, ny, norm * barW, 9);
+        ny += 22;
+
+        ctx.fillStyle = 'rgba(150,194,225,0.72)';
+        ctx.font = '8px "Share Tech Mono", monospace';
+        const verdict = rate < 1
+            ? `vruntime advances ${(1 / rate).toFixed(1)}× SLOWER than nice 0 ⇒ the scheduler lets it run MORE.`
+            : (rate > 1
+                ? `vruntime advances ${rate.toFixed(1)}× FASTER than nice 0 ⇒ it yields the CPU sooner.`
+                : 'baseline: vruntime advances 1:1 with real time.');
+        this._wrapText(verdict, cx, ny, w - 28, 11);
+        ny += 34;
+        this._wrapText(
+            'PELT feeds util_avg; EEVDF uses weight to scale real time into virtual time. Same geometric-decay math family as the Kernel DNA z-score.',
+            cx, ny, w - 28, 11
+        );
+    }
+
+    _wrapText(text, x, y, maxW, lineH) {
+        const ctx = this.ctx;
+        const words = String(text).split(' ');
+        let line = '';
+        let cy = y;
+        words.forEach((word) => {
+            const test = line ? `${line} ${word}` : word;
+            if (ctx.measureText(test).width > maxW && line) {
+                ctx.fillText(line, x, cy);
+                line = word;
+                cy += lineH;
+            } else {
+                line = test;
+            }
+        });
+        if (line) ctx.fillText(line, x, cy);
+        return cy;
+    }
+
     drawScene() {
         if (!this.ctx || !this.canvas) return;
         const w = window.innerWidth;
@@ -2213,6 +2992,12 @@ class ProcessesSubsystemVisualization {
             this.ctx.moveTo(0, gy + 0.5);
             this.ctx.lineTo(w, gy + 0.5);
             this.ctx.stroke();
+        }
+
+        if (this.layoutMode === 'scheduler') {
+            this.drawKernelHeader();
+            this.drawSchedulerView(gap, top, w - gap * 2, h - top - 30);
+            return;
         }
 
         this.drawHudChrome(gap, graphY, w - gap * 2, graphH);
