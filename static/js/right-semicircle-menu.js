@@ -104,15 +104,21 @@ class RightSemicircleMenuManager {
             window.location.assign('/linux-network-subsystem');
             return;
         }
-        if (!window.kernelContextMenu) return;
-        if (itemId === 'kernel') {
-            window.kernelContextMenu.activateDNAView();
+        if (itemId === 'files') {
+            // Force hard navigation to dedicated SEO page (same as the other
+            // subsystems), instead of opening the in-page overlay view.
+            window.location.assign('/linux-filesystem-subsystem');
             return;
-        } else if (itemId === 'devices') {
-            window.kernelContextMenu.activateDevicesView();
-        } else if (itemId === 'files') {
-            window.kernelContextMenu.activateFilesView();
         }
+        if (itemId === 'kernel') {
+            window.location.assign('/kernel-dna');
+            return;
+        }
+        if (itemId === 'devices') {
+            window.location.assign('/linux-devices-subsystem');
+            return;
+        }
+        if (!window.kernelContextMenu) return;
     }
 
     renderRightSemicircleMenu() {

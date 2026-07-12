@@ -390,7 +390,9 @@ class FilesystemMapVisualization {
             if (window.kernelContextMenu) {
                 window.kernelContextMenu.deactivateViews();
             } else {
-                this.deactivate();
+                // Standalone page (e.g. /linux-filesystem-subsystem): go home like
+                // the other subsystem pages instead of leaving a blank view.
+                window.location.assign('/');
             }
         };
         this.container.appendChild(btn);

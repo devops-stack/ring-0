@@ -11,6 +11,7 @@ from kernel_ai.http.api_handlers.kernel import (
     nginx_files,
     process_kernel_map,
     sentry_test,
+    siem_alerts,
     syscalls_realtime,
 )
 from kernel_ai.http.api_handlers.network_system import (
@@ -85,6 +86,7 @@ __all__ = [
     "scheduler_pelt",
     "security_realtime",
     "sentry_test",
+    "siem_alerts",
     "syscalls_realtime",
     "traceroute_info",
 ]

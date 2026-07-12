@@ -1,7 +1,7 @@
 // Device Control Surface Visualization
-// Version: 23
+// Version: 24
 
-debugLog('🧲 devices-belt.js v23: Script loading...');
+debugLog('🧲 devices-belt.js v24: Script loading...');
 
 class DevicesBeltVisualization {
     constructor() {
@@ -117,6 +117,11 @@ class DevicesBeltVisualization {
 
         this.resizeHandler = () => this.onResize();
         window.addEventListener('resize', this.resizeHandler);
+
+        this.keyHandler = (event) => {
+            if (event.key === 'Escape') this.closeDrill();
+        };
+        window.addEventListener('keydown', this.keyHandler);
 
         return true;
     }
@@ -296,6 +301,8 @@ class DevicesBeltVisualization {
         this.overlayNodes.push(detail);
         this.deviceDetailNode = detail;
 
+        this.createDrillOverlay();
+
         const err = document.createElement('div');
         err.style.cssText = `
             position: absolute;
@@ -346,7 +353,9 @@ class DevicesBeltVisualization {
             if (window.kernelContextMenu) {
                 window.kernelContextMenu.deactivateViews();
             } else {
-                this.deactivate();
+                // Standalone page (e.g. /linux-devices-subsystem): go home like
+                // the other subsystem pages instead of leaving a blank view.
+                window.location.assign('/');
             }
         };
         this.container.appendChild(btn);
@@ -588,7 +597,8 @@ class DevicesBeltVisualization {
         if (!device) {
             return `
                 <div style="color:#54d8e8; margin-bottom:6px;">DEVICE SIGNATURE</div>
-                hover a device block to inspect sysfs, driver and IRQ/DMA path
+                hover a device block to inspect sysfs, driver and IRQ/DMA path<br>
+                <span style="color:#7fd8ff">click</span> a device to open the full inspector
             `;
         }
         const category = this.normalizeCategory(device.category);
@@ -615,6 +625,162 @@ class DevicesBeltVisualization {
     updateDeviceDetail(device) {
         if (!this.deviceDetailNode) return;
         window.setSafeHtml(this.deviceDetailNode, this.formatDeviceDetail(device));
+    }
+
+    subsystemLinkFor(device) {
+        const sub = String(device.subsystem || '').toLowerCase();
+        const cat = this.normalizeCategory(device.category);
+        if (sub === 'file-system' || cat === 'block') {
+            return { href: '/linux-filesystem-subsystem', label: 'OPEN FILESYSTEM SUBSYSTEM' };
+        }
+        if (sub === 'network-stack' || cat === 'net') {
+            return { href: '/linux-network-subsystem', label: 'OPEN NETWORK SUBSYSTEM' };
+        }
+        return null;
+    }
+
+    createDrillOverlay() {
+        const scrim = document.createElement('div');
+        scrim.style.cssText = `
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(circle at 50% 42%, rgba(6, 12, 18, 0.68), rgba(2, 5, 9, 0.9));
+            z-index: 2000;
+            display: none;
+        `;
+        scrim.addEventListener('click', (event) => { if (event.target === scrim) this.closeDrill(); });
+
+        const panel = document.createElement('div');
+        panel.style.cssText = `
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            width: min(720px, 92vw);
+            max-height: 84vh;
+            overflow: auto;
+            background: rgba(6, 11, 17, 0.97);
+            border: 1px solid rgba(84, 216, 232, 0.42);
+            border-radius: 10px;
+            box-shadow: 0 0 44px rgba(84, 216, 232, 0.14);
+            padding: 22px 26px 24px;
+            font-family: 'Share Tech Mono', monospace;
+            color: #cfe8f2;
+        `;
+
+        const closeBtn = document.createElement('div');
+        closeBtn.textContent = '×';
+        closeBtn.style.cssText = `
+            position: absolute;
+            top: 12px;
+            right: 16px;
+            color: #7fd8ff;
+            font-size: 22px;
+            line-height: 1;
+            cursor: pointer;
+            opacity: 0.8;
+        `;
+        closeBtn.onmouseenter = () => { closeBtn.style.opacity = '1'; };
+        closeBtn.onmouseleave = () => { closeBtn.style.opacity = '0.8'; };
+        closeBtn.onclick = () => this.closeDrill();
+
+        const content = document.createElement('div');
+
+        const linkBtn = document.createElement('button');
+        linkBtn.style.cssText = `
+            margin-top: 16px;
+            padding: 8px 14px;
+            background: rgba(12, 22, 30, 0.9);
+            border: 1px solid rgba(127, 216, 255, 0.5);
+            color: #bff0ff;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 11px;
+            letter-spacing: 0.4px;
+            cursor: pointer;
+            display: none;
+        `;
+        linkBtn.onmouseenter = () => { linkBtn.style.background = 'rgba(20, 34, 44, 0.95)'; linkBtn.style.color = '#ffffff'; };
+        linkBtn.onmouseleave = () => { linkBtn.style.background = 'rgba(12, 22, 30, 0.9)'; linkBtn.style.color = '#bff0ff'; };
+        linkBtn.onclick = () => { if (this.drillLinkHref) window.location.assign(this.drillLinkHref); };
+
+        panel.appendChild(closeBtn);
+        panel.appendChild(content);
+        panel.appendChild(linkBtn);
+        scrim.appendChild(panel);
+        this.container.appendChild(scrim);
+        this.overlayNodes.push(scrim);
+
+        this.drillScrim = scrim;
+        this.drillContent = content;
+        this.drillLinkBtn = linkBtn;
+        this.drillLinkHref = null;
+    }
+
+    drillFlowHtml(device) {
+        const cat = this.normalizeCategory(device.category);
+        const bus = this.normalizeBus(device.bus, device.category);
+        const stages = [
+            ['BUS', bus.toUpperCase(), '#8ff0d2'],
+            ['DEVICE', String(device.name || '?').toUpperCase(), '#dffcff'],
+            ['DRIVER', String(device.driver || 'n/a').toUpperCase(), '#c9a6ff'],
+            ['KERNEL', String(device.subsystem || cat || 'core').toUpperCase(), '#7fd8ff'],
+            ['USERSPACE', String(device.user_interaction || 'syscall').toUpperCase(), '#b8c7da']
+        ];
+        const node = (label, value, col) => `
+            <div style="display:inline-block; text-align:center; vertical-align:middle;">
+                <div style="font-size:8px; color:#6d8398; letter-spacing:1px; margin-bottom:3px;">${this.escapeHtml(label)}</div>
+                <div style="border:1px solid ${col}; color:${col}; border-radius:4px; padding:5px 8px; font-size:10px; min-width:64px;">${this.escapeHtml(value)}</div>
+            </div>`;
+        const arrow = '<span style="color:#4b6377; margin:0 6px; font-size:12px; vertical-align:middle;">&rarr;</span>';
+        return `<div style="margin:14px 0 4px; white-space:nowrap; overflow-x:auto;">${stages.map(([l, v, c]) => node(l, v, c)).join(arrow)}</div>`;
+    }
+
+    formatDrillContent(device) {
+        const category = this.normalizeCategory(device.category);
+        const bus = this.normalizeBus(device.bus, device.category);
+        const majorMinor = device.major != null && device.minor != null ? `${device.major}:${device.minor}` : 'hotplug (dynamic)';
+        const loadPct = Math.round(Number(device.load_norm || 0) * 100);
+        const rows = [
+            ['bus / category', `${bus} / ${category}`],
+            ['driver', device.driver || 'n/a (no bound driver)'],
+            ['major:minor', majorMinor],
+            ['irq / sec', Number(device.irq_per_sec || 0).toFixed(2)],
+            ['irq total', Number(device.irq_total || 0).toLocaleString()],
+            ['throughput', `${Number(device.throughput_mb_s || 0).toFixed(3)} MB/s`],
+            ['user interaction', device.user_interaction || 'syscall / ioctl'],
+            ['sysfs path', device.sys_path || '/sys']
+        ];
+        if (device.category === 'net' || device.drops != null || device.errors != null) {
+            rows.push(['net drops / errors', `${Number(device.drops || 0)} / ${Number(device.errors || 0)}`]);
+        }
+        const header = `
+            <div style="color:#54d8e8; font-size:15px; letter-spacing:1px; margin-bottom:2px;">DEVICE :: ${this.escapeHtml(String(device.name || 'unknown').toUpperCase())}</div>
+            <div style="color:#8aa0b4; font-size:10px; margin-bottom:6px;">${this.escapeHtml(bus.toUpperCase())} bus &middot; ${this.escapeHtml(category)} class &middot; load ${loadPct}%</div>`;
+        const flow = this.drillFlowHtml(device);
+        const flowCaption = '<div style="font-size:9px; color:#6d8398; margin-bottom:10px;">enumeration path: how this device is reached from the bus down to userspace</div>';
+        const table = `<div style="font-size:11px; line-height:1.7;">${rows.map(([k, v]) => `
+            <div><span style="display:inline-block; width:150px; color:#7fd8ff;">${this.escapeHtml(k)}</span>${this.escapeHtml(v)}</div>`).join('')}</div>`;
+        return `${header}${flow}${flowCaption}${table}`;
+    }
+
+    openDrill(device) {
+        if (!this.drillScrim || !device) return;
+        window.setSafeHtml(this.drillContent, this.formatDrillContent(device));
+        const link = this.subsystemLinkFor(device);
+        if (link) {
+            this.drillLinkHref = link.href;
+            this.drillLinkBtn.textContent = `${link.label} \u2192`;
+            this.drillLinkBtn.style.display = 'inline-block';
+        } else {
+            this.drillLinkHref = null;
+            this.drillLinkBtn.style.display = 'none';
+        }
+        this.drillScrim.style.display = 'block';
+    }
+
+    closeDrill() {
+        if (this.drillScrim) this.drillScrim.style.display = 'none';
+        this.drillLinkHref = null;
     }
 
     linkLine(from, to, color, opacity, deviceRef, loadNorm) {
@@ -672,6 +838,7 @@ class DevicesBeltVisualization {
         if (!device) return;
         this.selectedDeviceKey = this.deviceKey(device);
         this.updateDeviceDetail(device);
+        this.openDrill(device);
     }
 
     buildDeviceScene(devices) {
@@ -1024,6 +1191,7 @@ class DevicesBeltVisualization {
 
     deactivate() {
         this.isActive = false;
+        this.closeDrill();
         if (this.animationId) {
             cancelAnimationFrame(this.animationId);
             this.animationId = null;

@@ -1,10 +1,10 @@
 // Kernel DNA Visualization - Double Helix Structure
 // Represents Linux kernel execution paths as DNA strands
-// Version: 31 — stable process selector during refresh
+// Version: 42 — feed group badge always-visible + limit 300
 
-debugLog('🧬 kernel-dna.js v31: Script loading...');
-debugLog('🧬 kernel-dna.js v31: THREE available:', typeof THREE);
-debugLog('🧬 kernel-dna.js v31: Browser:', navigator.userAgent);
+debugLog('🧬 kernel-dna.js v39: Script loading...');
+debugLog('🧬 kernel-dna.js v39: THREE available:', typeof THREE);
+debugLog('🧬 kernel-dna.js v39: Browser:', navigator.userAgent);
 
 class KernelDNAVisualization {
     constructor() {
@@ -45,6 +45,17 @@ class KernelDNAVisualization {
         this._uxStylesInjected = false;
         this.pinnedTimelineLabels = [];
         this.pinnedLabelLayer = null;
+
+        // SIEM attack "scars": real Elastic detection alerts rendered as
+        // lesions on the helix, plus a live threat feed HUD.
+        this.siemScars = [];        // [{group, shard, core, halo, severity, id, phase, focusUntil}]
+        this.siemLayer = null;      // THREE.Group child of helixLeft
+        this.siemInterval = null;   // polling timer
+        this.siemAlerts = [];       // last normalized alert list
+        this.leftHelixCurve = null; // cached curve for placing scars
+        this.scarById = {};         // id -> scar record
+        this.hoveredScarId = null;
+        this._haloTextures = {};     // color -> CanvasTexture cache
         
         // Color palette - New design system
         this.colors = {
@@ -268,7 +279,9 @@ class KernelDNAVisualization {
             if (window.kernelContextMenu && typeof window.kernelContextMenu.deactivateViews === 'function') {
                 window.kernelContextMenu.deactivateViews();
             } else {
-                this.deactivate();
+                // Standalone page (e.g. /kernel-dna): go home like the other
+                // subsystem pages instead of leaving a blank view.
+                window.location.assign('/');
             }
         };
         this.container.appendChild(exitBtn);
@@ -498,6 +511,362 @@ class KernelDNAVisualization {
         return group;
     }
 
+    // ---- SIEM attack scars -------------------------------------------------
+
+    _sevRank(sev) {
+        return { critical: 4, high: 3, medium: 2, low: 1 }[String(sev || '').toLowerCase()] || 2;
+    }
+
+    _sevColorNum(sev) {
+        return {
+            critical: 0xFF4530,
+            high: 0xE0564E,
+            medium: 0xE6C15A,
+            low: 0x8A8F95
+        }[String(sev || '').toLowerCase()] || 0xE6C15A;
+    }
+
+    _sevColorHex(sev) {
+        return {
+            critical: '#ff4530',
+            high: '#e0564e',
+            medium: '#e6c15a',
+            low: '#8a8f95'
+        }[String(sev || '').toLowerCase()] || '#e6c15a';
+    }
+
+    _haloTexture(colorHex) {
+        if (this._haloTextures[colorHex]) return this._haloTextures[colorHex];
+        const c = document.createElement('canvas');
+        c.width = c.height = 64;
+        const ctx = c.getContext('2d');
+        const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+        g.addColorStop(0, colorHex);
+        g.addColorStop(0.35, colorHex);
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.globalAlpha = 0.85;
+        ctx.beginPath();
+        ctx.arc(32, 32, 32, 0, Math.PI * 2);
+        ctx.fill();
+        const tex = new THREE.CanvasTexture(c);
+        tex.needsUpdate = true;
+        this._haloTextures[colorHex] = tex;
+        return tex;
+    }
+
+    // Crisp, non-glowing dot (hard edge) — line-art look, no bloom.
+    _dotTexture(colorHex) {
+        const key = 'dot:' + colorHex;
+        if (this._haloTextures[key]) return this._haloTextures[key];
+        const c = document.createElement('canvas');
+        c.width = c.height = 32;
+        const ctx = c.getContext('2d');
+        ctx.fillStyle = colorHex;
+        ctx.beginPath();
+        ctx.arc(16, 16, 11, 0, Math.PI * 2);
+        ctx.fill();
+        const tex = new THREE.CanvasTexture(c);
+        tex.needsUpdate = true;
+        this._haloTextures[key] = tex;
+        return tex;
+    }
+
+    _hashStr(s) {
+        let h = 2166136261 >>> 0;
+        for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+        return h;
+    }
+
+    // Ghost-in-the-Shell style attack orbits: each MITRE tactic becomes a tilted,
+    // glowing dotted ring encircling the helix at the tactic's height, with a
+    // green micro-label riding the orbit. Radius/brightness scale with volume &
+    // severity.
+    _ATTACK_GREEN = 0x39E67A;
+
+    _accentForRank(rank) {
+        if (rank >= 4) return { num: 0xFF5A45, hex: '#ff5a45' };   // critical
+        if (rank >= 3) return { num: 0xFFCF5A, hex: '#ffcf5a' };   // high
+        return { num: this._ATTACK_GREEN, hex: '#39e67a' };        // med/low → green
+    }
+
+    // Thin finely-dashed orbit ring (reference look) in the local XY plane.
+    // headStrength > 0 bakes a per-vertex brightness gradient: a bright "head"
+    // near frac 0 fading into a dim tail, so the spinning ring reads as a
+    // travelling comet of light along the orbit.
+    _makeOrbitLine(R, colorNum, opacity, headStrength = 0) {
+        const seg = 220;
+        const pts = [];
+        const colors = new Float32Array((seg + 1) * 3);
+        const base = new THREE.Color(colorNum);
+        for (let i = 0; i <= seg; i++) {
+            const a = (i / seg) * Math.PI * 2;
+            pts.push(new THREE.Vector3(Math.cos(a) * R, Math.sin(a) * R, 0));
+            const frac = i / seg;
+            let d = Math.abs(frac);           // distance from the head at frac 0
+            d = Math.min(d, 1 - d);           // wrap around the loop -> 0..0.5
+            const intensity = Math.pow(Math.max(0, 1 - d * 2), 1.6);
+            const mul = (1 - headStrength) + headStrength * (0.18 + 0.82 * intensity);
+            colors[i * 3] = base.r * mul;
+            colors[i * 3 + 1] = base.g * mul;
+            colors[i * 3 + 2] = base.b * mul;
+        }
+        const geo = new THREE.BufferGeometry().setFromPoints(pts);
+        geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        const line = new THREE.Line(geo, new THREE.LineDashedMaterial({
+            vertexColors: true, transparent: true, opacity,
+            dashSize: 0.13, gapSize: 0.11
+        }));
+        line.computeLineDistances();
+        return line;
+    }
+
+    _makeLabelSprite(text, colorHex) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 256; canvas.height = 40;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = 'rgba(6,14,10,0.62)';
+        ctx.fillRect(0, 8, canvas.width, 24);
+        ctx.strokeStyle = colorHex; ctx.lineWidth = 1;
+        ctx.strokeRect(0.5, 8.5, canvas.width - 1, 23);
+        ctx.fillStyle = colorHex;
+        ctx.font = 'bold 15px "Share Tech Mono", monospace';
+        ctx.shadowColor = colorHex; ctx.shadowBlur = 6;
+        ctx.fillText(String(text).slice(0, 26), 8, 26);
+        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+            map: new THREE.CanvasTexture(canvas), transparent: true, depthTest: false, depthWrite: false
+        }));
+        sprite.scale.set(2.6, 0.4, 1);
+        return sprite;
+    }
+
+    // Small stacked "telemetry" readout that rides the orbit (GITS micro-text).
+    _makeMicroCluster(lines, colorHex) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 128; canvas.height = 96;
+        const ctx = canvas.getContext('2d');
+        const texture = new THREE.CanvasTexture(canvas);
+        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+            map: texture, transparent: true, depthTest: false, depthWrite: false,
+            opacity: 0.85
+        }));
+        sprite.scale.set(1.05, 0.8, 1);
+        const rec = {
+            sprite, canvas, ctx, texture,
+            lines: lines.slice(), colorHex,
+            seed: (Math.random() * 0xFFFF) | 0, nextUpdate: 0
+        };
+        this._drawCluster(rec, 0);
+        return rec;
+    }
+
+    // Redraw a cluster with a live-ticking hex telemetry line at the bottom.
+    _drawCluster(rec, tMs) {
+        const ctx = rec.ctx;
+        ctx.clearRect(0, 0, rec.canvas.width, rec.canvas.height);
+        ctx.font = '10px "Share Tech Mono", monospace';
+        ctx.textBaseline = 'top';
+        const live = '0x' + (((rec.seed ^ ((tMs / 110) | 0)) & 0xFFFF) >>> 0)
+            .toString(16).toUpperCase().padStart(4, '0');
+        const display = [rec.lines[0], rec.lines[1], rec.lines[2], live];
+        display.forEach((ln, i) => {
+            if (ln == null) return;
+            const y = 6 + i * 14;
+            ctx.fillStyle = rec.colorHex;
+            ctx.globalAlpha = 0.85;
+            ctx.fillRect(2, y + 5, 7, 1.5); // small leading tick, like the reference dashes
+            ctx.globalAlpha = i === 3 ? 0.7 : 1;   // live line slightly dimmer
+            ctx.fillText(String(ln).slice(0, 14), 12, y);
+        });
+        rec.texture.needsUpdate = true;
+    }
+
+    createAttackOrbit(info, index, total) {
+        const group = new THREE.Group();
+        const rank = info.maxRank;
+        const accent = this._accentForRank(rank);
+
+        const h = this._hashStr(String(info.tactic || 'unmapped') + index);
+        // concentric bundle: nested radii around a shared centre
+        const R = 2.6 + index * 0.62;
+
+        // thin finely-dashed orbit line (no beads) — matches the reference's
+        // dashed arcs; severity tints the line colour, and a baked brightness
+        // head gives it a comet-like fade that sweeps as the ring spins
+        const ring = this._makeOrbitLine(R, accent.num, 0.85, 1);
+        group.add(ring);
+
+        // micro-text "telemetry" clusters riding the orbit (reference-style)
+        const clusters = [];
+        const samples = info.alerts.slice(0, 3);
+        const clusterCount = Math.min(3, Math.max(2, samples.length));
+        for (let i = 0; i < clusterCount; i++) {
+            const a = samples[i] || info.alerts[0] || {};
+            const ipTail = a.source_ip ? String(a.source_ip).split('.').slice(-2).join('.') : '--';
+            const lines = [
+                (a.technique || info.topTechnique || (info.tactic || 'ATK')),
+                ipTail,
+                `x${info.count}`
+            ];
+            const cl = this._makeMicroCluster(lines, accent.hex);
+            const ca = ((h + i * 137) % 360) * Math.PI / 180;
+            cl.sprite.position.set(Math.cos(ca) * R, Math.sin(ca) * R, 0);
+            group.add(cl.sprite);
+            clusters.push(cl);
+        }
+
+        // invisible torus = reliable raycast target for the whole ring
+        const hit = new THREE.Mesh(
+            new THREE.TorusGeometry(R, 0.4, 6, 48),
+            new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
+        );
+        hit.userData.isSiemRing = true;
+        hit.userData.siemGroup = info;
+        group.add(hit);
+
+        // concentric bundle: all rings share a centre, packed into a narrow
+        // height band; horizontal plane, spin about the vertical axis.
+        const n = Math.max(1, total || 1);
+        const centreY = 1.0;
+        const yPos = centreY + (index - (n - 1) / 2) * 0.5;
+        group.position.set(0, yPos, 0);
+        group.rotation.x = Math.PI / 2;              // normal → world +Y (horizontal ring)
+        group.rotation.z = (h % 360) * Math.PI / 180; // start phase offset
+
+        const spin = (0.14 + ((h % 7) / 7) * 0.16) * ((index % 2) ? 1 : -1);
+
+        return {
+            group, ring, clusters, hit,
+            key: info.tactic || 'unmapped',
+            rank, R, spin, focusUntil: 0,
+            phase: (h % 100) / 100 * Math.PI * 2
+        };
+    }
+
+    _ensureSiemLayer() {
+        if (!this.scene) return null;
+        if (this.siemLayer && this.siemLayer.parent === this.scene) return this.siemLayer;
+        this.siemLayer = new THREE.Group();
+        this.scene.add(this.siemLayer);
+        return this.siemLayer;
+    }
+
+    _disposeSiemScars() {
+        if (this.siemLayer) {
+            const dispose = (o) => {
+                if (o.geometry) o.geometry.dispose();
+                if (o.material) {
+                    const mats = Array.isArray(o.material) ? o.material : [o.material];
+                    mats.forEach(m => {
+                        // per-cluster canvas textures are unique -> free them; shared
+                        // dot textures are cached and reused, so leave those.
+                        if (m.map && m.map.image && m.map.image.width === 128 && m.map.image.height === 96) {
+                            m.map.dispose();
+                        }
+                        m.dispose();
+                    });
+                }
+                (o.children || []).forEach(dispose);
+            };
+            while (this.siemLayer.children.length) {
+                const c = this.siemLayer.children[0];
+                dispose(c);
+                this.siemLayer.remove(c);
+            }
+        }
+        this.siemScars = [];
+        this.scarById = {};
+    }
+
+    _groupAlertsByTactic(alerts) {
+        const groups = {};
+        alerts.forEach(a => {
+            const key = (a.tactic || 'unmapped');
+            if (!groups[key]) {
+                groups[key] = {
+                    tactic: a.tactic || null, count: 0, posSum: 0,
+                    maxRank: 0, sev: { critical: 0, high: 0, medium: 0, low: 0 },
+                    techniques: {}, alerts: [], topRule: null
+                };
+            }
+            const g = groups[key];
+            g.count++;
+            g.posSum += (Number(a.position) || 0.5);
+            const rk = this._sevRank(a.severity);
+            if (rk > g.maxRank) g.maxRank = rk;
+            const sk = String(a.severity || 'medium').toLowerCase();
+            if (g.sev[sk] != null) g.sev[sk]++;
+            if (a.technique) g.techniques[a.technique] = (g.techniques[a.technique] || 0) + 1;
+            if (!g.topRule) g.topRule = a.rule;
+            g.alerts.push(a);
+        });
+        return Object.keys(groups).map(key => {
+            const g = groups[key];
+            const topTechnique = Object.keys(g.techniques).sort((x, y) => g.techniques[y] - g.techniques[x])[0] || null;
+            return {
+                tactic: g.tactic, count: g.count, position: g.posSum / g.count,
+                maxRank: g.maxRank, sev: g.sev, topTechnique, topRule: g.topRule,
+                alerts: g.alerts
+            };
+        });
+    }
+
+    renderSiemScars(payload) {
+        const alerts = (payload && Array.isArray(payload.alerts)) ? payload.alerts : this.siemAlerts;
+        if (!this.scene) return;
+        const layer = this._ensureSiemLayer();
+        if (!layer) return;
+        this._disposeSiemScars();
+        if (!alerts || !alerts.length) return;
+
+        const groups = this._groupAlertsByTactic(alerts)
+            .sort((a, b) => b.maxRank - a.maxRank || b.count - a.count);
+
+        groups.forEach((info, i) => {
+            const rec = this.createAttackOrbit(info, i, groups.length);
+            layer.add(rec.group);
+            this.siemScars.push(rec);
+            info.alerts.forEach(a => { if (a.id) this.scarById[a.id] = rec; });
+        });
+
+        // Decorative concentric echo-arcs: when there are few real orbits, pad
+        // the bundle with faint unlabelled rings so it reads like the reference's
+        // gyroscope of orbits (ambient structure, no data / no interaction).
+        const decorCount = Math.max(0, 6 - groups.length);
+        const outerR = 2.6 + groups.length * 0.62;
+        // teal-shifted green so the real (pure-green / severity) orbits pop
+        // against the ambient structure
+        const decorTint = 0x2f9f86;
+        for (let k = 0; k < decorCount; k++) {
+            const R = outerR + 0.55 * (k + 1);
+            // stagger base brightness for depth: some arcs sit "closer", some fade back
+            const baseOpacity = 0.09 + (k % 3) * 0.045;
+            const g = new THREE.Group();
+            const line = this._makeOrbitLine(R, decorTint, baseOpacity, 0);
+            g.add(line);
+            g.position.set(0, 1.0 + (k - decorCount / 2) * 0.45, 0);
+            // slight per-arc tilt off the horizontal plane -> volumetric gyroscope
+            const tilt = 0.12 * Math.sin(k * 1.7);
+            g.rotation.x = Math.PI / 2 + tilt;
+            g.rotation.y = 0.10 * Math.cos(k * 2.3);
+            g.rotation.z = k * 1.13;
+            layer.add(g);
+            this.siemScars.push({
+                group: g, ring: line, clusters: [], hit: null,
+                key: 'decor' + k, decor: true, rank: 0, R, baseOpacity,
+                spin: (0.07 + k * 0.015) * (k % 2 ? 1 : -1),
+                focusUntil: 0, phase: k * 0.9
+            });
+        }
+    }
+
+    _focusScar(id) {
+        const rec = this.scarById[id];
+        if (!rec) return;
+        rec.focusUntil = performance.now() + 2600;
+    }
+
     async loadData() {
         try {
             const response = await fetch('/api/kernel-dna');
@@ -680,6 +1049,8 @@ class KernelDNAVisualization {
         const rightHelix = this.createHelixStrand(false);
         this.helixLeft = leftHelix.group;
         this.helixRight = rightHelix.group;
+        this.leftHelixCurve = leftHelix.curve;
+        this.siemLayer = null; // recreated lazily; old one was disposed by clear()
         
         // Restore rotation state to prevent jitter
         this.helixLeft.rotation.y = savedLeftRotation;
@@ -736,6 +1107,11 @@ class KernelDNAVisualization {
                 this.helixLeft.add(mutationMesh);
                 this.mutations.push(mutationMesh);
             });
+        }
+
+        // Re-attach SIEM attack scars from the last poll (helix was rebuilt).
+        if (this.siemAlerts && this.siemAlerts.length) {
+            this.renderSiemScars({ alerts: this.siemAlerts });
         }
         
         await this._hideLoadingOverlay();
@@ -1364,7 +1740,7 @@ class KernelDNAVisualization {
             position: absolute;
             top: 80px;
             right: 20px;
-            width: 300px;
+            width: 262px;
             max-height: 500px;
             background: rgba(12, 18, 28, 0.95);
             border: 1px solid rgba(160, 170, 190, 0.35);
@@ -1572,6 +1948,7 @@ class KernelDNAVisualization {
                 <div style="margin-top: 10px; color: #cc4444;">⚠ Mutations = Anomalies</div>
                 <div style="margin-top: 4px; color: #E6C15A;">◇ RULE = threshold</div>
                 <div style="margin-bottom: 2px; color: #67C8E0;">◇ ML = baseline z-score</div>
+                <div style="margin-top: 4px; color: #39E67A;">◯ ORBIT = SIEM attack (by tactic)</div>
             </div>
         `);
         legendDiv.style.cssText = `
@@ -1583,10 +1960,11 @@ class KernelDNAVisualization {
         this.container.appendChild(legendDiv);
 
         const driftEl = this._ensureDriftIndicator();
+        const threatEl = this._ensureThreatFeed();
 
         await this.addProcessSelector();
         const selectorEl = this.container.querySelector('.dna-process-selector');
-        this._applyStaggeredReveal([titleDiv, devLabel, legendDiv, driftEl, selectorEl]);
+        this._applyStaggeredReveal([titleDiv, devLabel, legendDiv, driftEl, threatEl, selectorEl]);
     }
 
     /**
@@ -1605,45 +1983,20 @@ class KernelDNAVisualization {
                 bottom: 26px;
                 left: 20px;
                 z-index: 1001;
-                width: 196px;
-                padding: 11px 13px 12px;
+                width: 262px;
+                padding: 15px;
                 font-family: 'Share Tech Mono', monospace;
                 color: #c8ccd4;
                 cursor: default;
-                background:
-                    linear-gradient(180deg, rgba(18,26,32,0.78), rgba(10,13,16,0.72));
-                border: 1px solid rgba(103, 200, 224, 0.28);
-                box-shadow: 0 0 18px rgba(103,200,224,0.08),
-                            inset 0 0 24px rgba(103,200,224,0.04);
-                backdrop-filter: blur(3px);
+                background: rgba(12, 18, 28, 0.95);
+                border: 1px solid rgba(160, 170, 190, 0.35);
+                border-radius: 4px;
                 overflow: hidden;
-                /* clipped "cut corner" -> instrument-panel silhouette */
-                clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
             }
-            /* corner tick brackets */
+            /* unified with SELECT PROCESS: drop cut-corner ticks + scanline */
             .dna-drift-indicator::before,
-            .dna-drift-indicator::after {
-                content: '';
-                position: absolute;
-                width: 9px; height: 9px;
-                border: 1px solid rgba(103,200,224,0.65);
-                pointer-events: none;
-            }
-            .dna-drift-indicator::before { top: 4px; left: 4px; border-width: 1px 0 0 1px; }
-            .dna-drift-indicator::after { bottom: 4px; right: 4px; border-width: 0 1px 1px 0; }
-            /* slow scanline sweep */
-            .dna-drift-scan {
-                position: absolute; left: 0; right: 0; top: 0; height: 28px;
-                background: linear-gradient(180deg, rgba(103,200,224,0.10), rgba(103,200,224,0));
-                pointer-events: none;
-                animation: dna-drift-scan 4.6s linear infinite;
-            }
-            @keyframes dna-drift-scan {
-                0%   { transform: translateY(-30px); opacity: 0; }
-                12%  { opacity: 1; }
-                88%  { opacity: 1; }
-                100% { transform: translateY(150px); opacity: 0; }
-            }
+            .dna-drift-indicator::after { content: none; }
+            .dna-drift-scan { display: none; }
             .dna-drift-head { display:flex; align-items:center; gap:7px; margin-bottom:8px; }
             .dna-drift-led {
                 width:7px; height:7px; border-radius:50%;
@@ -1715,6 +2068,276 @@ class KernelDNAVisualization {
         if (sec < 5400) return `${Math.round(sec / 60)}m ago`;
         if (sec < 172800) return `${Math.round(sec / 3600)}h ago`;
         return `${Math.round(sec / 86400)}d ago`;
+    }
+
+    // ---- Live threat feed HUD (Elastic SIEM) -------------------------------
+
+    _ensureThreatStyles() {
+        if (this._threatStylesInjected || typeof document === 'undefined') return;
+        const style = document.createElement('style');
+        style.id = 'kernel-dna-threat-styles';
+        style.textContent = `
+            .dna-threat-feed {
+                position: absolute; top: 262px; left: 20px; z-index: 1001;
+                width: 292px; max-height: 46vh; display: flex; flex-direction: column;
+                font-family: 'Share Tech Mono', monospace; color: #c8ccd4;
+                background: rgba(12, 18, 28, 0.95);
+                border: 1px solid rgba(160, 170, 190, 0.35);
+                border-radius: 4px; overflow: hidden;
+            }
+            /* unified with SELECT PROCESS: no cut-corner / tick brackets */
+            .dna-threat-feed::before, .dna-threat-feed::after { content: none; }
+            .dna-threat-head { display:flex; align-items:center; gap:7px; padding:11px 13px 8px; }
+            .dna-threat-led {
+                width:7px; height:7px; border-radius:50%; background:#E0564E;
+                box-shadow:0 0 7px rgba(224,86,78,0.9); animation: dna-threat-led 1.5s ease-in-out infinite;
+            }
+            @keyframes dna-threat-led { 0%,100%{opacity:0.45;} 50%{opacity:1;} }
+            .dna-threat-title { font-size:10px; letter-spacing:1.2px; opacity:0.9; flex:1;
+                text-shadow:0 0 8px rgba(224,86,78,0.25); }
+            .dna-threat-counts { font-size:9px; opacity:0.85; padding:0 13px 8px; letter-spacing:0.4px; }
+            .dna-threat-counts b { color:#ff6a5c; }
+            .dna-threat-list { overflow-y:auto; padding:0 8px 10px; }
+            .dna-threat-list::-webkit-scrollbar { width:5px; }
+            .dna-threat-list::-webkit-scrollbar-thumb { background:rgba(224,86,78,0.3); border-radius:3px; }
+            .dna-threat-row {
+                display:flex; gap:7px; padding:6px 6px; margin:3px 0; cursor:pointer;
+                border-left:2px solid transparent; align-items:flex-start;
+                transition: background 0.15s, border-color 0.15s;
+            }
+            .dna-threat-row:hover, .dna-threat-row.active {
+                background: rgba(224,86,78,0.10); border-left-color:#e0564e;
+            }
+            .dna-threat-dot { width:8px; height:8px; border-radius:50%; margin-top:3px; flex:0 0 auto; }
+            .dna-threat-body { flex:1; min-width:0; }
+            .dna-threat-rule { font-size:10.5px; line-height:1.25; color:#dbe0e6;
+                white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+            .dna-threat-meta { font-size:9px; opacity:0.7; margin-top:2px;
+                white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+            .dna-threat-meta .tech { color:#e6c15a; }
+            .dna-threat-count {
+                flex:0 0 auto; align-self:center; margin-left:4px; padding:0 5px;
+                font-size:9px; line-height:15px; border-radius:8px; color:#0c121c;
+                font-weight:700; background:#e0564e;
+            }
+            .dna-threat-caret { flex:0 0 auto; align-self:center; font-size:9px; opacity:0.55;
+                transition: transform 0.15s; margin-left:2px; }
+            .dna-threat-row.expanded .dna-threat-caret { transform: rotate(90deg); opacity:0.9; }
+            .dna-threat-sub { display:none; margin:0 0 4px 17px;
+                border-left:1px solid rgba(160,170,190,0.18); padding-left:8px; }
+            .dna-threat-subrow {
+                display:flex; justify-content:space-between; gap:8px; padding:3px 4px;
+                font-size:9px; cursor:pointer; border-radius:2px;
+            }
+            .dna-threat-subrow:hover { background: rgba(224,86,78,0.10); }
+            .dna-threat-subrow .p { color:#c3c9d2; white-space:nowrap; overflow:hidden;
+                text-overflow:ellipsis; font-family:"Share Tech Mono", monospace; }
+            .dna-threat-subrow .t { opacity:0.55; flex:0 0 auto; }
+            .dna-threat-empty { font-size:10px; opacity:0.6; padding:12px 14px; }
+        `;
+        document.head.appendChild(style);
+        this._threatStylesInjected = true;
+    }
+
+    _ensureThreatFeed() {
+        let panel = this.container.querySelector('.dna-threat-feed');
+        if (panel) return panel;
+        this._ensureThreatStyles();
+        panel = document.createElement('div');
+        panel.className = 'dna-threat-feed';
+        window.setSafeHtml(panel, `
+            <div class="dna-threat-head">
+                <span class="dna-threat-led"></span>
+                <span class="dna-threat-title">LIVE THREAT FEED</span>
+            </div>
+            <div class="dna-threat-counts">…</div>
+            <div class="dna-threat-list"><div class="dna-threat-empty">connecting to SIEM…</div></div>
+        `);
+        this.container.appendChild(panel);
+        this._startSiemPolling();
+        return panel;
+    }
+
+    _startSiemPolling() {
+        if (this.siemInterval) return;
+        const poll = async () => {
+            if (!this.isActive) return;
+            try {
+                const resp = await fetch('/api/siem-alerts?hours=24&limit=300');
+                const payload = await resp.json();
+                this.siemAlerts = (payload && Array.isArray(payload.alerts)) ? payload.alerts : [];
+                this._renderThreatFeed(payload);
+                this.renderSiemScars(payload);
+            } catch (e) {
+                this._renderThreatFeed({ available: false });
+            }
+        };
+        poll();
+        this.siemInterval = setInterval(poll, 20000);
+    }
+
+    _relTime(iso) {
+        if (!iso) return '';
+        const then = Date.parse(iso);
+        if (isNaN(then)) return '';
+        const sec = Math.max(0, (Date.now() - then) / 1000);
+        return this._fmtAge(sec);
+    }
+
+    _renderThreatFeed(payload) {
+        const panel = this.container && this.container.querySelector('.dna-threat-feed');
+        if (!panel) return;
+        const counts = panel.querySelector('.dna-threat-counts');
+        const list = panel.querySelector('.dna-threat-list');
+        if (!list) return;
+
+        if (!payload || payload.available === false) {
+            if (counts) counts.textContent = 'SIEM offline';
+            while (list.firstChild) list.removeChild(list.firstChild);
+            const empty = document.createElement('div');
+            empty.className = 'dna-threat-empty';
+            empty.textContent = 'SIEM unreachable';
+            list.appendChild(empty);
+            return;
+        }
+
+        const bysev = payload.by_severity || {};
+        if (counts) {
+            const total = payload.total != null ? payload.total : (payload.count || 0);
+            window.setSafeHtml(counts,
+                `24h: <b>${total}</b> alerts · ${bysev.critical || 0} crit · ${bysev.high || 0} high · ${bysev.medium || 0} med`);
+        }
+
+        const alerts = Array.isArray(payload.alerts) ? payload.alerts : [];
+        while (list.firstChild) list.removeChild(list.firstChild);
+        if (!alerts.length) {
+            const empty = document.createElement('div');
+            empty.className = 'dna-threat-empty';
+            empty.textContent = 'no attacks in window';
+            list.appendChild(empty);
+            return;
+        }
+
+        // Group by (source_ip + rule): a single scanner hitting 130 dotfile
+        // variants collapses into one line with an ×N count, expandable to show
+        // the individual paths that differ.
+        const groups = this._groupFeed(alerts);
+
+        groups.forEach(g => {
+            const row = document.createElement('div');
+            row.className = 'dna-threat-row';
+            row.dataset.id = g.repId || '';
+
+            const dot = document.createElement('div');
+            dot.className = 'dna-threat-dot';
+            dot.style.background = this._sevColorHex(g.severity);
+            dot.style.boxShadow = `0 0 6px ${this._sevColorHex(g.severity)}`;
+
+            const body = document.createElement('div');
+            body.className = 'dna-threat-body';
+
+            const rule = document.createElement('div');
+            rule.className = 'dna-threat-rule';
+            rule.textContent = g.rule;
+
+            const meta = document.createElement('div');
+            meta.className = 'dna-threat-meta';
+            const tech = g.technique ? `<span class="tech">${g.technique}</span> · ` : '';
+            const rel = this._relTime(g.latest);
+            const np = g.paths ? g.paths.size : 0;
+            const paths = np > 1 ? ` · ${np} paths` : '';
+            window.setSafeHtml(meta, `${tech}${g.ip}${rel ? ' · ' + rel : ''}${paths}`);
+
+            body.appendChild(rule);
+            body.appendChild(meta);
+            row.appendChild(dot);
+            row.appendChild(body);
+
+            if (g.count > 1) {
+                const badge = document.createElement('span');
+                badge.className = 'dna-threat-count';
+                badge.textContent = `×${g.count}`;
+                badge.style.background = this._sevColorHex(g.severity);
+                row.appendChild(badge);
+                const caret = document.createElement('span');
+                caret.className = 'dna-threat-caret';
+                caret.textContent = '▸';
+                row.appendChild(caret);
+            }
+            list.appendChild(row);
+
+            // expandable sublist of the individual (differing) paths / hits
+            let sub = null;
+            if (g.count > 1) {
+                sub = document.createElement('div');
+                sub.className = 'dna-threat-sub';
+                g.items.forEach(a => {
+                    const sr = document.createElement('div');
+                    sr.className = 'dna-threat-subrow';
+                    sr.dataset.id = a.id || '';
+                    const path = a.url_path || a.url_query || '(no path)';
+                    const srel = this._relTime(a.time);
+                    window.setSafeHtml(sr,
+                        `<span class="p">${String(path).slice(0, 42)}</span>${srel ? ' <span class="t">' + srel + '</span>' : ''}`);
+                    sr.addEventListener('click', ev => {
+                        ev.stopPropagation();
+                        this._focusScar(a.id);
+                    });
+                    sr.addEventListener('mouseenter', () => { this.hoveredScarId = a.id; });
+                    sr.addEventListener('mouseleave', () => { if (this.hoveredScarId === a.id) this.hoveredScarId = null; });
+                    sub.appendChild(sr);
+                });
+                list.appendChild(sub);
+            }
+
+            row.addEventListener('click', () => {
+                this._focusScar(g.repId);
+                panel.querySelectorAll('.dna-threat-row.active').forEach(r => r.classList.remove('active'));
+                row.classList.add('active');
+                if (sub) {
+                    const open = row.classList.toggle('expanded');
+                    sub.style.display = open ? 'block' : 'none';
+                }
+            });
+            row.addEventListener('mouseenter', () => { this.hoveredScarId = g.repId; });
+            row.addEventListener('mouseleave', () => { if (this.hoveredScarId === g.repId) this.hoveredScarId = null; });
+        });
+    }
+
+    // Collapse alerts by (source_ip + rule) into ranked groups for the feed.
+    _groupFeed(alerts) {
+        const map = new Map();
+        alerts.forEach(a => {
+            const key = `${a.source_ip || '—'}||${a.rule || 'web attack'}`;
+            let g = map.get(key);
+            if (!g) {
+                g = {
+                    key, rule: a.rule || 'web attack', ip: a.source_ip || '—',
+                    technique: a.technique || null, severity: a.severity || 'medium',
+                    maxRank: this._sevRank(a.severity), count: 0, latest: a.time,
+                    repId: a.id || '', items: [], paths: new Set()
+                };
+                map.set(key, g);
+            }
+            g.count += 1;
+            g.items.push(a);
+            if (a.url_path) g.paths.add(a.url_path);
+            if (!g.technique && a.technique) g.technique = a.technique;
+            const rk = this._sevRank(a.severity);
+            if (rk > g.maxRank) { g.maxRank = rk; g.severity = a.severity; g.repId = a.id || g.repId; }
+            if (a.time && (!g.latest || Date.parse(a.time) > Date.parse(g.latest))) g.latest = a.time;
+        });
+
+        const groups = Array.from(map.values());
+        groups.forEach(g => {
+            g.distinctPaths = g.paths.size || g.count;
+            g.items.sort((x, y) => Date.parse(y.time || 0) - Date.parse(x.time || 0));
+        });
+        groups.sort((a, b) =>
+            b.maxRank - a.maxRank ||
+            b.count - a.count ||
+            Date.parse(b.latest || 0) - Date.parse(a.latest || 0));
+        return groups;
     }
 
     _renderDriftIndicator(payload) {
@@ -1862,6 +2485,40 @@ class KernelDNAVisualization {
                 }
             });
         });
+
+        // Animate SIEM attack orbits: rings spin (gyroscope), the line gently
+        // breathes, and the focused/hovered orbit brightens.
+        if (this.siemScars && this.siemScars.length) {
+            const now = currentTime * 0.001;
+            this.siemScars.forEach(rec => {
+                if (rec.group) rec.group.rotation.z += rec.spin * deltaTime;
+                const focused = (rec.focusUntil && currentTime < rec.focusUntil)
+                    || (this.hoveredScarId && (this.hoveredScarId === rec.key || this.scarById[this.hoveredScarId] === rec));
+                if (rec.ring) {
+                    if (rec.decor) {
+                        // faint ambient arcs: breathe around their staggered depth level
+                        const b = rec.baseOpacity != null ? rec.baseOpacity : 0.11;
+                        rec.ring.material.opacity = b + Math.sin(now * 0.8 + rec.phase) * 0.03;
+                    } else {
+                        // real orbits: brightness scales with severity, loud ones pulse
+                        let base = 0.60 + rec.rank * 0.07;          // low..crit -> ~.67/.74/.81/.88
+                        if (rec.rank >= 3) base += Math.sin(now * 3 + rec.phase) * 0.12;
+                        else base += Math.sin(now * 1.4 + rec.phase) * 0.08;
+                        rec.ring.material.opacity = focused ? 1 : Math.max(0.4, Math.min(1, base));
+                    }
+                }
+                if (rec.clusters && rec.clusters.length) {
+                    const co = focused ? 1 : 0.82 + Math.sin(now * 1.2 + rec.phase) * 0.1;
+                    rec.clusters.forEach(cl => {
+                        if (currentTime > cl.nextUpdate) {
+                            this._drawCluster(cl, currentTime);
+                            cl.nextUpdate = currentTime + 300 + Math.random() * 260;
+                        }
+                        cl.sprite.material.opacity = co;
+                    });
+                }
+            });
+        }
         
         // Rotate camera around helix - smooth camera movement
         // In timeline mode, camera looks from side to see growth
@@ -1921,6 +2578,10 @@ class KernelDNAVisualization {
         this.genes = [];
         this.mutations = [];
         this.mutationAnimations = [];
+        // Scars live under helixLeft and were disposed above; drop stale refs.
+        this.siemScars = [];
+        this.scarById = {};
+        this.siemLayer = null;
         this.helixLeft = null;
         this.helixRight = null;
         
@@ -2034,6 +2695,16 @@ class KernelDNAVisualization {
         }
         const driftPanel = this.container && this.container.querySelector('.dna-drift-indicator');
         if (driftPanel && driftPanel.parentNode) driftPanel.parentNode.removeChild(driftPanel);
+
+        if (this.siemInterval) {
+            clearInterval(this.siemInterval);
+            this.siemInterval = null;
+        }
+        const threatPanel = this.container && this.container.querySelector('.dna-threat-feed');
+        if (threatPanel && threatPanel.parentNode) threatPanel.parentNode.removeChild(threatPanel);
+        this.siemScars = [];
+        this.scarById = {};
+        this.hoveredScarId = null;
         
         // Explicitly remove exit button before hiding container
         if (this.exitButton && this.exitButton.parentNode) {
@@ -2132,6 +2803,13 @@ class KernelDNAVisualization {
                 allInteractiveObjects.push(mutation);
             });
         }
+
+        // Add SIEM attack orbits (invisible torus carries the tooltip payload)
+        if (this.siemScars && this.siemScars.length > 0) {
+            this.siemScars.forEach(rec => {
+                if (rec.hit) allInteractiveObjects.push(rec.hit);
+            });
+        }
         
         // Add helix strands (for timeline markers, etc.)
         if (this.helixLeft && this.helixLeft.children) {
@@ -2166,7 +2844,7 @@ class KernelDNAVisualization {
                 // Traverse up the parent chain to find object with userData
                 let current = obj;
                 while (current) {
-                    if (current.userData && (current.userData.name || current.userData.code || current.userData.event || current.userData.isNucleotide)) {
+                    if (current.userData && (current.userData.name || current.userData.code || current.userData.event || current.userData.isNucleotide || current.userData.isSiemScar || current.userData.isSiemRing || current.userData.mutationType)) {
                         targetObject = current;
                         break;
                     }
@@ -2191,6 +2869,7 @@ class KernelDNAVisualization {
                 
                 // Format tooltip content based on object type
                 let tooltipContent = '';
+                this.hoveredScarId = null; // re-set below only when a scar is hovered
                 
                 // Check if this is a timeline event
                 if (userData.event && userData.timestamp) {
@@ -2215,6 +2894,49 @@ class KernelDNAVisualization {
                             GENE: ${userData.geneName}
                         </div>
                         <div style="color: #6B7076; font-size: 10px;">Subsystem: ${userData.subsystem || 'kernel'}</div>
+                    `;
+                } else if (userData.isSiemRing && userData.siemGroup) {
+                    // Attack orbit = one MITRE tactic. Summary; per-alert detail in feed.
+                    const g = userData.siemGroup;
+                    const acc = this._accentForRank(g.maxRank);
+                    this.hoveredScarId = g.tactic || 'unmapped';
+                    const feedPanel = this.container.querySelector('.dna-threat-feed');
+                    if (feedPanel) feedPanel.querySelectorAll('.dna-threat-row.active').forEach(r => r.classList.remove('active'));
+                    const sevParts = ['critical', 'high', 'medium', 'low']
+                        .filter(k => g.sev[k]).map(k => `${g.sev[k]} ${k}`).join(' · ');
+                    const tech = g.topTechnique ? `<div style="color:#8A8F95;font-size:10px;">technique: ${g.topTechnique}</div>` : '';
+                    tooltipContent = `
+                        <div style="font-weight:bold;color:${acc.hex};margin-bottom:4px;">⦿ ${(g.tactic || 'UNMAPPED').toUpperCase()}</div>
+                        <div style="margin-bottom:2px;color:#D0D3D6;">${g.count} attack${g.count > 1 ? 's' : ''} on this orbit</div>
+                        <div style="color:#8A8F95;font-size:10px;">${sevParts || '—'}</div>
+                        ${tech}
+                        <div style="color:#6B7076;font-size:10px;margin-top:3px;">e.g. ${g.topRule || 'web attack'}</div>
+                        <div style="color:#6B7076;font-size:9px;margin-top:5px;opacity:0.7;">Elastic SIEM · see feed for detail</div>
+                    `;
+                } else if (userData.mutationSource === 'siem' && userData.siem) {
+                    // Real Elastic SIEM detection alert (attack "scar").
+                    const a = userData.siem;
+                    const headColor = this._sevColorHex(a.severity);
+                    const sev = String(a.severity || 'medium').toUpperCase();
+                    this.hoveredScarId = a.id;
+                    const feedPanel = this.container.querySelector('.dna-threat-feed');
+                    if (feedPanel) {
+                        feedPanel.querySelectorAll('.dna-threat-row.active').forEach(r => r.classList.remove('active'));
+                        const r = feedPanel.querySelector(`.dna-threat-row[data-id="${(a.id || '').replace(/"/g, '')}"]`);
+                        if (r) r.classList.add('active');
+                    }
+                    const tactic = a.tactic ? `<div style="color:#8A8F95;font-size:10px;">ATT&CK: ${a.tactic}${a.technique ? ' · ' + a.technique : ''}</div>` : '';
+                    const req = (a.method || a.url_path)
+                        ? `<div style="color:#6B7076;font-size:10px;margin-top:4px;word-break:break-all;">${a.method || ''} ${a.url_path || ''}</div>` : '';
+                    const q = a.url_query
+                        ? `<div style="color:#e6c15a;font-size:10px;word-break:break-all;">?${a.url_query}</div>` : '';
+                    const rel = this._relTime(a.time);
+                    tooltipContent = `
+                        <div style="font-weight:bold;color:${headColor};margin-bottom:4px;">⚠ ATTACK — ${sev}</div>
+                        <div style="margin-bottom:2px;color:#D0D3D6;">${a.rule || 'web attack'}</div>
+                        <div style="color:#8A8F95;font-size:10px;">src ${a.source_ip || '—'}${rel ? ' · ' + rel : ''}</div>
+                        ${tactic}${req}${q}
+                        <div style="color:#6B7076;font-size:9px;margin-top:5px;opacity:0.7;">Elastic SIEM detection</div>
                     `;
                 } else if (userData.mutationType) {
                     // Mutation - source-coloured header (ML cyan, rule yellow).
@@ -2255,6 +2977,7 @@ class KernelDNAVisualization {
                 this.hoveredNucleotide.userData.ring.visible = false;
             }
             this.hoveredNucleotide = null;
+            this.hoveredScarId = null;
         }
     }
 
