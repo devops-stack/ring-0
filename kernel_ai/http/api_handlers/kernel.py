@@ -82,6 +82,29 @@ def kernel_dna():
     return api_json(_telemetry.get_kernel_dna_data)
 
 
+def siem_alerts():
+    """Recent Elastic SIEM detection alerts (web attacks) for Kernel DNA.
+
+    Read-only bridge to the sibling Elastic server. Fails soft: if Elastic is
+    unreachable/unconfigured, returns available=False with an empty list.
+    """
+
+    def _payload():
+        from kernel_ai.services import siem as _siem
+
+        try:
+            hours = int(request.args.get("hours", 24))
+        except (TypeError, ValueError):
+            hours = 24
+        try:
+            limit = int(request.args.get("limit", 120))
+        except (TypeError, ValueError):
+            limit = 120
+        return _siem.get_siem_alerts(hours=hours, limit=limit)
+
+    return api_json(_payload)
+
+
 def ml_anomalies():
     """Recent ML-detected anomalies (Stage 1 baselines) for Kernel DNA.
 
