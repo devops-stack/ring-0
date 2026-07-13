@@ -20,6 +20,15 @@ _PAGE_ROUTES = [
     ("/linux-network-subsystem", "linux_network_subsystem_page", h.linux_network_subsystem_page),
     ("/network", "network_page_legacy", h.network_page_legacy),
     ("/linux-network-subsystem.html", "linux_network_subsystem_html", h.linux_network_subsystem_html),
+    ("/linux-filesystem-subsystem", "linux_filesystem_subsystem_page", h.linux_filesystem_subsystem_page),
+    ("/filesystem", "filesystem_page_legacy", h.filesystem_page_legacy),
+    ("/files", "files_page_legacy", h.files_page_legacy),
+    ("/linux-filesystem-subsystem.html", "linux_filesystem_subsystem_html", h.linux_filesystem_subsystem_html),
+    ("/kernel-dna", "kernel_dna_page", h.kernel_dna_page),
+    ("/kernel-dna.html", "kernel_dna_html", h.kernel_dna_html),
+    ("/linux-devices-subsystem", "linux_devices_subsystem_page", h.linux_devices_subsystem_page),
+    ("/devices", "devices_page_legacy", h.devices_page_legacy),
+    ("/linux-devices-subsystem.html", "linux_devices_subsystem_html", h.linux_devices_subsystem_html),
     ("/health", "health_check", h.health_check),
 ]
 
