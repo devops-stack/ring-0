@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Linux Device Subsystem - Device Model, sysfs, udev &amp; Drivers Visualization</title>
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/images/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/images/favicon-16x16.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/images/apple-touch-icon.png">
+    <meta name="description" content="Interactive Linux device subsystem visualization: the kernel device model (kobjects, buses, classes), sysfs, udev and hotplug, driver binding, and block/char/network devices — driven by real device telemetry in real time.">
+    <meta name="keywords" content="
+linux device subsystem,
+linux device model,
+linux device drivers,
+sysfs udev hotplug,
+kobject kset bus driver,
+block char network devices,
+device tree enumeration,
+linux kernel driver binding,
+linux architecture,
+kernel architecture,
+linux kernel device visualization
+">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="/linux-devices-subsystem">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="/linux-devices-subsystem">
+    <meta property="og:title" content="Linux Device Subsystem Visualization">
+    <meta property="og:description" content="The Linux device model visualized: kobjects, buses and classes, sysfs and udev, driver binding and hotplug, block/char/network devices — in real time.">
+    <meta property="og:image" content="/static/images/009.png">
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="/linux-devices-subsystem">
+    <meta property="twitter:title" content="Linux Device Subsystem Visualization">
+    <meta property="twitter:description" content="How the Linux kernel models devices: kobjects, buses, sysfs, udev, driver binding and hotplug, visualized live.">
+    <meta property="twitter:image" content="/static/images/009.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "WebPage",
+        "name": "Linux Device Subsystem Visualization",
+        "url": "https://ring-0.sh/linux-devices-subsystem",
+        "description": "Interactive visualization of the Linux kernel device subsystem: the device model (kobjects, buses, classes), sysfs, udev and hotplug, driver binding, and block/char/network devices.",
+        "about": [
+            {"@type": "Thing", "name": "Linux device model"},
+            {"@type": "Thing", "name": "sysfs"},
+            {"@type": "Thing", "name": "udev"},
+            {"@type": "Thing", "name": "Linux kernel architecture"}
+        ],
+        "isPartOf": {"@type": "WebSite", "name": "ring-0.sh", "url": "https://ring-0.sh/"}
+    }
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/main.css?v=3">
+    <style>
+        body {
+            margin: 0;
+            background: #070c10;
+            color: #d4dbe8;
+            font-family: "Share Tech Mono", monospace;
+        }
+        .seo-dev {
+            position: absolute;
+            left: -10000px;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body>
+    <h1 class="seo-dev">Linux Device Subsystem &mdash; Device Model, sysfs &amp; Drivers</h1>
+    <section class="seo-dev">
+        <h2>The Linux Device Model</h2>
+        <p>
+            This page visualizes the Linux device subsystem &mdash; the unified device model that
+            the kernel uses to represent every piece of hardware. At its core are kobjects and
+            ksets, organized into buses (PCI, USB, platform), device classes and drivers. The model
+            is exported to userspace through sysfs (/sys), and udev listens for hotplug uevents to
+            create device nodes and apply rules. The visualization is driven by real device
+            telemetry.
+        </p>
+        <h2>Device Subsystem Concepts</h2>
+        <ul>
+            <li><strong>Device model</strong> &mdash; kobject/kset reference-counted objects that form the /sys hierarchy of devices, buses and classes.</li>
+            <li><strong>Buses</strong> &mdash; PCI, USB, platform and virtual buses that enumerate devices and match them to drivers.</li>
+            <li><strong>Driver binding</strong> &mdash; the probe/remove lifecycle that attaches a driver to a matching device.</li>
+            <li><strong>sysfs</strong> &mdash; the in-memory filesystem at /sys that exposes device attributes and topology to userspace.</li>
+            <li><strong>udev + hotplug</strong> &mdash; uevents from the kernel drive device-node creation, permissions and naming.</li>
+            <li><strong>Device classes</strong> &mdash; block, character and network devices, plus input, sound and GPU classes.</li>
+        </ul>
+        <h2>Kernel Architecture Context</h2>
+        <p>
+            The device subsystem is the bridge between the Linux kernel and physical hardware,
+            sitting beneath the filesystem and network subsystems that ultimately depend on block
+            and network devices. Understanding the device model &mdash; kobjects, buses, sysfs and
+            driver binding &mdash; is a key part of the overall Linux architecture and kernel
+            architecture: how hardware is discovered, named and made available to the rest of the
+            system.
+        </p>
+    </section>
+    <script src="/static/js/safe-utils.js?v=2"></script>
+    <script src="/static/js/frontend-logger.js?v=2"></script>
+    <script src="/static/js/devices-belt.js?v=24"></script>
+    <script>
+        (function startDevicesPage() {
+            if (typeof window.DevicesBeltVisualization !== 'function') {
+                console.error('DevicesBeltVisualization is not available');
+                return;
+            }
+            const viz = new window.DevicesBeltVisualization();
+            const ok = viz.init('devices-belt-container');
+            if (ok === false) return;
+            viz.activate();
+        })();
+    </script>
+</body>
+</html>
