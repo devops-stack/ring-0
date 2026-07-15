@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kernel DNA - Live Linux Kernel Anomaly Detection &amp; Syscall Visualization</title>
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/images/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/images/favicon-16x16.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/images/apple-touch-icon.png">
+    <meta name="description" content="Kernel DNA: a live double-helix visualization of Linux kernel and process telemetry with machine-learning anomaly detection — EWMA/z-score baselining, Isolation Forest scoring, concept-drift detection and STIDE syscall n-gram analysis, in real time.">
+    <meta name="keywords" content="
+kernel dna,
+linux kernel anomaly detection,
+linux syscall monitoring,
+machine learning intrusion detection,
+ebpf kernel telemetry,
+isolation forest anomaly,
+concept drift detection,
+stide syscall n-gram,
+real time kernel visualization,
+linux architecture,
+kernel architecture
+">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="/kernel-dna">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="/kernel-dna">
+    <meta property="og:title" content="Kernel DNA — Live Linux Kernel Anomaly Detection">
+    <meta property="og:description" content="A double-helix visualization of live Linux kernel telemetry with ML anomaly detection: EWMA/z-score, Isolation Forest, drift detection and STIDE syscall n-grams.">
+    <meta property="og:image" content="/static/images/009.png">
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="/kernel-dna">
+    <meta property="twitter:title" content="Kernel DNA — Live Linux Kernel Anomaly Detection">
+    <meta property="twitter:description" content="Live Linux kernel telemetry as a DNA helix, scored by machine learning: EWMA/z-score, Isolation Forest, drift detection and STIDE syscall n-grams.">
+    <meta property="twitter:image" content="/static/images/009.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "WebPage",
+        "name": "Kernel DNA — Live Linux Kernel Anomaly Detection",
+        "url": "https://ring-0.sh/kernel-dna",
+        "description": "Live double-helix visualization of Linux kernel and process telemetry with machine-learning anomaly detection: EWMA/z-score baselining, Isolation Forest scoring, concept-drift detection and STIDE syscall n-gram analysis.",
+        "about": [
+            {"@type": "Thing", "name": "Linux kernel anomaly detection"},
+            {"@type": "Thing", "name": "Syscall monitoring"},
+            {"@type": "Thing", "name": "Machine learning intrusion detection"},
+            {"@type": "Thing", "name": "Linux kernel architecture"}
+        ],
+        "isPartOf": {"@type": "WebSite", "name": "ring-0.sh", "url": "https://ring-0.sh/"}
+    }
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/main.css?v=3">
+    <style>
+        body {
+            margin: 0;
+            background: #0E1114;
+            color: #d4dbe8;
+            font-family: "Share Tech Mono", monospace;
+        }
+        .seo-dna {
+            position: absolute;
+            left: -10000px;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body>
+    <h1 class="seo-dna">Kernel DNA &mdash; Live Linux Kernel Anomaly Detection</h1>
+    <section class="seo-dna">
+        <h2>A DNA Helix of Live Kernel Telemetry</h2>
+        <p>
+            Kernel DNA renders the running Linux kernel and its processes as a double-helix strand.
+            Each bead on the strand is a live telemetry sample &mdash; CPU, memory, I/O, context
+            switches and syscall activity &mdash; and "mutations" appear where behavior deviates
+            from the learned baseline. It turns the abstract state of the kernel into an organism
+            you can watch evolve in real time, driven by real counters from /proc and the process
+            table.
+        </p>
+        <h2>The Machine-Learning Anomaly Pipeline</h2>
+        <ul>
+            <li><strong>EWMA + z-score baselining</strong> &mdash; an exponentially weighted moving average learns the normal range of each feature; deviations are scored as z-scores.</li>
+            <li><strong>Isolation Forest</strong> &mdash; an unsupervised model that isolates rare multi-dimensional feature combinations as anomalies.</li>
+            <li><strong>Concept-drift detection</strong> &mdash; the system watches the feature distribution over time and triggers automatic retraining when the workload shifts.</li>
+            <li><strong>STIDE syscall n-grams</strong> &mdash; sequences of system calls are modeled as n-grams so that unusual syscall patterns (a classic intrusion signal) light up.</li>
+        </ul>
+        <h2>Why Visualize Kernel Behavior</h2>
+        <p>
+            Anomaly detection at the kernel boundary (ring 0) is central to Linux security and
+            observability. Understanding how syscall patterns, process lineage and resource usage
+            form a behavioral fingerprint helps reason about the wider Linux architecture and kernel
+            architecture: where intrusions, crypto-miners or misbehaving services first become
+            visible. Kernel DNA is the front-end of that pipeline &mdash; the same statistics that
+            power drift detection and retraining, made visible.
+        </p>
+    </section>
+    <script src="/static/js/safe-utils.js?v=2"></script>
+    <script src="/static/js/frontend-logger.js?v=2"></script>
+    <script src="/static/js/kernel-dna.js?v=49"></script>
+    <script>
+        (function startKernelDnaPage() {
+            if (typeof window.KernelDNAVisualization !== 'function') {
+                console.error('KernelDNAVisualization is not available');
+                return;
+            }
+            const viz = new window.KernelDNAVisualization();
+            const ok = viz.init('kernel-dna-container');
+            if (ok === false) return;
+            viz.activate();
+        })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Linux Filesystem Kernel Subsystem - VFS, ext4, Writeback, Page Cache Architecture</title>
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/images/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/images/favicon-16x16.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/images/apple-touch-icon.png">
+    <meta name="description" content="Interactive Linux filesystem architecture visualization: the VFS write path from a write() syscall through the page cache, dirty-page writeback and the block/IO scheduler to the device, with real mounts, ext4 inode and extent trees, jbd2 journaling and the dentry cache.">
+    <meta name="keywords" content="
+filesystem architecture,
+linux architecture,
+kernel architecture,
+linux filesystem subsystem,
+linux vfs virtual filesystem,
+ext4 inode extent tree,
+page cache writeback dirty pages,
+jbd2 journaling durability,
+block io scheduler,
+dentry cache path resolution,
+linux kernel filesystem visualization
+">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="/linux-filesystem-subsystem">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="/linux-filesystem-subsystem">
+    <meta property="og:title" content="Linux Filesystem Kernel Subsystem Visualization">
+    <meta property="og:description" content="The Linux filesystem write path visualized: VFS, page cache, dirty-page writeback, the block/IO scheduler and the device — plus real mounts, ext4 inode/extent trees and jbd2 journaling, in real time.">
+    <meta property="og:image" content="/static/images/009.png">
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="/linux-filesystem-subsystem">
+    <meta property="twitter:title" content="Linux Filesystem Kernel Subsystem Visualization">
+    <meta property="twitter:description" content="How a write travels the Linux filesystem architecture: VFS → page cache → writeback → block/IO → device, with ext4 inodes, extents and jbd2 journaling.">
+    <meta property="twitter:image" content="/static/images/009.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "WebPage",
+        "name": "Linux Filesystem Kernel Subsystem Visualization",
+        "url": "https://ring-0.sh/linux-filesystem-subsystem",
+        "description": "Interactive visualization of the Linux filesystem architecture: the VFS write path through the page cache, dirty-page writeback and the block/IO scheduler to the device, with real mounts, ext4 inode and extent trees, jbd2 journaling and the dentry cache.",
+        "about": [
+            {"@type": "Thing", "name": "Linux filesystem architecture"},
+            {"@type": "Thing", "name": "Virtual File System (VFS)"},
+            {"@type": "Thing", "name": "ext4 filesystem"},
+            {"@type": "Thing", "name": "Page cache and writeback"},
+            {"@type": "Thing", "name": "Linux kernel architecture"}
+        ],
+        "isPartOf": {"@type": "WebSite", "name": "ring-0.sh", "url": "https://ring-0.sh/"}
+    }
+    </script>
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/main.css?v=3">
+    <style>
+        body {
+            margin: 0;
+            background: #090d14;
+            color: #d4dbe8;
+            font-family: "Share Tech Mono", monospace;
+        }
+        .seo-fs {
+            position: absolute;
+            left: -10000px;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body>
+    <h1 class="seo-fs">Linux Filesystem Kernel Subsystem &mdash; Architecture &amp; Write Path</h1>
+    <section class="seo-fs">
+        <h2>The Write Path Through the Linux Filesystem Architecture</h2>
+        <p>
+            This page visualizes the Linux filesystem architecture as a live write path from
+            userspace to persistent storage. When an application calls write(), the Virtual File
+            System (VFS) dispatches the operation to a concrete filesystem such as ext4. Data first
+            lands in the page cache as dirty pages; the kernel later flushes those pages via
+            writeback, throttling writers with balance_dirty_pages when dirty memory approaches the
+            configured ratios. Flushed blocks pass through the block layer and an I/O scheduler,
+            are journaled by jbd2 for crash consistency, and are finally written to the device.
+            The visualization is driven by real kernel counters from /proc and /sys.
+        </p>
+        <h2>Filesystem Layers</h2>
+        <ul>
+            <li><strong>VFS</strong> &mdash; the virtual filesystem: inodes, dentries, the file and superblock objects, and the common syscall interface (open, read, write, stat).</li>
+            <li><strong>Page cache</strong> &mdash; cached file pages, dirty-page accounting and read-ahead.</li>
+            <li><strong>Writeback</strong> &mdash; dirty-page flushing, dirty_ratio/dirty_background_ratio thresholds and balance_dirty_pages throttling.</li>
+            <li><strong>Block / IO scheduler</strong> &mdash; the bio/request layer, merging and the active I/O scheduler (mq-deadline, BFQ, none).</li>
+            <li><strong>ext4</strong> &mdash; inodes, extent trees mapping logical file blocks to physical device blocks, and block groups.</li>
+            <li><strong>jbd2 journaling</strong> &mdash; the transaction lifecycle (running, committing, checkpoint) that guarantees crash consistency and durability.</li>
+            <li><strong>dentry cache</strong> &mdash; path resolution component-by-component, with cached and negative dentries kept on an LRU.</li>
+        </ul>
+        <h2>Kernel Architecture Context</h2>
+        <p>
+            The filesystem is one of the core Linux kernel subsystems, sitting between the process
+            and memory subsystems above and the block device drivers below. Understanding the
+            filesystem architecture &mdash; VFS abstraction, page cache, writeback and journaling
+            &mdash; is central to reasoning about the overall Linux architecture and kernel
+            architecture: how data durability, I/O latency and memory pressure interact.
+        </p>
+    </section>
+    <script src="/static/js/safe-utils.js?v=2"></script>
+    <script src="/static/js/frontend-logger.js?v=2"></script>
+    <script src="/static/js/filesystem-map.js?v=19"></script>
+    <script>
+        (function startFilesystemPage() {
+            if (typeof window.FilesystemMapVisualization !== 'function') {
+                console.error('FilesystemMapVisualization is not available');
+                return;
+            }
+            const viz = new window.FilesystemMapVisualization();
+            const ok = viz.init('filesystem-map-container');
+            if (ok === false) return;
+            viz.activate();
+        })();
+    </script>
+</body>
+</html>
