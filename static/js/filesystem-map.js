@@ -209,36 +209,74 @@ class FilesystemMapVisualization {
         this.sortModeButton = sortBtn;
         this.updateSortModeButtonState();
 
+        // Path caption + explore tools: one centered stack above the pipeline
+        // (same axis as page title / path band — not a random side float).
         const featureRow = document.createElement('div');
         featureRow.style.cssText = `
             position: absolute;
-            bottom: 40px;
-            left: 22px;
+            top: 152px;
+            left: 50%;
+            transform: translateX(-50%);
             display: flex;
+            flex-direction: column;
+            align-items: center;
             gap: 8px;
             z-index: 1001;
+            pointer-events: auto;
+        `;
+        const pathCaption = document.createElement('div');
+        pathCaption.textContent = 'WRITE PATH  ·  application → disk';
+        pathCaption.style.cssText = `
+            color: rgba(150, 178, 206, 0.82);
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 10px;
+            letter-spacing: 0.6px;
+            user-select: none;
+            white-space: nowrap;
+        `;
+        featureRow.appendChild(pathCaption);
+
+        const exploreRow = document.createElement('div');
+        exploreRow.style.cssText = `
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
         `;
         [['LIVE WRITERS', 'hotfiles'], ['PATH WALK', 'pathwalk']].forEach(([label, mode]) => {
             const b = document.createElement('button');
             b.textContent = `▸ ${label}`;
             b.style.cssText = `
-                padding: 5px 10px;
-                background: rgba(12, 18, 28, 0.9);
-                border: 1px solid rgba(130, 148, 172, 0.4);
-                color: #a9c4dd;
+                min-width: 132px;
+                padding: 6px 12px;
+                background: rgba(16, 28, 42, 0.92);
+                border: 1px solid rgba(127, 194, 255, 0.55);
+                color: #d3e7ff;
                 font-family: 'Share Tech Mono', monospace;
-                font-size: 9px;
-                letter-spacing: 0.4px;
+                font-size: 10px;
+                letter-spacing: 0.45px;
                 cursor: pointer;
+                text-align: center;
             `;
-            b.onmouseenter = () => { b.style.borderColor = 'rgba(129,180,255,0.9)'; b.style.color = '#d3e7ff'; };
-            b.onmouseleave = () => { b.style.borderColor = 'rgba(130,148,172,0.4)'; b.style.color = '#a9c4dd'; };
+            b.onmouseenter = () => {
+                b.style.borderColor = 'rgba(255, 176, 96, 0.85)';
+                b.style.color = '#ffe6c8';
+                b.style.background = 'rgba(28, 36, 48, 0.95)';
+            };
+            b.onmouseleave = () => {
+                b.style.borderColor = 'rgba(127, 194, 255, 0.55)';
+                b.style.color = '#d3e7ff';
+                b.style.background = 'rgba(16, 28, 42, 0.92)';
+            };
             b.onclick = () => this.openFx(mode);
-            featureRow.appendChild(b);
+            exploreRow.appendChild(b);
             this.overlayNodes.push(b);
         });
+        featureRow.appendChild(exploreRow);
         this.container.appendChild(featureRow);
         this.overlayNodes.push(featureRow);
+        this.featureRow = featureRow;
+        this.layoutFeatureRow();
 
         const info = document.createElement('div');
         info.style.cssText = `
@@ -601,17 +639,15 @@ class FilesystemMapVisualization {
         const stages = Array.isArray(wp.stages) ? wp.stages : [];
         if (!stages.length) return;
         const n = stages.length;
-        const bandY = Math.floor(h * 0.31);
+        // Slightly lower than before so stage labels clear the centered
+        // WRITE PATH / explore stack under the KPI row.
+        const bandY = Math.floor(h * 0.35);
         const x0 = Math.floor(w * 0.14);
         const x1 = Math.floor(w * 0.86);
         const span = Math.max(1, x1 - x0);
         const xs = stages.map((_, i) => x0 + (n > 1 ? span * i / (n - 1) : span / 2));
         const writeBps = Number(wp.write_bps || 0);
         const flow = Math.max(0.05, Math.min(1, writeBps / (20 * 1024 * 1024)));
-
-        ctx.fillStyle = 'rgba(150,178,206,0.72)';
-        ctx.font = '10px "Share Tech Mono", monospace';
-        ctx.fillText('WRITE PATH  ·  application → disk', x0, bandY - 60);
 
         // Segments with flowing particles (density/brightness ~ write rate).
         for (let i = 0; i < n - 1; i += 1) {
@@ -1778,6 +1814,15 @@ class FilesystemMapVisualization {
         }
     }
 
+    layoutFeatureRow() {
+        if (!this.featureRow) return;
+        // Park just under the KPI cards (canvas y≈98..142). Path band is lower
+        // (h*0.35) so VFS/PAGE CACHE labels stay clear of this stack.
+        this.featureRow.style.left = '50%';
+        this.featureRow.style.transform = 'translateX(-50%)';
+        this.featureRow.style.top = '150px';
+    }
+
     onResize() {
         if (!this.canvas) return;
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -1788,6 +1833,7 @@ class FilesystemMapVisualization {
         if (this.ctx) {
             this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         }
+        this.layoutFeatureRow();
     }
 }
 
