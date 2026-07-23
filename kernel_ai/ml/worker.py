@@ -135,21 +135,75 @@ class MLWorker:
         self._last_if_emit = 0.0
         self._maybe_load_model()
 
-        # Stage 4 (syscall sequence / STIDE). Sampler + tracker run regardless so
-        # the n-gram vocabulary keeps growing; scoring only happens once a profile
-        # artifact exists (built by training/retrain).
+        # Stage 4 (syscall sequence / STIDE). Source is selectable:
+        #   procfs — L0 /proc/<pid>/syscall sampler (default)
+        #   socket — L2 Stage 6 collector (docs/ML_STAGE6_L2_COLLECTOR.md)
+        #   off    — disable sequence path entirely
         self.seq_sampler = None
+        self.seq_socket_source = None
         self.seq_tracker = None
         self.seq_model = None
         self._seq_model_mtime: float | None = None
         self._last_seq_emit = 0.0
         self._last_seq_flush = 0.0
-        if self.cfg.enable_stage4:
+        self._seq_source = (self.cfg.seq_source or "procfs").strip().lower()
+        if self.cfg.enable_stage4 and self._seq_source != "off":
             from kernel_ai.ml.sequence import NgramTracker, SyscallSampler
 
-            self.seq_sampler = SyscallSampler(max_pids=self.cfg.seq_max_pids)
             self.seq_tracker = NgramTracker(n=self.cfg.seq_n, window=self.cfg.seq_window)
+            if self._seq_source == "socket":
+                from kernel_ai.ml.collectors.socket_source import SocketSyscallSource
+
+                self.seq_socket_source = SocketSyscallSource(
+                    self.cfg.seq_socket,
+                    max_events=self.cfg.seq_socket_max_events,
+                )
+                logger.info("Stage 4 source=socket (%s)", self.cfg.seq_socket)
+            else:
+                self.seq_sampler = SyscallSampler(max_pids=self.cfg.seq_max_pids)
+                logger.info("Stage 4 source=procfs")
             self._maybe_load_seq_model()
+
+        # Stage 5 — per-process L1 features + lineage (off by default).
+        self.proc_extractor = None
+        self.proc_detector = None
+        self._last_proc_flush = 0.0
+        if self.cfg.enable_stage5:
+            from kernel_ai.ml.proc_baseline import ProcBaselineDetector
+            from kernel_ai.ml.proc_features import ProcFeatureExtractor
+
+            self.proc_extractor = ProcFeatureExtractor(max_pids=self.cfg.proc_max_pids)
+            self.proc_detector = ProcBaselineDetector(
+                alpha=self.cfg.alpha,
+                warmup_samples=self.cfg.warmup_samples,
+                z_warn=self.cfg.z_warn,
+                z_crit=self.cfg.z_crit,
+                lineage_min_count=self.cfg.proc_lineage_min_count,
+                cooldown_sec=self.cfg.proc_cooldown_sec,
+                max_emit_per_tick=self.cfg.proc_max_emit,
+            )
+            try:
+                self.proc_detector.lineage.load_counts(self.store.load_lineage_counts())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("failed to load lineage whitelist: %s", exc)
+            logger.info(
+                "Stage 5 enabled: max_pids=%d lineage_min=%d",
+                self.cfg.proc_max_pids,
+                self.cfg.proc_lineage_min_count,
+            )
+
+        # Stage 8 — deep sequence stub (Markov/LSTM). No-op without artifact.
+        self.deep_scorer = None
+        self._last_stage8_emit = 0.0
+        if self.cfg.enable_stage8:
+            from kernel_ai.ml.sequence_deep import DeepSequenceScorer
+
+            self.deep_scorer = DeepSequenceScorer(self.cfg)
+            logger.info(
+                "Stage 8 enabled (backend=%s, ready=%s)",
+                self.cfg.stage8_backend,
+                self.deep_scorer.ready,
+            )
 
     def _maybe_load_model(self) -> None:
         """Load / hot-reload the IsolationForest artifact if present and changed.
@@ -196,19 +250,27 @@ class MLWorker:
             logger.warning("failed to load STIDE profile: %s", exc)
 
     def _tick_sequence(self) -> dict | None:
-        """Sample syscalls, grow the n-gram vocabulary, and score the window."""
-        if self.seq_sampler is None or self.seq_tracker is None:
+        """Ingest syscalls, grow the n-gram vocabulary, and score the window."""
+        if self.seq_tracker is None:
             return None
-        # Burst of rapid sub-samples: parked daemons still yield X,X,X (normal),
-        # while actively-working processes reveal real syscall transitions.
-        bursts = max(1, self.cfg.seq_subsamples)
-        gap = max(0.0, self.cfg.seq_subsample_gap_ms / 1000.0)
-        for i in range(bursts):
-            samples = self.seq_sampler.sample()
-            if samples:
-                self.seq_tracker.update(samples)
-            if i < bursts - 1 and gap:
-                time.sleep(gap)
+
+        if self.seq_socket_source is not None:
+            events = self.seq_socket_source.drain()
+            if events:
+                self.seq_tracker.update_stream(events)
+        elif self.seq_sampler is not None:
+            # Burst of rapid sub-samples: parked daemons still yield X,X,X (normal),
+            # while actively-working processes reveal real syscall transitions.
+            bursts = max(1, self.cfg.seq_subsamples)
+            gap = max(0.0, self.cfg.seq_subsample_gap_ms / 1000.0)
+            for i in range(bursts):
+                samples = self.seq_sampler.sample()
+                if samples:
+                    self.seq_tracker.update(samples)
+                if i < bursts - 1 and gap:
+                    time.sleep(gap)
+        else:
+            return None
 
         # Periodically persist newly observed n-grams so the profile can grow.
         now = time.time()
@@ -231,6 +293,67 @@ class MLWorker:
         self._last_seq_emit = now
         top = self.seq_model.top_unseen(window, limit=3)
         return _build_sequence_anomaly(mismatch, misses, len(window), top, self.cfg)
+
+    def _tick_stage8(self) -> dict | None:
+        """Stage 8 stub: score the Stage 4 rolling window if a model is ready."""
+        if self.deep_scorer is None or self.seq_tracker is None:
+            return None
+        self.deep_scorer.maybe_reload()
+        if not self.deep_scorer.ready:
+            return None
+        window = self.seq_tracker.recent()
+        if len(window) < max(8, self.cfg.stage8_window // 4):
+            return None
+        tokens = window[-self.cfg.stage8_window :]
+        score = self.deep_scorer.score_tokens(tokens)
+        if not score:
+            return None
+        neg = float(score.get("neg_avg_logprob") or score.get("perplexity") or 0.0)
+        if neg < self.cfg.stage8_score_warn:
+            return None
+        now = time.time()
+        if (now - self._last_stage8_emit) < self.cfg.stage8_cooldown_sec:
+            return None
+        self._last_stage8_emit = now
+        return self.deep_scorer.build_anomaly(score, self.cfg)
+
+    def _tick_process(self) -> list[dict]:
+        """Stage 5: sample processes, score lineage/baselines, persist whitelist."""
+        if self.proc_extractor is None or self.proc_detector is None:
+            return []
+        samples = self.proc_extractor.collect()
+        now = time.time()
+        anomalies = self.proc_detector.score(samples, now=now)
+
+        if self.cfg.proc_store_snapshots and samples and (now - self._last_proc_flush) >= self.cfg.proc_flush_sec:
+            # Persist a compact interesting subset (already interest-ranked).
+            rows = [
+                {
+                    "pid": s.pid,
+                    "ppid": s.ppid,
+                    "comm": s.comm,
+                    "features": {
+                        **s.features,
+                        "parent_comm": s.parent_comm,
+                        "age_sec": round(s.age_sec, 2),
+                        "ruid": s.ruid,
+                        "euid": s.euid,
+                    },
+                }
+                for s in samples[:16]
+            ]
+            try:
+                self.store.insert_proc_snapshots(rows)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("proc snapshot insert failed: %s", exc)
+            pending = self.proc_detector.lineage.drain_pending()
+            if pending:
+                try:
+                    self.store.upsert_lineage_counts(pending)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("lineage upsert failed: %s", exc)
+            self._last_proc_flush = now
+        return anomalies
 
     def stop(self, *_args) -> None:
         self._running = False
@@ -264,6 +387,34 @@ class MLWorker:
                     anomalies.append(seq_anom)
             except Exception as exc:  # noqa: BLE001 - never let Stage 4 kill the tick
                 logger.warning("sequence scoring failed: %s", exc)
+
+        # Stage 5: which *process* looks odd (lineage / per-comm baselines).
+        if self.cfg.enable_stage5:
+            try:
+                anomalies.extend(self._tick_process())
+            except Exception as exc:  # noqa: BLE001 - never let Stage 5 kill the tick
+                logger.warning("process scoring failed: %s", exc)
+
+        # Stage 8: deep sequence (Markov/LSTM) — stub no-op without artifact.
+        if self.cfg.enable_stage8:
+            try:
+                deep_anom = self._tick_stage8()
+                if deep_anom is not None:
+                    anomalies.append(deep_anom)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("stage8 scoring failed: %s", exc)
+
+        # Stage 7: ATT&CK / Sigma-lite labels on whatever Stages 1–5 emitted.
+        if self.cfg.enable_stage7 and anomalies:
+            try:
+                from kernel_ai.ml.attribution import enrich_anomalies
+
+                anomalies = enrich_anomalies(
+                    anomalies,
+                    min_confidence=self.cfg.attack_min_confidence,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("attribution enrich failed: %s", exc)
 
         if self.cfg.store_features:
             self.store.insert_feature_snapshot(features)
@@ -300,6 +451,8 @@ class MLWorker:
                     # Pick up a freshly retrained model without a restart.
                     self._maybe_load_model()
                     self._maybe_load_seq_model()
+                    if self.deep_scorer is not None:
+                        self.deep_scorer.maybe_reload()
             except Exception as exc:  # noqa: BLE001 - keep the loop alive
                 logger.exception("tick failed: %s", exc)
                 # Reconnect on DB hiccups rather than dying.

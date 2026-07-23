@@ -7,14 +7,14 @@ vocabulary of short syscall *sequences*; intrusions produce sequences never seen
 during normal operation. STIDE (Sequence TIme-Delay Embedding) learns the set of
 normal n-grams and flags windows with a high fraction of unseen n-grams.
 
-Data source (honesty note): we don't have a continuous syscall tracer here, so we
-*sample* ``/proc/<pid>/syscall`` each worker tick (the syscall a task is currently
-in). This is a coarse L0 signal -- it misses fast transitions -- but it needs zero
-privileges/deps and demonstrates the sequence approach end to end. Swapping in an
-eBPF/auditd tracer (L2) later only changes the sampler, not the model.
+Data source:
+  * L0 ``procfs`` — sample ``/proc/<pid>/syscall`` each tick (coarse).
+  * L2 ``socket`` — Stage 6 collector pushes ordered events
+    (see ``docs/ML_STAGE6_L2_COLLECTOR.md``). Only the source changes; the
+    n-gram model / store / UI stay the same.
 
 Components:
-    SyscallSampler  - read current syscall per pid from procfs
+    SyscallSampler  - read current syscall per pid from procfs (L0)
     NgramTracker    - per-pid rolling deques -> stream of syscall n-grams
     StideModel      - set of "normal" n-grams + window mismatch scoring
 """
@@ -85,6 +85,17 @@ class NgramTracker:
         # Counts of every n-gram observed since the last flush (profile growth).
         self._pending: dict[str, int] = {}
 
+    def _append(self, pid: int, name: str) -> None:
+        hist = self._hist.get(pid)
+        if hist is None:
+            hist = deque(maxlen=self.n)
+            self._hist[pid] = hist
+        hist.append(name)
+        if len(hist) == self.n:
+            key = _SEP.join(hist)
+            self._recent.append(key)
+            self._pending[key] = self._pending.get(key, 0) + 1
+
     def update(self, samples: dict[int, str]) -> None:
         # Drop histories for pids that vanished to bound memory.
         if len(self._hist) > self.max_pids:
@@ -92,15 +103,27 @@ class NgramTracker:
                 self._hist.pop(dead, None)
 
         for pid, name in samples.items():
-            hist = self._hist.get(pid)
-            if hist is None:
-                hist = deque(maxlen=self.n)
-                self._hist[pid] = hist
-            hist.append(name)
-            if len(hist) == self.n:
-                key = _SEP.join(hist)
-                self._recent.append(key)
-                self._pending[key] = self._pending.get(key, 0) + 1
+            self._append(int(pid), str(name))
+
+    def update_stream(self, events) -> int:
+        """Ingest an ordered L2 event stream (Stage 6). Returns events consumed."""
+        n = 0
+        for ev in events or []:
+            try:
+                pid = int(getattr(ev, "pid", None) if not isinstance(ev, dict) else ev["pid"])
+                name = str(getattr(ev, "syscall", None) if not isinstance(ev, dict) else ev["syscall"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            if not name:
+                continue
+            self._append(pid, name)
+            n += 1
+            if len(self._hist) > self.max_pids:
+                # Bound memory: drop oldest pid histories opportunistically.
+                overflow = len(self._hist) - self.max_pids
+                for dead in list(self._hist.keys())[:overflow]:
+                    self._hist.pop(dead, None)
+        return n
 
     def recent(self) -> list[str]:
         return list(self._recent)

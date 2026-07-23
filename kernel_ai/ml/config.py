@@ -118,9 +118,16 @@ class MLConfig:
 
     # --- Stage 4 (syscall sequence model: STIDE n-grams) ---
     # Detects anomalous *sequences* of syscalls rather than per-feature spikes.
-    # Built on sampled /proc/<pid>/syscall traces (L0), so it is a coarse but
-    # zero-dependency HIDS; eBPF/auditd tracing (L2) is the future upgrade.
+    # Default source is L0 procfs sampling. PROD Stage 6 uses SEQ_SOURCE=socket
+    # fed by deploy/ebpf/syscall_stream_collector.py (no caps on this worker).
     enable_stage4: bool = os.getenv("KERNEL_AI_ML_STAGE4", "true").lower() == "true"
+    # procfs | socket | off  — see docs/ML_STAGE6_L2_COLLECTOR.md
+    seq_source: str = os.getenv("KERNEL_AI_ML_SEQ_SOURCE", "procfs").strip().lower()
+    seq_socket: str = os.getenv(
+        "KERNEL_AI_ML_SEQ_SOCKET",
+        "/run/kernel-ai/ml-syscall.sock",
+    )
+    seq_socket_max_events: int = _env_int("KERNEL_AI_ML_SEQ_SOCKET_MAX", 2000)
     seq_model_path: str = os.getenv(
         "KERNEL_AI_ML_SEQ_MODEL_PATH",
         str(_DATA_DIR / "stide_latest.joblib"),
@@ -145,6 +152,43 @@ class MLConfig:
     # Training keeps n-grams seen at least this many times (frequency-based poison
     # guard: a one-off attack sequence never enters the "normal" profile).
     seq_min_ngram_count: int = _env_int("KERNEL_AI_ML_SEQ_MIN_COUNT", 3)
+
+    # --- Stage 5 (per-process L1 features + lineage) ---
+    # Default off until explicitly enabled locally / after soak — keeps PROD safe
+    # if code is synced without a deliberate cutover.
+    enable_stage5: bool = os.getenv("KERNEL_AI_ML_STAGE5", "false").lower() == "true"
+    proc_max_pids: int = _env_int("KERNEL_AI_ML_PROC_MAX_PIDS", 80)
+    proc_lineage_min_count: int = _env_int("KERNEL_AI_ML_PROC_LINEAGE_MIN", 3)
+    proc_cooldown_sec: float = _env_float("KERNEL_AI_ML_PROC_COOLDOWN_SEC", 20.0)
+    proc_max_emit: int = _env_int("KERNEL_AI_ML_PROC_MAX_EMIT", 4)
+    proc_store_snapshots: bool = (
+        os.getenv("KERNEL_AI_ML_PROC_STORE", "true").lower() == "true"
+    )
+    proc_flush_sec: float = _env_float("KERNEL_AI_ML_PROC_FLUSH_SEC", 30.0)
+
+    # --- Stage 7 (ATT&CK / Sigma-lite attribution) ---
+    # Pure enrichment of anomalies already emitted — safe default ON locally.
+    # Does not change detection thresholds; only adds attack.* metadata.
+    enable_stage7: bool = os.getenv("KERNEL_AI_ML_STAGE7", "true").lower() == "true"
+    attack_min_confidence: float = _env_float("KERNEL_AI_ML_ATTACK_MIN_CONF", 0.35)
+
+    # --- Stage 8 (deep sequence: Markov/HMM → LSTM/Transformer) ---
+    # Stub: safe default OFF. Requires trained artifact + preferably Stage 6
+    # stream; without a model file the worker path is a no-op.
+    enable_stage8: bool = os.getenv("KERNEL_AI_ML_STAGE8", "false").lower() == "true"
+    stage8_backend: str = os.getenv("KERNEL_AI_ML_STAGE8_BACKEND", "markov").strip().lower()
+    stage8_markov_path: str = os.getenv(
+        "KERNEL_AI_ML_STAGE8_MARKOV_PATH",
+        str(_DATA_DIR / "markov_latest.joblib"),
+    )
+    stage8_lstm_path: str = os.getenv(
+        "KERNEL_AI_ML_STAGE8_LSTM_PATH",
+        str(_DATA_DIR / "lstm_latest.pt"),
+    )
+    stage8_window: int = _env_int("KERNEL_AI_ML_STAGE8_WINDOW", 64)
+    stage8_score_warn: float = _env_float("KERNEL_AI_ML_STAGE8_SCORE_WARN", 3.0)
+    stage8_score_crit: float = _env_float("KERNEL_AI_ML_STAGE8_SCORE_CRIT", 5.0)
+    stage8_cooldown_sec: float = _env_float("KERNEL_AI_ML_STAGE8_COOLDOWN_SEC", 30.0)
 
     @property
     def alpha(self) -> float:

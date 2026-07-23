@@ -89,18 +89,22 @@ def _ml_anomalies_to_mutations(rows):
         if feature in seen:
             continue
         seen.add(feature)
-        mutations.append(
-            {
-                "type": feature or row.get("type") or "ml_anomaly",
-                "severity": row.get("severity", "medium"),
-                "message": row.get("message", ""),
-                "description": row.get("message", ""),
-                "position": row.get("position", 0.5),
-                "source": "ml",
-                "subsystem": row.get("subsystem"),
-                "score": row.get("score"),
-            }
-        )
+        attack = row.get("attack")
+        if not attack and isinstance(row.get("meta"), dict):
+            attack = row["meta"].get("attack")
+        mut = {
+            "type": feature or row.get("type") or "ml_anomaly",
+            "severity": row.get("severity", "medium"),
+            "message": row.get("message", ""),
+            "description": row.get("message", ""),
+            "position": row.get("position", 0.5),
+            "source": "ml",
+            "subsystem": row.get("subsystem"),
+            "score": row.get("score"),
+        }
+        if attack:
+            mut["attack"] = attack
+        mutations.append(mut)
         if len(mutations) >= KERNEL_DNA_ML_MAX:
             break
     return mutations

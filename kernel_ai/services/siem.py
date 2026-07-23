@@ -24,7 +24,9 @@ import time
 import urllib.request
 from datetime import datetime, timezone
 
-_ENV_PATH = "/etc/kernel-ai/elastic.env"
+# PROD default; local/dev can override with KERNEL_AI_ES_ENV_FILE or export
+# KERNEL_AI_ES_URL / KERNEL_AI_ES_API_KEY directly (no file required).
+_ENV_PATH = os.environ.get("KERNEL_AI_ES_ENV_FILE", "/etc/kernel-ai/elastic.env")
 _CACHE_TTL_SEC = 45.0
 
 _cache_lock = threading.Lock()
