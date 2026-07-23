@@ -436,10 +436,16 @@ class KernelDNAVisualization {
         // Severity drives the assessment marker colour (high = red, else yellow).
         const isML = mutationData.source === 'ml';
         const isHigh = String(mutationData.severity || '').toLowerCase() === 'high';
-        const wireColor = isML ? 0x67C8E0 : this.colors.mutedText;
+        const attack = mutationData.attack || null;
+        const attackColorCss = (attack && attack.color) ? String(attack.color) : null;
+        const wireColor = isML
+            ? (attackColorCss ? parseInt(attackColorCss.replace('#', ''), 16) : 0x67C8E0)
+            : this.colors.mutedText;
         const markerColor = isHigh ? 0xE0564E : this.colors.signalYellow;
-        const accentCss = isML ? 'rgba(103, 200, 224, 0.9)' : 'rgba(230, 193, 90, 0.7)';
-        const accentText = isML ? '#67C8E0' : '#E6C15A';
+        const accentCss = isML
+            ? (attackColorCss ? attackColorCss : 'rgba(103, 200, 224, 0.9)')
+            : 'rgba(230, 193, 90, 0.7)';
+        const accentText = isML ? (attackColorCss || '#67C8E0') : '#E6C15A';
 
         // Mutation: "broken" appearance - distorted/irregular shape.
         const geometry = new THREE.OctahedronGeometry(0.25, 0); // Irregular shape
@@ -467,8 +473,12 @@ class KernelDNAVisualization {
         yellowMarker.position.copy(point);
         yellowMarker.position.y += 0.3; // Position above mutation
 
-        const baseLabel = String(mutationData.type || 'anomaly').replace(/_/g, ' ').toUpperCase().slice(0, 22);
-        const tag = isML ? 'ML' : 'RULE';
+        const mitreTag = attack && attack.mitre ? String(attack.mitre) : '';
+        const baseLabel = (mitreTag
+            ? mitreTag
+            : String(mutationData.type || 'anomaly').replace(/_/g, ' ')
+        ).toUpperCase().slice(0, 22);
+        const tag = isML ? (mitreTag ? 'ATT' : 'ML') : 'RULE';
         const canvas = document.createElement('canvas');
         canvas.width = 256;
         canvas.height = 48;
@@ -504,6 +514,7 @@ class KernelDNAVisualization {
         mutation.userData.mutationSeverity = mutationData.severity || 'medium';
         mutation.userData.mutationScore = mutationData.score;
         mutation.userData.description = mutationData.description || mutationData.message || 'Anomaly detected';
+        mutation.userData.mutationAttack = attack;
         
         group.add(mutation);
         group.add(yellowMarker);
@@ -2941,17 +2952,24 @@ class KernelDNAVisualization {
                 } else if (userData.mutationType) {
                     // Mutation - source-coloured header (ML cyan, rule yellow).
                     const isML = userData.mutationSource === 'ml';
-                    const headColor = isML ? '#67C8E0' : '#E6C15A';
-                    const sourceLabel = isML ? 'ML baseline detector' : 'Threshold rule';
+                    const atk = userData.mutationAttack || null;
+                    const headColor = (atk && atk.color) ? atk.color : (isML ? '#67C8E0' : '#E6C15A');
+                    const sourceLabel = isML ? 'ML detector' : 'Threshold rule';
                     const sev = String(userData.mutationSeverity || 'medium').toUpperCase();
                     const scoreLine = (userData.mutationScore != null)
-                        ? `<div style="color: #8A8F95; font-size: 10px;">z-score: ${userData.mutationScore}</div>`
+                        ? `<div style="color: #8A8F95; font-size: 10px;">score: ${userData.mutationScore}</div>`
+                        : '';
+                    const attackLine = atk
+                        ? `<div style="color:#8A8F95;font-size:10px;margin-top:4px;">ATT&amp;CK: ${atk.mitre || '?'}${atk.family ? ' · ' + atk.family : ''}${atk.label_confidence != null ? ' · conf ' + atk.label_confidence : ''}</div>
+                           <div style="color:#6B7076;font-size:9px;">${atk.why || atk.name || ''}${atk.source ? ' [' + atk.source + ']' : ''}</div>
+                           ${(atk.cve && atk.cve.length) ? `<div style="color:#e6c15a;font-size:9px;">CVE: ${atk.cve.join(', ')}</div>` : ''}`
                         : '';
                     tooltipContent = `
                         <div style="font-weight: bold; color: ${headColor}; margin-bottom: 4px;">
                             MUTATION: ${userData.mutationType}
                         </div>
                         <div style="margin-bottom: 2px; color: #D0D3D6;">${userData.description || 'Anomaly detected'}</div>
+                        ${attackLine}
                         <div style="color: #6B7076; font-size: 10px; margin-top: 4px;">Source: ${sourceLabel}</div>
                         <div style="color: #6B7076; font-size: 10px;">Severity: ${sev}</div>
                         ${scoreLine}

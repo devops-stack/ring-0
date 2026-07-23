@@ -71,6 +71,24 @@ CREATE TABLE IF NOT EXISTS ml_syscall_ngrams (
     last_seen  timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS ml_syscall_ngrams_n_idx ON ml_syscall_ngrams (n);
+
+CREATE TABLE IF NOT EXISTS ml_proc_snapshots (
+    ts        timestamptz NOT NULL DEFAULT now(),
+    pid       integer     NOT NULL,
+    ppid      integer,
+    comm      text        NOT NULL,
+    features  jsonb       NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ml_proc_snapshots_ts_idx ON ml_proc_snapshots (ts);
+
+CREATE TABLE IF NOT EXISTS ml_proc_lineage (
+    parent_comm text        NOT NULL,
+    child_comm  text        NOT NULL,
+    count       bigint      NOT NULL DEFAULT 0,
+    first_seen  timestamptz NOT NULL DEFAULT now(),
+    last_seen   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (parent_comm, child_comm)
+);
 """
 
 
@@ -147,6 +165,47 @@ class PostgresStore:
                 [{"ngram": g, "n": n, "count": c} for g, c in counts.items()],
             )
 
+    def insert_proc_snapshots(self, rows: list[dict]) -> None:
+        """Persist a compact Stage 5 process sample batch."""
+        if not rows:
+            return
+        with self.conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO ml_proc_snapshots (pid, ppid, comm, features)
+                VALUES (%(pid)s, %(ppid)s, %(comm)s, %(features)s)
+                """,
+                [
+                    {
+                        "pid": r["pid"],
+                        "ppid": r.get("ppid"),
+                        "comm": r["comm"],
+                        "features": Json(r.get("features") or {}),
+                    }
+                    for r in rows
+                ],
+            )
+
+    def upsert_lineage_counts(self, edges: list[tuple[str, str, int]]) -> None:
+        if not edges:
+            return
+        with self.conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO ml_proc_lineage (parent_comm, child_comm, count)
+                VALUES (%(parent)s, %(child)s, %(count)s)
+                ON CONFLICT (parent_comm, child_comm) DO UPDATE
+                    SET count = ml_proc_lineage.count + EXCLUDED.count,
+                        last_seen = now()
+                """,
+                [{"parent": p, "child": c, "count": n} for p, c, n in edges],
+            )
+
+    def load_lineage_counts(self) -> list[tuple[str, str, int]]:
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT parent_comm, child_comm, count FROM ml_proc_lineage")
+            return [(r[0], r[1], int(r[2])) for r in cur.fetchall()]
+
     def save_baseline(self, rows: list[dict]) -> None:
         if not rows:
             return
@@ -181,6 +240,10 @@ class PostgresStore:
             cur.execute(
                 "DELETE FROM ml_anomalies WHERE ts < now() - make_interval(hours => %s)",
                 (anomalies_hours,),
+            )
+            cur.execute(
+                "DELETE FROM ml_proc_snapshots WHERE ts < now() - make_interval(hours => %s)",
+                (features_hours,),
             )
 
     def close(self) -> None:
@@ -309,7 +372,7 @@ def fetch_recent_anomalies(dsn: str, *, since_seconds: int = 120, limit: int = 1
             cur.execute(
                 """
                 SELECT ts, source, feature, subsystem, type, severity, score, value,
-                       baseline_mean, baseline_std, position, message
+                       baseline_mean, baseline_std, position, message, meta
                 FROM ml_anomalies
                 WHERE ts > now() - make_interval(secs => %s)
                 ORDER BY ts DESC
@@ -323,6 +386,9 @@ def fetch_recent_anomalies(dsn: str, *, since_seconds: int = 120, limit: int = 1
                 rec = dict(zip(cols, row))
                 if rec.get("ts") is not None:
                     rec["ts"] = rec["ts"].isoformat()
+                meta = rec.get("meta") if isinstance(rec.get("meta"), dict) else {}
+                if meta.get("attack") and not rec.get("attack"):
+                    rec["attack"] = meta["attack"]
                 out.append(rec)
             return out
     except Exception as exc:  # noqa: BLE001 - API must degrade gracefully

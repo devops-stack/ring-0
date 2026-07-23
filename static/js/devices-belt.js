@@ -1,7 +1,7 @@
 // Device Control Surface Visualization
-// Version: 24
+// Version: 25
 
-debugLog('🧲 devices-belt.js v24: Script loading...');
+debugLog('🧲 devices-belt.js v25: Script loading...');
 
 class DevicesBeltVisualization {
     constructor() {
@@ -33,6 +33,7 @@ class DevicesBeltVisualization {
         this.deviceNodes = [];
         this.links = [];
         this.pulses = [];
+        this.gridCells = [];
 
         this.subsystemOrder = ['block', 'net', 'char', 'input', 'usb'];
         this.busOrder = ['pcie', 'usb', 'virtual', 'net'];
@@ -506,20 +507,62 @@ class DevicesBeltVisualization {
         return line;
     }
 
-    createTinyGrid(origin, cols, rows, cellSize, gap, color, activeCount, target = this.deviceNodes) {
+    createTinyGrid(origin, cols, rows, cellSize, gap, color, activeCount, target = this.deviceNodes, options = {}) {
         const total = cols * rows;
+        const occupied = Math.max(0, Math.min(total, Number(activeCount) || 0));
+        const hotCount = Math.max(0, Math.min(occupied, Number(options.hotCount) || 0));
         for (let i = 0; i < total; i += 1) {
             const col = i % cols;
             const row = Math.floor(i / cols);
-            const active = i < activeCount || (i + row) % 5 === 0;
-            this.createBoxNode('', new THREE.Vector3(origin.x + col * (cellSize + gap), origin.y - row * (cellSize + gap), origin.z), new THREE.Vector3(cellSize, cellSize, 0.035), color, {
-                target,
-                fillOpacity: active ? 0.34 : 0.035,
-                opacity: active ? 0.78 : 0.18,
-                scaleX: 0.05,
-                scaleY: 0.05
-            });
+            const isOccupied = i < occupied;
+            const isHot = isOccupied && i < hotCount;
+            // Empty cells stay almost hollow; occupied read as lit slots; hot = live activity.
+            const baseFill = isOccupied ? (isHot ? 0.52 : 0.30) : 0.018;
+            const baseEdge = isOccupied ? (isHot ? 0.95 : 0.68) : 0.11;
+            const node = this.createBoxNode(
+                '',
+                new THREE.Vector3(origin.x + col * (cellSize + gap), origin.y - row * (cellSize + gap), origin.z),
+                new THREE.Vector3(cellSize, cellSize, 0.035),
+                color,
+                {
+                    target,
+                    fillColor: isOccupied ? (isHot ? 0x123a48 : 0x0a222c) : 0x05080c,
+                    fillOpacity: baseFill,
+                    opacity: baseEdge,
+                    scaleX: 0.05,
+                    scaleY: 0.05
+                }
+            );
+            const cellMeta = {
+                occupied: isOccupied,
+                hot: isHot,
+                baseFill,
+                baseEdge,
+                phase: Math.random() * Math.PI * 2,
+                speed: isHot ? 2.4 + Math.random() * 1.6 : 1.1 + Math.random() * 0.8
+            };
+            node.fill.userData.gridCell = cellMeta;
+            node.edge.userData.gridCell = cellMeta;
+            if (isOccupied) {
+                this.gridCells.push({ fill: node.fill, edge: node.edge });
+            }
         }
+    }
+
+    updateGridFlicker(nowMs) {
+        if (!this.gridCells.length) return;
+        const t = nowMs * 0.001;
+        this.gridCells.forEach(({ fill, edge }) => {
+            const g = fill.userData.gridCell;
+            if (!g || !g.occupied) return;
+            const wave = 0.5 + 0.5 * Math.sin(t * g.speed + g.phase);
+            const fillAmp = g.hot ? 0.20 : 0.07;
+            const edgeAmp = g.hot ? 0.10 : 0.04;
+            fill.material.opacity = Math.min(0.85, g.baseFill + wave * fillAmp);
+            edge.material.opacity = Math.min(1, g.baseEdge + wave * edgeAmp);
+            fill.material.needsUpdate = true;
+            edge.material.needsUpdate = true;
+        });
     }
 
     lifecycleValue(stage, device, bus, category) {
@@ -558,6 +601,7 @@ class DevicesBeltVisualization {
         this.deviceNodes = [];
         this.links = [];
         this.pulses = [];
+        this.gridCells = [];
         this.interactiveDeviceNodes = [];
         this.deviceLookup = {};
     }
@@ -915,7 +959,23 @@ class DevicesBeltVisualization {
                 labelColor: '#061014'
             });
         });
-        this.createTinyGrid(new THREE.Vector3(-5.92, 1.12, 0.16), 5, 4, 0.24, 0.07, 0x54d8e8, Math.min(20, 5 + list.length), this.subsystemNodes);
+        const hotLive = list.filter((d) => (
+            Number(d.load_norm || 0) > 0.12
+            || Number(d.irq_per_sec || 0) > 0.8
+            || Number(d.throughput_mb_s || 0) > 0.05
+        )).length;
+        // Utility kit: one slot per live device (no random filler cells).
+        this.createTinyGrid(
+            new THREE.Vector3(-5.92, 1.12, 0.16),
+            5,
+            4,
+            0.24,
+            0.07,
+            0x54d8e8,
+            Math.min(20, list.length),
+            this.subsystemNodes,
+            { hotCount: Math.min(20, hotLive) }
+        );
 
         const rightPanel = new THREE.Vector3(3.76, 1.62, 0.14);
         this.createBoxNode('', rightPanel, new THREE.Vector3(4.15, 2.42, 0.08), 0x54d8e8, {
@@ -954,7 +1014,18 @@ class DevicesBeltVisualization {
         kernelLabel.position.set(-1.25, 0.82, 0.16);
         this.scene.add(kernelLabel);
         this.subsystemNodes.push(kernelLabel);
-        this.createTinyGrid(new THREE.Vector3(-3.75, 0.38, 0.14), 22, 4, 0.17, 0.08, 0x54d8e8, Math.min(88, 16 + list.length * 2), this.subsystemNodes);
+        // Contact grid: ~3 contact cells per device; hot cells track live load/irq.
+        this.createTinyGrid(
+            new THREE.Vector3(-3.75, 0.38, 0.14),
+            22,
+            4,
+            0.17,
+            0.08,
+            0x54d8e8,
+            Math.min(88, Math.max(list.length * 3, list.length ? 6 : 0)),
+            this.subsystemNodes,
+            { hotCount: Math.min(88, Math.max(hotLive * 3, hotLive ? 2 : 0)) }
+        );
         const kernelParts = [
             ['BUS', -3.75], ['DRV', -2.55], ['PROBE', -1.35], ['IRQ', -0.15], ['DMA', 1.05], ['UDEV', 2.25], ['VFS', 3.45]
         ];
@@ -1161,6 +1232,7 @@ class DevicesBeltVisualization {
         this.lastFrameTime = now;
 
         this.updateLinksAndPulses(dt);
+        this.updateGridFlicker(now);
 
         this.camera.position.x = 0;
         this.camera.position.z = 13.2;
