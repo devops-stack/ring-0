@@ -282,6 +282,123 @@ def _rate_to_mbps(value, unit):
     return v * scale
 
 
+def _hex_le_ipv4(hex_str: str) -> str:
+    raw = (hex_str or "").strip()
+    if len(raw) != 8:
+        return "0.0.0.0"
+    try:
+        parts = [raw[i : i + 2] for i in range(0, 8, 2)]
+        parts.reverse()
+        return ".".join(str(int(b, 16)) for b in parts)
+    except ValueError:
+        return "0.0.0.0"
+
+
+def _mask_to_prefix(mask_hex: str) -> int:
+    try:
+        value = int(mask_hex, 16)
+    except ValueError:
+        return 0
+    return bin(value).count("1")
+
+
+def get_ip_layer_map(limit_routes: int = 12, limit_neigh: int = 10) -> dict:
+    """Live IP-layer map: FIB routes, ARP/neigh, ICMP + IP SNMP counters."""
+    routes: list[dict] = []
+    try:
+        with open("/proc/net/route", "r", encoding="utf-8", errors="ignore") as fh:
+            for line in fh.readlines()[1:]:
+                parts = line.strip().split()
+                if len(parts) < 8:
+                    continue
+                iface, dest_h, gw_h, flags_h = parts[0], parts[1], parts[2], parts[3]
+                metric = int(parts[6]) if parts[6].isdigit() else 0
+                mask_h = parts[7]
+                try:
+                    flags = int(flags_h, 16)
+                except ValueError:
+                    flags = 0
+                if not (flags & 0x1):  # RTF_UP
+                    continue
+                dest = _hex_le_ipv4(dest_h)
+                gateway = _hex_le_ipv4(gw_h)
+                prefix = _mask_to_prefix(mask_h)
+                is_default = dest_h == "00000000" and (flags & 0x2)
+                routes.append(
+                    {
+                        "iface": iface,
+                        "destination": "default" if is_default else f"{dest}/{prefix}",
+                        "gateway": gateway if gateway != "0.0.0.0" else "*",
+                        "metric": metric,
+                        "flags": flags,
+                        "default": bool(is_default),
+                    }
+                )
+        routes.sort(key=lambda r: (0 if r.get("default") else 1, r.get("metric", 0), r.get("destination", "")))
+        routes = routes[: max(1, int(limit_routes))]
+    except OSError:
+        routes = []
+
+    neigh: list[dict] = []
+    try:
+        with open("/proc/net/arp", "r", encoding="utf-8", errors="ignore") as fh:
+            for line in fh.readlines()[1:]:
+                parts = line.split()
+                if len(parts) < 6:
+                    continue
+                ip_addr, _hw_type, flags_h, mac, _mask, device = parts[:6]
+                try:
+                    flags = int(flags_h, 16)
+                except ValueError:
+                    flags = 0
+                if mac in ("00:00:00:00:00:00", "0:0:0:0:0:0"):
+                    continue
+                state = "REACHABLE" if flags & 0x2 else ("INCOMPLETE" if flags & 0x1 else "STALE")
+                neigh.append(
+                    {
+                        "ip": ip_addr,
+                        "mac": mac,
+                        "iface": device,
+                        "state": state,
+                        "flags": flags,
+                    }
+                )
+        neigh = neigh[: max(1, int(limit_neigh))]
+    except OSError:
+        neigh = []
+
+    ip_stats = _parse_snmp_section("Ip")
+    icmp_stats = _parse_snmp_section("Icmp")
+    return {
+        "routes": routes,
+        "neigh": neigh,
+        "icmp": {
+            "in_msgs": int(icmp_stats.get("InMsgs", 0)),
+            "out_msgs": int(icmp_stats.get("OutMsgs", 0)),
+            "in_errors": int(icmp_stats.get("InErrors", 0)),
+            "out_errors": int(icmp_stats.get("OutErrors", 0)),
+            "in_dest_unreach": int(icmp_stats.get("InDestUnreachs", 0)),
+            "out_dest_unreach": int(icmp_stats.get("OutDestUnreachs", 0)),
+            "in_time_excds": int(icmp_stats.get("InTimeExcds", 0)),
+            "in_echo_reps": int(icmp_stats.get("InEchoReps", 0)),
+            "out_echos": int(icmp_stats.get("OutEchos", 0)),
+        },
+        "ip": {
+            "forwarding": int(ip_stats.get("Forwarding", 0)),
+            "default_ttl": int(ip_stats.get("DefaultTTL", 0)),
+            "in_receives": int(ip_stats.get("InReceives", 0)),
+            "out_requests": int(ip_stats.get("OutRequests", 0)),
+            "in_discards": int(ip_stats.get("InDiscards", 0)),
+            "out_discards": int(ip_stats.get("OutDiscards", 0)),
+            "in_addr_errors": int(ip_stats.get("InAddrErrors", 0)),
+            "in_hdr_errors": int(ip_stats.get("InHdrErrors", 0)),
+            "reasm_reqds": int(ip_stats.get("ReasmReqds", 0)),
+            "frag_oks": int(ip_stats.get("FragOKs", 0)),
+        },
+        "source": {"routes": "/proc/net/route", "neigh": "/proc/net/arp", "snmp": "/proc/net/snmp"},
+    }
+
+
 def get_network_stack_realtime(network_stack_prev=None):
     network_stack_prev = _NETWORK_STACK_PREV_DEFAULT if network_stack_prev is None else network_stack_prev
     now = time.time()
@@ -439,6 +556,7 @@ def get_network_stack_realtime(network_stack_prev=None):
             "out_segs": int(tcp_stats.get("OutSegs", 0)),
             "retrans_segs_total": int(retrans_total),
         },
+        "ip_map": get_ip_layer_map(),
     }
 
 

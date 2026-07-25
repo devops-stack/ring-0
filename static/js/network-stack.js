@@ -1,7 +1,7 @@
 // Network Stack Visualization - vertical packet flow through Linux networking layers
-// Version: 5
+// Version: 6 — L04 IP drill-in replaces puzzle with FIB/route/neigh/ICMP map
 
-debugLog('🌐 network-stack.js v5: Script loading...');
+debugLog('🌐 network-stack.js v6: Script loading...');
 
 class NetworkStackVisualization {
     constructor() {
@@ -95,6 +95,7 @@ class NetworkStackVisualization {
         this.selectedGalaxy = 'state';
         this.galaxyStateData = null;
         this.lifecyclePanelNode = null;
+        this.ipMapPinned = false;
         this.hideOsiTiles = true;
         this.hideVerticalOrbs = true;
         this.packetLifecycleStages = [
@@ -1946,6 +1947,10 @@ class NetworkStackVisualization {
 
     updatePacketLifecycleUI() {
         if (!this.lifecyclePanelNode) return;
+        if (this.ipMapPinned || this.drillLayerId === 'ip') {
+            this.renderIpLayerMapPanel();
+            return;
+        }
         const idx = this.getPacketLifecycleIndex();
         const stage = this.packetLifecycleStages[Math.max(0, Math.min(this.packetLifecycleStages.length - 1, idx))] || 'NIC RX';
         const activeCoreNode = this.lifecycleStageToNode[stage] || 'skb';
@@ -2945,11 +2950,155 @@ class NetworkStackVisualization {
         return (rows[layerId] || (() => []))();
     }
 
+    getIpMapData() {
+        return this.telemetryData?.ip_map || { routes: [], neigh: [], icmp: {}, ip: {} };
+    }
+
+    buildIpLayerMapHtml({ compact = false } = {}) {
+        const map = this.getIpMapData();
+        const routes = Array.isArray(map.routes) ? map.routes : [];
+        const neigh = Array.isArray(map.neigh) ? map.neigh : [];
+        const icmp = map.icmp || {};
+        const ip = map.ip || {};
+        const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+        const fwd = n(ip.forwarding) === 1 ? 'forwarding ON' : 'host (no forward)';
+        const routeRows = routes.length
+            ? routes.map((r) => {
+                const dest = r.default
+                    ? '<span style="color:#e6c15a">default</span>'
+                    : `<span style="color:#d4dde7">${r.destination}</span>`;
+                const via = r.gateway && r.gateway !== '*'
+                    ? `via <span style="color:#a9d4e8">${r.gateway}</span>`
+                    : 'on-link';
+                return `<div style="display:flex; gap:8px; flex-wrap:wrap; padding:3px 0; border-bottom:1px solid rgba(70,82,98,0.25);">
+                    <span style="min-width:118px;">${dest}</span>
+                    <span style="color:#8d99a7;">${via}</span>
+                    <span style="color:#6f8597;">dev ${r.iface}</span>
+                    <span style="color:#556273;margin-left:auto;">metric ${r.metric ?? 0}</span>
+                </div>`;
+            }).join('')
+            : '<div style="color:#6f8597;">no routes in /proc/net/route</div>';
+        const neighRows = neigh.length
+            ? neigh.map((h) => {
+                const st = String(h.state || 'STALE');
+                const stCol = st === 'REACHABLE' ? '#96ffbe' : (st === 'INCOMPLETE' ? '#e69696' : '#e6c15a');
+                return `<div style="display:flex; gap:8px; flex-wrap:wrap; padding:3px 0; border-bottom:1px solid rgba(70,82,98,0.25);">
+                    <span style="color:#a9d4e8;min-width:110px;">${h.ip}</span>
+                    <span style="color:#c2cede;">${h.mac}</span>
+                    <span style="color:#6f8597;">dev ${h.iface}</span>
+                    <span style="color:${stCol};margin-left:auto;letter-spacing:0.5px;">${st}</span>
+                </div>`;
+            }).join('')
+            : '<div style="color:#6f8597;">no ARP/neigh entries</div>';
+        const chip = (label, value, hot = false) => `
+            <div style="background:rgba(8,12,20,0.7); border:1px solid ${hot ? 'rgba(230,193,90,0.45)' : 'rgba(96,110,128,0.32)'}; border-radius:4px; padding:7px 9px; min-width:88px;">
+                <div style="font-size:8px; letter-spacing:0.6px; color:#7f93a6; text-transform:uppercase;">${label}</div>
+                <div style="font-size:${compact ? '14px' : '16px'}; color:#e2edf5; margin-top:2px;">${value}</div>
+            </div>`;
+        const icmpHot = n(icmp.in_errors) + n(icmp.out_errors) + n(icmp.in_dest_unreach) > 0;
+        const flowDiagram = `
+            <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:8px 0 10px; font-size:9px; letter-spacing:0.4px;">
+                <span style="color:#6f8597;">LOOKUP</span>
+                <span style="padding:3px 8px; border:1px solid rgba(230,193,90,0.45); border-radius:12px; color:#e6c15a;">FIB</span>
+                <span style="color:#556273;">→</span>
+                <span style="padding:3px 8px; border:1px solid rgba(103,190,224,0.45); border-radius:12px; color:#a9d4e8;">NEIGH</span>
+                <span style="color:#556273;">→</span>
+                <span style="padding:3px 8px; border:1px solid rgba(150,255,190,0.35); border-radius:12px; color:#96ffbe;">L2 / NIC</span>
+                <span style="color:#556273; margin:0 4px;">|</span>
+                <span style="padding:3px 8px; border:1px solid rgba(232,96,104,0.4); border-radius:12px; color:#e69696;">ICMP</span>
+                <span style="color:#6f8597;">control / errors</span>
+            </div>`;
+        return `
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+                <div style="flex:1;">
+                    <div style="font-size:10px;color:#7f8fa2;letter-spacing:0.6px;">IP LAYER MAP · L04 · ${fwd}</div>
+                    <div style="font-size:9px;color:#556273;margin-top:2px;">/proc/net/route · /proc/net/arp · /proc/net/snmp</div>
+                </div>
+                ${compact ? `<button type="button" class="ns-ip-back-puzzle" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.6px; color:#a9d4e8; background:rgba(103,190,224,0.1); border:1px solid rgba(103,190,224,0.4); border-radius:12px; padding:4px 10px;">← PUZZLE</button>` : ''}
+            </div>
+            ${flowDiagram}
+            <div style="display:grid; grid-template-columns:${compact ? '1.2fr 1fr 0.9fr' : '1.15fr 1fr 0.95fr'}; gap:10px;">
+                <div>
+                    <div style="font-size:8px; letter-spacing:1px; color:#e6c15a; margin-bottom:4px;">FIB / ROUTES</div>
+                    <div style="max-height:${compact ? '12vh' : '28vh'}; overflow:auto; font-size:9.5px; line-height:1.45;">${routeRows}</div>
+                </div>
+                <div>
+                    <div style="font-size:8px; letter-spacing:1px; color:#a9d4e8; margin-bottom:4px;">NEIGH / ARP</div>
+                    <div style="max-height:${compact ? '12vh' : '28vh'}; overflow:auto; font-size:9.5px; line-height:1.45;">${neighRows}</div>
+                </div>
+                <div>
+                    <div style="font-size:8px; letter-spacing:1px; color:#e69696; margin-bottom:4px;">ICMP · IP COUNTERS</div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+                        ${chip('ICMP in', n(icmp.in_msgs))}
+                        ${chip('ICMP out', n(icmp.out_msgs))}
+                        ${chip('errors', n(icmp.in_errors) + n(icmp.out_errors), icmpHot)}
+                        ${chip('unreach', n(icmp.in_dest_unreach) + n(icmp.out_dest_unreach), n(icmp.in_dest_unreach) > 0)}
+                        ${chip('TTL / echo', `${n(ip.default_ttl) || '—'} / ${n(icmp.out_echos)}`)}
+                        ${chip('IP discards', n(ip.in_discards) + n(ip.out_discards), n(ip.in_discards) + n(ip.out_discards) > 0)}
+                    </div>
+                </div>
+            </div>`;
+    }
+
+    renderIpLayerMapPanel() {
+        if (!this.lifecyclePanelNode) return;
+        window.setSafeHtml(this.lifecyclePanelNode, this.buildIpLayerMapHtml({ compact: true }));
+        const back = this.lifecyclePanelNode.querySelector('.ns-ip-back-puzzle');
+        if (back) {
+            back.addEventListener('click', () => {
+                this.ipMapPinned = false;
+                if (this.drillLayerId === 'ip') this.closeLayerDrilldown();
+                else this.updatePacketLifecycleUI();
+            });
+        }
+    }
+
     openLayerDrilldown(layerId) {
         if (!this.drillScrim || !this.drillPanel) return;
         const info = this.getLayerDrillInfo(layerId);
         if (!info) return;
         this.drillLayerId = layerId;
+
+        if (layerId === 'ip') {
+            this.ipMapPinned = true;
+            this.drillPanel.style.width = 'min(980px, 92vw)';
+            const act = Math.round(Math.max(0, Math.min(1, Number(this.layerActivity.ip ?? 0))) * 100);
+            const actCol = act > 80 ? 'rgba(232,96,104,0.95)' : (act > 55 ? 'rgba(230,193,90,0.95)' : 'rgba(103,190,224,0.95)');
+            const metrics = this.getLayerDrillMetrics('ip');
+            const metricCells = metrics.map(([k, v]) => `
+                <div style="background:rgba(8,12,20,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">
+                    <div style="font-size:8.5px; letter-spacing:0.6px; color:#7f93a6; text-transform:uppercase;">${k}</div>
+                    <div style="font-size:18px; color:#e2edf5; line-height:1.15; margin-top:2px;">${v}</div>
+                </div>`).join('');
+            const html = `
+                <div style="display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid rgba(230,193,90,0.35); background:linear-gradient(90deg, rgba(230,193,90,0.12), rgba(103,190,224,0.05));">
+                    <div style="flex:1 1 auto;">
+                        <div style="font-size:8px; letter-spacing:1.4px; color:#6f8597;">STACK LAYER · NETWORK · L04</div>
+                        <div style="font-size:20px; letter-spacing:1.2px; color:#e8f2f9;">IP · FIB / ROUTE / NEIGH / ICMP</div>
+                    </div>
+                    <div style="flex:none; text-align:right;">
+                        <div style="font-size:8px; letter-spacing:1px; color:#6f8597;">LIVE ACTIVITY</div>
+                        <div style="font-size:22px; color:${actCol};">${act}<span style="font-size:11px; color:#7f93a6;">%</span></div>
+                    </div>
+                    <div class="ns-ov-close" style="flex:none; cursor:pointer; width:26px; height:26px; border:1px solid rgba(160,170,190,0.4); border-radius:4px; display:flex; align-items:center; justify-content:center; color:#c8ccd4; font-size:14px;">✕</div>
+                </div>
+                <div style="padding:14px 18px 16px; max-height:78vh; overflow:auto;">
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin-bottom:12px;">${metricCells}</div>
+                    <div style="font-size:11.5px; line-height:1.6; color:#c2cede; margin-bottom:10px;">${info.what}</div>
+                    <div style="margin-bottom:8px; font-size:10.5px; line-height:1.55; color:#9db6c8; border-left:2px solid rgba(230,193,90,0.6); padding-left:9px;"><span style="color:#e6c15a; letter-spacing:0.5px;">WATCH · </span>${info.watch}</div>
+                    ${this.buildIpLayerMapHtml({ compact: false })}
+                </div>`;
+            window.setSafeHtml(this.drillPanel, html);
+            const closeBtn = this.drillPanel.querySelector('.ns-ov-close');
+            if (closeBtn) closeBtn.addEventListener('click', () => this.closeLayerDrilldown());
+            this.renderIpLayerMapPanel();
+            this.drillScrim.style.display = 'block';
+            if (this.layerTooltipNode) this.layerTooltipNode.style.display = 'none';
+            return;
+        }
+
+        this.ipMapPinned = false;
+        this.drillPanel.style.width = 'min(680px, 78vw)';
         const act = Math.round(Math.max(0, Math.min(1, Number(this.layerActivity[layerId] ?? 0))) * 100);
         const actCol = act > 80 ? 'rgba(232,96,104,0.95)' : (act > 55 ? 'rgba(230,193,90,0.95)' : 'rgba(103,190,224,0.95)');
         const metrics = this.getLayerDrillMetrics(layerId);
@@ -2993,8 +3142,13 @@ class NetworkStackVisualization {
     }
 
     closeLayerDrilldown() {
+        const wasIp = this.drillLayerId === 'ip';
         this.drillLayerId = null;
         if (this.drillScrim) this.drillScrim.style.display = 'none';
+        if (this.drillPanel) this.drillPanel.style.width = 'min(680px, 78vw)';
+        // Keep IP map pinned in the bottom panel after closing the overlay
+        // until the user hits ← PUZZLE or opens another layer.
+        if (wasIp) this.renderIpLayerMapPanel();
     }
 
     // Push the latest BBR sample into a rolling window (used to estimate the
