@@ -1,7 +1,7 @@
 // Network Stack Visualization - vertical packet flow through Linux networking layers
-// Version: 6 — L04 IP drill-in replaces puzzle with FIB/route/neigh/ICMP map
+// Version: 11 — Netfilter morph (syntax-safe) + hooks/conntrack/verdict
 
-debugLog('🌐 network-stack.js v6: Script loading...');
+debugLog('🌐 network-stack.js v16: Script loading...');
 
 class NetworkStackVisualization {
     constructor() {
@@ -96,8 +96,31 @@ class NetworkStackVisualization {
         this.galaxyStateData = null;
         this.lifecyclePanelNode = null;
         this.ipMapPinned = false;
+        this.ipMorphTarget = null; // { kind:'route'|'neigh'|'flow', ... }
+        this.ipMapFrozen = null;   // snapshot while morph/IP drill is being read
+        this.tcpMapPinned = false;
+        this.tcpMorphTarget = null; // { focus:'flow'|'cwnd'|'rtt'|'cc'|... }
+        this.tcpFrozen = null;      // { tcp_udp, bbr, flow }
+        this.nfMapPinned = false;
+        this.nfMorphTarget = null;  // { focus:'hook'|'ct'|'verdict'|... }
+        this.nfFrozen = null;       // { netfilter, flow }
+        this.sockMapPinned = false;
+        this.sockMorphTarget = null; // { focus:'fd'|'inode'|'sk'|'queue'|... }
+        this.sockFrozen = null;      // { socket_api, flow }
+        this.flowFollow = null;      // { remote, local, proto, ip, port } from ?remote=
+        this._flowFollowApplied = false;
+        this._ghostPending = false;
+        this._ghostEl = null;
+        this._ghostTimer = null;
+        this._ghostFadeTimer = null;
         this.hideOsiTiles = true;
+        // Keep the particle swarm and hero packet off — morph stays as panel ribbons.
         this.hideVerticalOrbs = true;
+        this.packetMorphEnabled = false;
+        this.packetMorphPhase = -1;
+        this.packetMorphCtx = null;
+        this.packetMorphTag = null;
+        this.packetMorphPulse = 0;
         this.packetLifecycleStages = [
             'NIC RX',
             'IRQ',
@@ -897,12 +920,210 @@ class NetworkStackVisualization {
             this.scene.add(trail);
             this.packetTrail.push(trail);
         }
-        if (this.hideVerticalOrbs) {
+        if (this.hideVerticalOrbs && !this.packetMorphEnabled) {
             this.packet.visible = false;
             this.packetGlow.visible = false;
             this.packetTrail.forEach((trail) => {
                 if (trail) trail.visible = false;
             });
+        } else if (this.packetMorphEnabled) {
+            this.packet.visible = true;
+            this.packetGlow.visible = true;
+            this.packetTrail.forEach((trail) => {
+                if (trail) trail.visible = true;
+            });
+            this.ensurePacketMorphTag();
+        }
+    }
+
+    ensurePacketMorphTag() {
+        if (this.packetMorphTag || !this.scene) return;
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        canvas.width = 380;
+        canvas.height = 88;
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.needsUpdate = true;
+        const material = new THREE.SpriteMaterial({
+            map: texture,
+            transparent: true,
+            depthTest: false,
+            depthWrite: false,
+            opacity: 0,
+        });
+        const sprite = new THREE.Sprite(material);
+        sprite.scale.set(1.85, 0.42, 1);
+        sprite.renderOrder = 4;
+        sprite.visible = false;
+        this.scene.add(sprite);
+        this.packetMorphTag = {
+            sprite,
+            canvas,
+            ctx,
+            texture,
+            lastText: '',
+            lastIntensity: -1,
+        };
+    }
+
+    paintPacketMorphTag(text, intensity = 0.75) {
+        const tag = this.packetMorphTag;
+        if (!tag || !tag.ctx) return;
+        const safeText = String(text || '');
+        const safeIntensity = Math.max(0, Math.min(1, Number(intensity) || 0));
+        if (safeText === tag.lastText && Math.abs(safeIntensity - (tag.lastIntensity ?? -1)) < 0.04) return;
+        tag.lastText = safeText;
+        tag.lastIntensity = safeIntensity;
+
+        const ctx = tag.ctx;
+        const w = tag.canvas.width;
+        const h = tag.canvas.height;
+        ctx.clearRect(0, 0, w, h);
+
+        ctx.fillStyle = `rgba(8, 12, 20, ${0.55 + safeIntensity * 0.28})`;
+        ctx.strokeStyle = `rgba(230, 193, 90, ${0.35 + safeIntensity * 0.45})`;
+        ctx.lineWidth = 1.4;
+        if (typeof ctx.roundRect === 'function') {
+            ctx.beginPath();
+            ctx.roundRect(0.5, 0.5, w - 1, h - 1, 7);
+            ctx.fill();
+            ctx.stroke();
+        } else {
+            ctx.fillRect(0, 0, w, h);
+            ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
+        }
+
+        const lines = safeText.split('\n').slice(0, 2);
+        ctx.textBaseline = 'middle';
+        ctx.shadowColor = `rgba(230, 193, 90, ${0.18 + safeIntensity * 0.35})`;
+        ctx.shadowBlur = 7;
+        if (lines[0]) {
+            ctx.font = '15px "Share Tech Mono", monospace';
+            ctx.fillStyle = `rgba(236, 244, 250, ${0.92 + safeIntensity * 0.08})`;
+            ctx.strokeStyle = 'rgba(10, 14, 20, 0.85)';
+            ctx.lineWidth = 2.4;
+            ctx.strokeText(lines[0], 14, h * 0.34);
+            ctx.fillText(lines[0], 14, h * 0.34);
+        }
+        if (lines[1]) {
+            ctx.font = '13px "Share Tech Mono", monospace';
+            ctx.fillStyle = `rgba(169, 212, 232, ${0.88 + safeIntensity * 0.1})`;
+            ctx.strokeStyle = 'rgba(10, 14, 20, 0.8)';
+            ctx.lineWidth = 2.2;
+            ctx.strokeText(lines[1], 14, h * 0.72);
+            ctx.fillText(lines[1], 14, h * 0.72);
+        }
+        ctx.shadowBlur = 0;
+        tag.texture.needsUpdate = true;
+    }
+
+    resolvePacketMorphPhase(y) {
+        if (!this.layerMap) return -1;
+        const top = (this.layerMap.tcp + this.layerMap.ip) / 2;
+        const bot = (this.layerMap.ip + this.layerMap.netfilter) / 2;
+        if (!(y <= top && y >= bot)) return -1;
+        const span = Math.max(0.001, top - bot);
+        const t = (top - y) / span;
+        return Math.min(3, Math.floor(t * 4));
+    }
+
+    refreshPacketMorphContext() {
+        // Snapshot into packetMorphCtx only — do not touch ipMapFrozen (panel freeze).
+        this.packetMorphCtx = this.resolveMorphContext({ kind: 'flow' });
+        return this.packetMorphCtx;
+    }
+
+    buildPacketMorphCaption(phase, ctx) {
+        const c = ctx || {};
+        const addr = this.ipv4ToBe32(c.ip);
+        const port = this.portToBe16(c.port);
+        const route = c.route || {};
+        const ha = this.macToHa(c.hop?.mac);
+        const ttl = Number(this.getIpMapData()?.ip?.default_ttl) || 64;
+        const dest = route.default ? 'default' : (route.destination || c.ip || '?');
+        const gw = route.gateway && route.gateway !== '*' ? route.gateway : 'on-link';
+        const iface = c.iface || '?';
+        const nh = c.nexthopIp || gw;
+        const macShort = (ha.mac && ha.mac !== '??') ? ha.mac : 'ha[] unfinished';
+
+        if (phase === 0) {
+            return 'IP hdr  ' + (c.ip || '?') + ':' + port.port + '  ttl ' + ttl + '\nip_queue_xmit';
+        }
+        if (phase === 1) {
+            return 'route  ' + dest + ' → ' + gw + '  oif ' + iface + '\nfib_table_lookup';
+        }
+        if (phase === 2) {
+            return 'neigh  ' + nh + '  ' + macShort + '\nneigh_resolve_output';
+        }
+        return 'eth hdr  → ' + iface + '  ' + (addr?.hex || 'be32') + '\ndev_queue_xmit';
+    }
+
+    applyPacketMorphPhase(phase) {
+        if (!this.packet) return;
+        const colors = [0xE6C15A, 0xE6C15A, 0x96FFBE, 0x67BEE0];
+        const scales = [1.0, 0.92, 0.86, 1.08];
+        const color = colors[phase] != null ? colors[phase] : 0xE6C15A;
+        const scale = scales[phase] != null ? scales[phase] : 1;
+        this.packet.material.color.setHex(color);
+        if (this.packetGlow?.material) this.packetGlow.material.color.setHex(color);
+        this.packet.scale.setScalar(scale);
+        if (this.packetGlow) this.packetGlow.scale.setScalar(scale * (1.15 + this.packetMorphPulse * 0.2));
+        this.packetTrail.forEach((trail, i) => {
+            if (trail?.material?.color) trail.material.color.setHex(color);
+            if (trail) trail.scale.setScalar(Math.max(0.55, scale * (1 - i * 0.08)));
+        });
+    }
+
+    setPacketMorphVisible(on) {
+        const tag = this.packetMorphTag;
+        if (!tag?.sprite) return;
+        tag.sprite.visible = !!on;
+        if (tag.sprite.material) {
+            tag.sprite.material.opacity = on ? 1 : 0;
+        }
+    }
+
+    updatePacketMorph() {
+        if (!this.packetMorphEnabled || !this.packet) return;
+        this.ensurePacketMorphTag();
+        const y = this.packet.position.y;
+        const phase = this.resolvePacketMorphPhase(y);
+
+        if (phase < 0) {
+            if (this.packetMorphPhase !== -1) {
+                this.packetMorphPhase = -1;
+                this.packetMorphCtx = null;
+                this.setPacketMorphVisible(false);
+                this.packet.scale.setScalar(1);
+                if (this.packetGlow) this.packetGlow.scale.setScalar(1);
+                this.updatePacketColorByFlow();
+            }
+            return;
+        }
+
+        if (this.packetMorphPhase < 0 || !this.packetMorphCtx) {
+            this.refreshPacketMorphContext();
+        }
+        if (phase !== this.packetMorphPhase) {
+            this.packetMorphPhase = phase;
+            this.packetMorphPulse = 1;
+            const caption = this.buildPacketMorphCaption(phase, this.packetMorphCtx);
+            this.paintPacketMorphTag(caption, 0.9);
+            this.applyPacketMorphPhase(phase);
+            this.setPacketMorphVisible(true);
+        } else if (this.packetMorphPulse > 0) {
+            this.packetMorphPulse = Math.max(0, this.packetMorphPulse - 0.04);
+            this.applyPacketMorphPhase(phase);
+        }
+
+        const tag = this.packetMorphTag;
+        if (tag?.sprite) {
+            tag.sprite.position.set(
+                this.packet.position.x + 1.55,
+                this.packet.position.y + 0.18,
+                this.packet.position.z
+            );
         }
     }
 
@@ -1947,8 +2168,13 @@ class NetworkStackVisualization {
 
     updatePacketLifecycleUI() {
         if (!this.lifecyclePanelNode) return;
-        if (this.ipMapPinned || this.drillLayerId === 'ip') {
-            this.renderIpLayerMapPanel();
+        // While IP/TCP map or morph is open, keep the right panel frozen — no live rewrites.
+        if (
+            this.ipMapPinned || this.tcpMapPinned || this.nfMapPinned || this.sockMapPinned
+            || this.drillLayerId === 'ip' || this.drillLayerId === 'tcp' || this.drillLayerId === 'netfilter'
+            || this.drillLayerId === 'socket'
+            || this.ipMorphTarget || this.tcpMorphTarget || this.nfMorphTarget || this.sockMorphTarget
+        ) {
             return;
         }
         const idx = this.getPacketLifecycleIndex();
@@ -2234,12 +2460,28 @@ class NetworkStackVisualization {
         });
     }
 
+    resetPacketLoop() {
+        if (!this.packet || !this.layerMap) return;
+        this.packet.position.y = this.layerMap.userspace + 0.5;
+        this.packetMorphPhase = -1;
+        this.packetMorphCtx = null;
+        this.packetMorphPulse = 0;
+        this.setPacketMorphVisible(false);
+        this.packet.scale.setScalar(1);
+        if (this.packetGlow) this.packetGlow.scale.setScalar(1);
+        this.updatePacketColorByFlow();
+    }
+
     updatePacket(dt) {
         if (!this.packet) return;
 
         this.packet.position.y -= this.packetSpeed * dt;
-        this.packetGlow.position.copy(this.packet.position);
-        this.packetGlow.scale.setScalar(1 + Math.sin(performance.now() * 0.008) * 0.1);
+        if (this.packetGlow) {
+            this.packetGlow.position.copy(this.packet.position);
+            if (this.packetMorphPhase < 0) {
+                this.packetGlow.scale.setScalar(1 + Math.sin(performance.now() * 0.008) * 0.1);
+            }
+        }
 
         // Retransmit visual on TCP/UDP layer.
         this.retransmitCooldown -= dt;
@@ -2255,7 +2497,7 @@ class NetworkStackVisualization {
         if (this.dropCooldown <= 0 && Math.abs(this.packet.position.y - this.layerMap.netfilter) < 0.08) {
             if (Math.random() < this.dropProbability) {
                 this.triggerDrop();
-                this.packet.position.y = this.layerMap.userspace + 0.5;
+                this.resetPacketLoop();
                 this.dropCooldown = 1.8;
                 return;
             }
@@ -2263,14 +2505,18 @@ class NetworkStackVisualization {
 
         // NIC -> wire -> remote reached; restart packet loop.
         if (this.packet.position.y < this.layerMap.nic - 0.75) {
-            this.packet.position.y = this.layerMap.userspace + 0.5;
+            this.resetPacketLoop();
         }
 
         // Trail follows packet.
         for (let i = this.packetTrail.length - 1; i > 0; i--) {
             this.packetTrail[i].position.lerp(this.packetTrail[i - 1].position, 0.65);
         }
-        this.packetTrail[0].position.lerp(this.packet.position, 0.65);
+        if (this.packetTrail[0]) {
+            this.packetTrail[0].position.lerp(this.packet.position, 0.65);
+        }
+
+        this.updatePacketMorph();
     }
 
     updatePacketColorByFlow() {
@@ -2359,7 +2605,25 @@ class NetworkStackVisualization {
 
         if (this.flowNode) {
             if (flow) {
-                this.flowNode.textContent = `process -> syscall -> socket -> ${flowType} ${flowState} -> IP -> NIC -> wire -> ${flow.remote || 'remote'}`;
+                const remote = flow.remote || 'remote';
+                this.flowNode.innerHTML = '';
+                const prefix = document.createTextNode(
+                    `process -> syscall -> socket -> ${flowType} ${flowState} -> IP -> NIC -> wire -> `
+                );
+                const remoteSpan = document.createElement('span');
+                remoteSpan.textContent = remote;
+                if (this.flowFollow?.remote) {
+                    remoteSpan.style.color = '#e6c15a';
+                    remoteSpan.style.textShadow = '0 0 8px rgba(230,193,90,0.35)';
+                    this.flowNode.style.borderColor = 'rgba(230,193,90,0.55)';
+                    this.flowNode.style.boxShadow = '0 0 14px rgba(230,193,90,0.12)';
+                } else {
+                    remoteSpan.style.color = '';
+                    this.flowNode.style.borderColor = 'rgba(90, 104, 120, 0.32)';
+                    this.flowNode.style.boxShadow = 'none';
+                }
+                this.flowNode.appendChild(prefix);
+                this.flowNode.appendChild(remoteSpan);
             } else {
                 this.flowNode.textContent = 'process -> syscall -> socket -> TCP -> IP -> NIC -> wire -> remote (no active flow)';
             }
@@ -2580,11 +2844,25 @@ class NetworkStackVisualization {
                 this.dropProbability = Math.max(0.03, Math.min(0.75, Number(data.signals?.drop_probability ?? 0.2)));
                 this.retransmitProbability = Math.max(0.04, Math.min(0.75, Number(data.signals?.retransmit_probability ?? 0.28)));
                 this.packetSpeed = Math.max(1.1, Math.min(5.2, Number(data.signals?.packet_speed ?? 2.2)));
+                this.applyFlowFollowOverride();
                 this.updatePacketColorByFlow();
                 this.updateTelemetryUI();
                 this.recordBbrSample();
-                if (this.drillLayerId) this.openLayerDrilldown(this.drillLayerId);
-                if (this.bbrOpen) this.openBbrOverlay();
+                // Do not rebuild drill/morph overlays on every poll — user needs time to read.
+                const freezeDrill = (
+                    this.drillLayerId === 'ip' || this.drillLayerId === 'tcp' || this.drillLayerId === 'netfilter'
+                    || this.drillLayerId === 'socket'
+                    || this.ipMorphTarget || this.tcpMorphTarget || this.nfMorphTarget || this.sockMorphTarget
+                );
+                if (freezeDrill) {
+                    // freeze: keep current overlay DOM + frozen snapshots
+                } else if (this.drillLayerId) {
+                    this.openLayerDrilldown(this.drillLayerId);
+                }
+                if (this.bbrOpen && !freezeDrill) {
+                    this.openBbrOverlay();
+                }
+                this.maybeApplyFlowFollowDeepLink();
                 if (this.telemetryErrorNode) {
                     this.telemetryErrorNode.textContent = '';
                 }
@@ -2931,7 +3209,9 @@ class NetworkStackVisualization {
             ],
             netfilter: () => [
                 ['drop/s', n(m.netfilter?.drop_per_sec)],
-                ['drop ratio', `${(n(m.netfilter?.drop_ratio) * 100).toFixed(2)}%`]
+                ['drop ratio', `${(n(m.netfilter?.drop_ratio) * 100).toFixed(2)}%`],
+                ['conntrack', `${n(m.netfilter?.conntrack_count)} / ${n(m.netfilter?.conntrack_max) || '—'}`],
+                ['ct usage', `${(n(m.netfilter?.conntrack_usage) * 100).toFixed(2)}%`]
             ],
             driver: () => [
                 ['iface', m.driver?.iface ?? 'n/a'],
@@ -2951,7 +3231,500 @@ class NetworkStackVisualization {
     }
 
     getIpMapData() {
+        if (this.ipMapFrozen) return this.ipMapFrozen;
         return this.telemetryData?.ip_map || { routes: [], neigh: [], icmp: {}, ip: {} };
+    }
+
+    freezeIpMapSnapshot() {
+        const live = this.telemetryData?.ip_map || { routes: [], neigh: [], icmp: {}, ip: {} };
+        try {
+            this.ipMapFrozen = JSON.parse(JSON.stringify(live));
+        } catch (_) {
+            this.ipMapFrozen = live;
+        }
+    }
+
+    escapeHtml(value) {
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    ipv4ToBe32(ip) {
+        const parts = String(ip || '').split('.').map((x) => Number(x));
+        if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n) || n < 0 || n > 255)) {
+            return null;
+        }
+        const host = ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
+        // Network byte order (big-endian) as stored in __be32 / sockaddr_in.
+        const be = host;
+        return {
+            dotted: parts.join('.'),
+            host,
+            be,
+            hex: `0x${be.toString(16).padStart(8, '0')}`,
+            bytes: parts.map((n) => `0x${n.toString(16).padStart(2, '0')}`).join(' '),
+        };
+    }
+
+    portToBe16(port) {
+        const p = Number(port);
+        if (!Number.isFinite(p) || p < 0 || p > 65535) return { port: 0, hex: '0x0000' };
+        return { port: p, hex: `0x${p.toString(16).padStart(4, '0')}` };
+    }
+
+    macToHa(mac) {
+        const parts = String(mac || '').toLowerCase().split(':').filter(Boolean);
+        if (parts.length !== 6) return { mac: String(mac || '??'), ha: 'ha[] unfinished', bytes: [] };
+        const bytes = parts.map((b) => `0x${b.padStart(2, '0')}`);
+        return { mac: parts.join(':'), ha: `{ ${bytes.join(', ')} }`, bytes };
+    }
+
+    parseEndpoint(endpoint) {
+        const value = String(endpoint || '').trim();
+        if (!value) return { ip: '', port: null };
+        const sep = value.lastIndexOf(':');
+        if (sep <= 0) return { ip: value, port: null };
+        const ip = value.slice(0, sep);
+        const portNum = Number(value.slice(sep + 1));
+        return { ip, port: Number.isFinite(portNum) ? portNum : null };
+    }
+
+    parseFlowFollowFromUrl() {
+        try {
+            const params = new URLSearchParams(window.location.search || '');
+            const remote = String(params.get('remote') || '').trim();
+            if (!remote) return null;
+            const local = String(params.get('local') || '').trim();
+            const proto = String(params.get('proto') || 'TCP').toUpperCase();
+            const { ip, port } = this.parseEndpoint(remote);
+            if (!ip) return null;
+            return { remote, local, proto, ip, port: port != null ? port : 443 };
+        } catch (_) {
+            return null;
+        }
+    }
+
+    applyFlowFollowOverride() {
+        if (!this.flowFollow) {
+            this.flowFollow = this.parseFlowFollowFromUrl();
+        }
+        if (!this.flowFollow || !this.telemetryData) return;
+        const ff = this.flowFollow;
+        const prev = this.telemetryData.flow || {};
+        this.telemetryData.flow = {
+            ...prev,
+            remote: ff.remote,
+            local: ff.local || prev.local || null,
+            type: ff.proto || prev.type || 'TCP',
+            state_name: prev.state_name || 'ESTABLISHED',
+            state_code: prev.state_code || '01',
+        };
+    }
+
+    maybeApplyFlowFollowDeepLink() {
+        if (this._flowFollowApplied) return;
+        if (!this.flowFollow) this.flowFollow = this.parseFlowFollowFromUrl();
+        if (!this.flowFollow || !this.telemetryData?.ip_map) return;
+        this._flowFollowApplied = true;
+        this.applyFlowFollowOverride();
+        this.updateTelemetryUI();
+
+        const map = this.getIpMapData();
+        const routes = Array.isArray(map.routes) ? map.routes : [];
+        const neigh = Array.isArray(map.neigh) ? map.neigh : [];
+        const routeIndex = routes.findIndex((r) => r.default);
+        const resolvedRoute = routeIndex >= 0 ? routes[routeIndex] : (routes[0] || null);
+        const nexthop = (resolvedRoute?.gateway && resolvedRoute.gateway !== '*')
+            ? resolvedRoute.gateway
+            : this.flowFollow.ip;
+        let neighIndex = neigh.findIndex((n) => n.ip === this.flowFollow.ip);
+        if (neighIndex < 0) neighIndex = neigh.findIndex((n) => n.ip === nexthop);
+
+        const target = {
+            kind: 'flow',
+            ip: this.flowFollow.ip,
+            port: this.flowFollow.port,
+            routeIndex: routeIndex >= 0 ? routeIndex : (routes.length ? 0 : -1),
+            neighIndex,
+            follow: true,
+        };
+        // Defer one frame so overlay UI nodes exist after activate/init.
+        requestAnimationFrame(() => this.openIpKernelMorph(target));
+    }
+
+    resolveMorphContext(target) {
+        const map = this.getIpMapData();
+        const routes = Array.isArray(map.routes) ? map.routes : [];
+        const neigh = Array.isArray(map.neigh) ? map.neigh : [];
+        const flow = this.telemetryData?.flow || {};
+        const flowRemote = String(flow.remote || '');
+        const parsedFlow = this.parseEndpoint(flowRemote);
+        const flowIp = parsedFlow.ip;
+        const flowPortRaw = parsedFlow.port;
+
+        let kind = target?.kind || 'route';
+        let ip = target?.ip || '';
+        let port = target?.port != null ? target.port : (Number(flowPortRaw) || 443);
+        let route = null;
+        let hop = null;
+
+        if (kind === 'route' && Number.isFinite(Number(target?.index))) {
+            route = routes[Number(target.index)] || null;
+        } else if (kind === 'neigh' && Number.isFinite(Number(target?.index))) {
+            hop = neigh[Number(target.index)] || null;
+            ip = hop?.ip || ip;
+        } else if (kind === 'flow') {
+            ip = ip || flowIp;
+        }
+
+        if (Number.isFinite(Number(target?.routeIndex)) && Number(target.routeIndex) >= 0) {
+            route = routes[Number(target.routeIndex)] || route;
+        }
+        if (Number.isFinite(Number(target?.neighIndex)) && Number(target.neighIndex) >= 0) {
+            hop = neigh[Number(target.neighIndex)] || hop;
+        }
+
+        if (!route && ip) {
+            // Prefer default route for remote destinations; else first matching iface route.
+            route = routes.find((r) => r.default) || routes[0] || null;
+        }
+        if (!ip) {
+            if (route?.gateway && route.gateway !== '*') ip = route.gateway;
+            else if (hop?.ip) ip = hop.ip;
+            else if (flowIp) ip = flowIp;
+        }
+        if (!hop && ip) {
+            hop = neigh.find((n) => n.ip === ip) || null;
+        }
+        // For gateway routes, neigh is usually the gateway, not the remote.
+        const nexthopIp = (route?.gateway && route.gateway !== '*') ? route.gateway : ip;
+        if (!hop && nexthopIp) {
+            hop = neigh.find((n) => n.ip === nexthopIp) || null;
+        }
+
+        const routeIndex = route ? routes.indexOf(route) : -1;
+        const neighIndex = hop ? neigh.indexOf(hop) : -1;
+
+        return {
+            kind,
+            ip: ip || nexthopIp || '0.0.0.0',
+            port,
+            route,
+            hop,
+            nexthopIp: nexthopIp || ip || '0.0.0.0',
+            iface: hop?.iface || route?.iface || '?',
+            flow,
+            routeIndex,
+            neighIndex,
+        };
+    }
+
+    buildIpKernelMorphHtml(target) {
+        const ctx = this.resolveMorphContext(target);
+        const addr = this.ipv4ToBe32(ctx.ip);
+        const nhAddr = this.ipv4ToBe32(ctx.nexthopIp);
+        const port = this.portToBe16(ctx.port);
+        const ha = this.macToHa(ctx.hop?.mac);
+        const route = ctx.route || {};
+        const ttl = Number(this.getIpMapData()?.ip?.default_ttl) || 64;
+        const destLabel = route.default
+            ? 'default'
+            : (route.destination || ctx.ip);
+        const gwLabel = route.gateway && route.gateway !== '*' ? route.gateway : 'on-link';
+        const fibType = route.default ? 'RTN_UNICAST (default)' : 'RTN_UNICAST';
+        const neighState = ctx.hop?.state || 'INCOMPLETE';
+        const esc = (v) => this.escapeHtml(v);
+
+        const step = (sym, title, body, accent) => `
+            <div class="ns-ip-morph-step" style="opacity:0; transform:translateY(6px); transition:opacity 320ms ease, transform 320ms ease; flex:1 1 140px; min-width:132px; background:rgba(8,12,20,0.78); border:1px solid ${accent}; border-radius:6px; padding:8px 9px;">
+                <div style="font-size:8px; letter-spacing:0.7px; color:#7f93a6; margin-bottom:3px;">${esc(title)}</div>
+                <div style="font-size:11px; color:#e8f2f9; line-height:1.35; word-break:break-word;">${body}</div>
+                <div style="margin-top:6px; font-size:8.5px; letter-spacing:0.4px; color:#a9d4e8;">${esc(sym)}</div>
+            </div>`;
+
+        const arrow = `<div class="ns-ip-morph-arrow" style="opacity:0; transition:opacity 280ms ease; color:#556273; font-size:14px; padding:0 2px;">↓</div>`;
+
+        return `
+            <div class="ns-ip-morph" data-morph="1" style="margin:0 0 12px; padding:10px 12px; border:1px solid rgba(230,193,90,0.35); border-radius:8px; background:linear-gradient(180deg, rgba(230,193,90,0.08), rgba(8,12,20,0.35));">
+                <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+                    <div style="flex:1;">
+                        <div style="font-size:9px; letter-spacing:1px; color:#e6c15a;">IP → KERNEL TRANSLATION</div>
+                        <div style="font-size:10px; color:#8d99a7; margin-top:2px;">address is not a string in the kernel — it becomes integers, fib_result, neighbour, dst</div>
+                    </div>
+                    <button type="button" class="ns-ip-morph-close" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.5px; color:#c8ccd4; background:transparent; border:1px solid rgba(160,170,190,0.35); border-radius:12px; padding:4px 10px;">CLOSE</button>
+                </div>
+                <div style="display:flex; flex-direction:column; gap:6px; align-items:stretch;">
+                    ${step('inet_pton / sockaddr_in', '1 · SOCKET ADDR', `
+                        <span style="color:#d4dde7">${esc(ctx.ip)}:${esc(port.port)}</span><br>
+                        <span style="color:#8d99a7;font-size:10px;">sin_addr / sin_port</span>
+                    `, 'rgba(212,221,231,0.28)')}
+                    ${arrow}
+                    ${step('__be32 / htons', '2 · WIRE INTEGERS', `
+                        <span style="color:#a9d4e8">${esc(addr?.hex || '0x????????')}</span>
+                        <span style="color:#6f8597;"> :</span>
+                        <span style="color:#a9d4e8">${esc(port.hex)}</span><br>
+                        <span style="color:#8d99a7;font-size:10px;">${esc(addr?.bytes || '')} · port be16</span>
+                    `, 'rgba(103,190,224,0.4)')}
+                    ${arrow}
+                    ${step('fib_table_lookup', '3 · fib_result', `
+                        dest <span style="color:#e6c15a">${esc(destLabel)}</span><br>
+                        nh/gw <span style="color:#a9d4e8">${esc(gwLabel)}</span>
+                        · oif <span style="color:#96ffbe">${esc(ctx.iface)}</span><br>
+                        <span style="color:#8d99a7;font-size:10px;">${esc(fibType)} · metric ${esc(route.metric ?? '—')} · nh ${esc(nhAddr?.hex || '—')}</span>
+                    `, 'rgba(230,193,90,0.45)')}
+                    ${arrow}
+                    ${step('neigh_resolve_output', '4 · neighbour / dst', `
+                        nexthop <span style="color:#a9d4e8">${esc(ctx.nexthopIp)}</span><br>
+                        ha[] <span style="color:#96ffbe">${esc(ha.ha)}</span><br>
+                        <span style="color:#8d99a7;font-size:10px;">nud=${esc(neighState)} · dst_entry → ha</span>
+                    `, 'rgba(150,255,190,0.35)')}
+                    ${arrow}
+                    ${step('dev_queue_xmit', '5 · sk_buff → NIC', `
+                        skb → dev <span style="color:#96ffbe">${esc(ctx.iface)}</span> ring<br>
+                        <span style="color:#8d99a7;font-size:10px;">eth hdr · TTL ${esc(ttl)} · qdisc / NAPI path</span>
+                    `, 'rgba(103,190,224,0.35)')}
+                </div>
+                <div style="margin-top:8px; font-size:8.5px; color:#556273; letter-spacing:0.4px;">
+                    symbols: ip_route_output_key → fib_table_lookup → neigh_lookup → neigh_resolve_output → dev_queue_xmit
+                </div>
+            </div>`;
+    }
+
+    animateIpMorph(root) {
+        if (!root) return;
+        const steps = [...root.querySelectorAll('.ns-ip-morph-step')];
+        const arrows = [...root.querySelectorAll('.ns-ip-morph-arrow')];
+        steps.forEach((el, i) => {
+            setTimeout(() => {
+                el.style.opacity = '1';
+                el.style.transform = 'translateY(0)';
+                if (arrows[i]) arrows[i].style.opacity = '1';
+            }, 90 + i * 160);
+        });
+    }
+
+    clearKernelGhost() {
+        if (this._ghostTimer) {
+            clearTimeout(this._ghostTimer);
+            this._ghostTimer = null;
+        }
+        if (this._ghostFadeTimer) {
+            clearTimeout(this._ghostFadeTimer);
+            this._ghostFadeTimer = null;
+        }
+        if (this._ghostEl) {
+            this._ghostEl.remove();
+            this._ghostEl = null;
+        }
+    }
+
+    flashKernelGhost(anchorEl, code = 'fib_lookup(fl4)') {
+        if (!anchorEl || typeof anchorEl.getBoundingClientRect !== 'function') return;
+        this.clearKernelGhost();
+        const rect = anchorEl.getBoundingClientRect();
+        if (!rect || rect.width < 2) return;
+
+        const el = document.createElement('div');
+        el.className = 'ns-kernel-ghost';
+        el.textContent = String(code || 'fib_lookup(fl4)');
+        const preferLeft = rect.right > window.innerWidth - 220;
+        const left = preferLeft
+            ? Math.max(8, rect.left - 12)
+            : Math.min(window.innerWidth - 12, rect.right + 10);
+        const top = Math.max(8, rect.top + rect.height / 2 - 12);
+        el.style.cssText = [
+            'position:fixed',
+            `left:${left}px`,
+            `top:${top}px`,
+            preferLeft ? 'transform:translate(-100%,0) translateX(6px)' : 'transform:translateX(-6px)',
+            'opacity:0',
+            'pointer-events:none',
+            'z-index:10050',
+            'font:12px "Share Tech Mono", monospace',
+            'letter-spacing:0.4px',
+            'color:rgba(230,193,90,0.88)',
+            'text-shadow:0 0 10px rgba(230,193,90,0.35)',
+            'background:rgba(8,12,20,0.55)',
+            'border:1px solid rgba(230,193,90,0.28)',
+            'border-radius:4px',
+            'padding:3px 8px',
+            'white-space:nowrap',
+            'transition:opacity 220ms ease, transform 220ms ease',
+        ].join(';');
+        document.body.appendChild(el);
+        this._ghostEl = el;
+
+        const reveal = () => {
+            if (this._ghostEl !== el) return;
+            el.style.opacity = '1';
+            el.style.transform = preferLeft ? 'translate(-100%,0) translateX(0)' : 'translateX(0)';
+        };
+        requestAnimationFrame(reveal);
+        setTimeout(reveal, 32);
+
+        this._ghostTimer = setTimeout(() => {
+            if (this._ghostEl !== el) return;
+            el.style.opacity = '0';
+            el.style.transform = preferLeft
+                ? 'translate(-100%,0) translateX(-8px)'
+                : 'translateX(8px)';
+            this._ghostFadeTimer = setTimeout(() => {
+                if (this._ghostEl === el) {
+                    el.remove();
+                    this._ghostEl = null;
+                }
+            }, 260);
+        }, 1700);
+    }
+
+    kernelGhostCodeForIpTarget(target) {
+        const t = target || this.ipMorphTarget || {};
+        if (t.kind === 'neigh') return 'neigh_lookup(&key)';
+        if (t.kind === 'route') return 'fib_lookup(fl4)';
+        if (t.kind === 'flow') return 'ip_route_output_key()';
+        return 'fib_lookup(fl4)';
+    }
+
+    flashKernelGhostForIpTarget(root) {
+        const t = this.ipMorphTarget;
+        if (!t || !root) return;
+        let anchor = null;
+        if (t.kind === 'route' && Number.isFinite(Number(t.index))) {
+            anchor = root.querySelector(`.ns-ip-route-row[data-route-index="${Number(t.index)}"]`);
+        } else if (t.kind === 'neigh' && Number.isFinite(Number(t.index))) {
+            anchor = root.querySelector(`.ns-ip-neigh-row[data-neigh-index="${Number(t.index)}"]`);
+        } else if (t.kind === 'flow') {
+            if (Number.isFinite(Number(t.neighIndex)) && Number(t.neighIndex) >= 0) {
+                anchor = root.querySelector(`.ns-ip-neigh-row[data-neigh-index="${Number(t.neighIndex)}"]`);
+            }
+            if (!anchor && Number.isFinite(Number(t.routeIndex)) && Number(t.routeIndex) >= 0) {
+                anchor = root.querySelector(`.ns-ip-route-row[data-route-index="${Number(t.routeIndex)}"]`);
+            }
+        }
+        if (!anchor) {
+            anchor = root.querySelector('.ns-ip-route-row, .ns-ip-neigh-row, .ns-ip-morph');
+        }
+        this.flashKernelGhost(anchor, this.kernelGhostCodeForIpTarget(t));
+    }
+
+    bindIpMapInteractions(root) {
+        if (!root) return;
+        root.querySelectorAll('.ns-ip-route-row').forEach((el) => {
+            el.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const index = Number(el.getAttribute('data-route-index'));
+                this.openIpKernelMorph({ kind: 'route', index });
+            });
+        });
+        root.querySelectorAll('.ns-ip-neigh-row').forEach((el) => {
+            el.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const index = Number(el.getAttribute('data-neigh-index'));
+                this.openIpKernelMorph({ kind: 'neigh', index });
+            });
+        });
+        const back = root.querySelector('.ns-ip-back-puzzle');
+        if (back) {
+            back.addEventListener('click', () => {
+                this.ipMapPinned = false;
+                this.ipMorphTarget = null;
+                this.ipMapFrozen = null;
+                this._ipMapPanelSig = null;
+                if (this.drillLayerId === 'ip') this.closeLayerDrilldown();
+                else this.updatePacketLifecycleUI();
+            });
+        }
+        const morphClose = root.querySelector('.ns-ip-morph-close');
+        if (morphClose) {
+            morphClose.addEventListener('click', (e) => {
+                e.stopPropagation();
+                // Close ribbon only: restore right panel to pre-morph IP map (no ribbon).
+                this.ipMorphTarget = null;
+                this._ipMapPanelSig = null;
+                this.renderIpLayerMapPanel();
+                this.refreshIpMapViews({ drillOnly: true });
+            });
+        }
+        const morphRoot = root.querySelector('.ns-ip-morph');
+        if (morphRoot) this.animateIpMorph(morphRoot);
+    }
+
+    refreshIpMapViews({ drillOnly = false } = {}) {
+        if (!drillOnly && this.lifecyclePanelNode && (this.ipMapPinned || this.drillLayerId === 'ip')) {
+            this.renderIpLayerMapPanel();
+        }
+        if (this.drillLayerId === 'ip' && this.drillScrim?.style.display === 'block') {
+            // Rebuild drill body map section without collapsing overlay.
+            const info = this.getLayerDrillInfo('ip');
+            if (!info || !this.drillPanel) return;
+            const act = Math.round(Math.max(0, Math.min(1, Number(this.layerActivity.ip ?? 0))) * 100);
+            const actCol = act > 80 ? 'rgba(232,96,104,0.95)' : (act > 55 ? 'rgba(230,193,90,0.95)' : 'rgba(103,190,224,0.95)');
+            const metrics = this.getLayerDrillMetrics('ip');
+            const metricCells = metrics.map(([k, v]) => `
+                <div style="background:rgba(8,12,20,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">
+                    <div style="font-size:8.5px; letter-spacing:0.6px; color:#7f93a6; text-transform:uppercase;">${k}</div>
+                    <div style="font-size:18px; color:#e2edf5; line-height:1.15; margin-top:2px;">${v}</div>
+                </div>`).join('');
+            const morph = this.ipMorphTarget ? this.buildIpKernelMorphHtml(this.ipMorphTarget) : `
+                <div style="margin:0 0 10px; font-size:10px; color:#6f8597; letter-spacing:0.4px;">
+                    tip: click a <span style="color:#e6c15a">route</span> or <span style="color:#a9d4e8">neigh</span> row to watch IP → kernel translation
+                </div>`;
+            const html = `
+                <div style="display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid rgba(230,193,90,0.35); background:linear-gradient(90deg, rgba(230,193,90,0.12), rgba(103,190,224,0.05));">
+                    <div style="flex:1 1 auto;">
+                        <div style="font-size:8px; letter-spacing:1.4px; color:#6f8597;">STACK LAYER · NETWORK · L04</div>
+                        <div style="font-size:20px; letter-spacing:1.2px; color:#e8f2f9;">IP · FIB / ROUTE / NEIGH / ICMP</div>
+                    </div>
+                    <div style="flex:none; text-align:right;">
+                        <div style="font-size:8px; letter-spacing:1px; color:#6f8597;">LIVE ACTIVITY</div>
+                        <div style="font-size:22px; color:${actCol};">${act}<span style="font-size:11px; color:#7f93a6;">%</span></div>
+                    </div>
+                    <div class="ns-ov-close" style="flex:none; cursor:pointer; width:26px; height:26px; border:1px solid rgba(160,170,190,0.4); border-radius:4px; display:flex; align-items:center; justify-content:center; color:#c8ccd4; font-size:14px;">✕</div>
+                </div>
+                <div style="padding:14px 18px 16px; max-height:78vh; overflow:auto;">
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin-bottom:12px;">${metricCells}</div>
+                    <div style="font-size:11.5px; line-height:1.6; color:#c2cede; margin-bottom:10px;">${info.what}</div>
+                    <div style="margin-bottom:8px; font-size:10.5px; line-height:1.55; color:#9db6c8; border-left:2px solid rgba(230,193,90,0.6); padding-left:9px;"><span style="color:#e6c15a; letter-spacing:0.5px;">WATCH · </span>${info.watch}</div>
+                    ${morph}
+                    ${this.buildIpLayerMapHtml({ compact: false })}
+                </div>`;
+            window.setSafeHtml(this.drillPanel, html);
+            const closeBtn = this.drillPanel.querySelector('.ns-ov-close');
+            if (closeBtn) closeBtn.addEventListener('click', () => this.closeLayerDrilldown());
+            this.bindIpMapInteractions(this.drillPanel);
+            if (this._ghostPending) {
+                this._ghostPending = false;
+                requestAnimationFrame(() => this.flashKernelGhostForIpTarget(this.drillPanel));
+            }
+        }
+    }
+
+    openIpKernelMorph(target) {
+        this.freezeIpMapSnapshot();
+        const next = target || { kind: 'flow' };
+        // For flow follow, attach route/neigh indexes so the map rows light up.
+        if (next.kind === 'flow' && (next.routeIndex == null || next.neighIndex == null)) {
+            const ctx = this.resolveMorphContext(next);
+            if (next.routeIndex == null) next.routeIndex = ctx.routeIndex;
+            if (next.neighIndex == null) next.neighIndex = ctx.neighIndex;
+            if (!next.ip) next.ip = ctx.ip;
+            if (next.port == null) next.port = ctx.port;
+        }
+        this.ipMorphTarget = next;
+        this.ipMapPinned = true;
+        this._ipMapPanelSig = null;
+        this._ghostPending = true;
+        // Morph lives only in the center overlay — keep the right panel as the
+        // compact IP map (pre-ribbon layout) so it still fits.
+        if (this.lifecyclePanelNode) this.renderIpLayerMapPanel();
+        if (this.drillLayerId !== 'ip') {
+            this.openLayerDrilldown('ip');
+            return;
+        }
+        this.refreshIpMapViews({ drillOnly: true });
     }
 
     buildIpLayerMapHtml({ compact = false } = {}) {
@@ -2962,31 +3735,43 @@ class NetworkStackVisualization {
         const ip = map.ip || {};
         const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
         const fwd = n(ip.forwarding) === 1 ? 'forwarding ON' : 'host (no forward)';
+        let selectedRoute = this.ipMorphTarget?.kind === 'route' ? Number(this.ipMorphTarget.index) : -1;
+        let selectedNeigh = this.ipMorphTarget?.kind === 'neigh' ? Number(this.ipMorphTarget.index) : -1;
+        if (this.ipMorphTarget?.kind === 'flow') {
+            if (Number.isFinite(Number(this.ipMorphTarget.routeIndex))) {
+                selectedRoute = Number(this.ipMorphTarget.routeIndex);
+            }
+            if (Number.isFinite(Number(this.ipMorphTarget.neighIndex))) {
+                selectedNeigh = Number(this.ipMorphTarget.neighIndex);
+            }
+        }
         const routeRows = routes.length
-            ? routes.map((r) => {
+            ? routes.map((r, idx) => {
                 const dest = r.default
                     ? '<span style="color:#e6c15a">default</span>'
-                    : `<span style="color:#d4dde7">${r.destination}</span>`;
+                    : `<span style="color:#d4dde7">${this.escapeHtml(r.destination)}</span>`;
                 const via = r.gateway && r.gateway !== '*'
-                    ? `via <span style="color:#a9d4e8">${r.gateway}</span>`
+                    ? `via <span style="color:#a9d4e8">${this.escapeHtml(r.gateway)}</span>`
                     : 'on-link';
-                return `<div style="display:flex; gap:8px; flex-wrap:wrap; padding:3px 0; border-bottom:1px solid rgba(70,82,98,0.25);">
+                const active = idx === selectedRoute;
+                return `<div class="ns-ip-route-row" data-route-index="${idx}" title="Translate this route into kernel objects" style="display:flex; gap:8px; flex-wrap:wrap; padding:4px 4px; margin:0 -4px; border-bottom:1px solid rgba(70,82,98,0.25); cursor:pointer; border-radius:4px; background:${active ? 'rgba(230,193,90,0.12)' : 'transparent'};">
                     <span style="min-width:118px;">${dest}</span>
                     <span style="color:#8d99a7;">${via}</span>
-                    <span style="color:#6f8597;">dev ${r.iface}</span>
+                    <span style="color:#6f8597;">dev ${this.escapeHtml(r.iface)}</span>
                     <span style="color:#556273;margin-left:auto;">metric ${r.metric ?? 0}</span>
                 </div>`;
             }).join('')
             : '<div style="color:#6f8597;">no routes in /proc/net/route</div>';
         const neighRows = neigh.length
-            ? neigh.map((h) => {
+            ? neigh.map((h, idx) => {
                 const st = String(h.state || 'STALE');
                 const stCol = st === 'REACHABLE' ? '#96ffbe' : (st === 'INCOMPLETE' ? '#e69696' : '#e6c15a');
-                return `<div style="display:flex; gap:8px; flex-wrap:wrap; padding:3px 0; border-bottom:1px solid rgba(70,82,98,0.25);">
-                    <span style="color:#a9d4e8;min-width:110px;">${h.ip}</span>
-                    <span style="color:#c2cede;">${h.mac}</span>
-                    <span style="color:#6f8597;">dev ${h.iface}</span>
-                    <span style="color:${stCol};margin-left:auto;letter-spacing:0.5px;">${st}</span>
+                const active = idx === selectedNeigh;
+                return `<div class="ns-ip-neigh-row" data-neigh-index="${idx}" title="Translate this neighbour into dst/ha[]" style="display:flex; gap:8px; flex-wrap:wrap; padding:4px 4px; margin:0 -4px; border-bottom:1px solid rgba(70,82,98,0.25); cursor:pointer; border-radius:4px; background:${active ? 'rgba(103,190,224,0.12)' : 'transparent'};">
+                    <span style="color:#a9d4e8;min-width:110px;">${this.escapeHtml(h.ip)}</span>
+                    <span style="color:#c2cede;">${this.escapeHtml(h.mac)}</span>
+                    <span style="color:#6f8597;">dev ${this.escapeHtml(h.iface)}</span>
+                    <span style="color:${stCol};margin-left:auto;letter-spacing:0.5px;">${this.escapeHtml(st)}</span>
                 </div>`;
             }).join('')
             : '<div style="color:#6f8597;">no ARP/neigh entries</div>';
@@ -2996,6 +3781,10 @@ class NetworkStackVisualization {
                 <div style="font-size:${compact ? '14px' : '16px'}; color:#e2edf5; margin-top:2px;">${value}</div>
             </div>`;
         const icmpHot = n(icmp.in_errors) + n(icmp.out_errors) + n(icmp.in_dest_unreach) > 0;
+        // Morph ribbon is center-overlay only — never inject into the right panel.
+        const tip = compact
+            ? '<div style="font-size:8.5px;color:#556273;margin:0 0 6px;">click route/neigh → IP→kernel morph (center)</div>'
+            : '';
         const flowDiagram = `
             <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:8px 0 10px; font-size:9px; letter-spacing:0.4px;">
                 <span style="color:#6f8597;">LOOKUP</span>
@@ -3016,14 +3805,15 @@ class NetworkStackVisualization {
                 </div>
                 ${compact ? `<button type="button" class="ns-ip-back-puzzle" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.6px; color:#a9d4e8; background:rgba(103,190,224,0.1); border:1px solid rgba(103,190,224,0.4); border-radius:12px; padding:4px 10px;">← PUZZLE</button>` : ''}
             </div>
+            ${tip}
             ${flowDiagram}
             <div style="display:grid; grid-template-columns:${compact ? '1.2fr 1fr 0.9fr' : '1.15fr 1fr 0.95fr'}; gap:10px;">
                 <div>
-                    <div style="font-size:8px; letter-spacing:1px; color:#e6c15a; margin-bottom:4px;">FIB / ROUTES</div>
+                    <div style="font-size:8px; letter-spacing:1px; color:#e6c15a; margin-bottom:4px;">FIB / ROUTES <span style="color:#556273;letter-spacing:0.3px;">· click</span></div>
                     <div style="max-height:${compact ? '12vh' : '28vh'}; overflow:auto; font-size:9.5px; line-height:1.45;">${routeRows}</div>
                 </div>
                 <div>
-                    <div style="font-size:8px; letter-spacing:1px; color:#a9d4e8; margin-bottom:4px;">NEIGH / ARP</div>
+                    <div style="font-size:8px; letter-spacing:1px; color:#a9d4e8; margin-bottom:4px;">NEIGH / ARP <span style="color:#556273;letter-spacing:0.3px;">· click</span></div>
                     <div style="max-height:${compact ? '12vh' : '28vh'}; overflow:auto; font-size:9.5px; line-height:1.45;">${neighRows}</div>
                 </div>
                 <div>
@@ -3043,38 +3833,250 @@ class NetworkStackVisualization {
     renderIpLayerMapPanel() {
         if (!this.lifecyclePanelNode) return;
         window.setSafeHtml(this.lifecyclePanelNode, this.buildIpLayerMapHtml({ compact: true }));
-        const back = this.lifecyclePanelNode.querySelector('.ns-ip-back-puzzle');
-        if (back) {
-            back.addEventListener('click', () => {
-                this.ipMapPinned = false;
-                if (this.drillLayerId === 'ip') this.closeLayerDrilldown();
-                else this.updatePacketLifecycleUI();
-            });
+        this.bindIpMapInteractions(this.lifecyclePanelNode);
+    }
+
+    getTcpSnap() {
+        if (this.tcpFrozen) return this.tcpFrozen;
+        const m = this.telemetryData?.layer_metrics?.tcp_udp || {};
+        const b = this.telemetryData?.bbr || {};
+        const flow = this.telemetryData?.flow || {};
+        return { tcp_udp: m, bbr: b, flow };
+    }
+
+    freezeTcpSnapshot() {
+        const snap = {
+            tcp_udp: { ...(this.telemetryData?.layer_metrics?.tcp_udp || {}) },
+            bbr: { ...(this.telemetryData?.bbr || {}) },
+            flow: { ...(this.telemetryData?.flow || {}) },
+        };
+        try {
+            this.tcpFrozen = JSON.parse(JSON.stringify(snap));
+        } catch (_) {
+            this.tcpFrozen = snap;
         }
     }
 
-    openLayerDrilldown(layerId) {
-        if (!this.drillScrim || !this.drillPanel) return;
-        const info = this.getLayerDrillInfo(layerId);
-        if (!info) return;
-        this.drillLayerId = layerId;
+    buildTcpKernelMorphHtml(target = {}) {
+        const snap = this.getTcpSnap();
+        const t = snap.tcp_udp || {};
+        const b = snap.bbr || {};
+        const flow = snap.flow || {};
+        const n = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
+        const esc = (v) => this.escapeHtml(v);
+        const cwnd = n(t.cwnd ?? b.cwnd);
+        const mss = n(b.mss, 1448);
+        const rtt = n(t.rtt_ms ?? b.rtt_ms);
+        const minRtt = n(t.min_rtt_ms ?? b.min_rtt_ms, rtt);
+        const retrans = n(t.retrans_per_sec);
+        const cc = String(t.cc || b.cc || 'unknown');
+        const pacing = n(b.pacing_rate_mbps ?? t.delivery_rate_mbps);
+        const delivery = n(t.delivery_rate_mbps ?? b.delivery_rate_mbps);
+        const inflightBytes = cwnd * mss;
+        const inflightKb = inflightBytes >= 1024 ? `${(inflightBytes / 1024).toFixed(1)} KiB` : `${inflightBytes} B`;
+        const local = flow.local || 'local';
+        const remote = flow.remote || 'remote';
+        const state = flow.state_name || 'ESTABLISHED';
+        const focus = target.focus || 'flow';
+        const hi = (key, accent) => (focus === key ? accent : 'rgba(96,110,128,0.32)');
 
-        if (layerId === 'ip') {
-            this.ipMapPinned = true;
-            this.drillPanel.style.width = 'min(980px, 92vw)';
-            const act = Math.round(Math.max(0, Math.min(1, Number(this.layerActivity.ip ?? 0))) * 100);
+        const step = (sym, title, body, accent) => `
+            <div class="ns-tcp-morph-step" style="opacity:0; transform:translateY(6px); transition:opacity 320ms ease, transform 320ms ease; flex:1 1 140px; min-width:132px; background:rgba(8,12,20,0.78); border:1px solid ${accent}; border-radius:6px; padding:8px 9px;">
+                <div style="font-size:8px; letter-spacing:0.7px; color:#7f93a6; margin-bottom:3px;">${esc(title)}</div>
+                <div style="font-size:11px; color:#e8f2f9; line-height:1.35; word-break:break-word;">${body}</div>
+                <div style="margin-top:6px; font-size:8.5px; letter-spacing:0.4px; color:#a9d4e8;">${esc(sym)}</div>
+            </div>`;
+        const arrow = `<div class="ns-tcp-morph-arrow" style="opacity:0; transition:opacity 280ms ease; color:#556273; font-size:14px; padding:0 2px;">↓</div>`;
+
+        return `
+            <div class="ns-tcp-morph" data-morph="1" style="margin:0 0 12px; padding:10px 12px; border:1px solid rgba(103,190,224,0.4); border-radius:8px; background:linear-gradient(180deg, rgba(103,190,224,0.10), rgba(8,12,20,0.35));">
+                <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+                    <div style="flex:1;">
+                        <div style="font-size:9px; letter-spacing:1px; color:#a9d4e8;">TCP → KERNEL TRANSLATION</div>
+                        <div style="font-size:10px; color:#8d99a7; margin-top:2px;">a flow is not just “connected” — it is tcp_sock fields deciding what may leave the stack</div>
+                    </div>
+                    <button type="button" class="ns-tcp-morph-close" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.5px; color:#c8ccd4; background:transparent; border:1px solid rgba(160,170,190,0.35); border-radius:12px; padding:4px 10px;">CLOSE</button>
+                </div>
+                <div style="display:flex; flex-direction:column; gap:6px; align-items:stretch;">
+                    ${step('tcp_v4_connect / tcp_rcv_established', '1 · FLOW', `
+                        <span style="color:#d4dde7">${esc(local)}</span>
+                        <span style="color:#556273;"> → </span>
+                        <span style="color:#a9d4e8">${esc(remote)}</span><br>
+                        <span style="color:#8d99a7;font-size:10px;">state ${esc(state)} · sk → tcp_sock</span>
+                    `, hi('flow', 'rgba(212,221,231,0.4)'))}
+                    ${arrow}
+                    ${step('tcp_ack / tcp_rtt_estimator', '2 · tcp_sock', `
+                        snd_cwnd <span style="color:#e6c15a">${esc(cwnd)}</span>
+                        · srtt ≈ <span style="color:#a9d4e8">${esc(rtt.toFixed(1))} ms</span><br>
+                        <span style="color:#8d99a7;font-size:10px;">minrtt ${esc(minRtt.toFixed(2))} · retrans/s ${esc(retrans)}</span>
+                    `, focus === 'rtt'
+                        ? 'rgba(103,190,224,0.5)'
+                        : (focus === 'cwnd' || focus === 'retrans' ? 'rgba(230,193,90,0.5)' : 'rgba(96,110,128,0.32)'))}
+                    ${arrow}
+                    ${step('tcp_snd_wnd / tcp_tso_should_defer', '3 · SEND BUDGET', `
+                        cwnd×MSS = <span style="color:#96ffbe">${esc(inflightKb)}</span>
+                        <span style="color:#8d99a7;"> (${esc(cwnd)} × ${esc(mss)})</span><br>
+                        <span style="color:#8d99a7;font-size:10px;">bytes allowed in flight before ACK</span>
+                    `, hi('budget', 'rgba(150,255,190,0.4)'))}
+                    ${arrow}
+                    ${step('tcp_cong_control / ca_ops', '4 · CONGESTION CTL', `
+                        cc <span style="color:#e6c15a">${esc(cc)}</span>
+                        · pace <span style="color:#a9d4e8">${esc(pacing.toFixed(3))} Mbps</span><br>
+                        <span style="color:#8d99a7;font-size:10px;">delivery ${esc(delivery.toFixed(3))} Mbps · tp-&gt;ca_ops</span>
+                    `, hi('cc', 'rgba(230,193,90,0.45)'))}
+                    ${arrow}
+                    ${step('tcp_transmit_skb → ip_queue_xmit', '5 · sk_buff → IP', `
+                        skb leaves TCP → IP output<br>
+                        <span style="color:#8d99a7;font-size:10px;">then FIB / neigh morph on L04</span>
+                    `, hi('skb', 'rgba(103,190,224,0.4)'))}
+                </div>
+                <div style="margin-top:8px; font-size:8.5px; color:#556273; letter-spacing:0.4px;">
+                    symbols: tcp_rcv_established → tcp_ack → tcp_cong_control → tcp_write_xmit → tcp_transmit_skb
+                </div>
+            </div>`;
+    }
+
+    animateTcpMorph(root) {
+        if (!root) return;
+        const steps = [...root.querySelectorAll('.ns-tcp-morph-step')];
+        const arrows = [...root.querySelectorAll('.ns-tcp-morph-arrow')];
+        steps.forEach((el, i) => {
+            setTimeout(() => {
+                el.style.opacity = '1';
+                el.style.transform = 'translateY(0)';
+                if (arrows[i]) arrows[i].style.opacity = '1';
+            }, 90 + i * 160);
+        });
+    }
+
+    buildTcpLayerMapHtml({ compact = false } = {}) {
+        const snap = this.getTcpSnap();
+        const t = snap.tcp_udp || {};
+        const b = snap.bbr || {};
+        const flow = snap.flow || {};
+        const n = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
+        const esc = (v) => this.escapeHtml(v);
+        const cwnd = n(t.cwnd ?? b.cwnd);
+        const rtt = n(t.rtt_ms ?? b.rtt_ms);
+        const retrans = n(t.retrans_per_sec);
+        const cc = String(t.cc || b.cc || 'unknown');
+        const focus = this.tcpMorphTarget?.focus || '';
+        const row = (key, label, value, color) => {
+            const active = focus === key;
+            return `<div class="ns-tcp-row" data-tcp-focus="${key}" title="Translate into tcp_sock / ca_ops" style="display:flex; gap:8px; align-items:baseline; padding:5px 6px; margin:0 -4px 3px; border-radius:4px; cursor:pointer; border:1px solid ${active ? color : 'rgba(70,82,98,0.35)'}; background:${active ? 'rgba(103,190,224,0.10)' : 'rgba(8,12,20,0.35)'};">
+                <span style="min-width:${compact ? '64px' : '88px'}; font-size:8px; letter-spacing:0.6px; color:#7f93a6;">${label}</span>
+                <span style="color:${color}; font-size:${compact ? '12px' : '14px'};">${esc(value)}</span>
+            </div>`;
+        };
+        return `
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+                <div style="flex:1;">
+                    <div style="font-size:10px;color:#7f8fa2;letter-spacing:0.6px;">TCP LAYER MAP · L05 · ${esc(cc)}</div>
+                    <div style="font-size:9px;color:#556273;margin-top:2px;">ss -tin · tcp_sock · ca_ops</div>
+                </div>
+                ${compact ? `<button type="button" class="ns-tcp-back-puzzle" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.6px; color:#a9d4e8; background:rgba(103,190,224,0.1); border:1px solid rgba(103,190,224,0.4); border-radius:12px; padding:4px 10px;">← PUZZLE</button>` : ''}
+            </div>
+            ${compact ? '<div style="font-size:8.5px;color:#556273;margin:0 0 6px;">click a field → TCP→kernel morph (center)</div>' : ''}
+            <div style="display:grid; grid-template-columns:${compact ? '1fr' : '1.1fr 0.9fr'}; gap:10px;">
+                <div>
+                    ${row('flow', 'FLOW', `${flow.local || '—'} → ${flow.remote || '—'}`, '#d4dde7')}
+                    ${row('cwnd', 'CWND', `${cwnd} segments`, '#e6c15a')}
+                    ${row('rtt', 'RTT', `${rtt.toFixed(1)} ms`, '#a9d4e8')}
+                    ${row('cc', 'CC', cc, '#96ffbe')}
+                    ${row('retrans', 'RETRANS', `${retrans}/s`, retrans > 0 ? '#e69696' : '#8d99a7')}
+                </div>
+                <div style="font-size:9.5px; line-height:1.55; color:#8d99a7;">
+                    <div style="font-size:8px; letter-spacing:1px; color:#6f8597; margin-bottom:4px;">PATH</div>
+                    <div>userspace send → <span style="color:#a9d4e8">tcp_sendmsg</span></div>
+                    <div>→ window / cwnd check → <span style="color:#e6c15a">tcp_write_xmit</span></div>
+                    <div>→ skb build → <span style="color:#96ffbe">tcp_transmit_skb</span></div>
+                    <div>→ <span style="color:#d4dde7">ip_queue_xmit</span> (L04)</div>
+                    ${!compact ? `<div style="margin-top:10px;">
+                        <button type="button" class="ns-tcp-open-morph" style="cursor:pointer; font:inherit; font-size:10px; letter-spacing:0.7px; color:#a9d4e8; background:rgba(103,190,224,0.12); border:1px solid rgba(103,190,224,0.45); border-radius:14px; padding:5px 12px;">▸ TCP → KERNEL TRANSLATION</button>
+                        <button type="button" class="ns-drill-bbr" style="cursor:pointer; font:inherit; font-size:10px; letter-spacing:0.7px; color:#e6c15a; background:rgba(230,193,90,0.10); border:1px solid rgba(230,193,90,0.4); border-radius:14px; padding:5px 12px; margin-left:6px;">▸ BBR PATH MODEL</button>
+                    </div>` : ''}
+                </div>
+            </div>`;
+    }
+
+    bindTcpMapInteractions(root) {
+        if (!root) return;
+        root.querySelectorAll('.ns-tcp-row').forEach((el) => {
+            el.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const focus = el.getAttribute('data-tcp-focus') || 'flow';
+                this.openTcpKernelMorph({ focus });
+            });
+        });
+        const openMorph = root.querySelector('.ns-tcp-open-morph');
+        if (openMorph) {
+            openMorph.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.openTcpKernelMorph({ focus: 'flow' });
+            });
+        }
+        const back = root.querySelector('.ns-tcp-back-puzzle');
+        if (back) {
+            back.addEventListener('click', () => {
+                this.tcpMapPinned = false;
+                this.tcpMorphTarget = null;
+                this.tcpFrozen = null;
+                if (this.drillLayerId === 'tcp') this.closeLayerDrilldown();
+                else this.updatePacketLifecycleUI();
+            });
+        }
+        const morphClose = root.querySelector('.ns-tcp-morph-close');
+        if (morphClose) {
+            morphClose.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.tcpMorphTarget = null;
+                this.renderTcpLayerMapPanel();
+                this.refreshTcpMapViews({ drillOnly: true });
+            });
+        }
+        const bbrBtn = root.querySelector('.ns-drill-bbr');
+        if (bbrBtn) {
+            bbrBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.closeLayerDrilldown();
+                this.openBbrOverlay();
+            });
+        }
+        const morphRoot = root.querySelector('.ns-tcp-morph');
+        if (morphRoot) this.animateTcpMorph(morphRoot);
+    }
+
+    renderTcpLayerMapPanel() {
+        if (!this.lifecyclePanelNode) return;
+        window.setSafeHtml(this.lifecyclePanelNode, this.buildTcpLayerMapHtml({ compact: true }));
+        this.bindTcpMapInteractions(this.lifecyclePanelNode);
+    }
+
+    refreshTcpMapViews({ drillOnly = false } = {}) {
+        if (!drillOnly && this.lifecyclePanelNode && (this.tcpMapPinned || this.drillLayerId === 'tcp')) {
+            this.renderTcpLayerMapPanel();
+        }
+        if (this.drillLayerId === 'tcp' && this.drillScrim?.style.display === 'block') {
+            const info = this.getLayerDrillInfo('tcp');
+            if (!info || !this.drillPanel) return;
+            const act = Math.round(Math.max(0, Math.min(1, Number(this.layerActivity.tcp ?? 0))) * 100);
             const actCol = act > 80 ? 'rgba(232,96,104,0.95)' : (act > 55 ? 'rgba(230,193,90,0.95)' : 'rgba(103,190,224,0.95)');
-            const metrics = this.getLayerDrillMetrics('ip');
+            const metrics = this.getLayerDrillMetrics('tcp');
             const metricCells = metrics.map(([k, v]) => `
                 <div style="background:rgba(8,12,20,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">
                     <div style="font-size:8.5px; letter-spacing:0.6px; color:#7f93a6; text-transform:uppercase;">${k}</div>
                     <div style="font-size:18px; color:#e2edf5; line-height:1.15; margin-top:2px;">${v}</div>
                 </div>`).join('');
+            const morph = this.tcpMorphTarget
+                ? this.buildTcpKernelMorphHtml(this.tcpMorphTarget)
+                : `<div style="margin:0 0 10px; font-size:10px; color:#6f8597; letter-spacing:0.4px;">
+                    tip: click <span style="color:#e6c15a">cwnd</span> / <span style="color:#a9d4e8">rtt</span> / <span style="color:#96ffbe">cc</span> — or open the translation ribbon
+                   </div>`;
             const html = `
-                <div style="display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid rgba(230,193,90,0.35); background:linear-gradient(90deg, rgba(230,193,90,0.12), rgba(103,190,224,0.05));">
+                <div style="display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid rgba(103,190,224,0.35); background:linear-gradient(90deg, rgba(103,190,224,0.12), rgba(230,193,90,0.05));">
                     <div style="flex:1 1 auto;">
-                        <div style="font-size:8px; letter-spacing:1.4px; color:#6f8597;">STACK LAYER · NETWORK · L04</div>
-                        <div style="font-size:20px; letter-spacing:1.2px; color:#e8f2f9;">IP · FIB / ROUTE / NEIGH / ICMP</div>
+                        <div style="font-size:8px; letter-spacing:1.4px; color:#6f8597;">STACK LAYER · TRANSPORT · L05</div>
+                        <div style="font-size:20px; letter-spacing:1.2px; color:#e8f2f9;">TCP · SOCK / CWND / CC / SKB</div>
                     </div>
                     <div style="flex:none; text-align:right;">
                         <div style="font-size:8px; letter-spacing:1px; color:#6f8597;">LIVE ACTIVITY</div>
@@ -3085,19 +4087,682 @@ class NetworkStackVisualization {
                 <div style="padding:14px 18px 16px; max-height:78vh; overflow:auto;">
                     <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin-bottom:12px;">${metricCells}</div>
                     <div style="font-size:11.5px; line-height:1.6; color:#c2cede; margin-bottom:10px;">${info.what}</div>
-                    <div style="margin-bottom:8px; font-size:10.5px; line-height:1.55; color:#9db6c8; border-left:2px solid rgba(230,193,90,0.6); padding-left:9px;"><span style="color:#e6c15a; letter-spacing:0.5px;">WATCH · </span>${info.watch}</div>
-                    ${this.buildIpLayerMapHtml({ compact: false })}
+                    <div style="margin-bottom:8px; font-size:10.5px; line-height:1.55; color:#9db6c8; border-left:2px solid rgba(103,190,224,0.6); padding-left:9px;"><span style="color:#a9d4e8; letter-spacing:0.5px;">WATCH · </span>${info.watch}</div>
+                    ${morph}
+                    ${this.buildTcpLayerMapHtml({ compact: false })}
                 </div>`;
             window.setSafeHtml(this.drillPanel, html);
             const closeBtn = this.drillPanel.querySelector('.ns-ov-close');
             if (closeBtn) closeBtn.addEventListener('click', () => this.closeLayerDrilldown());
-            this.renderIpLayerMapPanel();
+            this.bindTcpMapInteractions(this.drillPanel);
+        }
+    }
+
+    openTcpKernelMorph(target) {
+        this.freezeTcpSnapshot();
+        this.tcpMorphTarget = target || { focus: 'flow' };
+        this.tcpMapPinned = true;
+        // Clear other pins so the right panel shows TCP map only.
+        this.ipMapPinned = false;
+        this.ipMorphTarget = null;
+        this.nfMapPinned = false;
+        this.nfMorphTarget = null;
+        this.sockMapPinned = false;
+        this.sockMorphTarget = null;
+        if (this.lifecyclePanelNode) this.renderTcpLayerMapPanel();
+        if (this.drillLayerId !== 'tcp') {
+            this.openLayerDrilldown('tcp');
+            return;
+        }
+        this.refreshTcpMapViews({ drillOnly: true });
+    }
+
+    getNfSnap() {
+        if (this.nfFrozen) return this.nfFrozen;
+        return {
+            netfilter: { ...(this.telemetryData?.layer_metrics?.netfilter || {}) },
+            flow: { ...(this.telemetryData?.flow || {}) },
+        };
+    }
+
+    freezeNfSnapshot() {
+        const snap = this.getNfSnap();
+        try {
+            this.nfFrozen = JSON.parse(JSON.stringify(snap));
+        } catch (_) {
+            this.nfFrozen = snap;
+        }
+    }
+
+    buildNfKernelMorphHtml(target = {}) {
+        const snap = this.getNfSnap();
+        const nf = snap.netfilter || {};
+        const flow = snap.flow || {};
+        const n = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
+        const esc = (v) => this.escapeHtml(v);
+        const drops = n(nf.drop_per_sec);
+        const ratio = n(nf.drop_ratio);
+        const ct = n(nf.conntrack_count);
+        const ctMax = n(nf.conntrack_max);
+        const ctUsage = n(nf.conntrack_usage);
+        const engine = nf.nft ? 'nftables' : (nf.nf_conntrack ? 'iptables+ct' : 'netfilter');
+        const verdict = drops > 0.5 || ratio > 0.01 ? 'NF_DROP pressure' : 'NF_ACCEPT path';
+        const verdictCol = drops > 0.5 || ratio > 0.01 ? '#e69696' : '#96ffbe';
+        const focus = target.focus || 'hook';
+        const hi = (key, accent) => (focus === key ? accent : 'rgba(96,110,128,0.32)');
+        const step = (sym, title, body, accent) => (
+            '<div class="ns-nf-morph-step" style="opacity:0; transform:translateY(6px); transition:opacity 320ms ease, transform 320ms ease; flex:1 1 140px; min-width:132px; background:rgba(8,12,20,0.78); border:1px solid '
+            + accent + '; border-radius:6px; padding:8px 9px;">'
+            + '<div style="font-size:8px; letter-spacing:0.7px; color:#7f93a6; margin-bottom:3px;">' + esc(title) + '</div>'
+            + '<div style="font-size:11px; color:#e8f2f9; line-height:1.35; word-break:break-word;">' + body + '</div>'
+            + '<div style="margin-top:6px; font-size:8.5px; letter-spacing:0.4px; color:#a9d4e8;">' + esc(sym) + '</div>'
+            + '</div>'
+        );
+        const arrow = '<div class="ns-nf-morph-arrow" style="opacity:0; transition:opacity 280ms ease; color:#556273; font-size:14px; padding:0 2px;">↓</div>';
+        const flowName = esc(flow.state_name || '-');
+        const stepsHtml = [
+            step(
+                'NF_HOOK / nf_hook_slow',
+                '1 · HOOK',
+                '<span style="color:#e69696">PREROUTING → LOCAL_IN / FORWARD → POSTROUTING</span><br>'
+                + '<span style="color:#8d99a7;font-size:10px;">engine ' + esc(engine) + ' · flow ' + flowName + '</span>',
+                hi('hook', 'rgba(232,96,104,0.45)')
+            ),
+            arrow,
+            step(
+                'nf_conntrack_in',
+                '2 · CONNTRACK',
+                'ct entries <span style="color:#a9d4e8">' + esc(ct) + '</span>'
+                + ' / <span style="color:#8d99a7">' + esc(ctMax || '-') + '</span>'
+                + ' · <span style="color:#e6c15a">' + esc((ctUsage * 100).toFixed(2)) + '%</span><br>'
+                + '<span style="color:#8d99a7;font-size:10px;">tuple → nf_conn · NEW / ESTABLISHED</span>',
+                hi('ct', 'rgba(103,190,224,0.45)')
+            ),
+            arrow,
+            step(
+                'nft_do_chain / iptable_*',
+                '3 · CHAIN',
+                'rules walk the skb at the active hook<br>'
+                + '<span style="color:#8d99a7;font-size:10px;">match → target (filter / nat / mangle)</span>',
+                hi('chain', 'rgba(230,193,90,0.45)')
+            ),
+            arrow,
+            step(
+                'nft_verdict / NF_DROP',
+                '4 · VERDICT',
+                '<span style="color:' + verdictCol + '">' + esc(verdict) + '</span><br>'
+                + '<span style="color:#8d99a7;font-size:10px;">drop/s ' + esc(drops) + ' · ratio ' + (ratio * 100).toFixed(2) + '%</span>',
+                hi('verdict', 'rgba(232,96,104,0.5)')
+            ),
+            arrow,
+            step(
+                'okfn / skb continue',
+                '5 · CONTINUE',
+                'ACCEPT → stack continues · DROP → kfree_skb<br>'
+                + '<span style="color:#8d99a7;font-size:10px;">surviving skb → TCP/IP path</span>',
+                hi('continue', 'rgba(150,255,190,0.35)')
+            ),
+        ].join('');
+
+        return (
+            '<div class="ns-nf-morph" data-morph="1" style="margin:0 0 12px; padding:10px 12px; border:1px solid rgba(232,96,104,0.4); border-radius:8px; background:linear-gradient(180deg, rgba(232,96,104,0.10), rgba(8,12,20,0.35));">'
+            + '<div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">'
+            + '<div style="flex:1;">'
+            + '<div style="font-size:9px; letter-spacing:1px; color:#e69696;">NETFILTER → KERNEL TRANSLATION</div>'
+            + '<div style="font-size:10px; color:#8d99a7; margin-top:2px;">policy is not a black box — hooks, conntrack tuples, then a verdict on the skb</div>'
+            + '</div>'
+            + '<button type="button" class="ns-nf-morph-close" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.5px; color:#c8ccd4; background:transparent; border:1px solid rgba(160,170,190,0.35); border-radius:12px; padding:4px 10px;">CLOSE</button>'
+            + '</div>'
+            + '<div style="display:flex; flex-direction:column; gap:6px; align-items:stretch;">'
+            + stepsHtml
+            + '</div>'
+            + '<div style="margin-top:8px; font-size:8.5px; color:#556273; letter-spacing:0.4px;">'
+            + 'symbols: nf_hook_slow → nf_conntrack_in → nft_do_chain → nft_verdict → okfn'
+            + '</div></div>'
+        );
+    }
+
+    animateNfMorph(root) {
+        if (!root) return;
+        const steps = [...root.querySelectorAll('.ns-nf-morph-step')];
+        const arrows = [...root.querySelectorAll('.ns-nf-morph-arrow')];
+        steps.forEach((el, i) => {
+            setTimeout(() => {
+                el.style.opacity = '1';
+                el.style.transform = 'translateY(0)';
+                if (arrows[i]) arrows[i].style.opacity = '1';
+            }, 90 + i * 160);
+        });
+    }
+
+    buildNfLayerMapHtml({ compact = false } = {}) {
+        const snap = this.getNfSnap();
+        const nf = snap.netfilter || {};
+        const n = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
+        const esc = (v) => this.escapeHtml(v);
+        const drops = n(nf.drop_per_sec);
+        const ratio = n(nf.drop_ratio);
+        const ct = n(nf.conntrack_count);
+        const ctMax = n(nf.conntrack_max);
+        const engine = nf.nft ? 'nftables' : (nf.nf_conntrack ? 'iptables+ct' : 'netfilter');
+        const focus = this.nfMorphTarget?.focus || '';
+        const row = (key, label, value, color) => {
+            const active = focus === key;
+            return `<div class="ns-nf-row" data-nf-focus="${key}" title="Translate into hooks / conntrack / verdict" style="display:flex; gap:8px; align-items:baseline; padding:5px 6px; margin:0 -4px 3px; border-radius:4px; cursor:pointer; border:1px solid ${active ? color : 'rgba(70,82,98,0.35)'}; background:${active ? 'rgba(232,96,104,0.10)' : 'rgba(8,12,20,0.35)'};">
+                <span style="min-width:${compact ? '64px' : '88px'}; font-size:8px; letter-spacing:0.6px; color:#7f93a6;">${label}</span>
+                <span style="color:${color}; font-size:${compact ? '12px' : '14px'};">${esc(value)}</span>
+            </div>`;
+        };
+        return `
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+                <div style="flex:1;">
+                    <div style="font-size:10px;color:#7f8fa2;letter-spacing:0.6px;">NETFILTER MAP · L03 · ${esc(engine)}</div>
+                    <div style="font-size:9px;color:#556273;margin-top:2px;">hooks · nf_conntrack · verdict</div>
+                </div>
+                ${compact ? `<button type="button" class="ns-nf-back-puzzle" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.6px; color:#a9d4e8; background:rgba(103,190,224,0.1); border:1px solid rgba(103,190,224,0.4); border-radius:12px; padding:4px 10px;">← PUZZLE</button>` : ''}
+            </div>
+            ${compact ? '<div style="font-size:8.5px;color:#556273;margin:0 0 6px;">click a field → Netfilter→kernel morph (center)</div>' : ''}
+            <div style="display:grid; grid-template-columns:${compact ? '1fr' : '1.1fr 0.9fr'}; gap:10px;">
+                <div>
+                    ${row('hook', 'HOOKS', 'PREROUTING…POSTROUTING', '#e69696')}
+                    ${row('ct', 'CONNTRACK', `${ct} / ${ctMax || '—'}`, '#a9d4e8')}
+                    ${row('verdict', 'DROPS', `${drops}/s · ${(ratio * 100).toFixed(2)}%`, drops > 0 ? '#e69696' : '#8d99a7')}
+                    ${row('chain', 'ENGINE', engine, '#e6c15a')}
+                </div>
+                <div style="font-size:9.5px; line-height:1.55; color:#8d99a7;">
+                    <div style="font-size:8px; letter-spacing:1px; color:#6f8597; margin-bottom:4px;">RX PATH</div>
+                    <div>NIC → <span style="color:#e69696">PREROUTING</span></div>
+                    <div>→ <span style="color:#a9d4e8">nf_conntrack_in</span></div>
+                    <div>→ <span style="color:#e6c15a">nft_do_chain</span></div>
+                    <div>→ verdict → TCP/IP or drop</div>
+                    ${!compact ? `<div style="margin-top:10px;">
+                        <button type="button" class="ns-nf-open-morph" style="cursor:pointer; font:inherit; font-size:10px; letter-spacing:0.7px; color:#e69696; background:rgba(232,96,104,0.12); border:1px solid rgba(232,96,104,0.45); border-radius:14px; padding:5px 12px;">▸ NETFILTER → KERNEL TRANSLATION</button>
+                    </div>` : ''}
+                </div>
+            </div>`;
+    }
+
+    bindNfMapInteractions(root) {
+        if (!root) return;
+        root.querySelectorAll('.ns-nf-row').forEach((el) => {
+            el.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.openNfKernelMorph({ focus: el.getAttribute('data-nf-focus') || 'hook' });
+            });
+        });
+        const openMorph = root.querySelector('.ns-nf-open-morph');
+        if (openMorph) {
+            openMorph.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.openNfKernelMorph({ focus: 'hook' });
+            });
+        }
+        const back = root.querySelector('.ns-nf-back-puzzle');
+        if (back) {
+            back.addEventListener('click', () => {
+                this.nfMapPinned = false;
+                this.nfMorphTarget = null;
+                this.nfFrozen = null;
+                if (this.drillLayerId === 'netfilter') this.closeLayerDrilldown();
+                else this.updatePacketLifecycleUI();
+            });
+        }
+        const morphClose = root.querySelector('.ns-nf-morph-close');
+        if (morphClose) {
+            morphClose.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.nfMorphTarget = null;
+                this.renderNfLayerMapPanel();
+                this.refreshNfMapViews({ drillOnly: true });
+            });
+        }
+        const morphRoot = root.querySelector('.ns-nf-morph');
+        if (morphRoot) this.animateNfMorph(morphRoot);
+    }
+
+    renderNfLayerMapPanel() {
+        if (!this.lifecyclePanelNode) return;
+        window.setSafeHtml(this.lifecyclePanelNode, this.buildNfLayerMapHtml({ compact: true }));
+        this.bindNfMapInteractions(this.lifecyclePanelNode);
+    }
+
+    refreshNfMapViews({ drillOnly = false } = {}) {
+        if (!drillOnly && this.lifecyclePanelNode && (this.nfMapPinned || this.drillLayerId === 'netfilter')) {
+            this.renderNfLayerMapPanel();
+        }
+        if (this.drillLayerId === 'netfilter' && this.drillScrim?.style.display === 'block') {
+            const info = this.getLayerDrillInfo('netfilter');
+            if (!info || !this.drillPanel) return;
+            const act = Math.round(Math.max(0, Math.min(1, Number(this.layerActivity.netfilter ?? 0))) * 100);
+            const actCol = act > 80 ? 'rgba(232,96,104,0.95)' : (act > 55 ? 'rgba(230,193,90,0.95)' : 'rgba(103,190,224,0.95)');
+            const metrics = this.getLayerDrillMetrics('netfilter');
+            const metricCells = metrics.map(([k, v]) => `
+                <div style="background:rgba(8,12,20,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">
+                    <div style="font-size:8.5px; letter-spacing:0.6px; color:#7f93a6; text-transform:uppercase;">${k}</div>
+                    <div style="font-size:18px; color:#e2edf5; line-height:1.15; margin-top:2px;">${v}</div>
+                </div>`).join('');
+            const morph = this.nfMorphTarget
+                ? this.buildNfKernelMorphHtml(this.nfMorphTarget)
+                : `<div style="margin:0 0 10px; font-size:10px; color:#6f8597; letter-spacing:0.4px;">
+                    tip: click <span style="color:#e69696">hooks</span> / <span style="color:#a9d4e8">conntrack</span> / <span style="color:#e6c15a">verdict</span>
+                   </div>`;
+            const html = `
+                <div style="display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid rgba(232,96,104,0.35); background:linear-gradient(90deg, rgba(232,96,104,0.12), rgba(103,190,224,0.05));">
+                    <div style="flex:1 1 auto;">
+                        <div style="font-size:8px; letter-spacing:1.4px; color:#6f8597;">STACK LAYER · FIREWALL · L03</div>
+                        <div style="font-size:20px; letter-spacing:1.2px; color:#e8f2f9;">NETFILTER · HOOK / CT / VERDICT</div>
+                    </div>
+                    <div style="flex:none; text-align:right;">
+                        <div style="font-size:8px; letter-spacing:1px; color:#6f8597;">LIVE ACTIVITY</div>
+                        <div style="font-size:22px; color:${actCol};">${act}<span style="font-size:11px; color:#7f93a6;">%</span></div>
+                    </div>
+                    <div class="ns-ov-close" style="flex:none; cursor:pointer; width:26px; height:26px; border:1px solid rgba(160,170,190,0.4); border-radius:4px; display:flex; align-items:center; justify-content:center; color:#c8ccd4; font-size:14px;">✕</div>
+                </div>
+                <div style="padding:14px 18px 16px; max-height:78vh; overflow:auto;">
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin-bottom:12px;">${metricCells}</div>
+                    <div style="font-size:11.5px; line-height:1.6; color:#c2cede; margin-bottom:10px;">${info.what}</div>
+                    <div style="margin-bottom:8px; font-size:10.5px; line-height:1.55; color:#9db6c8; border-left:2px solid rgba(232,96,104,0.6); padding-left:9px;"><span style="color:#e69696; letter-spacing:0.5px;">WATCH · </span>${info.watch}</div>
+                    ${morph}
+                    ${this.buildNfLayerMapHtml({ compact: false })}
+                </div>`;
+            window.setSafeHtml(this.drillPanel, html);
+            const closeBtn = this.drillPanel.querySelector('.ns-ov-close');
+            if (closeBtn) closeBtn.addEventListener('click', () => this.closeLayerDrilldown());
+            this.bindNfMapInteractions(this.drillPanel);
+        }
+    }
+
+    openNfKernelMorph(target) {
+        this.freezeNfSnapshot();
+        this.nfMorphTarget = target || { focus: 'hook' };
+        this.nfMapPinned = true;
+        this.ipMapPinned = false;
+        this.ipMorphTarget = null;
+        this.tcpMapPinned = false;
+        this.tcpMorphTarget = null;
+        this.sockMapPinned = false;
+        this.sockMorphTarget = null;
+        if (this.lifecyclePanelNode) this.renderNfLayerMapPanel();
+        if (this.drillLayerId !== 'netfilter') {
+            this.openLayerDrilldown('netfilter');
+            return;
+        }
+        this.refreshNfMapViews({ drillOnly: true });
+    }
+
+    getSockSnap() {
+        if (this.sockFrozen) return this.sockFrozen;
+        return {
+            socket_api: { ...(this.telemetryData?.layer_metrics?.socket_api || {}) },
+            flow: { ...(this.telemetryData?.flow || {}) },
+        };
+    }
+
+    freezeSockSnapshot() {
+        const snap = this.getSockSnap();
+        try {
+            this.sockFrozen = JSON.parse(JSON.stringify(snap));
+        } catch (_) {
+            this.sockFrozen = snap;
+        }
+    }
+
+    buildSockKernelMorphHtml(target = {}) {
+        const snap = this.getSockSnap();
+        const sa = snap.socket_api || {};
+        const flow = snap.flow || {};
+        const ex = sa.example || {};
+        const n = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
+        const esc = (v) => this.escapeHtml(v);
+        const fd = ex.fd != null ? ex.fd : (flow.fd != null ? flow.fd : null);
+        const inode = n(ex.inode != null ? ex.inode : flow.inode);
+        const pid = ex.pid != null ? ex.pid : (flow.pid != null ? flow.pid : null);
+        const proc = ex.process || flow.process || 'process';
+        const local = ex.local || flow.local || 'local';
+        const remote = ex.remote || flow.remote || 'remote';
+        const state = ex.state_name || flow.state_name || 'ESTABLISHED';
+        const est = n(sa.established);
+        const active = n(sa.active_sockets);
+        const focus = target.focus || 'fd';
+        const hi = (key, accent) => (focus === key ? accent : 'rgba(96,110,128,0.32)');
+        const fdLabel = fd != null ? String(fd) : 'fd?';
+        const inodeLabel = inode > 0 ? String(inode) : 'inode?';
+        const pidLabel = pid != null ? String(pid) : 'pid?';
+        const skHint = inode > 0 ? ('sk@inode:' + inode) : 'struct sock *';
+
+        const step = (sym, title, body, accent) => (
+            '<div class="ns-sock-morph-step" style="opacity:0; transform:translateY(6px); transition:opacity 320ms ease, transform 320ms ease; flex:1 1 140px; min-width:132px; background:rgba(8,12,20,0.78); border:1px solid '
+            + accent + '; border-radius:6px; padding:8px 9px;">'
+            + '<div style="font-size:8px; letter-spacing:0.7px; color:#7f93a6; margin-bottom:3px;">' + esc(title) + '</div>'
+            + '<div style="font-size:11px; color:#e8f2f9; line-height:1.35; word-break:break-word;">' + body + '</div>'
+            + '<div style="margin-top:6px; font-size:8.5px; letter-spacing:0.4px; color:#a9d4e8;">' + esc(sym) + '</div>'
+            + '</div>'
+        );
+        const arrow = '<div class="ns-sock-morph-arrow" style="opacity:0; transition:opacity 280ms ease; color:#556273; font-size:14px; padding:0 2px;">↓</div>';
+        const stepsHtml = [
+            step(
+                'fget / fdtable',
+                '1 · FILE DESCRIPTOR',
+                'fd <span style="color:#96ffbe">' + esc(fdLabel) + '</span>'
+                + ' · pid <span style="color:#a9d4e8">' + esc(pidLabel) + '</span>'
+                + ' <span style="color:#8d99a7;">(' + esc(proc) + ')</span><br>'
+                + '<span style="color:#8d99a7;font-size:10px;">userspace handle → files_struct</span>',
+                hi('fd', 'rgba(150,255,190,0.45)')
+            ),
+            arrow,
+            step(
+                'SOCKET_I(inode)',
+                '2 · INODE → socket',
+                'inode <span style="color:#e6c15a">' + esc(inodeLabel) + '</span>'
+                + ' · uid <span style="color:#8d99a7">' + esc(ex.uid != null ? ex.uid : (flow.uid || 0)) + '</span><br>'
+                + '<span style="color:#8d99a7;font-size:10px;">file → dentry → inode → struct socket</span>',
+                hi('inode', 'rgba(230,193,90,0.45)')
+            ),
+            arrow,
+            step(
+                'sock_alloc / socket->sk',
+                '3 · struct sock *',
+                '<span style="color:#a9d4e8">' + esc(skHint) + '</span><br>'
+                + '<span style="color:#d4dde7">' + esc(local) + '</span>'
+                + '<span style="color:#556273;"> → </span>'
+                + '<span style="color:#a9d4e8">' + esc(remote) + '</span><br>'
+                + '<span style="color:#8d99a7;font-size:10px;">state ' + esc(state) + ' · protocol socket object</span>',
+                hi('sk', 'rgba(103,190,224,0.5)')
+            ),
+            arrow,
+            step(
+                'sk_receive_queue / sk_write_queue',
+                '4 · QUEUES',
+                'active <span style="color:#a9d4e8">' + esc(active) + '</span>'
+                + ' · established <span style="color:#96ffbe">' + esc(est) + '</span><br>'
+                + '<span style="color:#8d99a7;font-size:10px;">recv/send buffers · accept backlog · wakeups</span>',
+                hi('queue', 'rgba(150,255,190,0.35)')
+            ),
+            arrow,
+            step(
+                'sock_sendmsg / sock_recvmsg',
+                '5 · SYSCALL PATH',
+                'sendmsg / recvmsg copy between user pages and sk_buff<br>'
+                + '<span style="color:#8d99a7;font-size:10px;">fd stays the only handle the process ever sees</span>',
+                hi('syscall', 'rgba(212,221,231,0.35)')
+            ),
+        ].join('');
+
+        return (
+            '<div class="ns-sock-morph" data-morph="1" style="margin:0 0 12px; padding:10px 12px; border:1px solid rgba(150,255,190,0.4); border-radius:8px; background:linear-gradient(180deg, rgba(150,255,190,0.10), rgba(8,12,20,0.35));">'
+            + '<div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">'
+            + '<div style="flex:1;">'
+            + '<div style="font-size:9px; letter-spacing:1px; color:#96ffbe;">SOCKET → KERNEL TRANSLATION</div>'
+            + '<div style="font-size:10px; color:#8d99a7; margin-top:2px;">an fd is not the socket — it is a path: fd → file → inode → socket → sock*</div>'
+            + '</div>'
+            + '<button type="button" class="ns-sock-morph-close" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.5px; color:#c8ccd4; background:transparent; border:1px solid rgba(160,170,190,0.35); border-radius:12px; padding:4px 10px;">CLOSE</button>'
+            + '</div>'
+            + '<div style="display:flex; flex-direction:column; gap:6px; align-items:stretch;">'
+            + stepsHtml
+            + '</div>'
+            + '<div style="margin-top:8px; font-size:8.5px; color:#556273; letter-spacing:0.4px;">'
+            + 'symbols: fget → SOCKET_I → socket-&gt;sk → sk_*_queue → sock_sendmsg/recvmsg'
+            + '</div></div>'
+        );
+    }
+
+    animateSockMorph(root) {
+        if (!root) return;
+        const steps = [...root.querySelectorAll('.ns-sock-morph-step')];
+        const arrows = [...root.querySelectorAll('.ns-sock-morph-arrow')];
+        steps.forEach((el, i) => {
+            setTimeout(() => {
+                el.style.opacity = '1';
+                el.style.transform = 'translateY(0)';
+                if (arrows[i]) arrows[i].style.opacity = '1';
+            }, 90 + i * 160);
+        });
+    }
+
+    buildSockLayerMapHtml({ compact = false } = {}) {
+        const snap = this.getSockSnap();
+        const sa = snap.socket_api || {};
+        const flow = snap.flow || {};
+        const ex = sa.example || {};
+        const n = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
+        const esc = (v) => this.escapeHtml(v);
+        const fd = ex.fd != null ? ex.fd : flow.fd;
+        const inode = n(ex.inode != null ? ex.inode : flow.inode);
+        const pid = ex.pid != null ? ex.pid : flow.pid;
+        const proc = ex.process || flow.process || '—';
+        const local = ex.local || flow.local || '—';
+        const remote = ex.remote || flow.remote || '—';
+        const state = ex.state_name || flow.state_name || '—';
+        const focus = this.sockMorphTarget?.focus || '';
+        const row = (key, label, value, color) => {
+            const active = focus === key;
+            return (
+                '<div class="ns-sock-row" data-sock-focus="' + key + '" title="Translate into fd → sock*" style="display:flex; gap:8px; align-items:baseline; padding:5px 6px; margin:0 -4px 3px; border-radius:4px; cursor:pointer; border:1px solid '
+                + (active ? color : 'rgba(70,82,98,0.35)') + '; background:'
+                + (active ? 'rgba(150,255,190,0.10)' : 'rgba(8,12,20,0.35)') + ';">'
+                + '<span style="min-width:' + (compact ? '64px' : '88px') + '; font-size:8px; letter-spacing:0.6px; color:#7f93a6;">' + label + '</span>'
+                + '<span style="color:' + color + '; font-size:' + (compact ? '12px' : '14px') + ';">' + esc(value) + '</span>'
+                + '</div>'
+            );
+        };
+        return (
+            '<div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">'
+            + '<div style="flex:1;">'
+            + '<div style="font-size:10px;color:#7f8fa2;letter-spacing:0.6px;">SOCKET MAP · L06 · fd → sock*</div>'
+            + '<div style="font-size:9px;color:#556273;margin-top:2px;">files_struct · inode · struct sock</div>'
+            + '</div>'
+            + (compact
+                ? '<button type="button" class="ns-sock-back-puzzle" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.6px; color:#a9d4e8; background:rgba(103,190,224,0.1); border:1px solid rgba(103,190,224,0.4); border-radius:12px; padding:4px 10px;">← PUZZLE</button>'
+                : '')
+            + '</div>'
+            + (compact ? '<div style="font-size:8.5px;color:#556273;margin:0 0 6px;">click a field → Socket→kernel morph (center)</div>' : '')
+            + '<div style="display:grid; grid-template-columns:' + (compact ? '1fr' : '1.1fr 0.9fr') + '; gap:10px;">'
+            + '<div>'
+            + row('fd', 'FD', fd != null ? (fd + ' · pid ' + (pid != null ? pid : '?')) : 'n/a (no process match)', '#96ffbe')
+            + row('inode', 'INODE', inode > 0 ? String(inode) : 'n/a', '#e6c15a')
+            + row('sk', 'SOCK*', local + ' → ' + remote, '#a9d4e8')
+            + row('queue', 'QUEUES', 'est ' + n(sa.established) + ' / active ' + n(sa.active_sockets), '#96ffbe')
+            + row('syscall', 'STATE', state + ' · ' + proc, '#d4dde7')
+            + '</div>'
+            + '<div style="font-size:9.5px; line-height:1.55; color:#8d99a7;">'
+            + '<div style="font-size:8px; letter-spacing:1px; color:#6f8597; margin-bottom:4px;">LOOKUP PATH</div>'
+            + '<div>userspace <span style="color:#96ffbe">fd</span></div>'
+            + '<div>→ <span style="color:#e6c15a">inode / SOCKET_I</span></div>'
+            + '<div>→ <span style="color:#a9d4e8">struct sock *</span></div>'
+            + '<div>→ queues → TCP/UDP</div>'
+            + (!compact
+                ? '<div style="margin-top:10px;">'
+                  + '<button type="button" class="ns-sock-open-morph" style="cursor:pointer; font:inherit; font-size:10px; letter-spacing:0.7px; color:#96ffbe; background:rgba(150,255,190,0.12); border:1px solid rgba(150,255,190,0.45); border-radius:14px; padding:5px 12px;">▸ SOCKET → KERNEL TRANSLATION</button>'
+                  + '</div>'
+                : '')
+            + '</div></div>'
+        );
+    }
+
+    bindSockMapInteractions(root) {
+        if (!root) return;
+        root.querySelectorAll('.ns-sock-row').forEach((el) => {
+            el.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.openSockKernelMorph({ focus: el.getAttribute('data-sock-focus') || 'fd' });
+            });
+        });
+        const openMorph = root.querySelector('.ns-sock-open-morph');
+        if (openMorph) {
+            openMorph.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.openSockKernelMorph({ focus: 'fd' });
+            });
+        }
+        const back = root.querySelector('.ns-sock-back-puzzle');
+        if (back) {
+            back.addEventListener('click', () => {
+                this.sockMapPinned = false;
+                this.sockMorphTarget = null;
+                this.sockFrozen = null;
+                if (this.drillLayerId === 'socket') this.closeLayerDrilldown();
+                else this.updatePacketLifecycleUI();
+            });
+        }
+        const morphClose = root.querySelector('.ns-sock-morph-close');
+        if (morphClose) {
+            morphClose.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.sockMorphTarget = null;
+                this.renderSockLayerMapPanel();
+                this.refreshSockMapViews({ drillOnly: true });
+            });
+        }
+        const morphRoot = root.querySelector('.ns-sock-morph');
+        if (morphRoot) this.animateSockMorph(morphRoot);
+    }
+
+    renderSockLayerMapPanel() {
+        if (!this.lifecyclePanelNode) return;
+        window.setSafeHtml(this.lifecyclePanelNode, this.buildSockLayerMapHtml({ compact: true }));
+        this.bindSockMapInteractions(this.lifecyclePanelNode);
+    }
+
+    refreshSockMapViews({ drillOnly = false } = {}) {
+        if (!drillOnly && this.lifecyclePanelNode && (this.sockMapPinned || this.drillLayerId === 'socket')) {
+            this.renderSockLayerMapPanel();
+        }
+        if (this.drillLayerId === 'socket' && this.drillScrim?.style.display === 'block') {
+            const info = this.getLayerDrillInfo('socket');
+            if (!info || !this.drillPanel) return;
+            const act = Math.round(Math.max(0, Math.min(1, Number(this.layerActivity.socket ?? 0))) * 100);
+            const actCol = act > 80 ? 'rgba(232,96,104,0.95)' : (act > 55 ? 'rgba(230,193,90,0.95)' : 'rgba(103,190,224,0.95)');
+            const metrics = this.getLayerDrillMetrics('socket');
+            const metricCells = metrics.map(([k, v]) => (
+                '<div style="background:rgba(8,12,20,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">'
+                + '<div style="font-size:8.5px; letter-spacing:0.6px; color:#7f93a6; text-transform:uppercase;">' + this.escapeHtml(k) + '</div>'
+                + '<div style="font-size:18px; color:#e2edf5; line-height:1.15; margin-top:2px;">' + this.escapeHtml(v) + '</div>'
+                + '</div>'
+            )).join('');
+            const morph = this.sockMorphTarget
+                ? this.buildSockKernelMorphHtml(this.sockMorphTarget)
+                : '<div style="margin:0 0 10px; font-size:10px; color:#6f8597; letter-spacing:0.4px;">'
+                  + 'tip: click <span style="color:#96ffbe">fd</span> / <span style="color:#e6c15a">inode</span> / <span style="color:#a9d4e8">sock*</span>'
+                  + '</div>';
+            const html = (
+                '<div style="display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid rgba(150,255,190,0.35); background:linear-gradient(90deg, rgba(150,255,190,0.12), rgba(103,190,224,0.05));">'
+                + '<div style="flex:1 1 auto;">'
+                + '<div style="font-size:8px; letter-spacing:1.4px; color:#6f8597;">STACK LAYER · SOCKET API · L06</div>'
+                + '<div style="font-size:20px; letter-spacing:1.2px; color:#e8f2f9;">SOCKET · FD / INODE / SOCK*</div>'
+                + '</div>'
+                + '<div style="flex:none; text-align:right;">'
+                + '<div style="font-size:8px; letter-spacing:1px; color:#6f8597;">LIVE ACTIVITY</div>'
+                + '<div style="font-size:22px; color:' + actCol + ';">' + act + '<span style="font-size:11px; color:#7f93a6;">%</span></div>'
+                + '</div>'
+                + '<div class="ns-ov-close" style="flex:none; cursor:pointer; width:26px; height:26px; border:1px solid rgba(160,170,190,0.4); border-radius:4px; display:flex; align-items:center; justify-content:center; color:#c8ccd4; font-size:14px;">✕</div>'
+                + '</div>'
+                + '<div style="padding:14px 18px 16px; max-height:78vh; overflow:auto;">'
+                + '<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin-bottom:12px;">' + metricCells + '</div>'
+                + '<div style="font-size:11.5px; line-height:1.6; color:#c2cede; margin-bottom:10px;">' + info.what + '</div>'
+                + '<div style="margin-bottom:8px; font-size:10.5px; line-height:1.55; color:#9db6c8; border-left:2px solid rgba(150,255,190,0.6); padding-left:9px;"><span style="color:#96ffbe; letter-spacing:0.5px;">WATCH · </span>' + info.watch + '</div>'
+                + morph
+                + this.buildSockLayerMapHtml({ compact: false })
+                + '</div>'
+            );
+            window.setSafeHtml(this.drillPanel, html);
+            const closeBtn = this.drillPanel.querySelector('.ns-ov-close');
+            if (closeBtn) closeBtn.addEventListener('click', () => this.closeLayerDrilldown());
+            this.bindSockMapInteractions(this.drillPanel);
+        }
+    }
+
+    openSockKernelMorph(target) {
+        this.freezeSockSnapshot();
+        this.sockMorphTarget = target || { focus: 'fd' };
+        this.sockMapPinned = true;
+        this.ipMapPinned = false;
+        this.ipMorphTarget = null;
+        this.tcpMapPinned = false;
+        this.tcpMorphTarget = null;
+        this.nfMapPinned = false;
+        this.nfMorphTarget = null;
+        if (this.lifecyclePanelNode) this.renderSockLayerMapPanel();
+        if (this.drillLayerId !== 'socket') {
+            this.openLayerDrilldown('socket');
+            return;
+        }
+        this.refreshSockMapViews({ drillOnly: true });
+    }
+
+    clearLayerPinsExcept(keep) {
+        if (keep !== 'ip') {
+            this.ipMapPinned = false;
+            this.ipMorphTarget = null;
+            this.ipMapFrozen = null;
+        }
+        if (keep !== 'tcp') {
+            this.tcpMapPinned = false;
+            this.tcpMorphTarget = null;
+            this.tcpFrozen = null;
+        }
+        if (keep !== 'netfilter') {
+            this.nfMapPinned = false;
+            this.nfMorphTarget = null;
+            this.nfFrozen = null;
+        }
+        if (keep !== 'socket') {
+            this.sockMapPinned = false;
+            this.sockMorphTarget = null;
+            this.sockFrozen = null;
+        }
+    }
+
+    openLayerDrilldown(layerId) {
+        if (!this.drillScrim || !this.drillPanel) return;
+        const info = this.getLayerDrillInfo(layerId);
+        if (!info) return;
+        this.drillLayerId = layerId;
+
+        if (layerId === 'ip') {
+            this.clearLayerPinsExcept('ip');
+            this.ipMapPinned = true;
+            if (!this.ipMapFrozen) this.freezeIpMapSnapshot();
+            this.drillPanel.style.width = 'min(980px, 92vw)';
             this.drillScrim.style.display = 'block';
             if (this.layerTooltipNode) this.layerTooltipNode.style.display = 'none';
+            this.refreshIpMapViews();
             return;
         }
 
-        this.ipMapPinned = false;
+        if (layerId === 'tcp') {
+            this.clearLayerPinsExcept('tcp');
+            this.tcpMapPinned = true;
+            if (!this.tcpFrozen) this.freezeTcpSnapshot();
+            this.drillPanel.style.width = 'min(980px, 92vw)';
+            this.drillScrim.style.display = 'block';
+            if (this.layerTooltipNode) this.layerTooltipNode.style.display = 'none';
+            this.refreshTcpMapViews();
+            return;
+        }
+
+        if (layerId === 'netfilter') {
+            this.clearLayerPinsExcept('netfilter');
+            this.nfMapPinned = true;
+            if (!this.nfFrozen) this.freezeNfSnapshot();
+            this.drillPanel.style.width = 'min(980px, 92vw)';
+            this.drillScrim.style.display = 'block';
+            if (this.layerTooltipNode) this.layerTooltipNode.style.display = 'none';
+            this.refreshNfMapViews();
+            return;
+        }
+
+        if (layerId === 'socket') {
+            this.clearLayerPinsExcept('socket');
+            this.sockMapPinned = true;
+            if (!this.sockFrozen) this.freezeSockSnapshot();
+            this.drillPanel.style.width = 'min(980px, 92vw)';
+            this.drillScrim.style.display = 'block';
+            if (this.layerTooltipNode) this.layerTooltipNode.style.display = 'none';
+            this.refreshSockMapViews();
+            return;
+        }
+
+        this.clearLayerPinsExcept(null);
         this.drillPanel.style.width = 'min(680px, 78vw)';
         const act = Math.round(Math.max(0, Math.min(1, Number(this.layerActivity[layerId] ?? 0))) * 100);
         const actCol = act > 80 ? 'rgba(232,96,104,0.95)' : (act > 55 ? 'rgba(230,193,90,0.95)' : 'rgba(103,190,224,0.95)');
@@ -3130,25 +4795,59 @@ class NetworkStackVisualization {
                     <div style="font-size:8px; letter-spacing:1px; color:#6f8597; margin-bottom:4px;">KEY SUBSYSTEMS</div>
                     ${subs}
                 </div>
-                ${layerId === 'tcp' ? `<div class="ns-drill-bbr" style="margin-top:14px; display:inline-block; cursor:pointer; font-size:10px; letter-spacing:0.8px; color:#a9d4e8; background:rgba(103,190,224,0.12); border:1px solid rgba(103,190,224,0.45); border-radius:14px; padding:5px 14px;">▸ OPEN TCP BBR PATH MODEL</div>` : ''}
             </div>`;
         window.setSafeHtml(this.drillPanel, html);
         const closeBtn = this.drillPanel.querySelector('.ns-ov-close');
         if (closeBtn) closeBtn.addEventListener('click', () => this.closeLayerDrilldown());
-        const bbrBtn = this.drillPanel.querySelector('.ns-drill-bbr');
-        if (bbrBtn) bbrBtn.addEventListener('click', () => { this.closeLayerDrilldown(); this.openBbrOverlay(); });
         this.drillScrim.style.display = 'block';
         if (this.layerTooltipNode) this.layerTooltipNode.style.display = 'none';
     }
 
     closeLayerDrilldown() {
         const wasIp = this.drillLayerId === 'ip';
+        const wasTcp = this.drillLayerId === 'tcp';
+        const wasNf = this.drillLayerId === 'netfilter';
+        const wasSock = this.drillLayerId === 'socket';
+        this.clearKernelGhost();
+        this._ghostPending = false;
         this.drillLayerId = null;
+        this.ipMorphTarget = null;
+        this.ipMapFrozen = null;
+        this.tcpMorphTarget = null;
+        this.tcpFrozen = null;
+        this.nfMorphTarget = null;
+        this.nfFrozen = null;
+        this.sockMorphTarget = null;
+        this.sockFrozen = null;
         if (this.drillScrim) this.drillScrim.style.display = 'none';
         if (this.drillPanel) this.drillPanel.style.width = 'min(680px, 78vw)';
-        // Keep IP map pinned in the bottom panel after closing the overlay
-        // until the user hits ← PUZZLE or opens another layer.
-        if (wasIp) this.renderIpLayerMapPanel();
+        // After closing center overlay: keep compact layer map on the right
+        // (pre-ribbon layout). ← PUZZLE restores the puzzle architecture.
+        if (wasIp) {
+            this.ipMapPinned = true;
+            this.tcpMapPinned = false;
+            this.nfMapPinned = false;
+            this.sockMapPinned = false;
+            this.renderIpLayerMapPanel();
+        } else if (wasTcp) {
+            this.tcpMapPinned = true;
+            this.ipMapPinned = false;
+            this.nfMapPinned = false;
+            this.sockMapPinned = false;
+            this.renderTcpLayerMapPanel();
+        } else if (wasNf) {
+            this.nfMapPinned = true;
+            this.ipMapPinned = false;
+            this.tcpMapPinned = false;
+            this.sockMapPinned = false;
+            this.renderNfLayerMapPanel();
+        } else if (wasSock) {
+            this.sockMapPinned = true;
+            this.ipMapPinned = false;
+            this.tcpMapPinned = false;
+            this.nfMapPinned = false;
+            this.renderSockLayerMapPanel();
+        }
     }
 
     // Push the latest BBR sample into a rolling window (used to estimate the
@@ -3388,7 +5087,7 @@ class NetworkStackVisualization {
         const dt = Math.min(0.04, (now - this.lastFrameTime) / 1000);
         this.lastFrameTime = now;
 
-        if (!this.hideVerticalOrbs) {
+        if (!this.hideVerticalOrbs || this.packetMorphEnabled) {
             this.updatePacket(dt);
         }
         this.updateEffects(dt);

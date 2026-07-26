@@ -117,6 +117,20 @@ class ActiveConnectionsManager {
                 .attr('font-family', 'monospace');
 
             this.attachSocketTooltipHandlers(row, connection);
+
+            // Flow follow: open Network stack focused on this remote in FIB/neigh.
+            row.on('click', (event) => {
+                if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+                const remote = String(connection.remote || '').trim();
+                if (!remote) return;
+                const local = String(connection.local || '').trim();
+                const type = String(connection.type || 'TCP').toUpperCase();
+                const params = new URLSearchParams();
+                params.set('remote', remote);
+                if (local) params.set('local', local);
+                if (type) params.set('proto', type);
+                window.location.assign(`/linux-network-subsystem?${params.toString()}`);
+            });
         });
     }
 
