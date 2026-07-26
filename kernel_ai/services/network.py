@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import os
 import re
 import subprocess
 import time
@@ -55,7 +56,7 @@ def get_active_connections():
             lines = f.readlines()[1:]
             for line in lines:
                 parts = line.strip().split()
-                if len(parts) < 4:
+                if len(parts) < 10:
                     continue
                 local_addr = parts[1]
                 remote_addr = parts[2]
@@ -68,6 +69,14 @@ def get_active_connections():
 
                 local_ip = hex_to_ip(local_addr.split(":")[0])
                 local_port = int(local_addr.split(":")[1], 16)
+                try:
+                    uid = int(parts[7])
+                except ValueError:
+                    uid = 0
+                try:
+                    inode = int(parts[9])
+                except ValueError:
+                    inode = 0
 
                 if remote_addr != "00000000:0000":
                     remote_ip = hex_to_ip(remote_addr.split(":")[0])
@@ -78,6 +87,8 @@ def get_active_connections():
                             "remote": f"{remote_ip}:{remote_port}",
                             "state": state,
                             "type": "TCP",
+                            "uid": uid,
+                            "inode": inode,
                         }
                     )
         return connections[:20]
@@ -97,12 +108,76 @@ def get_active_connections():
 
 def get_mock_active_connections():
     return [
-        {"local": "127.0.0.1:22", "remote": "192.168.1.100:54321", "state": "01", "type": "TCP"},
-        {"local": "0.0.0.0:80", "remote": "10.0.0.50:12345", "state": "01", "type": "TCP"},
-        {"local": "127.0.0.1:3306", "remote": "172.16.0.10:65432", "state": "01", "type": "TCP"},
-        {"local": "0.0.0.0:443", "remote": "203.0.113.0:54321", "state": "01", "type": "TCP"},
-        {"local": "127.0.0.1:5001", "remote": "192.168.1.101:12345", "state": "01", "type": "TCP"},
+        {"local": "127.0.0.1:22", "remote": "192.168.1.100:54321", "state": "01", "type": "TCP", "uid": 0, "inode": 12345},
+        {"local": "0.0.0.0:80", "remote": "10.0.0.50:12345", "state": "01", "type": "TCP", "uid": 0, "inode": 12346},
+        {"local": "127.0.0.1:3306", "remote": "172.16.0.10:65432", "state": "01", "type": "TCP", "uid": 0, "inode": 12347},
+        {"local": "0.0.0.0:443", "remote": "203.0.113.0:54321", "state": "01", "type": "TCP", "uid": 0, "inode": 12348},
+        {"local": "127.0.0.1:5001", "remote": "192.168.1.101:12345", "state": "01", "type": "TCP", "uid": 0, "inode": 12349},
     ]
+
+
+def _addr_key(addr) -> str:
+    if not addr:
+        return ""
+    if isinstance(addr, (tuple, list)) and len(addr) >= 2:
+        return f"{addr[0]}:{addr[1]}"
+    return str(addr)
+
+
+def _get_socket_example(all_connections: list) -> dict | None:
+    """Pick a live flow and attach fd/pid via psutil when possible (for Socket morph)."""
+    interesting = [
+        c
+        for c in all_connections
+        if not str(c.get("remote", "")).startswith("127.0.0.1")
+        and not str(c.get("remote", "")).startswith("0.0.0.0")
+    ]
+    # Prefer ESTABLISHED with a real inode — better for fd→sock* morph.
+    established = [
+        c for c in interesting
+        if str(c.get("state", "")).upper() == "01" and int(c.get("inode") or 0) > 0
+    ]
+    with_inode = [c for c in interesting if int(c.get("inode") or 0) > 0]
+    base = (
+        established[0]
+        if established
+        else (with_inode[0] if with_inode else (interesting[0] if interesting else (all_connections[0] if all_connections else None)))
+    )
+    if not base:
+        return None
+    example = {
+        "local": base.get("local"),
+        "remote": base.get("remote"),
+        "type": str(base.get("type", "TCP")).upper(),
+        "state_code": base.get("state", "00"),
+        "state_name": _tcp_state_name(base.get("state", "00")),
+        "inode": int(base.get("inode") or 0),
+        "uid": int(base.get("uid") or 0),
+        "fd": None,
+        "pid": None,
+        "process": None,
+    }
+    want_local = str(example["local"] or "")
+    want_remote = str(example["remote"] or "")
+    try:
+        for conn in psutil.net_connections(kind="inet"):
+            if conn.status and str(conn.status).upper() not in ("ESTABLISHED", "LISTEN", "CLOSE_WAIT", "TIME_WAIT"):
+                # Still allow match by address even for other states.
+                pass
+            local = _addr_key(conn.laddr)
+            remote = _addr_key(conn.raddr)
+            if local == want_local and (not want_remote or remote == want_remote or not remote):
+                example["fd"] = int(conn.fd) if conn.fd is not None and conn.fd >= 0 else None
+                example["pid"] = int(conn.pid) if conn.pid is not None else None
+                if example["pid"]:
+                    try:
+                        example["process"] = psutil.Process(example["pid"]).name()
+                    except (psutil.Error, OSError):
+                        example["process"] = None
+                break
+    except (psutil.Error, OSError, AttributeError):
+        pass
+    return example
 
 
 def _tcp_state_name(code):
@@ -282,6 +357,44 @@ def _rate_to_mbps(value, unit):
     return v * scale
 
 
+def _read_sysctl_int(path: str, default: int = 0) -> int:
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+            return int(fh.read().strip())
+    except (OSError, ValueError):
+        return default
+
+
+def _get_conntrack_stats() -> dict:
+    """Best-effort nf_conntrack occupancy for the Netfilter morph view."""
+    count = _read_sysctl_int("/proc/sys/net/netfilter/nf_conntrack_count", 0)
+    maximum = _read_sysctl_int("/proc/sys/net/netfilter/nf_conntrack_max", 0)
+    available = count > 0 or maximum > 0
+    # Also true when the sysctl node exists even at zero.
+    try:
+        available = available or os.path.exists("/proc/sys/net/netfilter/nf_conntrack_count")
+    except OSError:
+        pass
+    usage = round(count / maximum, 5) if maximum > 0 else 0.0
+    nf_conntrack = False
+    nft = False
+    try:
+        with open("/proc/modules", "r", encoding="utf-8", errors="ignore") as fh:
+            mods = fh.read()
+        nf_conntrack = "nf_conntrack" in mods
+        nft = "nf_tables" in mods
+    except OSError:
+        pass
+    return {
+        "available": bool(available),
+        "count": int(count),
+        "max": int(maximum),
+        "usage": usage,
+        "nf_conntrack": nf_conntrack,
+        "nft": nft,
+    }
+
+
 def _hex_le_ipv4(hex_str: str) -> str:
     raw = (hex_str or "").strip()
     if len(raw) != 8:
@@ -408,6 +521,7 @@ def get_network_stack_realtime(network_stack_prev=None):
     all_connections = get_active_connections()
     interesting = [c for c in all_connections if not c["remote"].startswith("127.0.0.1") and not c["remote"].startswith("0.0.0.0")]
     flow = interesting[0] if interesting else (all_connections[0] if all_connections else None)
+    socket_example = _get_socket_example(all_connections)
     if flow:
         flow = {
             "local": flow.get("local"),
@@ -415,12 +529,18 @@ def get_network_stack_realtime(network_stack_prev=None):
             "type": str(flow.get("type", "TCP")).upper(),
             "state_code": flow.get("state", "00"),
             "state_name": _tcp_state_name(flow.get("state", "00")),
+            "inode": int(flow.get("inode") or 0),
+            "uid": int(flow.get("uid") or 0),
+            "fd": (socket_example or {}).get("fd"),
+            "pid": (socket_example or {}).get("pid"),
+            "process": (socket_example or {}).get("process"),
         }
 
     tcpext = _parse_netstat_tcpext()
     ip_stats = _parse_snmp_section("Ip")
     tcp_stats = _parse_snmp_section("Tcp")
     ss_metrics = _get_ss_tcp_metrics()
+    conntrack = _get_conntrack_stats()
 
     retrans_total = tcpext.get("RetransSegs", 0)
     ip_in_total = ip_stats.get("InReceives", 0)
@@ -492,7 +612,12 @@ def get_network_stack_realtime(network_stack_prev=None):
         "flow": flow,
         "layer_metrics": {
             "userspace": {"active_processes": len(psutil.pids())},
-            "socket_api": {"active_sockets": len(all_connections), "established": established, "retransmits_per_sec": round(retrans_per_sec, 2)},
+            "socket_api": {
+                "active_sockets": len(all_connections),
+                "established": established,
+                "retransmits_per_sec": round(retrans_per_sec, 2),
+                "example": socket_example,
+            },
             "tcp_udp": {
                 "established": established,
                 "retrans_per_sec": round(retrans_per_sec, 2),
@@ -509,7 +634,16 @@ def get_network_stack_realtime(network_stack_prev=None):
                 "drop_per_sec": round(ip_drop_per_sec, 3),
                 "drop_ratio": round(drop_ratio, 5),
             },
-            "netfilter": {"drop_per_sec": round(ip_drop_per_sec, 3), "drop_ratio": round(drop_ratio, 5)},
+            "netfilter": {
+                "drop_per_sec": round(ip_drop_per_sec, 3),
+                "drop_ratio": round(drop_ratio, 5),
+                "conntrack_count": int(conntrack.get("count", 0)),
+                "conntrack_max": int(conntrack.get("max", 0)),
+                "conntrack_usage": float(conntrack.get("usage", 0.0)),
+                "conntrack_available": bool(conntrack.get("available")),
+                "nft": bool(conntrack.get("nft")),
+                "nf_conntrack": bool(conntrack.get("nf_conntrack")),
+            },
             "driver": {
                 "iface": iface,
                 "rx_mb_s": round(rx_per_sec / (1024 * 1024), 3),

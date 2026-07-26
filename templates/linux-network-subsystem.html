@@ -101,19 +101,30 @@ linux kernel networking
             online from the traffic itself.
         </p>
     </section>
+    <div id="network-stack-container" style="position:fixed;inset:0;background:#0E1114;z-index:1;"></div>
     <script src="/static/js/safe-utils.js?v=2"></script>
     <script src="/static/js/frontend-logger.js?v=2"></script>
-    <script src="/static/js/network-stack.js?v=42"></script>
+    <script src="/static/js/network-stack.js?v=52"></script>
     <script>
         (function startNetworkPage() {
-            if (typeof window.NetworkStackVisualization !== 'function') {
-                console.error('NetworkStackVisualization is not available');
-                return;
+            try {
+                if (typeof window.NetworkStackVisualization !== 'function') {
+                    console.error('NetworkStackVisualization is not available');
+                    document.body.insertAdjacentHTML('beforeend',
+                        '<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#e69696;font:14px monospace;background:#0E1114;z-index:99999;">Network stack JS failed to load — check console</div>');
+                    return;
+                }
+                const viz = new window.NetworkStackVisualization();
+                window.__nsViz = viz;
+                const ok = viz.init('network-stack-container');
+                if (ok === false) return;
+                viz.activate();
+            } catch (err) {
+                console.error('Network stack boot failed', err);
+                document.body.insertAdjacentHTML('beforeend',
+                    '<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#e69696;font:14px monospace;background:#0E1114;z-index:99999;padding:24px;text-align:center;">Network stack boot failed: '
+                    + String(err && err.message || err) + '</div>');
             }
-            const viz = new window.NetworkStackVisualization();
-            const ok = viz.init('network-stack-container');
-            if (ok === false) return;
-            viz.activate();
         })();
     </script>
 </body>
