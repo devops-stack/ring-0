@@ -1,7 +1,7 @@
 // Crypto subsystem realtime interaction visualization
-// Version: 10
+// Version: 15 — Architecture + consumer/primitive morph
 
-debugLog('🔐 crypto-belt.js v10: Script loading...');
+debugLog('🔐 crypto-belt.js v15: Script loading...');
 
 class CryptoSubsystemVisualization {
     constructor() {
@@ -24,7 +24,21 @@ class CryptoSubsystemVisualization {
         this.selectedClientFilters = new Set();
         this.selectedRequesterFilter = null;
         this.selectedImplementationClassFilter = null;
+        // Default: AES LAB first; Architecture and Live Flow are secondary.
         this.activeCryptoView = 'LINEAR_ANALYSIS';
+        this.archFocus = null; // { layer, id, label, hint }
+        this.archMorphTarget = null; // { id, label, layer }
+        this.archMorphNode = null;
+        this.schemeSource = null; // { id, label } — opened from Architecture click
+        this.schemeKind = 'aes-gcm'; // aes-gcm | wg-chacha
+        this.schemePhase = 0;
+        this.schemePlaying = false;
+        this._schemePlayTimer = null;
+        this.schemeRendered = false;
+        this.schemeNr = 10; // AES-128=10, AES-256=14
+        this.schemeInspectByte = 0;
+        this._archGhostEl = null;
+        this._archGhostTimer = null;
         this.titleNode = null;
         this.subtitleNode = null;
         this.viewToggleNode = null;
@@ -112,7 +126,7 @@ class CryptoSubsystemVisualization {
             'z-index: 1001',
             'text-shadow: 0 0 8px rgba(180, 210, 255, 0.25)'
         ].join(';');
-        title.textContent = 'KERNEL CRYPTO LIVE INTERACTIONS (in development)';
+        title.textContent = 'KERNEL CRYPTO ARCHITECTURE';
         this.container.appendChild(title);
         this.titleNode = title;
 
@@ -127,7 +141,7 @@ class CryptoSubsystemVisualization {
             'font-size: 11px',
             'z-index: 1001'
         ].join(';');
-        subtitle.textContent = 'process -> protocol -> crypto subsystem -> algorithm';
+        subtitle.textContent = 'consumers → Kernel Crypto API → primitives / drivers / acceleration';
         this.container.appendChild(subtitle);
         this.subtitleNode = subtitle;
 
@@ -198,6 +212,23 @@ class CryptoSubsystemVisualization {
         ].join(';');
         this.container.appendChild(hoverCard);
         this.hoverCard = hoverCard;
+
+        const morph = document.createElement('div');
+        morph.className = 'crypto-arch-morph-host';
+        morph.style.cssText = [
+            'position: absolute',
+            'left: 50%',
+            'top: 50%',
+            'transform: translate(-50%, -50%)',
+            'width: min(560px, 86vw)',
+            'max-height: min(72vh, 640px)',
+            'overflow: auto',
+            'z-index: 1005',
+            'display: none',
+            'pointer-events: auto'
+        ].join(';');
+        this.container.appendChild(morph);
+        this.archMorphNode = morph;
     }
 
     setTerminatorBadge(statusText) {
@@ -242,7 +273,9 @@ class CryptoSubsystemVisualization {
     updateCryptoViewToggle() {
         if (!this.viewToggleNode) return;
         const views = [
-            ['LINEAR_ANALYSIS', 'AES INTERNALS'],
+            ['LINEAR_ANALYSIS', 'AES LAB'],
+            ['ARCHITECTURE', 'ARCHITECTURE'],
+            ['HANDSHAKE', 'HANDSHAKE'],
             ['LIVE_FLOW', 'LIVE FLOW']
         ];
         this.viewToggleNode.innerHTML = '';
@@ -250,6 +283,12 @@ class CryptoSubsystemVisualization {
             const btn = document.createElement('button');
             const isActive = this.activeCryptoView === id;
             btn.textContent = label;
+            btn.title = ({
+                ARCHITECTURE: 'Consumers → Crypto API → implementations · click kTLS/AES for scheme',
+                HANDSHAKE: 'TLS 1.3: ClientHello → X25519 → HKDF → AES-GCM',
+                LIVE_FLOW: 'Live interaction lanes',
+                LINEAR_ANALYSIS: 'AES linear analysis demo'
+            })[id] || label;
             btn.style.cssText = [
                 'padding: 5px 12px',
                 `background: ${isActive ? 'rgba(35, 58, 88, 0.94)' : 'rgba(8, 12, 18, 0.86)'}`,
@@ -263,8 +302,15 @@ class CryptoSubsystemVisualization {
                 'box-shadow: none'
             ].join(';');
             btn.onclick = () => {
+                if (id !== 'ARCHITECTURE') this.closeArchMorph();
+                if (id !== 'SCHEME') {
+                    this.stopSchemePlay();
+                    this.schemeSource = null;
+                    this.schemeRendered = false;
+                }
                 this.activeCryptoView = id;
                 this.updateCryptoViewToggle();
+                this.syncOverlayForCurrentView();
                 this.renderFlowMap(this.lastPayload || this.normalizeTelemetry(this.getFallbackTelemetry()));
             };
             this.viewToggleNode.appendChild(btn);
@@ -273,20 +319,41 @@ class CryptoSubsystemVisualization {
 
     syncOverlayForCurrentView() {
         const isLinear = this.activeCryptoView === 'LINEAR_ANALYSIS';
+        const isArch = this.activeCryptoView === 'ARCHITECTURE';
+        const isScheme = this.activeCryptoView === 'SCHEME';
+        const isHandshake = this.activeCryptoView === 'HANDSHAKE';
         if (this.titleNode) {
             this.titleNode.style.display = isLinear ? 'none' : 'block';
+            if (isArch) this.titleNode.textContent = 'KERNEL CRYPTO ARCHITECTURE';
+            else if (isScheme) {
+                const src = this.schemeSource?.label || this.schemeSource?.id || 'AES';
+                const tail = this.schemeKind === 'wg-chacha' ? 'CHACHA20-POLY1305' : 'AES-GCM';
+                this.titleNode.textContent = `SCHEME · ${String(src).toUpperCase()} → ${tail}`;
+            } else if (isHandshake) this.titleNode.textContent = 'TLS 1.3 · HANDSHAKE → KEYS';
+            else if (!isLinear) this.titleNode.textContent = 'KERNEL CRYPTO LIVE INTERACTIONS';
         }
         if (this.subtitleNode) {
             this.subtitleNode.style.display = isLinear ? 'none' : 'block';
+            if (isArch) {
+                this.subtitleNode.textContent = 'click kTLS/AES or WireGuard/ChaCha for textbook SCHEME · other nodes → morph';
+            } else if (isScheme) {
+                const kind = this.schemeKind === 'wg-chacha' ? 'WireGuard · ChaCha20-Poly1305' : 'kTLS · AES-GCM';
+                this.subtitleNode.textContent = `opened from Architecture · ${kind} · CODE refs → Elixir`;
+            } else if (isHandshake) {
+                this.subtitleNode.textContent = 'ClientHello → X25519 → HKDF → AES-GCM keys — ECC bridge to symmetric';
+            } else if (!isLinear) {
+                this.subtitleNode.textContent = 'process -> protocol -> crypto subsystem -> algorithm';
+            }
         }
         if (this.terminatorNode) {
-            this.terminatorNode.style.display = isLinear ? 'none' : 'block';
+            // Architecture map is structural — hide TLS terminator chrome.
+            this.terminatorNode.style.display = (isLinear || isArch) ? 'none' : 'block';
         }
         if (this.viewToggleNode) {
-            this.viewToggleNode.style.top = isLinear ? '18px' : '112px';
-            this.viewToggleNode.style.left = isLinear ? 'auto' : '50%';
-            this.viewToggleNode.style.right = isLinear ? '170px' : 'auto';
-            this.viewToggleNode.style.transform = isLinear ? 'none' : 'translateX(-50%)';
+            this.viewToggleNode.style.top = '18px';
+            this.viewToggleNode.style.left = 'auto';
+            this.viewToggleNode.style.right = '170px';
+            this.viewToggleNode.style.transform = 'none';
         }
     }
 
@@ -4014,6 +4081,2650 @@ class CryptoSubsystemVisualization {
             .text('Vogel spiral = distribution of candidate linear masks; Fibonacci trail = bias decay across rounds');
     }
 
+    escapeArchHtml(value) {
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    getConsumerMorphScript(id) {
+        const scripts = {
+            wireguard: {
+                title: 'WIREGUARD → CRYPTO TRANSLATION',
+                tagline: 'a tunnel is not “encrypted packets” — it is Noise + AEAD through the crypto API',
+                ghost: 'crypto_aead_encrypt()',
+                accent: 'rgba(150,255,190,0.45)',
+                steps: [
+                    { sym: 'wg_encrypt / noise_handshake', title: '1 · CONSUMER', body: 'WireGuard builds a Noise_IK message<br><span style="color:#8d99a7;font-size:10px;">peer keys · counters · packet payload</span>' },
+                    { sym: 'crypto_alloc_aead / crypto_alloc_kpp', title: '2 · CRYPTO API', body: 'request <span style="color:#e6c15a">aead</span> + <span style="color:#a9d4e8">kpp</span><br><span style="color:#8d99a7;font-size:10px;">name lookup → tfm allocation</span>' },
+                    { sym: 'struct crypto_aead *', title: '3 · TFM HANDLE', body: 'tfm holds setkey / encrypt / decrypt ops<br><span style="color:#8d99a7;font-size:10px;">one handle, many backends</span>' },
+                    { sym: 'chacha20poly1305 + curve25519', title: '4 · PRIMITIVES', body: '<span style="color:#96ffbe">ChaCha20-Poly1305</span> for data<br><span style="color:#a9d4e8">Curve25519 (X25519)</span> for handshake' },
+                    { sym: 'chacha20-simd / generic', title: '5 · IMPLEMENTATION', body: 'priority race picks SIMD/generic path<br><span style="color:#8d99a7;font-size:10px;">same API — faster bytes</span>' }
+                ]
+            },
+            ktls: {
+                title: 'kTLS → CRYPTO TRANSLATION',
+                tagline: 'TLS records leave userspace — AEAD runs beside the TCP stack',
+                ghost: 'tls_sw_sendmsg()',
+                accent: 'rgba(103,190,224,0.5)',
+                openHandshake: true,
+                steps: [
+                    { sym: 'tls_sw_sendmsg / kTLS', title: '1 · CONSUMER', body: 'socket send path hits kernel TLS<br><span style="color:#8d99a7;font-size:10px;">record framing stays in-kernel</span>' },
+                    { sym: 'crypto_aead_encrypt', title: '2 · CRYPTO API', body: 'kTLS asks the unified AEAD API<br><span style="color:#8d99a7;font-size:10px;">no userspace crypto round-trip</span>' },
+                    { sym: 'crypto_alloc_aead(aes-gcm)', title: '3 · TFM HANDLE', body: 'tfm bound to TLS keys / IV / seq<br><span style="color:#8d99a7;font-size:10px;">per-connection crypto state</span>' },
+                    { sym: 'AES-GCM', title: '4 · PRIMITIVE', body: '<span style="color:#e6c15a">AES</span> + <span style="color:#a9d4e8">GHASH</span> over the record<br><span style="color:#8d99a7;font-size:10px;">confidentiality + integrity together</span>' },
+                    { sym: 'aesni / cryptd(__aes-aesni)', title: '5 · IMPLEMENTATION', body: 'AES-NI (+PCLMUL) wins on x86<br><span style="color:#8d99a7;font-size:10px;">cryptd may wrap for async</span>' }
+                ]
+            },
+            af_alg: {
+                title: 'AF_ALG → CRYPTO TRANSLATION',
+                tagline: 'userspace speaks sockets — the kernel hears crypto_tfm',
+                ghost: 'af_alg_sendmsg()',
+                accent: 'rgba(230,193,90,0.5)',
+                steps: [
+                    { sym: 'socket(AF_ALG) / accept', title: '1 · CONSUMER', body: 'userspace opens an alg socket<br><span style="color:#8d99a7;font-size:10px;">bind type+name · setkey · sendmsg</span>' },
+                    { sym: 'af_alg → crypto_skcipher/aead', title: '2 · CRYPTO API', body: 'AF_ALG is a thin gateway into crypto API<br><span style="color:#8d99a7;font-size:10px;">same alloc/lookup as in-kernel clients</span>' },
+                    { sym: 'struct crypto_tfm *', title: '3 · TFM HANDLE', body: 'accepted fd holds a live transform<br><span style="color:#8d99a7;font-size:10px;">ops dispatched per request</span>' },
+                    { sym: 'AES / SHA / ChaCha…', title: '4 · PRIMITIVE', body: 'name string selects the algorithm family<br><span style="color:#8d99a7;font-size:10px;">one socket model · many algos</span>' },
+                    { sym: 'aesni / sha*-avx2 / simd', title: '5 · IMPLEMENTATION', body: 'best registered driver for this CPU<br><span style="color:#8d99a7;font-size:10px;">transparent to the application</span>' }
+                ]
+            },
+            dm_crypt: {
+                title: 'dm-crypt → CRYPTO TRANSLATION',
+                tagline: 'block I/O becomes skcipher requests on the way to disk',
+                ghost: 'crypt_convert()',
+                accent: 'rgba(232,96,104,0.45)',
+                steps: [
+                    { sym: 'dm-crypt map / crypt_convert', title: '1 · CONSUMER', body: 'bio hits the crypto target<br><span style="color:#8d99a7;font-size:10px;">sector → IV → cipher request</span>' },
+                    { sym: 'crypto_skcipher_encrypt', title: '2 · CRYPTO API', body: 'dm-crypt talks skcipher (often XTS)<br><span style="color:#8d99a7;font-size:10px;">same API as AF_ALG / fscrypt</span>' },
+                    { sym: 'crypto_alloc_skcipher', title: '3 · TFM HANDLE', body: 'per-device tfm with volume key<br><span style="color:#8d99a7;font-size:10px;">setkey once · encrypt many bios</span>' },
+                    { sym: 'AES-XTS', title: '4 · PRIMITIVE', body: '<span style="color:#e6c15a">AES</span> in XTS mode for disk blocks<br><span style="color:#8d99a7;font-size:10px;">tweakable encryption per sector</span>' },
+                    { sym: 'aes-aesni / cryptd', title: '5 · IMPLEMENTATION', body: 'AES-NI preferred · cryptd if async needed<br><span style="color:#8d99a7;font-size:10px;">storage latency meets crypto throughput</span>' }
+                ]
+            },
+            fscrypt: {
+                title: 'fscrypt → CRYPTO TRANSLATION',
+                tagline: 'files and directories encrypt through the same skcipher spine',
+                ghost: 'fscrypt_encrypt_pagecache_blocks()',
+                accent: 'rgba(196,176,255,0.5)',
+                steps: [
+                    { sym: 'fscrypt / inode policy', title: '1 · CONSUMER', body: 'VFS pagecache write hits fscrypt<br><span style="color:#8d99a7;font-size:10px;">per-file key derived from master</span>' },
+                    { sym: 'crypto_skcipher_encrypt', title: '2 · CRYPTO API', body: 'contents via skcipher · names via hashes<br><span style="color:#8d99a7;font-size:10px;">API shared with dm-crypt</span>' },
+                    { sym: 'crypto_alloc_skcipher', title: '3 · TFM HANDLE', body: 'tfm cached with derived key<br><span style="color:#8d99a7;font-size:10px;">reuse across pages</span>' },
+                    { sym: 'AES / Adiantum', title: '4 · PRIMITIVE', body: 'typically <span style="color:#e6c15a">AES</span> modes · sometimes Adiantum<br><span style="color:#8d99a7;font-size:10px;">policy chooses the primitive</span>' },
+                    { sym: 'aesni / generic', title: '5 · IMPLEMENTATION', body: 'CPU-accelerated when available<br><span style="color:#8d99a7;font-size:10px;">filesystem never picks registers itself</span>' }
+                ]
+            },
+            ipsec: {
+                title: 'IPsec/XFRM → CRYPTO TRANSLATION',
+                tagline: 'ESP/AH transforms are just crypto API clients on the packet path',
+                ghost: 'xfrm_output()',
+                accent: 'rgba(103,190,224,0.45)',
+                steps: [
+                    { sym: 'xfrm_output / ESP', title: '1 · CONSUMER', body: 'XFRM applies a transform to the skb<br><span style="color:#8d99a7;font-size:10px;">policy → state → crypto</span>' },
+                    { sym: 'crypto_aead_encrypt', title: '2 · CRYPTO API', body: 'ESP almost always uses AEAD<br><span style="color:#8d99a7;font-size:10px;">encrypt + auth in one call</span>' },
+                    { sym: 'crypto_alloc_aead', title: '3 · TFM HANDLE', body: 'per-SA tfm with keys from IKE<br><span style="color:#8d99a7;font-size:10px;">lifetime tied to xfrm_state</span>' },
+                    { sym: 'AES-GCM / SHA', title: '4 · PRIMITIVE', body: 'modern stacks prefer <span style="color:#e6c15a">AES-GCM</span><br><span style="color:#8d99a7;font-size:10px;">older: cipher + auth separately</span>' },
+                    { sym: 'aesni / offload', title: '5 · IMPLEMENTATION', body: 'AES-NI or NIC IPsec offload<br><span style="color:#8d99a7;font-size:10px;">same SA · different engine</span>' }
+                ]
+            },
+            ima: {
+                title: 'IMA/EVM → CRYPTO TRANSLATION',
+                tagline: 'integrity is hashing and signatures — still through crypto API',
+                ghost: 'ima_calc_file_hash()',
+                accent: 'rgba(230,193,90,0.45)',
+                steps: [
+                    { sym: 'ima_file_check / evm', title: '1 · CONSUMER', body: 'measure or appraise a file<br><span style="color:#8d99a7;font-size:10px;">policy hooks into LSM path</span>' },
+                    { sym: 'crypto_shash_digest', title: '2 · CRYPTO API', body: 'hashes via shash · sigs via akcipher<br><span style="color:#8d99a7;font-size:10px;">unified digest/verify entry points</span>' },
+                    { sym: 'crypto_alloc_shash', title: '3 · TFM HANDLE', body: 'hash tfm for measurement<br><span style="color:#8d99a7;font-size:10px;">optional ECDSA/RSA verify tfm</span>' },
+                    { sym: 'SHA-2 + ECDSA', title: '4 · PRIMITIVES', body: '<span style="color:#96ffbe">SHA-256/512</span> measure<br><span style="color:#a9d4e8">ECDSA</span> can appraise' },
+                    { sym: 'sha*-avx2 / generic', title: '5 · IMPLEMENTATION', body: 'SIMD hash when present<br><span style="color:#8d99a7;font-size:10px;">signature path may stay generic</span>' }
+                ]
+            },
+            random: {
+                title: 'random/CRNG → CRYPTO TRANSLATION',
+                tagline: 'the entropy pool’s output mixer is ChaCha20 in disguise',
+                ghost: 'crng_fast_key_erasure()',
+                accent: 'rgba(150,255,190,0.4)',
+                steps: [
+                    { sym: 'get_random_bytes', title: '1 · CONSUMER', body: 'kernel clients ask for random bytes<br><span style="color:#8d99a7;font-size:10px;">keys · nonces · IV material</span>' },
+                    { sym: 'CRNG core', title: '2 · CRYPTO ENGINE', body: 'ChaCha20-based CRNG mixes state<br><span style="color:#8d99a7;font-size:10px;">fast path after initial seed</span>' },
+                    { sym: 'chacha_block', title: '3 · PRIMITIVE', body: '<span style="color:#96ffbe">ChaCha20</span> expands a secret state<br><span style="color:#8d99a7;font-size:10px;">not a tfm alloc every call</span>' },
+                    { sym: 'SIMD ChaCha', title: '4 · IMPLEMENTATION', body: 'arch SIMD helpers when available<br><span style="color:#8d99a7;font-size:10px;">same stream cipher family as WireGuard</span>' },
+                    { sym: 'reuse across kernel', title: '5 · MAGIC', body: 'one primitive · many consumers<br><span style="color:#8d99a7;font-size:10px;">VPN AEAD and RNG share ChaCha DNA</span>' }
+                ]
+            }
+        };
+        return scripts[id] || {
+            title: 'CONSUMER → CRYPTO TRANSLATION',
+            tagline: 'subsystem request becomes a crypto API transform',
+            ghost: 'crypto_alloc_tfm()',
+            accent: 'rgba(169,212,232,0.45)',
+            steps: [
+                { sym: 'subsystem hook', title: '1 · CONSUMER', body: 'a kernel client needs crypto<br><span style="color:#8d99a7;font-size:10px;">encrypt · hash · sign · agree</span>' },
+                { sym: 'crypto_alloc_*', title: '2 · CRYPTO API', body: 'unified entry by type + name<br><span style="color:#8d99a7;font-size:10px;">lookup · priority · tfm</span>' },
+                { sym: 'struct crypto_tfm *', title: '3 · TFM', body: 'opaque handle to algorithm ops<br><span style="color:#8d99a7;font-size:10px;">setkey · encrypt · digest</span>' },
+                { sym: 'primitive', title: '4 · PRIMITIVE', body: 'AES · ChaCha · SHA · ECC…<br><span style="color:#8d99a7;font-size:10px;">math the subsystem asked for</span>' },
+                { sym: 'driver / acceleration', title: '5 · IMPLEMENTATION', body: 'generic · simd · aesni · offload<br><span style="color:#8d99a7;font-size:10px;">fastest registered winner</span>' }
+            ]
+        };
+    }
+
+    getPrimitiveMorphScript(id) {
+        const scripts = {
+            aes: {
+                title: 'AES → KERNEL DRILL',
+                tagline: 'one block cipher · GCM for TLS · XTS for disks · many consumers',
+                ghost: 'aesni_enc()',
+                accent: 'rgba(230,193,90,0.55)',
+                openAesLab: true,
+                steps: [
+                    { sym: 'who asks for AES?', title: '1 · CONSUMERS', body: '<span style="color:#a9d4e8">kTLS</span> · IPsec · dm-crypt · fscrypt · AF_ALG<br><span style="color:#8d99a7;font-size:10px;">same primitive · different I/O paths</span>' },
+                    { sym: 'crypto_alloc_aead / skcipher', title: '2 · API SHAPE', body: 'AES-GCM → <span style="color:#e6c15a">aead</span><br>AES-XTS → <span style="color:#e6c15a">skcipher</span><br><span style="color:#8d99a7;font-size:10px;">mode decides the API type</span>' },
+                    { sym: 'rounds · SubBytes · MixColumns', title: '3 · INSIDE THE CIPHER', body: '10/12/14 rounds transform the state<br><span style="color:#8d99a7;font-size:10px;">demo of those rounds → AES LAB</span>' },
+                    { sym: 'GHASH / XTS tweak', title: '4 · MODE MAGIC', body: 'GCM authenticates · XTS tweaks per sector<br><span style="color:#8d99a7;font-size:10px;">AES is the engine · mode is the mission</span>' },
+                    { sym: 'aes-aesni / cryptd / offload', title: '5 · IMPLEMENTATION', body: '<span style="color:#96ffbe">AES-NI</span> wins on modern x86<br><span style="color:#8d99a7;font-size:10px;">generic/simd/offload as fallbacks</span>' }
+                ]
+            },
+            curve25519: {
+                title: 'CURVE25519 → KERNEL DRILL',
+                tagline: 'elliptic-curve DH — short keys, fast agreement, no AES involved',
+                ghost: 'curve25519_generic()',
+                accent: 'rgba(169,212,232,0.55)',
+                openHandshake: true,
+                steps: [
+                    { sym: 'who needs X25519?', title: '1 · CONSUMERS', body: '<span style="color:#96ffbe">WireGuard</span> Noise_IK · TLS 1.3 ECDHE<br><span style="color:#8d99a7;font-size:10px;">handshake / key agreement only</span>' },
+                    { sym: 'crypto_alloc_kpp', title: '2 · KPP API', body: 'key-agreement type in crypto API<br><span style="color:#8d99a7;font-size:10px;">set_secret · generate_public · compute_shared</span>' },
+                    { sym: 'X25519 scalar mult', title: '3 · THE MATH', body: 'clamp scalar · Montgomery ladder on Curve25519<br><span style="color:#8d99a7;font-size:10px;">32-byte public · 32-byte shared secret</span>' },
+                    { sym: 'shared secret → HKDF/Noise', title: '4 · AFTER ECDH', body: 'secret feeds key schedule — not the record cipher<br><span style="color:#8d99a7;font-size:10px;">WireGuard → ChaCha · TLS → often AES-GCM</span>' },
+                    { sym: 'curve25519-generic / fiat', title: '5 · IMPLEMENTATION', body: 'constant-time software paths in-tree<br><span style="color:#8d99a7;font-size:10px;">no AES-NI here — different silicon story</span>' }
+                ]
+            },
+            chacha: {
+                title: 'CHACHA20 → KERNEL DRILL',
+                tagline: 'stream cipher DNA shared by VPN AEAD and the CRNG',
+                ghost: 'chacha_permute()',
+                accent: 'rgba(150,255,190,0.5)',
+                steps: [
+                    { sym: 'who streams ChaCha?', title: '1 · CONSUMERS', body: 'WireGuard AEAD · random CRNG · AF_ALG<br><span style="color:#8d99a7;font-size:10px;">one ARX design · two worlds</span>' },
+                    { sym: 'aead vs CRNG core', title: '2 · API SHAPE', body: 'packets → <span style="color:#e6c15a">chacha20poly1305</span> aead<br>entropy → in-kernel ChaCha CRNG<br><span style="color:#8d99a7;font-size:10px;">not always a tfm alloc</span>' },
+                    { sym: '20 rounds · quarter-round', title: '3 · INSIDE', body: 'add-rotate-xor mixes a 512-bit state<br><span style="color:#8d99a7;font-size:10px;">software-friendly · SIMD loves it</span>' },
+                    { sym: 'Poly1305 tag', title: '4 · WITH POLY', body: 'AEAD pairs ChaCha with <span style="color:#a9d4e8">Poly1305</span><br><span style="color:#8d99a7;font-size:10px;">encrypt + authenticate together</span>' },
+                    { sym: 'chacha20-simd / generic', title: '5 · IMPLEMENTATION', body: 'AVX/NEON when present<br><span style="color:#8d99a7;font-size:10px;">same family powers get_random_bytes</span>' }
+                ]
+            },
+            sha2: {
+                title: 'SHA-2 → KERNEL DRILL',
+                tagline: 'the measurement workhorse — IMA, HMAC, key derivation helpers',
+                ghost: 'sha256_transform()',
+                accent: 'rgba(196,176,255,0.5)',
+                steps: [
+                    { sym: 'who hashes?', title: '1 · CONSUMERS', body: 'IMA/EVM · AF_ALG · IPsec auth · fscrypt names<br><span style="color:#8d99a7;font-size:10px;">integrity more often than secrecy</span>' },
+                    { sym: 'crypto_alloc_shash', title: '2 · SHASH API', body: 'init/update/final on a shash tfm<br><span style="color:#8d99a7;font-size:10px;">HMAC built on the same digest</span>' },
+                    { sym: 'SHA-256 / SHA-512', title: '3 · PRIMITIVE', body: 'Merkle–Damgård compression of blocks<br><span style="color:#8d99a7;font-size:10px;">fixed-size digest · one-way</span>' },
+                    { sym: 'reuse with AES/ECC', title: '4 · IN PROTOCOLS', body: 'TLS finished / HKDF often sit on SHA-2<br><span style="color:#8d99a7;font-size:10px;">companion to AES-GCM or X25519</span>' },
+                    { sym: 'sha256-avx2 / generic', title: '5 · IMPLEMENTATION', body: 'SIMD digest paths when available<br><span style="color:#8d99a7;font-size:10px;">IMA loves throughput here</span>' }
+                ]
+            },
+            ecdsa: {
+                title: 'ECDSA → KERNEL DRILL',
+                tagline: 'signatures on NIST curves — appraisal, modules, trust',
+                ghost: 'ecdsa_verify()',
+                accent: 'rgba(232,150,150,0.5)',
+                steps: [
+                    { sym: 'who verifies?', title: '1 · CONSUMERS', body: 'IMA/EVM appraisal · module signing paths<br><span style="color:#8d99a7;font-size:10px;">prove origin · not encrypt bytes</span>' },
+                    { sym: 'crypto_alloc_akcipher', title: '2 · AKCIPHER API', body: 'asymmetric verify/sign through crypto API<br><span style="color:#8d99a7;font-size:10px;">keys as cert/raw coordinates</span>' },
+                    { sym: 'P-256 / P-384', title: '3 · CURVE', body: 'ECDSA over prime-field NIST curves<br><span style="color:#8d99a7;font-size:10px;">different curve family than Curve25519</span>' },
+                    { sym: 'hash-then-sign', title: '4 · WITH SHA-2', body: 'digest first (often SHA-2) · then verify<br><span style="color:#8d99a7;font-size:10px;">two primitives · one trust decision</span>' },
+                    { sym: 'ecdsa-generic', title: '5 · IMPLEMENTATION', body: 'mostly software · careful constant-time<br><span style="color:#8d99a7;font-size:10px;">no AES-NI analogue for ECDSA</span>' }
+                ]
+            },
+            poly: {
+                title: 'POLY1305 → KERNEL DRILL',
+                tagline: 'one-time authenticator — the “tag” half of ChaCha20-Poly1305',
+                ghost: 'poly1305_core()',
+                accent: 'rgba(150,255,190,0.4)',
+                steps: [
+                    { sym: 'who needs a MAC?', title: '1 · CONSUMERS', body: 'WireGuard · any chacha20poly1305 aead user<br><span style="color:#8d99a7;font-size:10px;">integrity for the ciphertext</span>' },
+                    { sym: 'inside AEAD', title: '2 · NOT ALONE', body: 'almost always paired with ChaCha20<br><span style="color:#8d99a7;font-size:10px;">one-time key from the cipher state</span>' },
+                    { sym: 'polynomial MAC', title: '3 · THE MATH', body: 'evaluate a poly over the message in prime field<br><span style="color:#8d99a7;font-size:10px;">fast in software · forgery-resistant with OTKs</span>' },
+                    { sym: '16-byte tag', title: '4 · OUTPUT', body: 'auth tag appended / checked on decrypt<br><span style="color:#8d99a7;font-size:10px;">fail closed on mismatch</span>' },
+                    { sym: 'poly1305-simd / generic', title: '5 · IMPLEMENTATION', body: 'SIMD helpers beside ChaCha<br><span style="color:#8d99a7;font-size:10px;">ships as part of the AEAD driver</span>' }
+                ]
+            }
+        };
+        return scripts[id] || null;
+    }
+
+    getArchMorphScript(target) {
+        const id = target?.id;
+        const layer = target?.layer || 'consumers';
+        if (layer === 'primitives') {
+            return this.getPrimitiveMorphScript(id) || {
+                title: 'PRIMITIVE → KERNEL DRILL',
+                tagline: 'algorithm reused across subsystems through the crypto API',
+                ghost: 'crypto_alg_lookup()',
+                accent: 'rgba(150,255,190,0.4)',
+                steps: [
+                    { sym: 'consumers', title: '1 · WHO USES IT', body: 'multiple kernel paths may request this alg<br><span style="color:#8d99a7;font-size:10px;">reuse is the point of the framework</span>' },
+                    { sym: 'crypto_alloc_*', title: '2 · API', body: 'allocated by type + name<br><span style="color:#8d99a7;font-size:10px;">aead · skcipher · shash · kpp</span>' },
+                    { sym: 'tfm', title: '3 · HANDLE', body: 'ops table bound to this primitive<br><span style="color:#8d99a7;font-size:10px;">setkey · encrypt · digest</span>' },
+                    { sym: 'driver race', title: '4 · IMPLEMENTATION', body: 'priority picks simd/cpu/offload<br><span style="color:#8d99a7;font-size:10px;">same name · faster bytes</span>' }
+                ]
+            };
+        }
+        return this.getConsumerMorphScript(id);
+    }
+
+    clearArchGhost() {
+        if (this._archGhostTimer) {
+            clearTimeout(this._archGhostTimer);
+            this._archGhostTimer = null;
+        }
+        if (this._archGhostEl) {
+            this._archGhostEl.remove();
+            this._archGhostEl = null;
+        }
+    }
+
+    flashArchGhost(code) {
+        this.clearArchGhost();
+        if (!this.container) return;
+        const el = document.createElement('div');
+        el.textContent = String(code || 'crypto_alloc_tfm()');
+        el.style.cssText = [
+            'position:absolute',
+            'left:50%',
+            'top:18%',
+            'transform:translate(-50%,-8px)',
+            'opacity:0',
+            'pointer-events:none',
+            'z-index:1006',
+            'font:13px "Share Tech Mono", monospace',
+            'letter-spacing:0.5px',
+            'color:rgba(230,193,90,0.92)',
+            'text-shadow:0 0 14px rgba(230,193,90,0.45)',
+            'background:rgba(8,12,20,0.55)',
+            'border:1px solid rgba(230,193,90,0.35)',
+            'border-radius:4px',
+            'padding:5px 12px',
+            'transition:opacity 240ms ease, transform 240ms ease'
+        ].join(';');
+        this.container.appendChild(el);
+        this._archGhostEl = el;
+        requestAnimationFrame(() => {
+            el.style.opacity = '1';
+            el.style.transform = 'translate(-50%,0)';
+        });
+        this._archGhostTimer = setTimeout(() => {
+            el.style.opacity = '0';
+            el.style.transform = 'translate(-50%,-10px)';
+            setTimeout(() => {
+                if (this._archGhostEl === el) {
+                    el.remove();
+                    this._archGhostEl = null;
+                }
+            }, 280);
+        }, 1700);
+    }
+
+    closeArchMorph() {
+        this.archMorphTarget = null;
+        this.clearArchGhost();
+        if (this.archMorphNode) {
+            this.archMorphNode.style.display = 'none';
+            this.archMorphNode.innerHTML = '';
+        }
+    }
+
+    isSchemeNode(id) {
+        return ['ktls', 'aes', 'aead', 'aesni', 'wireguard', 'chacha', 'poly'].includes(String(id || ''));
+    }
+
+    resolveSchemeKind(id) {
+        const x = String(id || '');
+        if (['wireguard', 'chacha', 'poly'].includes(x)) return 'wg-chacha';
+        return 'aes-gcm';
+    }
+
+    stopSchemePlay() {
+        this.schemePlaying = false;
+        if (this._schemePlayTimer) {
+            clearInterval(this._schemePlayTimer);
+            this._schemePlayTimer = null;
+        }
+    }
+
+    openSchemeDiagram(source) {
+        this.closeArchMorph();
+        this.stopSchemePlay();
+        const id = source?.id || 'aes';
+        this.schemeKind = this.resolveSchemeKind(id);
+        this.schemeSource = {
+            id,
+            label: source?.label || id,
+            layer: source?.layer || ''
+        };
+        this.schemePhase = 0;
+        this.schemeRendered = false;
+        this.archFocus = null;
+        this.activeCryptoView = 'SCHEME';
+        this.updateCryptoViewToggle();
+        this.syncOverlayForCurrentView();
+        this.renderFlowMap(this.lastPayload || this.normalizeTelemetry(this.getFallbackTelemetry()));
+        // Auto-play once so the diagram feels alive immediately.
+        setTimeout(() => this.startSchemePlay(), 280);
+    }
+
+    startSchemePlay() {
+        if (this.activeCryptoView !== 'SCHEME') return;
+        this.stopSchemePlay();
+        this.schemePlaying = true;
+        this.schemePhase = 0;
+        if (this.svg) this.svg.select('.scheme-play-label').text('■ STOP');
+        this.applySchemePhase(0);
+        this._schemePlayTimer = setInterval(() => {
+            if (!this.isActive || this.activeCryptoView !== 'SCHEME' || !this.schemePlaying) {
+                this.stopSchemePlay();
+                if (this.svg) this.svg.select('.scheme-play-label').text('▶ PLAY');
+                return;
+            }
+            this.schemePhase = (this.schemePhase + 1) % 7;
+            this.applySchemePhase(this.schemePhase);
+        }, 1100);
+    }
+
+    schemeElixirIdent(sym) {
+        const clean = String(sym || '')
+            .replace(/\(\)$/, '')
+            .replace(/\(.*\)$/, '')
+            .split(/[\s/]+/)[0]
+            .trim();
+        if (!clean || clean.startsWith('…')) return null;
+        return `https://elixir.bootlin.com/linux/latest/A/ident/${encodeURIComponent(clean)}`;
+    }
+
+    schemeElixirFile(path) {
+        const clean = String(path || '').replace(/^\/+/, '');
+        if (!clean) return null;
+        return `https://elixir.bootlin.com/linux/latest/source/${clean}`;
+    }
+
+    openSchemeCodeRef(ref) {
+        if (!ref) return;
+        const url = ref.url || this.schemeElixirIdent(ref.sym) || this.schemeElixirFile(ref.file);
+        if (!url) return;
+        try {
+            window.open(url, '_blank', 'noopener,noreferrer');
+        } catch (e) {
+            /* ignore popup blockers quietly */
+        }
+        this.flashArchGhost(ref.sym || ref.file || 'kernel source');
+    }
+
+    getSchemePhaseMeta(phase) {
+        if (this.schemeKind === 'wg-chacha') return this.getWgChachaSchemePhaseMeta(phase);
+        return this.getAesGcmSchemePhaseMeta(phase);
+    }
+
+    getWgChachaSchemePhaseMeta(phase) {
+        const table = [
+            {
+                narr: 'WireGuard packet ready — Noise keys already agreed, AEAD protects the payload',
+                ghost: 'wg_packet_encrypt_worker()',
+                kernel: 0,
+                keyStage: 0,
+                inspect: [
+                    'WIREGUARD',
+                    'skb enters encrypt path',
+                    'peer keys / counters ready',
+                    'ChaCha20-Poly1305 is the AEAD'
+                ],
+                refs: [
+                    { sym: 'wg_packet_encrypt_worker', file: 'drivers/net/wireguard/send.c', note: 'encrypt worker' },
+                    { sym: 'wg_socket_send_buffer_as_reply_to_skb', file: 'drivers/net/wireguard/socket.c', note: 'send path' },
+                    { sym: 'curve25519_generic', file: 'lib/crypto/curve25519.c', note: 'handshake ECDH' }
+                ]
+            },
+            {
+                narr: 'crypto_alloc_aead("chacha20poly1305") — unified crypto API entry',
+                ghost: 'crypto_alloc_aead()',
+                kernel: 1,
+                keyStage: 1,
+                inspect: [
+                    'CRYPTO API',
+                    'name lookup → tfm',
+                    'same alloc path as kTLS',
+                    'priority race picks SIMD/generic'
+                ],
+                refs: [
+                    { sym: 'crypto_alloc_aead', file: 'crypto/api.c', note: 'tfm allocation' },
+                    { sym: 'chacha20poly1305_encrypt', file: 'lib/crypto/chacha20poly1305.c', note: 'lib AEAD helper' },
+                    { sym: 'crypto_register_aeads', file: 'crypto/aead.c', note: 'register AEAD algs' }
+                ]
+            },
+            {
+                narr: 'ChaCha20 · 20 rounds of ARX quarter-rounds on 512-bit state',
+                ghost: 'chacha_permute()',
+                kernel: 2,
+                keyStage: 3,
+                inspect: [
+                    'CHACHA20',
+                    'add-rotate-xor quarter-rounds',
+                    'counter + nonce → keystream',
+                    'software-friendly · SIMD loves it'
+                ],
+                refs: [
+                    { sym: 'chacha_block_generic', file: 'lib/crypto/chacha.c', note: 'generic block' },
+                    { sym: 'chacha_2block_xor_avx2', file: 'arch/x86/crypto/chacha_x86_64_glue.c', note: 'AVX2 path' },
+                    { sym: 'chacha_init_generic', file: 'lib/crypto/chacha.c', note: 'state init' }
+                ]
+            },
+            {
+                narr: 'rounds continue · 10 double-rounds (20 quarter-round layers)',
+                ghost: '… 20 rounds …',
+                kernel: 2,
+                keyStage: 4,
+                inspect: [
+                    'MIDDLE ROUNDS',
+                    'diagram compresses like textbook · · ·',
+                    'keystream fills 64-byte blocks',
+                    'no AES-NI here — different silicon story'
+                ],
+                refs: [
+                    { sym: 'chacha_permute', file: 'lib/crypto/chacha.c', note: 'core permute' },
+                    { sym: 'chacha_crypt_generic', file: 'lib/crypto/chacha.c', note: 'XOR keystream' }
+                ]
+            },
+            {
+                narr: 'keystream ⊕ plaintext → ciphertext (same length)',
+                ghost: 'chacha20poly1305_encrypt()',
+                kernel: 2,
+                keyStage: 3,
+                inspect: [
+                    'XOR KEYSTREAM',
+                    'stream cipher · no block padding',
+                    'WireGuard packet body encrypted',
+                    'auth still pending (Poly1305)'
+                ],
+                refs: [
+                    { sym: 'chacha20poly1305_encrypt', file: 'lib/crypto/chacha20poly1305.c', note: 'encrypt+tag API' },
+                    { sym: 'chacha_crypt_generic', file: 'lib/crypto/chacha.c', note: 'keystream XOR' }
+                ]
+            },
+            {
+                narr: 'Poly1305 one-time MAC → 16-byte tag over AAD + ciphertext',
+                ghost: 'poly1305_core()',
+                kernel: 3,
+                keyStage: 2,
+                inspect: [
+                    'POLY1305',
+                    'polynomial MAC in prime field',
+                    'one-time key from ChaCha state',
+                    'forgery-resistant with OTKs'
+                ],
+                refs: [
+                    { sym: 'poly1305_core_blocks', file: 'lib/crypto/poly1305.c', note: 'Poly1305 core' },
+                    { sym: 'poly1305_update', file: 'crypto/poly1305_generic.c', note: 'generic update' },
+                    { sym: 'chacha20poly1305_encrypt', file: 'lib/crypto/chacha20poly1305.c', note: 'AEAD wrapper' }
+                ]
+            },
+            {
+                narr: 'ciphertext ∥ tag → WireGuard UDP — Noise handshake already done',
+                ghost: 'wg_socket_send_skb()',
+                kernel: 4,
+                keyStage: 0,
+                inspect: [
+                    'WIRE OUT',
+                    'encrypted transport message',
+                    'X25519 only in handshake path',
+                    '→ HANDSHAKE for ECDH story'
+                ],
+                refs: [
+                    { sym: 'wg_packet_create_data_done', file: 'drivers/net/wireguard/send.c', note: 'packet done' },
+                    { sym: 'udp_sendmsg', file: 'net/ipv4/udp.c', note: 'UDP transmit' },
+                    { sym: 'curve25519_generic', file: 'lib/crypto/curve25519.c', note: 'handshake only' }
+                ]
+            }
+        ];
+        const row = table[phase] || table[0];
+        row.refs = (row.refs || []).map((r) => ({
+            ...r,
+            url: this.schemeElixirIdent(r.sym) || this.schemeElixirFile(r.file)
+        }));
+        return row;
+    }
+
+    getAesGcmSchemePhaseMeta(phase) {
+        const nr = this.schemeNr || 10;
+        const driver = (() => {
+            try {
+                const meta = this.lastPayload?.meta || {};
+                const comp = this.getCompetitionPayload(meta) || {};
+                return String(comp?.selected?.name || 'aesni / ce').replace(/^_+/, '').slice(0, 28);
+            } catch (e) {
+                return 'aesni / ce';
+            }
+        })();
+        const isArmCe = /(-ce\b|neon|armv8|aes-ce)/i.test(driver);
+        const aesImpl = isArmCe
+            ? { sym: 'ce_aes_ecb_encrypt', file: 'arch/arm64/crypto/aes-ce-glue.c', label: 'AES-CE glue' }
+            : { sym: 'aesni_encrypt', file: 'arch/x86/crypto/aesni-intel_glue.c', label: 'AES-NI glue' };
+        const ghashImpl = isArmCe
+            ? { sym: 'gcm_setkey', file: 'arch/arm64/crypto/aes-ce-ccm-glue.c', label: 'ARM CE GCM' }
+            : { sym: 'ghash_clmulni_digest', file: 'arch/x86/crypto/ghash-clmulni-intel_glue.c', label: 'PCLMUL GHASH' };
+
+        const table = [
+            {
+                narr: 'TLS record lands in kTLS — 128-bit AES state ready',
+                ghost: 'tls_sw_sendmsg()',
+                kernel: 0,
+                keyStage: 0,
+                inspect: [
+                    'KERNEL',
+                    'tls_sw_sendmsg / kTLS record path',
+                    'plaintext + AAD prepared for AEAD',
+                    `driver waiting: ${driver}`
+                ],
+                refs: [
+                    { sym: 'tls_sw_sendmsg', file: 'net/tls/tls_sw.c', note: 'kTLS software send' },
+                    { sym: 'tls_sw_recvmsg', file: 'net/tls/tls_sw.c', note: 'kTLS software recv' },
+                    { sym: 'crypto_alloc_aead', file: 'crypto/api.c', note: 'tfm allocation gate' }
+                ]
+            },
+            {
+                narr: 'round 1 · AddRoundKey ⊕ K₀ → SubBytes → ShiftRows → MixColumns',
+                ghost: 'crypto_aead_encrypt()',
+                kernel: 1,
+                keyStage: 3,
+                inspect: [
+                    'ROUND 1',
+                    '⊕ K₀ mixes key into state',
+                    'S-box · ShiftRows · MixColumns',
+                    'first diffusion of the block'
+                ],
+                refs: [
+                    { sym: 'crypto_aead_encrypt', file: 'include/linux/crypto.h', note: 'AEAD encrypt entry' },
+                    { sym: 'crypto_aead_setkey', file: 'crypto/aead.c', note: 'bind traffic key' },
+                    { sym: aesImpl.sym, file: aesImpl.file, note: aesImpl.label }
+                ]
+            },
+            {
+                narr: 'round 2 · same spine · next round key K₁',
+                ghost: `${aesImpl.sym}()`,
+                kernel: 2,
+                keyStage: 4,
+                inspect: [
+                    'ROUND 2',
+                    'silicon path preferred when present',
+                    `selected: ${driver}`,
+                    'same API — faster bytes'
+                ],
+                refs: [
+                    { sym: aesImpl.sym, file: aesImpl.file, note: aesImpl.label },
+                    { sym: 'crypto_aes_encrypt', file: 'crypto/aes_generic.c', note: 'generic fallback' },
+                    { sym: 'crypto_register_algs', file: 'crypto/algapi.c', note: 'priority registration' }
+                ]
+            },
+            {
+                narr: `rounds 3…${nr - 1} · omitted middle (Nr=${nr})`,
+                ghost: `… ${nr - 2} rounds …`,
+                kernel: 2,
+                keyStage: 4,
+                inspect: [
+                    'MIDDLE ROUNDS',
+                    `AES-${nr === 14 ? '256' : '128'} → Nr=${nr}`,
+                    'diagram compresses like textbook · · ·',
+                    'toggle Nr chips to switch story length'
+                ],
+                refs: [
+                    { sym: 'crypto_aes_set_key', file: 'crypto/aes_generic.c', note: 'key expand / Nr' },
+                    { sym: aesImpl.sym, file: aesImpl.file, note: 'hot round loop' },
+                    { sym: 'aes_expandkey', file: 'lib/crypto/aes.c', note: 'lib/crypto expand' }
+                ]
+            },
+            {
+                narr: `final round ${nr} · no MixColumns · ⊕ Kₙ`,
+                ghost: `${aesImpl.sym}()`,
+                kernel: 2,
+                keyStage: 5,
+                inspect: [
+                    'FINAL ROUND',
+                    'SubBytes + ShiftRows + ⊕ Kₙ',
+                    'MixColumns omitted on last round',
+                    'state is now ciphertext block'
+                ],
+                refs: [
+                    { sym: aesImpl.sym, file: aesImpl.file, note: 'final round in asm/glue' },
+                    { sym: 'crypto_aes_encrypt', file: 'crypto/aes_generic.c', note: 'C reference path' }
+                ]
+            },
+            {
+                narr: 'GHASH authenticates AAD + ciphertext → tag',
+                ghost: 'ghash_update()',
+                kernel: 3,
+                keyStage: 2,
+                inspect: [
+                    'AEAD TAG',
+                    'GHASH over AAD ∥ ciphertext',
+                    'PCLMULQDQ helps on x86',
+                    'integrity without a separate HMAC'
+                ],
+                refs: [
+                    { sym: ghashImpl.sym, file: ghashImpl.file, note: ghashImpl.label },
+                    { sym: 'crypto_gcm_encrypt', file: 'crypto/gcm.c', note: 'GCM mode wrapper' },
+                    { sym: 'ghash_update', file: 'crypto/ghash-generic.c', note: 'generic GHASH' }
+                ]
+            },
+            {
+                narr: 'ciphertext ∥ tag leaves on the TCP / kTLS path',
+                ghost: 'tls_sw_sendmsg()',
+                kernel: 4,
+                keyStage: 1,
+                inspect: [
+                    'WIRE OUT',
+                    'encrypted TLS record on the socket',
+                    'X25519 already left the hot path',
+                    '→ HANDSHAKE for the key-agreement story'
+                ],
+                refs: [
+                    { sym: 'tls_sw_sendmsg', file: 'net/tls/tls_sw.c', note: 'push encrypted record' },
+                    { sym: 'tcp_sendmsg', file: 'net/ipv4/tcp.c', note: 'TCP transmit' },
+                    { sym: 'crypto_aead_encrypt', file: 'include/linux/crypto.h', note: 'completed AEAD op' }
+                ]
+            }
+        ];
+        const row = table[phase] || table[0];
+        row.refs = (row.refs || []).map((r) => ({
+            ...r,
+            url: this.schemeElixirIdent(r.sym) || this.schemeElixirFile(r.file)
+        }));
+        return row;
+    }
+
+    applySchemePhase(phase) {
+        if (!this.svg) return;
+        const root = this.svg.select('.crypto-scheme-view');
+        if (root.empty()) return;
+        const meta = this.getSchemePhaseMeta(phase);
+        const nr = this.schemeNr || 10;
+
+        root.selectAll('.scheme-phase-group').style('opacity', function opacity() {
+            const p = Number(this.getAttribute('data-phase'));
+            if (Number.isNaN(p)) return 0.55;
+            return p === phase ? 1 : (Math.abs(p - phase) === 1 ? 0.72 : 0.28);
+        });
+        root.selectAll('.scheme-phase-group').select('rect.scheme-phase-glow')
+            .style('opacity', function glowOp() {
+                const p = Number(this.parentNode.getAttribute('data-phase'));
+                return p === phase ? 0.55 : 0;
+            });
+
+        root.select('.scheme-narrator').text(meta.narr || '');
+        root.select('.scheme-phase-pip').text(
+            this.schemeKind === 'wg-chacha'
+                ? `phase ${phase + 1}/7 · ChaCha 20 rounds · PLAY / STEP / click stage`
+                : `phase ${phase + 1}/7 · Nr=${nr} · PLAY / STEP / click stage`
+        );
+
+        // Kernel call rail
+        root.selectAll('.scheme-kernel-step').style('opacity', function kOp() {
+            const k = Number(this.getAttribute('data-kernel'));
+            return k === meta.kernel ? 1 : (Math.abs(k - meta.kernel) === 1 ? 0.55 : 0.22);
+        });
+        root.selectAll('.scheme-kernel-step').select('rect')
+            .style('stroke', function kStroke() {
+                const k = Number(this.parentNode.getAttribute('data-kernel'));
+                return k === meta.kernel ? '#e6c15a' : 'rgba(120,140,170,0.35)';
+            });
+
+        // Key schedule sync
+        root.selectAll('.scheme-key-stage').style('opacity', function keyOp() {
+            const k = Number(this.getAttribute('data-key-stage'));
+            return k === meta.keyStage ? 1 : 0.35;
+        });
+        root.selectAll('.scheme-key-stage').select('ellipse, rect')
+            .style('stroke', function keyStroke() {
+                const k = Number(this.parentNode.getAttribute('data-key-stage'));
+                return k === meta.keyStage ? '#e6c15a' : 'rgba(196,176,255,0.45)';
+            });
+
+        // Mini state grid + optional demo byte
+        let demoHex = null;
+        try {
+            const pt = this.aesDemo?.demo_vectors?.plaintext;
+            if (pt && typeof pt === 'string') demoHex = pt.replace(/\s/g, '');
+        } catch (e) { /* ignore */ }
+        root.selectAll('.scheme-state-cell').each((d, i, nodes) => {
+            const el = d3.select(nodes[i]);
+            const mine = Number(el.attr('data-i'));
+            const hot = (mine === ((this.schemeInspectByte + phase * 3) % 16));
+            el.style('fill', hot
+                ? 'rgba(230,193,90,0.9)'
+                : (mine % 4 === phase % 4 ? 'rgba(150,255,190,0.45)' : 'rgba(40,55,75,0.85)'));
+            el.style('stroke', hot ? '#e6c15a' : 'rgba(140,160,180,0.35)');
+        });
+
+        // Inspect panel
+        const lines = meta.inspect || [];
+        root.selectAll('.scheme-inspect-line').each(function insp(d, i) {
+            d3.select(this).text(lines[i] || '');
+        });
+        if (this.schemeKind === 'wg-chacha') {
+            const labels = ['const', 'const', 'const', 'const', 'key', 'key', 'key', 'key',
+                'key', 'key', 'key', 'key', 'ctr', 'nonce', 'nonce', 'nonce'];
+            const li = this.schemeInspectByte % 16;
+            root.select('.scheme-inspect-byte')
+                .text(`ChaCha state[${li}] · ${labels[li]} word · 512-bit matrix`);
+        } else if (demoHex && demoHex.length >= 32) {
+            const bi = (this.schemeInspectByte % 16) * 2;
+            const byte = demoHex.slice(bi, bi + 2).toUpperCase();
+            root.select('.scheme-inspect-byte')
+                .text(`demo state[${this.schemeInspectByte}] = 0x${byte}  (educational vector)`);
+        } else {
+            root.select('.scheme-inspect-byte')
+                .text('demo vector: load AES LAB data for live bytes');
+        }
+
+        // Code refs for this phase
+        const refs = meta.refs || [];
+        this._schemePhaseRefs = refs;
+        root.selectAll('.scheme-code-ref').each(function refRow(d, i) {
+            const row = d3.select(this);
+            const ref = refs[i];
+            if (!ref) {
+                row.style('display', 'none');
+                return;
+            }
+            row.style('display', null).attr('data-ref-i', i);
+            row.select('.scheme-code-sym').text(ref.sym || '');
+            row.select('.scheme-code-file').text(ref.file || '');
+            row.select('.scheme-code-note').text(ref.note || '');
+        });
+        root.select('.scheme-code-hint')
+            .text(refs[0] ? `click a symbol → Elixir · primary: ${refs[0].sym}` : 'no code refs');
+
+        root.selectAll('.scheme-key-inject').style('stroke-opacity', function inj() {
+            const p = Number(this.getAttribute('data-phase'));
+            return p === phase ? 1 : 0.25;
+        });
+
+        root.selectAll('.scheme-nr-chip').style('opacity', function nrOp() {
+            return Number(this.getAttribute('data-nr')) === nr ? 1 : 0.4;
+        });
+
+        if (meta.ghost) this.flashArchGhost(meta.ghost);
+    }
+
+    openArchMorph(target) {
+        if (!target?.id) return;
+        // Textbook scheme opens from relevant Architecture nodes — not a separate menu tab.
+        if (this.isSchemeNode(target.id)) {
+            this.openSchemeDiagram(target);
+            return;
+        }
+        this.archFocus = {
+            layer: target.layer || 'consumers',
+            id: target.id,
+            label: target.label,
+            hint: target.hint
+        };
+        this.archMorphTarget = target;
+        this.renderArchMorphRibbon();
+        this.renderFlowMap(this.lastPayload || this.normalizeTelemetry(this.getFallbackTelemetry()));
+    }
+
+    renderArchMorphRibbon() {
+        if (!this.archMorphNode || !this.archMorphTarget) return;
+        const script = this.getArchMorphScript(this.archMorphTarget);
+        const esc = (v) => this.escapeArchHtml(v);
+        const stepsHtml = (script.steps || []).map((step, idx) => (
+            '<div class="crypto-arch-morph-step" style="opacity:0; transform:translateY(8px); transition:opacity 340ms ease, transform 340ms ease; margin:0 0 '
+            + (idx === script.steps.length - 1 ? '0' : '8px')
+            + '; padding:10px 12px; background:rgba(8,12,20,0.82); border:1px solid '
+            + (idx === 0 ? script.accent : 'rgba(96,110,128,0.35)')
+            + '; border-radius:6px;">'
+            + '<div style="font-size:8px; letter-spacing:0.7px; color:#7f93a6; margin-bottom:3px;">' + esc(step.title) + '</div>'
+            + '<div style="font-size:12px; color:#e8f2f9; line-height:1.4;">' + step.body + '</div>'
+            + '<div style="margin-top:6px; font-size:9px; letter-spacing:0.35px; color:#a9d4e8;">' + esc(step.sym) + '</div>'
+            + '</div>'
+        )).join('');
+
+        const labBtn = script.openAesLab
+            ? '<button type="button" class="crypto-arch-open-aeslab" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.5px; color:#e6c15a; background:rgba(230,193,90,0.12); border:1px solid rgba(230,193,90,0.45); border-radius:12px; padding:4px 10px;">AES LAB</button>'
+            : '';
+        const hsBtn = script.openHandshake
+            ? '<button type="button" class="crypto-arch-open-handshake" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.5px; color:#96ffbe; background:rgba(150,255,190,0.10); border:1px solid rgba(150,255,190,0.45); border-radius:12px; padding:4px 10px;">HANDSHAKE</button>'
+            : '';
+        this.archMorphNode.innerHTML = (
+            '<div style="padding:14px 16px; border:1px solid '
+            + script.accent
+            + '; border-radius:10px; background:linear-gradient(180deg, rgba(20,28,40,0.96), rgba(8,12,18,0.94)); box-shadow:0 0 28px rgba(80,140,200,0.18);">'
+            + '<div style="display:flex; align-items:flex-start; gap:12px; margin-bottom:12px;">'
+            + '<div style="flex:1;">'
+            + '<div style="font-size:9px; letter-spacing:1px; color:#e6c15a;">' + esc(script.title) + '</div>'
+            + '<div style="font-size:11px; color:#9db0c6; margin-top:4px; line-height:1.45;">' + esc(script.tagline) + '</div>'
+            + '</div>'
+            + hsBtn
+            + labBtn
+            + '<button type="button" class="crypto-arch-morph-close" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.5px; color:#c8ccd4; background:transparent; border:1px solid rgba(160,170,190,0.35); border-radius:12px; padding:4px 10px;">CLOSE</button>'
+            + '</div>'
+            + stepsHtml
+            + '<div style="margin-top:10px; font-size:8.5px; color:#556273; letter-spacing:0.4px;">'
+            + (this.archMorphTarget.layer === 'primitives'
+                ? 'magic: one primitive · many subsystems · mode chooses the API'
+                : 'magic: one API · many consumers · fastest impl wins')
+            + '</div></div>'
+        );
+        this.archMorphNode.style.display = 'block';
+
+        const closeBtn = this.archMorphNode.querySelector('.crypto-arch-morph-close');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.closeArchMorph();
+                this.renderFlowMap(this.lastPayload || this.normalizeTelemetry(this.getFallbackTelemetry()));
+            });
+        }
+        const lab = this.archMorphNode.querySelector('.crypto-arch-open-aeslab');
+        if (lab) {
+            lab.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.closeArchMorph();
+                this.selectedCompetitionAlgorithm = 'AES';
+                this.activeCryptoView = 'LINEAR_ANALYSIS';
+                this.updateCryptoViewToggle();
+                this.syncOverlayForCurrentView();
+                this.renderFlowMap(this.lastPayload || this.normalizeTelemetry(this.getFallbackTelemetry()));
+            });
+        }
+        const hs = this.archMorphNode.querySelector('.crypto-arch-open-handshake');
+        if (hs) {
+            hs.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.closeArchMorph();
+                this.activeCryptoView = 'HANDSHAKE';
+                this.updateCryptoViewToggle();
+                this.syncOverlayForCurrentView();
+                this.renderFlowMap(this.lastPayload || this.normalizeTelemetry(this.getFallbackTelemetry()));
+            });
+        }
+        const steps = [...this.archMorphNode.querySelectorAll('.crypto-arch-morph-step')];
+        steps.forEach((el, i) => {
+            setTimeout(() => {
+                el.style.opacity = '1';
+                el.style.transform = 'translateY(0)';
+            }, 80 + i * 140);
+        });
+        this.flashArchGhost(script.ghost);
+    }
+
+    drawSchemeXor(g, cx, cy, r = 9) {
+        g.append('circle')
+            .attr('cx', cx)
+            .attr('cy', cy)
+            .attr('r', r)
+            .style('fill', 'rgba(8,12,18,0.95)')
+            .style('stroke', '#d7e3f0')
+            .style('stroke-width', 1.4);
+        g.append('line').attr('x1', cx - r + 3).attr('y1', cy).attr('x2', cx + r - 3).attr('y2', cy)
+            .style('stroke', '#d7e3f0').style('stroke-width', 1.2);
+        g.append('line').attr('x1', cx).attr('y1', cy - r + 3).attr('x2', cx).attr('y2', cy + r - 3)
+            .style('stroke', '#d7e3f0').style('stroke-width', 1.2);
+    }
+
+    drawSchemeOp(g, cx, cy, letter, color = '#8fdcff', r = 11) {
+        g.append('circle')
+            .attr('cx', cx)
+            .attr('cy', cy)
+            .attr('r', r)
+            .style('fill', 'rgba(10,14,22,0.95)')
+            .style('stroke', color)
+            .style('stroke-width', 1.3);
+        g.append('text')
+            .attr('x', cx)
+            .attr('y', cy + 4)
+            .attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '11px')
+            .style('fill', color)
+            .text(letter);
+    }
+
+    drawSchemeBox(g, x, y, w, h, title, sub, stroke = 'rgba(169,212,232,0.55)') {
+        g.append('rect')
+            .attr('x', x)
+            .attr('y', y)
+            .attr('width', w)
+            .attr('height', h)
+            .attr('rx', 4)
+            .style('fill', 'rgba(10,14,20,0.92)')
+            .style('stroke', stroke);
+        g.append('text')
+            .attr('x', x + w / 2)
+            .attr('y', y + (sub ? h / 2 - 2 : h / 2 + 4))
+            .attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '11px')
+            .style('fill', '#e8f0fa')
+            .text(title);
+        if (sub) {
+            g.append('text')
+                .attr('x', x + w / 2)
+                .attr('y', y + h / 2 + 12)
+                .attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '9px')
+                .style('fill', '#7f93a6')
+                .text(sub);
+        }
+    }
+
+    drawSchemeArrow(g, x1, y1, x2, y2, color = 'rgba(180,200,220,0.65)') {
+        g.append('line')
+            .attr('x1', x1)
+            .attr('y1', y1)
+            .attr('x2', x2)
+            .attr('y2', y2)
+            .style('stroke', color)
+            .style('stroke-width', 1.2)
+            .attr('marker-end', 'url(#scheme-arrow)');
+    }
+
+    drawSchemeChrome(g, width, height, opts) {
+        const self = this;
+        const {
+            title,
+            narrator,
+            shortDriver,
+            showNr = true,
+            footerExtra = ''
+        } = opts;
+
+        const defs = g.append('defs');
+        defs.append('marker')
+            .attr('id', 'scheme-arrow')
+            .attr('viewBox', '0 0 10 10')
+            .attr('refX', 8)
+            .attr('refY', 5)
+            .attr('markerWidth', 6)
+            .attr('markerHeight', 6)
+            .attr('orient', 'auto')
+            .append('path')
+            .attr('d', 'M 0 0 L 10 5 L 0 10 z')
+            .style('fill', 'rgba(180,200,220,0.75)');
+
+        const marginX = 28;
+        const top = 100;
+        const frameH = Math.min(height - top - 52, 640);
+        const frameW = width - marginX * 2;
+
+        g.append('rect')
+            .attr('x', marginX)
+            .attr('y', top)
+            .attr('width', frameW)
+            .attr('height', frameH)
+            .attr('rx', 10)
+            .style('fill', 'rgba(6, 10, 16, 0.48)')
+            .style('stroke', 'rgba(120, 140, 170, 0.3)');
+
+        g.append('text')
+            .attr('x', marginX + 16)
+            .attr('y', top + 20)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '12px')
+            .style('letter-spacing', '0.8px')
+            .style('fill', '#e6c15a')
+            .text(title);
+
+        g.append('text')
+            .attr('class', 'scheme-narrator')
+            .attr('x', marginX + 16)
+            .attr('y', top + 38)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '11px')
+            .style('fill', '#96ffbe')
+            .text(narrator);
+
+        g.append('text')
+            .attr('class', 'scheme-phase-pip')
+            .attr('x', marginX + 16)
+            .attr('y', top + 54)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', '#6f8597')
+            .text('phase 1/7 · click PLAY or a stage');
+
+        const ctrlX = width - marginX - 118;
+        const playBtn = g.append('g')
+            .style('cursor', 'pointer')
+            .on('click', () => {
+                if (self.schemePlaying) self.stopSchemePlay();
+                else self.startSchemePlay();
+                playLabel.text(self.schemePlaying ? '■ STOP' : '▶ PLAY');
+            });
+        playBtn.append('rect')
+            .attr('x', ctrlX)
+            .attr('y', top + 12)
+            .attr('width', 100)
+            .attr('height', 28)
+            .attr('rx', 14)
+            .style('fill', 'rgba(230,193,90,0.12)')
+            .style('stroke', '#e6c15a');
+        const playLabel = playBtn.append('text')
+            .attr('class', 'scheme-play-label')
+            .attr('x', ctrlX + 50)
+            .attr('y', top + 30)
+            .attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '11px')
+            .style('fill', '#e6c15a')
+            .text(this.schemePlaying ? '■ STOP' : '▶ PLAY');
+
+        const stepBtn = g.append('g')
+            .style('cursor', 'pointer')
+            .on('click', () => {
+                self.stopSchemePlay();
+                playLabel.text('▶ PLAY');
+                self.schemePhase = (self.schemePhase + 1) % 7;
+                self.applySchemePhase(self.schemePhase);
+            });
+        stepBtn.append('rect')
+            .attr('x', ctrlX - 88)
+            .attr('y', top + 12)
+            .attr('width', 80)
+            .attr('height', 28)
+            .attr('rx', 14)
+            .style('fill', 'rgba(143,220,255,0.10)')
+            .style('stroke', '#8fdcff');
+        stepBtn.append('text')
+            .attr('x', ctrlX - 48)
+            .attr('y', top + 30)
+            .attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '11px')
+            .style('fill', '#8fdcff')
+            .text('STEP ▶');
+
+        if (showNr) {
+            [10, 14].forEach((nr, i) => {
+                const chip = g.append('g')
+                    .attr('class', 'scheme-nr-chip')
+                    .attr('data-nr', nr)
+                    .style('cursor', 'pointer')
+                    .style('opacity', this.schemeNr === nr ? 1 : 0.4)
+                    .on('click', () => {
+                        self.schemeNr = nr;
+                        self.applySchemePhase(self.schemePhase);
+                    });
+                chip.append('rect')
+                    .attr('x', ctrlX - 200 + i * 54)
+                    .attr('y', top + 14)
+                    .attr('width', 50)
+                    .attr('height', 24)
+                    .attr('rx', 10)
+                    .style('fill', 'rgba(150,255,190,0.08)')
+                    .style('stroke', '#96ffbe');
+                chip.append('text')
+                    .attr('x', ctrlX - 175 + i * 54)
+                    .attr('y', top + 30)
+                    .attr('text-anchor', 'middle')
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', '10px')
+                    .style('fill', '#96ffbe')
+                    .text(nr === 10 ? 'Nr10' : 'Nr14');
+            });
+        } else {
+            const chip = g.append('g');
+            chip.append('rect')
+                .attr('x', ctrlX - 146)
+                .attr('y', top + 14)
+                .attr('width', 50)
+                .attr('height', 24)
+                .attr('rx', 10)
+                .style('fill', 'rgba(150,255,190,0.12)')
+                .style('stroke', '#96ffbe');
+            chip.append('text')
+                .attr('x', ctrlX - 121)
+                .attr('y', top + 30)
+                .attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '10px')
+                .style('fill', '#96ffbe')
+                .text('20r');
+        }
+
+        return { marginX, top, frameH, frameW, playLabel, shortDriver, footerExtra };
+    }
+
+    drawSchemePanels(g, layout, self) {
+        const { marginX, top, frameH, frameW } = layout;
+        const inspW = Math.min(300, frameW * 0.28);
+        const codeW = Math.min(360, frameW * 0.34);
+        const inspX = marginX + frameW - inspW - codeW - 28;
+        const codeX = marginX + frameW - codeW - 16;
+        const inspY = top + frameH - 124;
+        const insp = g.append('g').attr('class', 'scheme-inspect');
+        insp.append('rect')
+            .attr('x', inspX)
+            .attr('y', inspY)
+            .attr('width', inspW)
+            .attr('height', 96)
+            .attr('rx', 8)
+            .style('fill', 'rgba(8,12,20,0.94)')
+            .style('stroke', 'rgba(230,193,90,0.45)');
+        insp.append('text')
+            .attr('x', inspX + 12)
+            .attr('y', inspY + 16)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('letter-spacing', '0.6px')
+            .style('fill', '#e6c15a')
+            .text('INSPECT · phase detail');
+        for (let i = 0; i < 4; i += 1) {
+            insp.append('text')
+                .attr('class', 'scheme-inspect-line')
+                .attr('x', inspX + 12)
+                .attr('y', inspY + 34 + i * 13)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', i === 0 ? '11px' : '9px')
+                .style('fill', i === 0 ? '#e8f0fa' : '#9db0c6')
+                .text('');
+        }
+
+        const codePanel = g.append('g').attr('class', 'scheme-code-panel');
+        codePanel.append('rect')
+            .attr('x', codeX)
+            .attr('y', inspY)
+            .attr('width', codeW)
+            .attr('height', 96)
+            .attr('rx', 8)
+            .style('fill', 'rgba(8,12,20,0.94)')
+            .style('stroke', 'rgba(143,220,255,0.45)');
+        codePanel.append('text')
+            .attr('x', codeX + 12)
+            .attr('y', inspY + 16)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('letter-spacing', '0.6px')
+            .style('fill', '#8fdcff')
+            .text('CODE · elixir.bootlin.com');
+        const openPrimary = codePanel.append('g')
+            .style('cursor', 'pointer')
+            .on('click', () => {
+                const refs = self._schemePhaseRefs || [];
+                if (refs[0]) self.openSchemeCodeRef(refs[0]);
+            });
+        openPrimary.append('rect')
+            .attr('x', codeX + codeW - 86)
+            .attr('y', inspY + 6)
+            .attr('width', 74)
+            .attr('height', 18)
+            .attr('rx', 9)
+            .style('fill', 'rgba(143,220,255,0.12)')
+            .style('stroke', '#8fdcff');
+        openPrimary.append('text')
+            .attr('x', codeX + codeW - 49)
+            .attr('y', inspY + 18)
+            .attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', '#8fdcff')
+            .text('OPEN ↗');
+
+        for (let i = 0; i < 3; i += 1) {
+            const ry = inspY + 28 + i * 22;
+            const row = codePanel.append('g')
+                .attr('class', 'scheme-code-ref')
+                .attr('data-ref-i', i)
+                .style('cursor', 'pointer')
+                .on('click', () => {
+                    const refs = self._schemePhaseRefs || [];
+                    if (refs[i]) self.openSchemeCodeRef(refs[i]);
+                })
+                .on('mousemove', (ev) => {
+                    const refs = self._schemePhaseRefs || [];
+                    const ref = refs[i];
+                    if (!ref || !self.hoverCard) return;
+                    self.hoverCard.style.display = 'block';
+                    self.hoverCard.textContent = [
+                        ref.sym,
+                        ref.file,
+                        ref.note || '',
+                        'click → open on Elixir Bootlin'
+                    ].filter(Boolean).join('\n');
+                    self.positionHoverCard(ev);
+                })
+                .on('mouseleave', () => {
+                    if (self.hoverCard) self.hoverCard.style.display = 'none';
+                });
+            row.append('rect')
+                .attr('x', codeX + 8)
+                .attr('y', ry - 2)
+                .attr('width', codeW - 16)
+                .attr('height', 20)
+                .attr('rx', 4)
+                .style('fill', 'rgba(20,28,40,0.75)')
+                .style('stroke', 'rgba(100,120,150,0.25)');
+            row.append('text')
+                .attr('class', 'scheme-code-sym')
+                .attr('x', codeX + 14)
+                .attr('y', ry + 12)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '10px')
+                .style('fill', '#96ffbe')
+                .text('');
+            row.append('text')
+                .attr('class', 'scheme-code-file')
+                .attr('x', codeX + 14 + Math.min(150, codeW * 0.42))
+                .attr('y', ry + 12)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '8px')
+                .style('fill', '#9db0c6')
+                .text('');
+            row.append('text')
+                .attr('class', 'scheme-code-note')
+                .attr('x', codeX + codeW - 14)
+                .attr('y', ry + 12)
+                .attr('text-anchor', 'end')
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '8px')
+                .style('fill', '#6f8597')
+                .text('');
+        }
+        g.append('text')
+            .attr('class', 'scheme-code-hint')
+            .attr('x', marginX + 16)
+            .attr('y', top + frameH - 18)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', '#8fdcff')
+            .text('click a symbol → Elixir');
+        g.append('text')
+            .attr('class', 'scheme-inspect-byte')
+            .attr('x', marginX + 16)
+            .attr('y', top + frameH - 32)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', '#6f8597')
+            .text('');
+    }
+
+    drawSchemeCtas(g, width, height, marginX) {
+        const ctaY = height - 40;
+        const makeCta = (label, x, stroke, onClick) => {
+            const cta = g.append('g').style('cursor', 'pointer').on('click', onClick);
+            cta.append('rect').attr('x', x).attr('y', ctaY).attr('width', 140).attr('height', 26).attr('rx', 13)
+                .style('fill', 'rgba(8,12,18,0.9)').style('stroke', stroke);
+            cta.append('text').attr('x', x + 70).attr('y', ctaY + 17).attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '10px').style('fill', stroke)
+                .text(label);
+        };
+        makeCta('← ARCHITECTURE', marginX, '#a9d4e8', () => {
+            this.stopSchemePlay();
+            this.schemeSource = null;
+            this.schemeRendered = false;
+            this.activeCryptoView = 'ARCHITECTURE';
+            this.updateCryptoViewToggle();
+            this.syncOverlayForCurrentView();
+            this.renderFlowMap(this.lastPayload || this.normalizeTelemetry(this.getFallbackTelemetry()));
+        });
+        makeCta('→ AES LAB', marginX + 152, '#e6c15a', () => {
+            this.stopSchemePlay();
+            this.schemeSource = null;
+            this.schemeRendered = false;
+            this.selectedCompetitionAlgorithm = 'AES';
+            this.activeCryptoView = 'LINEAR_ANALYSIS';
+            this.updateCryptoViewToggle();
+            this.syncOverlayForCurrentView();
+            this.renderFlowMap(this.lastPayload || this.normalizeTelemetry(this.getFallbackTelemetry()));
+        });
+        makeCta('→ HANDSHAKE', marginX + 304, '#96ffbe', () => {
+            this.stopSchemePlay();
+            this.schemeSource = null;
+            this.schemeRendered = false;
+            this.activeCryptoView = 'HANDSHAKE';
+            this.updateCryptoViewToggle();
+            this.syncOverlayForCurrentView();
+            this.renderFlowMap(this.lastPayload || this.normalizeTelemetry(this.getFallbackTelemetry()));
+        });
+    }
+
+    drawSchemeView(layer, payload, width, height) {
+        if (this.schemeKind === 'wg-chacha') {
+            this.drawWgChachaSchemeView(layer, payload, width, height);
+            return;
+        }
+        const g = layer.append('g').attr('class', 'crypto-scheme-view');
+        const meta = payload?.meta || {};
+        const comp = this.getCompetitionPayload(meta) || {};
+        const selected = String(comp?.selected?.name || 'aes-aesni / gcm-aes-ce');
+        const shortDriver = selected.replace(/^_+/, '').slice(0, 22);
+        const self = this;
+
+        const layout = this.drawSchemeChrome(g, width, height, {
+            title: `Рис. · ${(this.schemeSource?.label || 'kTLS / AES').toString()} → AES-GCM`,
+            narrator: 'TLS record lands in kTLS — 128-bit AES state ready',
+            shortDriver,
+            showNr: true
+        });
+        const { marginX, top, frameH, frameW, playLabel } = layout;
+
+        const colTop = top + 68;
+        const leftX = marginX + frameW * 0.06;
+        const midX = marginX + frameW * 0.38;
+        const rightX = marginX + frameW * 0.66;
+        const boxW = Math.min(150, frameW * 0.18);
+        const spineX = midX;
+
+        // Mini AES state 4×4
+        const grid = g.append('g').attr('class', 'scheme-state-grid');
+        const cell = 14;
+        const gx0 = leftX;
+        const gy0 = colTop + 8;
+        grid.append('text')
+            .attr('x', gx0)
+            .attr('y', gy0 - 6)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', '#8fdcff')
+            .text('AES state 4×4 · click byte');
+        for (let i = 0; i < 16; i += 1) {
+            const r = Math.floor(i / 4);
+            const c = i % 4;
+            grid.append('rect')
+                .attr('class', 'scheme-state-cell')
+                .attr('data-i', i)
+                .attr('x', gx0 + c * (cell + 3))
+                .attr('y', gy0 + r * (cell + 3))
+                .attr('width', cell)
+                .attr('height', cell)
+                .attr('rx', 2)
+                .style('fill', 'rgba(40,55,75,0.85)')
+                .style('stroke', 'rgba(140,160,180,0.35)')
+                .style('cursor', 'pointer')
+                .on('click', () => {
+                    self.schemeInspectByte = i;
+                    self.applySchemePhase(self.schemePhase);
+                });
+        }
+
+        // Kernel call rail under the state grid
+        const kernelCalls = [
+            { id: 0, label: 'kTLS record' },
+            { id: 1, label: 'aead_encrypt' },
+            { id: 2, label: 'aesni / ce' },
+            { id: 3, label: 'GHASH tag' },
+            { id: 4, label: 'wire out' }
+        ];
+        const railY0 = gy0 + 4 * (cell + 3) + 18;
+        g.append('text')
+            .attr('x', gx0)
+            .attr('y', railY0 - 4)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', '#e6c15a')
+            .text('KERNEL CALLS');
+        const kernelSymById = {
+            0: 'tls_sw_sendmsg',
+            1: 'crypto_aead_encrypt',
+            2: /(-ce\b|neon|aes-ce)/i.test(shortDriver) ? 'ce_aes_ecb_encrypt' : 'aesni_encrypt',
+            3: 'ghash_update',
+            4: 'tcp_sendmsg'
+        };
+        kernelCalls.forEach((kc, i) => {
+            const ky = railY0 + 6 + i * 28;
+            const step = g.append('g')
+                .attr('class', 'scheme-kernel-step')
+                .attr('data-kernel', kc.id)
+                .style('opacity', 0.35)
+                .style('cursor', 'pointer')
+                .on('click', () => {
+                    self.openSchemeCodeRef({ sym: kernelSymById[kc.id] });
+                })
+                .on('mousemove', (ev) => {
+                    if (!self.hoverCard) return;
+                    self.hoverCard.style.display = 'block';
+                    self.hoverCard.textContent = `${kernelSymById[kc.id]}()\nclick → open executing code on Elixir`;
+                    self.positionHoverCard(ev);
+                })
+                .on('mouseleave', () => {
+                    if (self.hoverCard) self.hoverCard.style.display = 'none';
+                });
+            step.append('rect')
+                .attr('x', gx0)
+                .attr('y', ky)
+                .attr('width', 92)
+                .attr('height', 22)
+                .attr('rx', 4)
+                .style('fill', 'rgba(10,14,20,0.9)')
+                .style('stroke', 'rgba(120,140,170,0.35)');
+            step.append('text')
+                .attr('x', gx0 + 46)
+                .attr('y', ky + 15)
+                .attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '9px')
+                .style('fill', '#d7e3f0')
+                .text(kc.label);
+            if (i < kernelCalls.length - 1) {
+                g.append('line')
+                    .attr('x1', gx0 + 46)
+                    .attr('y1', ky + 22)
+                    .attr('x2', gx0 + 46)
+                    .attr('y2', ky + 28)
+                    .style('stroke', 'rgba(160,180,200,0.35)')
+                    .style('stroke-width', 1);
+            }
+        });
+
+        this.drawSchemePanels(g, layout, self);
+        const tip = (title, body) => {
+            if (!this.hoverCard) return;
+            this.hoverCard.style.display = 'block';
+            this.hoverCard.textContent = `${title}\n${body}`;
+        };
+
+        const phaseGroup = (phase, x, y, w, h) => {
+            const grp = g.append('g')
+                .attr('class', 'scheme-phase-group')
+                .attr('data-phase', phase)
+                .style('cursor', 'pointer')
+                .style('opacity', 0.55)
+                .on('click', () => {
+                    self.stopSchemePlay();
+                    playLabel.text('▶ PLAY');
+                    self.schemePhase = phase;
+                    self.applySchemePhase(phase);
+                });
+            grp.append('rect')
+                .attr('class', 'scheme-phase-glow')
+                .attr('x', x)
+                .attr('y', y)
+                .attr('width', w)
+                .attr('height', h)
+                .attr('rx', 8)
+                .style('fill', 'rgba(230,193,90,0.08)')
+                .style('stroke', 'rgba(230,193,90,0.55)')
+                .style('opacity', 0);
+            return grp;
+        };
+
+        g.append('text')
+            .attr('x', spineX)
+            .attr('y', colTop)
+            .attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '10px')
+            .style('fill', '#a9d4e8')
+            .text('DATA PATH');
+        g.append('text')
+            .attr('x', rightX + boxW / 2)
+            .attr('y', colTop)
+            .attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '10px')
+            .style('fill', '#c4b0ff')
+            .text('KEY / DRIVER SCHEDULE');
+
+        const inY = colTop + 14;
+        const p0 = phaseGroup(0, leftX - 6, inY - 4, boxW * 2.2, 56);
+        this.drawSchemeBox(p0, leftX + 78, inY, boxW * 0.85, 40, 'TLS record', 'plaintext · AAD', 'rgba(169,212,232,0.65)');
+        this.drawSchemeBox(p0, spineX - boxW * 0.4, inY, boxW * 0.85, 40, '128-bit block', 'into AES state', 'rgba(150,255,190,0.5)');
+
+        let y = inY + 72;
+        this.drawSchemeArrow(g, spineX, inY + 40, spineX, y);
+
+        const drawRound = (parent, roundLabel, keyLabel, y0, showMix, phase) => {
+            const xorY = y0;
+            this.drawSchemeXor(parent, spineX, xorY, 10);
+            const inject = parent.append('line')
+                .attr('class', 'scheme-key-inject')
+                .attr('data-phase', phase)
+                .attr('x1', rightX)
+                .attr('y1', xorY)
+                .attr('x2', spineX + 10)
+                .attr('y2', xorY)
+                .style('stroke', '#c4b0ff')
+                .style('stroke-width', 1.4)
+                .style('stroke-dasharray', '5 4')
+                .attr('stroke-dashoffset', 20)
+                .attr('marker-end', 'url(#scheme-arrow)');
+            const runDash = () => {
+                inject.transition().duration(1400).ease(d3.easeLinear)
+                    .attr('stroke-dashoffset', 0)
+                    .on('end', () => {
+                        inject.attr('stroke-dashoffset', 20);
+                        runDash();
+                    });
+            };
+            runDash();
+            parent.append('text')
+                .attr('x', (rightX + spineX) / 2)
+                .attr('y', xorY - 8)
+                .attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '9px')
+                .style('fill', '#c4b0ff')
+                .text(keyLabel);
+            parent.append('text')
+                .attr('x', spineX - 52)
+                .attr('y', xorY + 4)
+                .attr('text-anchor', 'end')
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '9px')
+                .style('fill', '#e6c15a')
+                .text(roundLabel);
+
+            let yy = xorY + 22;
+            this.drawSchemeArrow(parent, spineX, xorY + 10, spineX, yy - 11);
+            const s = parent.append('g').style('cursor', 'help')
+                .on('mousemove', (ev) => { tip('SubBytes (S)', 'non-linear byte substitution · S-box'); this.positionHoverCard(ev); })
+                .on('mouseleave', () => { if (this.hoverCard) this.hoverCard.style.display = 'none'; });
+            this.drawSchemeOp(s, spineX, yy, 'S', '#e6c15a');
+            parent.append('text').attr('x', spineX + 18).attr('y', yy + 4)
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '9px').style('fill', '#8d99a7')
+                .text('SubBytes');
+
+            yy += 26;
+            this.drawSchemeArrow(parent, spineX, yy - 15, spineX, yy - 11);
+            const p = parent.append('g').style('cursor', 'help')
+                .on('mousemove', (ev) => { tip('ShiftRows (P)', 'row-wise rotation of the 4×4 state'); this.positionHoverCard(ev); })
+                .on('mouseleave', () => { if (this.hoverCard) this.hoverCard.style.display = 'none'; });
+            this.drawSchemeOp(p, spineX, yy, 'P', '#8fdcff');
+            parent.append('text').attr('x', spineX + 18).attr('y', yy + 4)
+                .style('font-family', 'Share Tech Mono, monospace').style('font-size', '9px').style('fill', '#8d99a7')
+                .text('ShiftRows');
+
+            if (showMix) {
+                yy += 26;
+                this.drawSchemeArrow(parent, spineX, yy - 15, spineX, yy - 11);
+                const m = parent.append('g').style('cursor', 'help')
+                    .on('mousemove', (ev) => { tip('MixColumns (M)', 'column diffusion in GF(2^8)'); this.positionHoverCard(ev); })
+                    .on('mouseleave', () => { if (this.hoverCard) this.hoverCard.style.display = 'none'; });
+                this.drawSchemeOp(m, spineX, yy, 'M', '#96ffbe');
+                parent.append('text').attr('x', spineX + 18).attr('y', yy + 4)
+                    .style('font-family', 'Share Tech Mono, monospace').style('font-size', '9px').style('fill', '#8d99a7')
+                    .text('MixColumns');
+            }
+            return yy + 16;
+        };
+
+        const p1 = phaseGroup(1, spineX - 120, y - 8, 250, 110);
+        y = drawRound(p1, 'round 1', 'K₀', y, true, 1);
+        this.drawSchemeArrow(g, spineX, y - 6, spineX, y + 8);
+        y += 12;
+        const p2 = phaseGroup(2, spineX - 120, y - 8, 250, 110);
+        y = drawRound(p2, 'round 2', 'K₁', y, true, 2);
+
+        const ellY = y + 6;
+        const p3 = phaseGroup(3, spineX - 120, ellY - 4, 250, 36);
+        p3.append('text').attr('x', spineX).attr('y', ellY + 18).attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace').style('font-size', '16px').style('fill', '#6f8597')
+            .text('· · ·');
+        p3.append('text').attr('x', spineX + 40).attr('y', ellY + 18)
+            .style('font-family', 'Share Tech Mono, monospace').style('font-size', '9px').style('fill', '#6f8597')
+            .text('rounds 3 … Nr−1');
+
+        y = ellY + 40;
+        this.drawSchemeArrow(g, spineX, ellY + 28, spineX, y);
+        const p4 = phaseGroup(4, spineX - 120, y - 8, 250, 90);
+        y = drawRound(p4, 'round Nr', 'Kₙ', y, false, 4);
+
+        const outY = Math.min(y + 24, top + frameH - 78);
+        this.drawSchemeArrow(g, spineX, y, spineX, outY - 6);
+        const p5 = phaseGroup(5, leftX - 4, outY - 56, boxW * 0.95, 48);
+        this.drawSchemeBox(p5, leftX, outY - 50, boxW * 0.9, 40, 'GHASH', 'AAD + ciphertext', 'rgba(143,220,255,0.55)');
+        g.append('line')
+            .attr('x1', leftX + boxW * 0.9)
+            .attr('y1', outY - 30)
+            .attr('x2', spineX - 70)
+            .attr('y2', outY + 12)
+            .style('stroke', 'rgba(143,220,255,0.45)')
+            .style('stroke-width', 1)
+            .style('stroke-dasharray', '3 3');
+
+        const p6 = phaseGroup(6, spineX - boxW * 0.6, outY - 4, boxW * 1.2, 52);
+        this.drawSchemeBox(p6, spineX - boxW * 0.55, outY, boxW * 1.1, 44, 'ciphertext ∥ tag', 'AES-GCM record out', 'rgba(230,193,90,0.6)');
+
+        // Right column — key/driver schedule with stage sync
+        let ky = inY;
+        const kw = boxW * 1.05;
+        const keyWrap = (stage, drawFn) => {
+            const grp = g.append('g')
+                .attr('class', 'scheme-key-stage')
+                .attr('data-key-stage', stage)
+                .style('opacity', 0.35);
+            drawFn(grp);
+            return grp;
+        };
+        keyWrap(0, (grp) => {
+            this.drawSchemeBox(grp, rightX, ky, kw, 38, 'traffic key', 'HKDF / handshake', 'rgba(196,176,255,0.55)');
+        });
+        ky += 48;
+        this.drawSchemeArrow(g, rightX + kw / 2, ky - 10, rightX + kw / 2, ky);
+        keyWrap(1, (grp) => {
+            this.drawSchemeBox(grp, rightX, ky, kw, 38, 'crypto_alloc_aead', 'gcm(aes)', 'rgba(230,193,90,0.45)');
+        });
+        ky += 48;
+        this.drawSchemeArrow(g, rightX + kw / 2, ky - 10, rightX + kw / 2, ky);
+        keyWrap(2, (grp) => {
+            this.drawSchemeBox(grp, rightX, ky, kw, 46, 'priority race', shortDriver || 'aesni / ce', 'rgba(150,255,190,0.5)');
+        });
+        g.append('text')
+            .attr('class', 'scheme-selected-driver')
+            .attr('x', rightX + kw / 2)
+            .attr('y', ky + 58)
+            .attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '8px')
+            .style('fill', '#96ffbe')
+            .text(`live: ${shortDriver}`);
+        ky += 70;
+        this.drawSchemeArrow(g, rightX + kw / 2, ky - 12, rightX + kw / 2, ky);
+        keyWrap(3, (grp) => {
+            this.drawSchemeBox(grp, rightX, ky, kw, 38, 'setkey(tfm)', 'K → round keys', 'rgba(169,212,232,0.5)');
+        });
+        ky += 50;
+        ['K₀ expand', 'ROL / S-box', 'K₁ … Kₙ'].forEach((label, i) => {
+            const oy = ky + i * 34;
+            const stage = i === 0 ? 3 : (i === 1 ? 4 : 5);
+            const grp = g.append('g')
+                .attr('class', 'scheme-key-stage')
+                .attr('data-key-stage', stage)
+                .style('opacity', 0.35);
+            grp.append('ellipse')
+                .attr('cx', rightX + kw / 2)
+                .attr('cy', oy + 10)
+                .attr('rx', kw * 0.42)
+                .attr('ry', 13)
+                .style('fill', 'rgba(12,16,24,0.95)')
+                .style('stroke', 'rgba(196,176,255,0.55)');
+            grp.append('text')
+                .attr('x', rightX + kw / 2)
+                .attr('y', oy + 14)
+                .attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '9px')
+                .style('fill', '#d7c6ff')
+                .text(label);
+        });
+
+        g.append('text')
+            .attr('x', marginX + 180)
+            .attr('y', top + frameH - 18)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', '#6f8597')
+            .text(`· Nr10/14 · ${shortDriver}`);
+
+        this.drawSchemeCtas(g, width, height, marginX);
+        this.schemeRendered = true;
+        this.applySchemePhase(this.schemePhase || 0);
+    }
+
+    drawWgChachaSchemeView(layer, payload, width, height) {
+        const g = layer.append('g').attr('class', 'crypto-scheme-view');
+        const meta = payload?.meta || {};
+        const comp = this.getCompetitionPayload(meta) || {};
+        const selected = String(comp?.selected?.name || 'chacha20poly1305 / simd');
+        const shortDriver = selected.replace(/^_+/, '').slice(0, 22);
+        const self = this;
+        const src = (this.schemeSource?.label || 'WireGuard').toString();
+
+        const layout = this.drawSchemeChrome(g, width, height, {
+            title: `Рис. · ${src} → ChaCha20-Poly1305`,
+            narrator: 'WireGuard transport — Noise keys ready, AEAD encrypts the packet',
+            shortDriver,
+            showNr: false
+        });
+        const { marginX, top, frameH, frameW, playLabel } = layout;
+        const colTop = top + 68;
+        const leftX = marginX + frameW * 0.06;
+        const midX = marginX + frameW * 0.38;
+        const rightX = marginX + frameW * 0.66;
+        const boxW = Math.min(150, frameW * 0.18);
+        const spineX = midX;
+
+        // ChaCha 4×4 state (32-bit words)
+        const grid = g.append('g').attr('class', 'scheme-state-grid');
+        const cell = 14;
+        const gx0 = leftX;
+        const gy0 = colTop + 8;
+        grid.append('text')
+            .attr('x', gx0)
+            .attr('y', gy0 - 6)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', '#8fdcff')
+            .text('ChaCha state 4×4 · 32-bit words');
+        for (let i = 0; i < 16; i += 1) {
+            const r = Math.floor(i / 4);
+            const c = i % 4;
+            grid.append('rect')
+                .attr('class', 'scheme-state-cell')
+                .attr('data-i', i)
+                .attr('x', gx0 + c * (cell + 3))
+                .attr('y', gy0 + r * (cell + 3))
+                .attr('width', cell)
+                .attr('height', cell)
+                .attr('rx', 2)
+                .style('fill', 'rgba(40,55,75,0.85)')
+                .style('stroke', 'rgba(140,160,180,0.35)')
+                .style('cursor', 'pointer')
+                .on('click', () => {
+                    self.schemeInspectByte = i;
+                    self.applySchemePhase(self.schemePhase);
+                });
+        }
+
+        const kernelCalls = [
+            { id: 0, label: 'wg encrypt' },
+            { id: 1, label: 'alloc_aead' },
+            { id: 2, label: 'chacha20' },
+            { id: 3, label: 'poly1305' },
+            { id: 4, label: 'UDP out' }
+        ];
+        const railY0 = gy0 + 4 * (cell + 3) + 18;
+        g.append('text')
+            .attr('x', gx0)
+            .attr('y', railY0 - 4)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', '#e6c15a')
+            .text('KERNEL CALLS');
+        const kernelSymById = {
+            0: 'wg_packet_encrypt_worker',
+            1: 'crypto_alloc_aead',
+            2: 'chacha_block_generic',
+            3: 'poly1305_core_blocks',
+            4: 'udp_sendmsg'
+        };
+        kernelCalls.forEach((kc, i) => {
+            const ky = railY0 + 6 + i * 28;
+            const step = g.append('g')
+                .attr('class', 'scheme-kernel-step')
+                .attr('data-kernel', kc.id)
+                .style('opacity', 0.35)
+                .style('cursor', 'pointer')
+                .on('click', () => {
+                    self.openSchemeCodeRef({ sym: kernelSymById[kc.id] });
+                })
+                .on('mousemove', (ev) => {
+                    if (!self.hoverCard) return;
+                    self.hoverCard.style.display = 'block';
+                    self.hoverCard.textContent = `${kernelSymById[kc.id]}()\nclick → open executing code on Elixir`;
+                    self.positionHoverCard(ev);
+                })
+                .on('mouseleave', () => {
+                    if (self.hoverCard) self.hoverCard.style.display = 'none';
+                });
+            step.append('rect')
+                .attr('x', gx0)
+                .attr('y', ky)
+                .attr('width', 92)
+                .attr('height', 22)
+                .attr('rx', 4)
+                .style('fill', 'rgba(10,14,20,0.9)')
+                .style('stroke', 'rgba(120,140,170,0.35)');
+            step.append('text')
+                .attr('x', gx0 + 46)
+                .attr('y', ky + 15)
+                .attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '9px')
+                .style('fill', '#d7e3f0')
+                .text(kc.label);
+            if (i < kernelCalls.length - 1) {
+                g.append('line')
+                    .attr('x1', gx0 + 46)
+                    .attr('y1', ky + 22)
+                    .attr('x2', gx0 + 46)
+                    .attr('y2', ky + 28)
+                    .style('stroke', 'rgba(160,180,200,0.35)')
+                    .style('stroke-width', 1);
+            }
+        });
+
+        this.drawSchemePanels(g, layout, self);
+
+        const tip = (title, body) => {
+            if (!this.hoverCard) return;
+            this.hoverCard.style.display = 'block';
+            this.hoverCard.textContent = `${title}\n${body}`;
+        };
+
+        const phaseGroup = (phase, x, y, w, h) => {
+            const grp = g.append('g')
+                .attr('class', 'scheme-phase-group')
+                .attr('data-phase', phase)
+                .style('cursor', 'pointer')
+                .style('opacity', 0.55)
+                .on('click', () => {
+                    self.stopSchemePlay();
+                    playLabel.text('▶ PLAY');
+                    self.schemePhase = phase;
+                    self.applySchemePhase(phase);
+                });
+            grp.append('rect')
+                .attr('class', 'scheme-phase-glow')
+                .attr('x', x)
+                .attr('y', y)
+                .attr('width', w)
+                .attr('height', h)
+                .attr('rx', 8)
+                .style('fill', 'rgba(230,193,90,0.08)')
+                .style('stroke', 'rgba(230,193,90,0.55)')
+                .style('opacity', 0);
+            return grp;
+        };
+
+        g.append('text')
+            .attr('x', spineX)
+            .attr('y', colTop)
+            .attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '10px')
+            .style('fill', '#a9d4e8')
+            .text('DATA PATH');
+        g.append('text')
+            .attr('x', rightX + boxW / 2)
+            .attr('y', colTop)
+            .attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '10px')
+            .style('fill', '#c4b0ff')
+            .text('KEY / DRIVER SCHEDULE');
+
+        const inY = colTop + 14;
+        const p0 = phaseGroup(0, leftX - 6, inY - 4, boxW * 2.2, 56);
+        this.drawSchemeBox(p0, leftX + 78, inY, boxW * 0.85, 40, 'WG packet', 'plaintext · AAD', 'rgba(169,212,232,0.65)');
+        this.drawSchemeBox(p0, spineX - boxW * 0.4, inY, boxW * 0.85, 40, '512-bit state', 'into ChaCha', 'rgba(150,255,190,0.5)');
+
+        let y = inY + 72;
+        this.drawSchemeArrow(g, spineX, inY + 40, spineX, y);
+
+        const drawQr = (parent, roundLabel, y0, phase) => {
+            const xorY = y0;
+            parent.append('text')
+                .attr('x', spineX - 52)
+                .attr('y', xorY + 4)
+                .attr('text-anchor', 'end')
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '9px')
+                .style('fill', '#e6c15a')
+                .text(roundLabel);
+
+            let yy = xorY;
+            const ops = [
+                { l: '+', name: 'ADD', tip: 'word add mod 2³²', c: '#e6c15a' },
+                { l: '≪', name: 'ROL', tip: 'rotate left · ARX rotate', c: '#8fdcff' },
+                { l: '⊕', name: 'XOR', tip: 'bitwise mix of columns/diagonals', c: '#96ffbe' }
+            ];
+            ops.forEach((op, oi) => {
+                if (oi > 0) this.drawSchemeArrow(parent, spineX, yy - 12, spineX, yy - 8);
+                const node = parent.append('g').style('cursor', 'help')
+                    .on('mousemove', (ev) => { tip(op.name, op.tip); this.positionHoverCard(ev); })
+                    .on('mouseleave', () => { if (this.hoverCard) this.hoverCard.style.display = 'none'; });
+                this.drawSchemeOp(node, spineX, yy, op.l, op.c, 12);
+                parent.append('text').attr('x', spineX + 18).attr('y', yy + 4)
+                    .style('font-family', 'Share Tech Mono, monospace').style('font-size', '9px').style('fill', '#8d99a7')
+                    .text(op.name);
+                const inject = parent.append('line')
+                    .attr('class', 'scheme-key-inject')
+                    .attr('data-phase', phase)
+                    .attr('x1', rightX)
+                    .attr('y1', yy)
+                    .attr('x2', spineX + 12)
+                    .attr('y2', yy)
+                    .style('stroke', '#c4b0ff')
+                    .style('stroke-width', oi === 0 ? 1.4 : 0.8)
+                    .style('stroke-dasharray', '5 4')
+                    .attr('stroke-dashoffset', 20)
+                    .style('opacity', oi === 0 ? 1 : 0.35)
+                    .attr('marker-end', oi === 0 ? 'url(#scheme-arrow)' : null);
+                if (oi === 0) {
+                    const runDash = () => {
+                        inject.transition().duration(1400).ease(d3.easeLinear)
+                            .attr('stroke-dashoffset', 0)
+                            .on('end', () => {
+                                inject.attr('stroke-dashoffset', 20);
+                                runDash();
+                            });
+                    };
+                    runDash();
+                    parent.append('text')
+                        .attr('x', (rightX + spineX) / 2)
+                        .attr('y', yy - 8)
+                        .attr('text-anchor', 'middle')
+                        .style('font-family', 'Share Tech Mono, monospace')
+                        .style('font-size', '9px')
+                        .style('fill', '#c4b0ff')
+                        .text('state words');
+                }
+                yy += 28;
+            });
+            return yy + 4;
+        };
+
+        const p1 = phaseGroup(1, spineX - 120, y - 8, 250, 40);
+        // phase 1 is alloc in meta — keep visual as entry into rounds
+        this.drawSchemeBox(p1, spineX - boxW * 0.45, y, boxW * 0.95, 36, 'crypto API', 'chacha20poly1305', 'rgba(230,193,90,0.5)');
+        y += 52;
+        this.drawSchemeArrow(g, spineX, y - 12, spineX, y);
+
+        const p2 = phaseGroup(2, spineX - 120, y - 8, 250, 100);
+        y = drawQr(p2, 'QR · column', y, 2);
+        this.drawSchemeArrow(g, spineX, y - 6, spineX, y + 8);
+        y += 12;
+        const p3 = phaseGroup(3, spineX - 120, y - 4, 250, 36);
+        p3.append('text').attr('x', spineX).attr('y', y + 18).attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace').style('font-size', '16px').style('fill', '#6f8597')
+            .text('· · ·');
+        p3.append('text').attr('x', spineX + 40).attr('y', y + 18)
+            .style('font-family', 'Share Tech Mono, monospace').style('font-size', '9px').style('fill', '#6f8597')
+            .text('10 double-rounds · 20 QR layers');
+
+        y += 40;
+        this.drawSchemeArrow(g, spineX, y - 12, spineX, y);
+        const p4 = phaseGroup(4, spineX - 120, y - 8, 250, 56);
+        this.drawSchemeXor(p4, spineX, y + 14, 11);
+        p4.append('text').attr('x', spineX + 20).attr('y', y + 18)
+            .style('font-family', 'Share Tech Mono, monospace').style('font-size', '10px').style('fill', '#e8f0fa')
+            .text('keystream ⊕ plaintext');
+        p4.append('text').attr('x', spineX + 20).attr('y', y + 34)
+            .style('font-family', 'Share Tech Mono, monospace').style('font-size', '9px').style('fill', '#8d99a7')
+            .text('stream cipher · no padding');
+
+        const outY = Math.min(y + 72, top + frameH - 78);
+        this.drawSchemeArrow(g, spineX, y + 48, spineX, outY - 6);
+        const p5 = phaseGroup(5, leftX - 4, outY - 56, boxW * 0.95, 48);
+        this.drawSchemeBox(p5, leftX, outY - 50, boxW * 0.9, 40, 'Poly1305', 'AAD + ciphertext', 'rgba(143,220,255,0.55)');
+        g.append('line')
+            .attr('x1', leftX + boxW * 0.9)
+            .attr('y1', outY - 30)
+            .attr('x2', spineX - 70)
+            .attr('y2', outY + 12)
+            .style('stroke', 'rgba(143,220,255,0.45)')
+            .style('stroke-width', 1)
+            .style('stroke-dasharray', '3 3');
+
+        const p6 = phaseGroup(6, spineX - boxW * 0.6, outY - 4, boxW * 1.2, 52);
+        this.drawSchemeBox(p6, spineX - boxW * 0.55, outY, boxW * 1.1, 44, 'ciphertext ∥ tag', 'WireGuard UDP out', 'rgba(230,193,90,0.6)');
+
+        // Right column
+        let ky = inY;
+        const kw = boxW * 1.05;
+        const keyWrap = (stage, drawFn) => {
+            const grp = g.append('g')
+                .attr('class', 'scheme-key-stage')
+                .attr('data-key-stage', stage)
+                .style('opacity', 0.35);
+            drawFn(grp);
+            return grp;
+        };
+        keyWrap(0, (grp) => {
+            this.drawSchemeBox(grp, rightX, ky, kw, 38, 'Noise keys', 'handshake done', 'rgba(196,176,255,0.55)');
+        });
+        ky += 48;
+        this.drawSchemeArrow(g, rightX + kw / 2, ky - 10, rightX + kw / 2, ky);
+        keyWrap(1, (grp) => {
+            this.drawSchemeBox(grp, rightX, ky, kw, 38, 'crypto_alloc_aead', 'chacha20poly1305', 'rgba(230,193,90,0.45)');
+        });
+        ky += 48;
+        this.drawSchemeArrow(g, rightX + kw / 2, ky - 10, rightX + kw / 2, ky);
+        keyWrap(2, (grp) => {
+            this.drawSchemeBox(grp, rightX, ky, kw, 46, 'priority race', shortDriver || 'simd / generic', 'rgba(150,255,190,0.5)');
+        });
+        g.append('text')
+            .attr('class', 'scheme-selected-driver')
+            .attr('x', rightX + kw / 2)
+            .attr('y', ky + 58)
+            .attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '8px')
+            .style('fill', '#96ffbe')
+            .text(`live: ${shortDriver}`);
+        ky += 70;
+        this.drawSchemeArrow(g, rightX + kw / 2, ky - 12, rightX + kw / 2, ky);
+        keyWrap(3, (grp) => {
+            this.drawSchemeBox(grp, rightX, ky, kw, 38, 'setkey(tfm)', 'key · nonce · ctr', 'rgba(169,212,232,0.5)');
+        });
+        ky += 50;
+        ['state init', 'QR columns', 'QR diagonals'].forEach((label, i) => {
+            const oy = ky + i * 34;
+            const stage = i === 0 ? 3 : 4;
+            const grp = g.append('g')
+                .attr('class', 'scheme-key-stage')
+                .attr('data-key-stage', stage)
+                .style('opacity', 0.35);
+            grp.append('ellipse')
+                .attr('cx', rightX + kw / 2)
+                .attr('cy', oy + 10)
+                .attr('rx', kw * 0.42)
+                .attr('ry', 13)
+                .style('fill', 'rgba(12,16,24,0.95)')
+                .style('stroke', 'rgba(196,176,255,0.55)');
+            grp.append('text')
+                .attr('x', rightX + kw / 2)
+                .attr('y', oy + 14)
+                .attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '9px')
+                .style('fill', '#d7c6ff')
+                .text(label);
+        });
+
+        g.append('text')
+            .attr('x', marginX + 180)
+            .attr('y', top + frameH - 18)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', '#6f8597')
+            .text(`· ARX · Poly1305 · ${shortDriver}`);
+
+        this.drawSchemeCtas(g, width, height, marginX);
+        this.schemeRendered = true;
+        this.applySchemePhase(this.schemePhase || 0);
+    }
+
+    getHandshakeStorySteps() {
+        return [
+            {
+                id: 'hello',
+                title: '1 · CLIENTHELLO',
+                sym: 'key_share · cipher suites',
+                body: 'TLS 1.3 offers X25519 + AES-GCM\n(no secrets yet — only proposals)',
+                accent: '#a9d4e8',
+                kernel: 'userspace TLS stack'
+            },
+            {
+                id: 'x25519',
+                title: '2 · X25519',
+                sym: 'crypto_alloc_kpp / curve25519',
+                body: 'ECDHE → 32-byte shared secret\nCurve25519 is agreement, not a cipher',
+                accent: '#8fdcff',
+                kernel: 'kpp · Curve25519'
+            },
+            {
+                id: 'secret',
+                title: '3 · SHARED SECRET',
+                sym: 'compute_shared_secret()',
+                body: 'raw ECDH output is not a key\nit must be extracted / expanded',
+                accent: '#96ffbe',
+                kernel: 'handshake transcript'
+            },
+            {
+                id: 'hkdf',
+                title: '4 · HKDF',
+                sym: 'HKDF-Extract / Expand-Label',
+                body: 'SHA-256 key schedule → traffic secrets\nbridge from ECC into symmetric world',
+                accent: '#c4b0ff',
+                kernel: 'shash · SHA-2'
+            },
+            {
+                id: 'aesgcm',
+                title: '5 · AES-GCM KEYS',
+                sym: 'crypto_aead_setkey',
+                body: 'record keys + IV for AES-GCM\nnow the path looks like Architecture AES',
+                accent: '#e6c15a',
+                kernel: 'aead · AES-GCM'
+            },
+            {
+                id: 'ktls',
+                title: '6 · RECORDS',
+                sym: 'tls_sw_sendmsg / kTLS',
+                body: 'encrypted application data\nX25519 already left the hot path',
+                accent: '#e6c15a',
+                kernel: 'kTLS · crypto_aead'
+            }
+        ];
+    }
+
+    drawHandshakeStoryView(layer, payload, width, height) {
+        const g = layer.append('g').attr('class', 'crypto-handshake-story');
+        const steps = this.getHandshakeStorySteps();
+        const marginX = 36;
+        const top = 118;
+        const cardH = Math.min(168, Math.max(140, height * 0.22));
+        const gap = 14;
+        const usableW = width - marginX * 2;
+        const cardW = Math.min(190, Math.max(118, (usableW - gap * (steps.length - 1)) / steps.length));
+        const totalW = steps.length * cardW + (steps.length - 1) * gap;
+        const startX = marginX + Math.max(0, (usableW - totalW) / 2);
+        const cardY = top + 36;
+
+        g.append('rect')
+            .attr('x', marginX - 8)
+            .attr('y', top - 20)
+            .attr('width', width - marginX * 2 + 16)
+            .attr('height', cardH + 120)
+            .attr('rx', 10)
+            .style('fill', 'rgba(6, 10, 16, 0.35)')
+            .style('stroke', 'rgba(120, 140, 170, 0.22)');
+
+        g.append('text')
+            .attr('x', marginX)
+            .attr('y', top)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '11px')
+            .style('letter-spacing', '1px')
+            .style('fill', '#96ffbe')
+            .text('ECC BRIDGE → SYMMETRIC KEYS');
+
+        g.append('text')
+            .attr('x', marginX)
+            .attr('y', top + 18)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '10px')
+            .style('fill', '#7f93a6')
+            .text('X25519 agrees on a secret · HKDF turns it into AES-GCM keys · records never use the curve');
+
+        // Connector line behind cards
+        const lineY = cardY + cardH / 2;
+        g.append('path')
+            .attr('d', `M ${startX + cardW / 2} ${lineY} L ${startX + totalW - cardW / 2} ${lineY}`)
+            .style('fill', 'none')
+            .style('stroke', 'rgba(150, 255, 190, 0.28)')
+            .style('stroke-width', 2)
+            .style('stroke-dasharray', '4 6');
+
+        steps.forEach((step, idx) => {
+            const x = startX + idx * (cardW + gap);
+            const node = g.append('g')
+                .attr('class', 'crypto-handshake-step')
+                .style('opacity', 0);
+
+            node.append('rect')
+                .attr('x', x)
+                .attr('y', cardY)
+                .attr('width', cardW)
+                .attr('height', cardH)
+                .attr('rx', 8)
+                .style('fill', 'rgba(10, 14, 20, 0.92)')
+                .style('stroke', step.accent)
+                .style('stroke-opacity', 0.65);
+
+            node.append('circle')
+                .attr('cx', x + cardW / 2)
+                .attr('cy', cardY - 2)
+                .attr('r', 4)
+                .style('fill', step.accent);
+
+            node.append('text')
+                .attr('x', x + 12)
+                .attr('y', cardY + 22)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '9px')
+                .style('letter-spacing', '0.5px')
+                .style('fill', step.accent)
+                .text(step.title);
+
+            const bodyLines = String(step.body || '').split('\n');
+            bodyLines.forEach((line, li) => {
+                node.append('text')
+                    .attr('x', x + 12)
+                    .attr('y', cardY + 48 + li * 14)
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', cardW < 140 ? '9px' : '10px')
+                    .style('fill', '#d7e3f0')
+                    .text(line.length > 28 ? `${line.slice(0, 27)}…` : line);
+            });
+
+            node.append('text')
+                .attr('x', x + 12)
+                .attr('y', cardY + cardH - 28)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '9px')
+                .style('fill', '#a9d4e8')
+                .text(String(step.sym).length > 26 ? `${String(step.sym).slice(0, 25)}…` : step.sym);
+
+            node.append('text')
+                .attr('x', x + 12)
+                .attr('y', cardY + cardH - 12)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '8px')
+                .style('fill', '#6f8597')
+                .text(step.kernel);
+
+            node.transition()
+                .delay(80 + idx * 120)
+                .duration(360)
+                .style('opacity', 1);
+
+            if (idx < steps.length - 1) {
+                const ax = x + cardW + 2;
+                g.append('path')
+                    .attr('d', `M ${ax} ${lineY} L ${ax + gap - 4} ${lineY}`)
+                    .style('fill', 'none')
+                    .style('stroke', step.accent)
+                    .style('stroke-width', 1.4)
+                    .style('opacity', 0.55);
+            }
+        });
+
+        // Bridge callouts
+        const callY = cardY + cardH + 28;
+        g.append('text')
+            .attr('x', marginX)
+            .attr('y', callY)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '11px')
+            .style('fill', '#8fdcff')
+            .text('left half = key agreement (ECC)   ·   right half = record protection (AES-GCM)');
+
+        g.append('text')
+            .attr('x', marginX)
+            .attr('y', callY + 20)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '10px')
+            .style('fill', '#7f93a6')
+            .text('WireGuard tells a related story with Noise + ChaCha20-Poly1305 instead of HKDF + AES-GCM');
+
+        // CTA chips
+        const ctaY = Math.min(height - 48, callY + 48);
+        const makeCta = (label, x, fill, stroke, onClick) => {
+            const cta = g.append('g').style('cursor', 'pointer').on('click', onClick);
+            cta.append('rect')
+                .attr('x', x)
+                .attr('y', ctaY)
+                .attr('width', 150)
+                .attr('height', 28)
+                .attr('rx', 14)
+                .style('fill', fill)
+                .style('stroke', stroke);
+            cta.append('text')
+                .attr('x', x + 75)
+                .attr('y', ctaY + 18)
+                .attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '10px')
+                .style('letter-spacing', '0.5px')
+                .style('fill', stroke)
+                .text(label);
+        };
+        makeCta('→ CURVE25519', marginX, 'rgba(143,220,255,0.10)', '#8fdcff', () => {
+            this.activeCryptoView = 'ARCHITECTURE';
+            this.updateCryptoViewToggle();
+            this.syncOverlayForCurrentView();
+            this.openArchMorph({ layer: 'primitives', id: 'curve25519', label: 'Curve25519', hint: 'X25519 key exchange' });
+        });
+        makeCta('→ AES LAB', marginX + 166, 'rgba(230,193,90,0.10)', '#e6c15a', () => {
+            this.selectedCompetitionAlgorithm = 'AES';
+            this.activeCryptoView = 'LINEAR_ANALYSIS';
+            this.updateCryptoViewToggle();
+            this.syncOverlayForCurrentView();
+            this.renderFlowMap(this.lastPayload || this.normalizeTelemetry(this.getFallbackTelemetry()));
+        });
+        makeCta('→ ARCHITECTURE', marginX + 332, 'rgba(169,212,232,0.10)', '#a9d4e8', () => {
+            this.activeCryptoView = 'ARCHITECTURE';
+            this.updateCryptoViewToggle();
+            this.syncOverlayForCurrentView();
+            this.renderFlowMap(this.lastPayload || this.normalizeTelemetry(this.getFallbackTelemetry()));
+        });
+
+        // Ghost cycle: agreement → derive → encrypt
+        const ghosts = ['curve25519_generic()', 'hkdf_expand_label()', 'crypto_aead_encrypt()'];
+        const ghostIdx = Math.floor(Date.now() / 1700) % ghosts.length;
+        this.flashArchGhost(ghosts[ghostIdx]);
+
+        g.append('text')
+            .attr('x', marginX)
+            .attr('y', height - 18)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', '#6f8597')
+            .text('handshake story · educational TLS 1.3 path · not a live packet decoder');
+    }
+
+    getArchitectureModel(payload) {
+        const meta = payload?.meta || {};
+        const competition = this.getCompetitionPayload(meta) || meta.algorithm_competition || {};
+        const selected = String(competition?.selected?.name || meta.selected_driver || 'aes-aesni');
+        const request = String(competition?.request || this.selectedCompetitionAlgorithm || 'AES').toUpperCase();
+        const lanes = Array.isArray(payload?.items) ? payload.items : [];
+        const liveProtocols = new Set(lanes.map((l) => String(l.protocol || '').toUpperCase()));
+        const liveAlgs = new Set(lanes.map((l) => String(l.algorithm || '').toUpperCase()));
+
+        const consumers = [
+            { id: 'ktls', label: 'kTLS', uses: ['aead', 'aes', 'chacha'], hint: 'TLS record offload in kernel', live: liveProtocols.has('TLS') },
+            { id: 'af_alg', label: 'AF_ALG', uses: ['skcipher', 'aead', 'shash'], hint: 'userspace → crypto API sockets', live: true },
+            { id: 'wireguard', label: 'WireGuard', uses: ['aead', 'chacha', 'curve25519'], hint: 'Noise_IK · ChaCha20-Poly1305 · X25519', live: liveProtocols.has('WIREGUARD') || liveAlgs.has('CHACHA20-POLY1305') },
+            { id: 'ipsec', label: 'IPsec/XFRM', uses: ['aead', 'aes', 'shash'], hint: 'ESP/AH transforms', live: liveProtocols.has('IPSEC') },
+            { id: 'dm_crypt', label: 'dm-crypt', uses: ['skcipher', 'aes'], hint: 'block device encryption', live: false },
+            { id: 'fscrypt', label: 'fscrypt', uses: ['skcipher', 'aes', 'shash'], hint: 'file/directory encryption', live: false },
+            { id: 'ima', label: 'IMA/EVM', uses: ['shash', 'ecdsa'], hint: 'integrity measurement / signatures', live: false },
+            { id: 'random', label: 'random', uses: ['chacha'], hint: 'CRNG (ChaCha20)', live: true }
+        ];
+
+        const api = [
+            { id: 'alloc', label: 'crypto_alloc_*', hint: 'allocate tfm by name/type' },
+            { id: 'tfm', label: 'struct crypto_tfm', hint: 'transform handle' },
+            { id: 'skcipher', label: 'skcipher', hint: 'symmetric cipher API' },
+            { id: 'aead', label: 'aead', hint: 'auth encryption API' },
+            { id: 'shash', label: 'shash', hint: 'synchronous hash API' },
+            { id: 'kpp', label: 'kpp', hint: 'key-agreement (ECDH/X25519)' }
+        ];
+
+        const primitives = [
+            { id: 'aes', label: 'AES', family: 'block', hint: 'AES-128/256 · GCM/XTS/CTR' },
+            { id: 'chacha', label: 'ChaCha20', family: 'stream', hint: 'ChaCha20-Poly1305' },
+            { id: 'sha2', label: 'SHA-2', family: 'hash', hint: 'SHA-256 / SHA-512' },
+            { id: 'curve25519', label: 'Curve25519', family: 'ecc', hint: 'X25519 key exchange' },
+            { id: 'ecdsa', label: 'ECDSA', family: 'ecc', hint: 'P-256/P-384 signatures' },
+            { id: 'poly', label: 'Poly1305', family: 'mac', hint: 'one-time authenticator' }
+        ];
+
+        const drivers = [
+            { id: 'generic', label: 'generic', hint: 'portable C fallback' },
+            { id: 'simd', label: 'simd/avx', hint: 'vector software path' },
+            { id: 'aesni', label: 'AES-NI', hint: 'CPU AES instructions', hot: /aesni|vaes/i.test(selected) },
+            { id: 'cryptd', label: 'cryptd', hint: 'async crypto daemon wrapper', hot: /cryptd/i.test(selected) },
+            { id: 'neon', label: 'NEON/CE', hint: 'ARM crypto extensions' },
+            { id: 'offload', label: 'HW offload', hint: 'qat / ccp / engine' }
+        ];
+
+        // Edges: consumer → api type, api → primitive, primitive → driver family
+        const edges = [
+            ['ktls', 'aead'], ['ktls', 'aes'],
+            ['af_alg', 'skcipher'], ['af_alg', 'aead'], ['af_alg', 'shash'],
+            ['wireguard', 'aead'], ['wireguard', 'chacha'], ['wireguard', 'curve25519'], ['wireguard', 'kpp'],
+            ['ipsec', 'aead'], ['ipsec', 'aes'],
+            ['dm_crypt', 'skcipher'], ['dm_crypt', 'aes'],
+            ['fscrypt', 'skcipher'], ['fscrypt', 'aes'],
+            ['ima', 'shash'], ['ima', 'ecdsa'],
+            ['random', 'chacha'],
+            ['aead', 'aes'], ['aead', 'chacha'], ['aead', 'poly'],
+            ['skcipher', 'aes'], ['skcipher', 'chacha'],
+            ['shash', 'sha2'],
+            ['kpp', 'curve25519'], ['kpp', 'ecdsa'],
+            ['aes', 'aesni'], ['aes', 'generic'], ['aes', 'cryptd'],
+            ['chacha', 'simd'], ['chacha', 'generic'],
+            ['sha2', 'simd'], ['sha2', 'generic'],
+            ['curve25519', 'generic'], ['ecdsa', 'generic'],
+            ['aes', 'offload'], ['aes', 'neon']
+        ];
+
+        return { consumers, api, primitives, drivers, edges, selected, request, liveCount: lanes.length };
+    }
+
+    drawArchitectureMapView(layer, payload, width, height) {
+        const model = this.getArchitectureModel(payload);
+        const focus = this.archFocus;
+        const marginX = 36;
+        const top = 108;
+        const bottom = height - 52;
+        const usableH = Math.max(420, bottom - top);
+        const bandH = usableH / 4;
+        const bands = [
+            { key: 'consumers', title: 'CONSUMERS · kernel subsystems', y: top, items: model.consumers, color: '#a9d4e8' },
+            { key: 'api', title: 'KERNEL CRYPTO API · unified entry', y: top + bandH, items: model.api, color: '#e6c15a' },
+            { key: 'primitives', title: 'PRIMITIVES · algorithms', y: top + bandH * 2, items: model.primitives, color: '#96ffbe' },
+            { key: 'drivers', title: 'IMPLEMENTATIONS · software / CPU / offload', y: top + bandH * 3, items: model.drivers, color: '#c4b0ff' }
+        ];
+
+        const nodeMap = new Map();
+        const related = new Set();
+        if (focus?.id) {
+            related.add(focus.id);
+            model.edges.forEach(([a, b]) => {
+                if (a === focus.id || b === focus.id) {
+                    related.add(a);
+                    related.add(b);
+                }
+            });
+            // one hop expand
+            const hop = [...related];
+            model.edges.forEach(([a, b]) => {
+                if (hop.includes(a) || hop.includes(b)) {
+                    related.add(a);
+                    related.add(b);
+                }
+            });
+        }
+
+        const g = layer.append('g').attr('class', 'crypto-architecture-map');
+
+        // Ambient frame
+        g.append('rect')
+            .attr('x', marginX - 8)
+            .attr('y', top - 28)
+            .attr('width', width - marginX * 2 + 16)
+            .attr('height', usableH + 48)
+            .attr('rx', 10)
+            .style('fill', 'rgba(6, 10, 16, 0.35)')
+            .style('stroke', 'rgba(120, 140, 170, 0.22)');
+
+        bands.forEach((band) => {
+            const rowY = band.y + 36;
+            const n = band.items.length;
+            const gap = 12;
+            const rowW = width - marginX * 2;
+            const nodeW = Math.min(132, Math.max(88, (rowW - gap * (n - 1)) / n));
+            const totalW = n * nodeW + (n - 1) * gap;
+            const startX = marginX + (rowW - totalW) / 2;
+
+            g.append('text')
+                .attr('x', marginX)
+                .attr('y', band.y + 14)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '10px')
+                .style('letter-spacing', '1px')
+                .style('fill', band.color)
+                .text(band.title);
+
+            band.items.forEach((item, idx) => {
+                const x = startX + idx * (nodeW + gap);
+                const y = rowY;
+                const isFocus = focus?.id === item.id;
+                const isRelated = !focus || related.has(item.id);
+                const isLive = Boolean(item.live || item.hot);
+                const opacity = isRelated ? 1 : 0.22;
+                const stroke = isFocus
+                    ? band.color
+                    : (isLive ? 'rgba(150,255,190,0.55)' : 'rgba(120,140,170,0.35)');
+                const fill = isFocus
+                    ? 'rgba(28, 40, 58, 0.95)'
+                    : 'rgba(10, 14, 20, 0.88)';
+
+                const node = g.append('g')
+                    .attr('class', 'crypto-arch-node')
+                    .style('cursor', 'pointer')
+                    .style('opacity', opacity)
+                    .on('click', () => {
+                        if (this.isSchemeNode(item.id)) {
+                            this.openSchemeDiagram({
+                                layer: band.key,
+                                id: item.id,
+                                label: item.label,
+                                hint: item.hint
+                            });
+                            return;
+                        }
+                        const morphable = band.key === 'consumers' || band.key === 'primitives';
+                        if (morphable) {
+                            if (this.archMorphTarget?.id === item.id && this.archMorphTarget?.layer === band.key) {
+                                this.closeArchMorph();
+                                this.archFocus = null;
+                                this.renderFlowMap(this.lastPayload || payload);
+                                return;
+                            }
+                            this.openArchMorph({
+                                layer: band.key,
+                                id: item.id,
+                                label: item.label,
+                                hint: item.hint
+                            });
+                            return;
+                        }
+                        this.closeArchMorph();
+                        this.archFocus = (this.archFocus?.id === item.id)
+                            ? null
+                            : { layer: band.key, id: item.id, label: item.label, hint: item.hint };
+                        this.renderFlowMap(this.lastPayload || payload);
+                    })
+                    .on('mousemove', (event) => {
+                        if (!this.hoverCard) return;
+                        this.hoverCard.style.display = 'block';
+                        const tip = this.isSchemeNode(item.id)
+                            ? (this.resolveSchemeKind(item.id) === 'wg-chacha'
+                                ? 'click → textbook SCHEME (ChaCha20-Poly1305)'
+                                : 'click → textbook SCHEME (AES-GCM path)')
+                            : (band.key === 'consumers'
+                                ? 'click → consumer→crypto morph'
+                                : (band.key === 'primitives'
+                                    ? 'click → primitive drill morph'
+                                    : 'click to highlight reuse edges'));
+                        this.hoverCard.textContent = [
+                            item.label,
+                            item.hint || '',
+                            isLive ? 'status: live / active path' : 'status: architectural link',
+                            tip
+                        ].filter(Boolean).join('\n');
+                        this.positionHoverCard(event);
+                    })
+                    .on('mouseleave', () => {
+                        if (this.hoverCard) this.hoverCard.style.display = 'none';
+                    });
+
+                node.append('rect')
+                    .attr('x', x)
+                    .attr('y', y)
+                    .attr('width', nodeW)
+                    .attr('height', 44)
+                    .attr('rx', 6)
+                    .style('fill', fill)
+                    .style('stroke', stroke)
+                    .style('stroke-width', isFocus ? 1.6 : 1);
+
+                node.append('text')
+                    .attr('x', x + nodeW / 2)
+                    .attr('y', y + 27)
+                    .attr('text-anchor', 'middle')
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', nodeW < 100 ? '9px' : '11px')
+                    .style('fill', '#e7eef8')
+                    .text(item.label);
+
+                if (isLive) {
+                    node.append('circle')
+                        .attr('cx', x + nodeW - 10)
+                        .attr('cy', y + 10)
+                        .attr('r', 3.2)
+                        .style('fill', '#96ffbe');
+                }
+
+                nodeMap.set(item.id, {
+                    x: x + nodeW / 2,
+                    y: y + 44,
+                    top: y,
+                    band: band.key,
+                    color: band.color
+                });
+            });
+        });
+
+        // Draw edges under nodes (insert before nodes by raising nodes - draw edges first in a lower group)
+        const edgeLayer = g.insert('g', ':first-child').attr('class', 'crypto-arch-edges');
+        const idToBand = {};
+        bands.forEach((b) => b.items.forEach((it) => { idToBand[it.id] = b.key; }));
+        const bandOrder = { consumers: 0, api: 1, primitives: 2, drivers: 3 };
+
+        model.edges.forEach(([from, to]) => {
+            const a = nodeMap.get(from);
+            const b = nodeMap.get(to);
+            if (!a || !b) return;
+            // Only draw downward (or equal) architectural links
+            if ((bandOrder[idToBand[to]] ?? 9) < (bandOrder[idToBand[from]] ?? 0)) return;
+            const active = !focus || (related.has(from) && related.has(to));
+            const x1 = a.x;
+            const y1 = a.y;
+            const x2 = b.x;
+            const y2 = b.top;
+            const midY = (y1 + y2) / 2;
+            edgeLayer.append('path')
+                .attr('d', `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`)
+                .style('fill', 'none')
+                .style('stroke', active ? 'rgba(169, 212, 232, 0.55)' : 'rgba(90, 110, 130, 0.10)')
+                .style('stroke-width', active && focus ? 1.6 : 1)
+                .style('opacity', active ? 1 : 0.7);
+        });
+
+        // Detail card
+        const detail = focus || {
+            label: 'Kernel Crypto API',
+            hint: 'One API, many consumers — click a node to see reuse edges',
+            id: 'api'
+        };
+        const cardW = Math.min(360, width * 0.28);
+        const cardX = width - cardW - 28;
+        const cardY = top - 8;
+        const card = g.append('g').attr('class', 'crypto-arch-detail');
+        card.append('rect')
+            .attr('x', cardX)
+            .attr('y', cardY)
+            .attr('width', cardW)
+            .attr('height', 118)
+            .attr('rx', 8)
+            .style('fill', 'rgba(8, 12, 20, 0.9)')
+            .style('stroke', 'rgba(230, 193, 90, 0.35)');
+        card.append('text')
+            .attr('x', cardX + 14)
+            .attr('y', cardY + 22)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('letter-spacing', '0.8px')
+            .style('fill', '#e6c15a')
+            .text(this.archMorphTarget ? 'MORPH · CRYPTO PATH' : (focus ? 'FOCUS · REUSE PATH' : 'ARCHITECTURE MAP'));
+        card.append('text')
+            .attr('x', cardX + 14)
+            .attr('y', cardY + 46)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '14px')
+            .style('fill', '#e8f0fa')
+            .text(String(detail.label || detail.id));
+        const hint = String(detail.hint || '');
+        card.append('text')
+            .attr('x', cardX + 14)
+            .attr('y', cardY + 68)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '10px')
+            .style('fill', '#9db0c6')
+            .text(hint.length > 42 ? `${hint.slice(0, 42)}…` : hint);
+        card.append('text')
+            .attr('x', cardX + 14)
+            .attr('y', cardY + 92)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', '#7f93a6')
+            .text(`live flows: ${model.liveCount} · selected: ${model.selected}`);
+        card.append('text')
+            .attr('x', cardX + 14)
+            .attr('y', cardY + 108)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', '#8fdcff')
+            .text(this.archMorphTarget
+                ? 'CLOSE ribbon or re-click node'
+                : 'click CONSUMER or PRIMITIVE for morph');
+
+        // Footer legend
+        g.append('text')
+            .attr('x', marginX)
+            .attr('y', height - 22)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('fill', '#6f8597')
+            .text('kTLS/AES → AES-GCM SCHEME · WireGuard/ChaCha/Poly → ChaCha SCHEME · other nodes → morph · API/impl → reuse');
+
+        if (this.archMorphTarget && this.archMorphNode) {
+            // Keep ribbon above the map after SVG rebuild.
+            this.archMorphNode.style.display = 'block';
+        }
+    }
+
     renderFlowMap(payload) {
         if (!this.svg) return;
         this.lastPayload = payload;
@@ -4040,6 +6751,24 @@ class CryptoSubsystemVisualization {
             if (this.aesOverlay) this.svg.select('.aes-ops-overlay').raise();
             return;
         }
+        if (this.activeCryptoView === 'ARCHITECTURE') {
+            this.drawArchitectureMapView(layer, payload, width, height);
+            if (this.archMorphTarget && this.archMorphNode && this.archMorphNode.style.display === 'none') {
+                this.renderArchMorphRibbon();
+            }
+            return;
+        }
+        if (this.activeCryptoView === 'SCHEME') {
+            this.closeArchMorph();
+            this.drawSchemeView(layer, payload, width, height);
+            return;
+        }
+        if (this.activeCryptoView === 'HANDSHAKE') {
+            this.closeArchMorph();
+            this.drawHandshakeStoryView(layer, payload, width, height);
+            return;
+        }
+        this.closeArchMorph();
         this.drawProtocolLegend(layer);
         this.drawRuntimeSourcesPanel(layer, payload, width, height);
         this.drawEntropyCloud(layer, payload?.meta || {}, width, height);
@@ -4208,6 +6937,18 @@ class CryptoSubsystemVisualization {
     }
 
     renderTelemetryPayload(normalized) {
+        // Keep SCHEME interactive (PLAY / phase) — do not rebuild SVG on every poll.
+        if (this.activeCryptoView === 'SCHEME' && this.schemeRendered) {
+            this.lastPayload = normalized;
+            const meta = normalized?.meta || {};
+            const comp = this.getCompetitionPayload(meta) || {};
+            const selected = String(comp?.selected?.name || '').replace(/^_+/, '').slice(0, 22);
+            if (selected && this.svg) {
+                this.svg.select('.scheme-selected-driver').text(`live: ${selected}`);
+            }
+            return;
+        }
+
         if (this.activeCryptoView !== 'LINEAR_ANALYSIS') {
             this.renderFlowMap(normalized);
             return;
@@ -4513,6 +7254,7 @@ class CryptoSubsystemVisualization {
         this.isActive = false;
         this.activeAnimationTick += 1;
         this.hideHoverCard();
+        this.closeArchMorph();
         if (this.aesOverlay) this.closeAesOpsOverlay();
 
         if (this.telemetryInterval) {
