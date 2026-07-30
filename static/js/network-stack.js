@@ -1,7 +1,7 @@
 // Network Stack Visualization - vertical packet flow through Linux networking layers
 // Version: 11 — Netfilter morph (syntax-safe) + hooks/conntrack/verdict
 
-debugLog('🌐 network-stack.js v16: Script loading...');
+debugLog('🌐 network-stack.js v18: Script loading...');
 
 class NetworkStackVisualization {
     constructor() {
@@ -109,6 +109,13 @@ class NetworkStackVisualization {
         this.sockFrozen = null;      // { socket_api, flow }
         this.flowFollow = null;      // { remote, local, proto, ip, port } from ?remote=
         this._flowFollowApplied = false;
+        // Path-distance ray: same plane as layer noise arms, but hops → peer.
+        this.pathHopRig = null;
+        this.pathHopRemote = null;
+        this.pathHopData = null;
+        this.pathHopCache = new Map();
+        this.pathHopPending = null;
+        this.pathHopNode = null;
         this._ghostPending = false;
         this._ghostEl = null;
         this._ghostTimer = null;
@@ -849,6 +856,301 @@ class NetworkStackVisualization {
         return { hub, ring, arms, supportRods, satellites, profile };
     }
 
+    disposeSceneObject(obj) {
+        if (!obj) return;
+        this.scene.remove(obj);
+        if (obj.geometry) obj.geometry.dispose();
+        if (obj.material) {
+            if (obj.material.map) obj.material.map.dispose();
+            obj.material.dispose();
+        }
+    }
+
+    disposePathHopRig() {
+        const rig = this.pathHopRig;
+        if (!rig) return;
+        this.disposeSceneObject(rig.hub);
+        this.disposeSceneObject(rig.ring);
+        this.disposeSceneObject(rig.arm);
+        this.disposeSceneObject(rig.tip);
+        (rig.beads || []).forEach((b) => this.disposeSceneObject(b));
+        (rig.segments || []).forEach((s) => this.disposeSceneObject(s));
+        (rig.tags || []).forEach((tag) => {
+            if (tag?.sprite) this.disposeSceneObject(tag.sprite);
+        });
+        this.pathHopRig = null;
+    }
+
+    getActivePeerIp() {
+        if (this.flowFollow?.ip) return String(this.flowFollow.ip).trim();
+        const remote = this.telemetryData?.flow?.remote;
+        const { ip } = this.parseEndpoint(remote);
+        return String(ip || '').trim();
+    }
+
+    syncPathHopDistance() {
+        if (!this.scene) return;
+        const peerIp = this.getActivePeerIp();
+        if (!peerIp || peerIp === '0.0.0.0' || peerIp === '::' || peerIp === 'N/A') {
+            this.disposePathHopRig();
+            this.pathHopRemote = null;
+            this.pathHopData = null;
+            this.updatePathHopHud(null);
+            return;
+        }
+        if (this.pathHopRemote === peerIp && this.pathHopRig) {
+            this.updatePathHopHud(this.pathHopData);
+            return;
+        }
+        if (this.pathHopPending === peerIp && this.pathHopRig) return;
+
+        this.pathHopRemote = peerIp;
+        this.pathHopPending = peerIp;
+        this.updatePathHopHud({ remote_ip: peerIp, hop_count: null, status: 'probe' });
+
+        this.rebuildPathHopRig({
+            remote_ip: peerIp,
+            hop_count: 0,
+            hops: [],
+            reached: false,
+            note: 'probing path…',
+            status: 'probe'
+        });
+
+        const cached = this.pathHopCache.get(peerIp);
+        const fetchPromise = cached
+            ? Promise.resolve(cached)
+            : window.fetchJson(`/api/traceroute?ip=${encodeURIComponent(peerIp)}`, { cache: 'no-store' }, {
+                timeoutMs: 9000,
+                suppressToast: true,
+                context: 'network-stack-path-hops'
+            }).then((payload) => {
+                if (payload && Array.isArray(payload.hops)) {
+                    this.pathHopCache.set(peerIp, payload);
+                }
+                return payload;
+            }).catch((err) => ({
+                remote_ip: peerIp,
+                tool: null,
+                reached: false,
+                hop_count: 0,
+                hops: [],
+                note: `path unavailable: ${err.message || err}`,
+                status: 'error'
+            }));
+
+        fetchPromise.then((payload) => {
+            if (this.pathHopRemote !== peerIp) return;
+            this.pathHopPending = null;
+            this.pathHopData = payload || { remote_ip: peerIp, hops: [], hop_count: 0 };
+            this.rebuildPathHopRig(this.pathHopData);
+            this.updatePathHopHud(this.pathHopData);
+        });
+    }
+
+    rebuildPathHopRig(trace) {
+        if (!this.scene) return;
+        this.disposePathHopRig();
+
+        const peerIp = String(trace?.remote_ip || this.pathHopRemote || '').trim();
+        const hops = Array.isArray(trace?.hops) ? trace.hops.filter((h) => h && h.target != null) : [];
+        const hopCount = hops.length || Number(trace?.hop_count) || 0;
+        const probing = trace?.status === 'probe' || (hopCount === 0 && !trace?.note);
+        const errored = Boolean(trace?.note) && hopCount === 0 && !probing;
+
+        // Same horizontal plane language as layer noise arms (IP = routing plane).
+        const ipY = this.layerMap?.ip ?? 0.05;
+        const hubPos = new THREE.Vector3(0.14, ipY, -0.08);
+        const visualHops = Math.max(1, Math.min(12, hopCount || (probing || errored ? 3 : 1)));
+        const armLen = 1.55 + visualHops * 0.42;
+        const end = new THREE.Vector3(
+            hubPos.x + armLen,
+            ipY + 0.02,
+            hubPos.z + 0.35
+        );
+
+        // High-contrast red so the path ray reads against the cyan tower noise.
+        const pathRed = 0xe0564e;
+        const pathRedHot = 0xff6a5c;
+        const pathRedDim = 0xa04038;
+
+        const hub = new THREE.Mesh(
+            new THREE.SphereGeometry(0.09, 14, 14),
+            new THREE.MeshBasicMaterial({
+                color: pathRedHot,
+                transparent: true,
+                opacity: 0.92
+            })
+        );
+        hub.position.copy(hubPos);
+        this.scene.add(hub);
+
+        const ring = new THREE.Mesh(
+            new THREE.TorusGeometry(0.2, 0.016, 8, 28),
+            new THREE.MeshBasicMaterial({
+                color: pathRed,
+                transparent: true,
+                opacity: 0.75
+            })
+        );
+        ring.position.copy(hubPos);
+        ring.rotation.x = Math.PI / 2;
+        this.scene.add(ring);
+
+        const arm = this.createRodBetween(hubPos, end, 0.028, pathRed, probing ? 0.55 : 0.88);
+
+        const tip = new THREE.Mesh(
+            new THREE.SphereGeometry(0.11, 12, 12),
+            new THREE.MeshBasicMaterial({
+                color: errored ? 0xff3030 : (probing ? pathRedDim : pathRedHot),
+                transparent: true,
+                opacity: 0.95
+            })
+        );
+        tip.position.copy(end);
+        this.scene.add(tip);
+
+        const beads = [];
+        const segments = [];
+        const tags = [];
+        const hopNodes = hops.length
+            ? hops
+            : Array.from({ length: visualHops }, (_, i) => ({
+                hop: i + 1,
+                target: probing ? '…' : (errored ? '?' : peerIp),
+                rtt_ms: null,
+                provisional: true
+            }));
+
+        hopNodes.forEach((hop, idx) => {
+            const t = (idx + 1) / (hopNodes.length + 1);
+            const pos = hubPos.clone().lerp(end, t);
+            const unknown = hop.target === '*' || hop.target === '?' || hop.target === '…';
+            const bead = new THREE.Mesh(
+                new THREE.SphereGeometry(unknown ? 0.036 : 0.052, 10, 10),
+                new THREE.MeshBasicMaterial({
+                    color: unknown ? pathRedDim : pathRedHot,
+                    transparent: true,
+                    opacity: unknown ? 0.45 : 0.95
+                })
+            );
+            bead.position.copy(pos);
+            bead.userData = { hop, t };
+            this.scene.add(bead);
+            beads.push(bead);
+
+            // Tiny lateral stub — same "ray with point" grammar as layer noise.
+            const stubEnd = pos.clone().add(new THREE.Vector3(
+                0.08 + (idx % 2) * 0.06,
+                (idx % 2 === 0 ? 0.12 : -0.1),
+                (idx % 2 === 0 ? 0.22 : -0.18)
+            ));
+            const stub = this.createRodBetween(pos, stubEnd, 0.01, pathRed, 0.55);
+            if (stub) segments.push(stub);
+            const stubDot = new THREE.Mesh(
+                new THREE.SphereGeometry(0.028, 8, 8),
+                new THREE.MeshBasicMaterial({
+                    color: pathRed,
+                    transparent: true,
+                    opacity: 0.7
+                })
+            );
+            stubDot.position.copy(stubEnd);
+            this.scene.add(stubDot);
+            beads.push(stubDot);
+
+            const showTag = !hop.provisional && (idx === 0 || idx === hopNodes.length - 1 || hopNodes.length <= 5);
+            if (showTag) {
+                const rtt = hop.rtt_ms != null ? `${Number(hop.rtt_ms).toFixed(1)}ms` : '—';
+                const tag = this.createSignalTagSprite(`h${hop.hop} ${hop.target}\n${rtt}`);
+                if (tag?.sprite) {
+                    tag.sprite.position.copy(pos.clone().add(new THREE.Vector3(0.05, 0.16, 0.05)));
+                    tag.sprite.scale.set(1.05, 0.26, 1);
+                    tags.push(tag);
+                }
+            }
+        });
+
+        const tipLabel = probing
+            ? `path → ${peerIp}\nprobing…`
+            : (errored
+                ? `path → ${peerIp}\n${String(trace?.note || 'unavailable').slice(0, 28)}`
+                : `peer ${peerIp}\n${hopCount} hop${hopCount === 1 ? '' : 's'}`);
+        const tipTag = this.createSignalTagSprite(tipLabel);
+        if (tipTag?.sprite) {
+            tipTag.sprite.position.copy(end.clone().add(new THREE.Vector3(0.12, 0.22, 0.08)));
+            tipTag.sprite.scale.set(1.25, 0.3, 1);
+            tags.push(tipTag);
+        }
+
+        this.pathHopRig = {
+            hub,
+            ring,
+            arm,
+            tip,
+            beads,
+            segments,
+            tags,
+            hubPos: hubPos.clone(),
+            end: end.clone(),
+            hopCount,
+            peerIp,
+            probing,
+            errored,
+            phase: 0
+        };
+    }
+
+    updatePathHopHud(trace) {
+        if (!this.pathHopNode) return;
+        const { value, card, label } = this.pathHopNode;
+        card.style.borderColor = 'rgba(224, 86, 78, 0.85)';
+        card.style.boxShadow = '0 0 14px rgba(224, 86, 78, 0.28)';
+        if (label) label.style.color = '#e0564e';
+        if (value) value.style.color = '#ff8a7a';
+        if (!trace) {
+            value.textContent = '—';
+            return;
+        }
+        const hops = Number(trace.hop_count ?? (Array.isArray(trace.hops) ? trace.hops.length : 0));
+        if (trace.status === 'probe' || hops == null || Number.isNaN(hops)) {
+            value.textContent = 'probe…';
+            return;
+        }
+        if (trace.note && hops === 0) {
+            value.textContent = 'n/a';
+            return;
+        }
+        const reached = trace.reached ? '✓' : '~';
+        value.textContent = `${hops} hops ${reached}`;
+    }
+
+    updatePathHopRig(dt) {
+        const rig = this.pathHopRig;
+        if (!rig) return;
+        rig.phase += dt;
+        if (rig.ring) rig.ring.rotation.z += dt * 0.45;
+        if (rig.hub?.material) {
+            rig.hub.material.opacity = 0.78 + 0.18 * Math.sin(rig.phase * 2.8);
+        }
+        if (rig.tip?.material) {
+            rig.tip.material.opacity = 0.82 + 0.16 * Math.sin(rig.phase * 3.4);
+            const s = 1 + 0.12 * Math.sin(rig.phase * 2.4);
+            rig.tip.scale.setScalar(s);
+        }
+        if (rig.arm?.material) {
+            rig.arm.material.opacity = rig.probing
+                ? 0.45 + 0.25 * (0.5 + 0.5 * Math.sin(rig.phase * 4.2))
+                : 0.75 + 0.15 * (0.5 + 0.5 * Math.sin(rig.phase * 1.8));
+            rig.arm.material.color?.setHex?.(0xe0564e);
+        }
+        (rig.beads || []).forEach((bead, idx) => {
+            if (!bead?.material) return;
+            const pulse = 0.5 + 0.5 * Math.sin(rig.phase * 3.0 + idx * 0.55);
+            bead.material.opacity = 0.55 + pulse * 0.4;
+        });
+    }
+
     createFlowParticles() {
         // Thin particles flowing along the vertical spine.
         for (let i = 0; i < 36; i++) {
@@ -1185,7 +1487,8 @@ class NetworkStackVisualization {
             { id: 'flow', label: 'FLOW' },
             { id: 'rtt', label: 'RTT' },
             { id: 'drop', label: 'DROPS' },
-            { id: 'retrans', label: 'RETRANS' }
+            { id: 'retrans', label: 'RETRANS' },
+            { id: 'path', label: 'PATH' }
         ];
         kpiSpec.forEach((spec) => {
             const card = document.createElement('div');
@@ -1219,6 +1522,13 @@ class NetworkStackVisualization {
             card.appendChild(value);
             kpiBar.appendChild(card);
             this.kpiNodes[spec.id] = { card, label, value };
+            if (spec.id === 'path') {
+                card.style.borderColor = 'rgba(224, 86, 78, 0.85)';
+                card.style.boxShadow = '0 0 14px rgba(224, 86, 78, 0.28)';
+                label.style.color = '#e0564e';
+                value.style.color = '#ff8a7a';
+                this.pathHopNode = { card, label, value };
+            }
         });
 
         // ARRAY OUTPUT block: a compact reference-style pattern matrix that is
@@ -2847,6 +3157,7 @@ class NetworkStackVisualization {
                 this.applyFlowFollowOverride();
                 this.updatePacketColorByFlow();
                 this.updateTelemetryUI();
+                this.syncPathHopDistance();
                 this.recordBbrSample();
                 // Do not rebuild drill/morph overlays on every poll — user needs time to read.
                 const freezeDrill = (
@@ -5095,6 +5406,7 @@ class NetworkStackVisualization {
             this.updateFlowParticles(dt);
         }
         this.updateLayerStrips(dt);
+        this.updatePathHopRig(dt);
         this.updatePacketLifecycleUI();
 
         // Gentle camera drift for cinematic depth.
@@ -5353,6 +5665,8 @@ class NetworkStackVisualization {
 
     deactivate() {
         this.isActive = false;
+        this.pathHopPending = null;
+        this.disposePathHopRig();
         if (this.animationId) {
             cancelAnimationFrame(this.animationId);
             this.animationId = null;
