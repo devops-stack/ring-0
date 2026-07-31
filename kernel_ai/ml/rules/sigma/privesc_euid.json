@@ -1,0 +1,16 @@
+{
+  "id": "privesc_euid",
+  "title": "Effective root with non-root real uid",
+  "description": "Process has euid=0 while ruid is non-root — elevation / setuid abuse candidate.",
+  "when": {
+    "kind_in": ["privesc"]
+  },
+  "attack": {
+    "family": "privilege_escalation",
+    "mitre": "T1548",
+    "name": "Abuse Elevation Control Mechanism",
+    "confidence": 0.92,
+    "cve": [],
+    "color": "#e0564e"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "id": "shell_from_web",
+  "title": "Web server spawned a shell",
+  "description": "Parent looks like a web/runtime worker; child is a shell or scripting interpreter (classic webshell/RCE pattern).",
+  "when": {
+    "source_in": ["stage5_process"],
+    "parent_in": ["nginx", "apache2", "httpd", "php-fpm", "php", "uwsgi", "gunicorn", "caddy", "node"],
+    "child_in": ["bash", "sh", "dash", "zsh", "python", "python3", "perl", "nc", "ncat", "netcat"]
+  },
+  "attack": {
+    "family": "execution",
+    "mitre": "T1059",
+    "name": "Command and Scripting Interpreter",
+    "confidence": 0.9,
+    "cve": [],
+    "color": "#e8a54b"
+  }
+}
