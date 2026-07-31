@@ -1,0 +1,18 @@
+{
+  "id": "reverse_shell_lineage",
+  "title": "Shell spawned network utility",
+  "description": "Interactive shell launching nc/socat/curl often indicates reverse shell or staging.",
+  "when": {
+    "source_in": ["stage5_process"],
+    "parent_in": ["bash", "sh", "dash", "zsh"],
+    "child_in": ["nc", "ncat", "netcat", "socat", "curl", "wget"]
+  },
+  "attack": {
+    "family": "command_and_control",
+    "mitre": "T1071",
+    "name": "Application Layer Protocol",
+    "confidence": 0.88,
+    "cve": [],
+    "color": "#67c8e0"
+  }
+}
