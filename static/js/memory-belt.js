@@ -1,7 +1,7 @@
 // Linux memory subsystem — strip map (same API payload as processes-realtime memory_visual)
-// Version: 3 — memory path now: lightweight kernel path hints from vmstat/PSI
+// Version: 10 — Tron/FLYNN style pass: cyan cold, white hot runs, bank grid
 
-debugLog('💾 memory-belt.js v3: Script loading...');
+debugLog('💾 memory-belt.js v10: Script loading...');
 
 class MemorySubsystemVisualization {
     constructor() {
@@ -28,6 +28,12 @@ class MemorySubsystemVisualization {
         this.viewModeButton = null;
         this.prevMemoryVmstat = null;
         this.memoryVmstatDelta = {};
+        this.fabricFocus = null; // { kind, rowId, label, heat, pid? }
+        this.fabricViewBounds = null;
+        this.parallaxX = 0;
+        this.parallaxY = 0;
+        this.parallaxTX = 0;
+        this.parallaxTY = 0;
     }
 
     init(containerId = 'memory-belt-container') {
@@ -67,10 +73,9 @@ class MemorySubsystemVisualization {
 
         const modeBtn = document.createElement('button');
         modeBtn.style.cssText = `
-            position:absolute;top:18px;left:18px;padding:8px 12px;z-index:10021;
-            background: rgba(7, 10, 16, 0.92); border:1px solid rgba(178,190,212,0.45);
-            color:#d5dce8; font-family:'Share Tech Mono', monospace; font-size:11px; cursor:pointer;
-            box-shadow: 0 0 14px rgba(150,175,220,0.18);
+            position:absolute;top:18px;left:150px;padding:8px 12px;z-index:10021;
+            background: rgba(2, 10, 14, 0.92); border:1px solid rgba(0, 220, 230, 0.45);
+            color:#b8e8f0; font-family:'Share Tech Mono', monospace; font-size:11px; cursor:pointer;
         `;
         modeBtn.onclick = () => this.toggleViewMode();
         this.container.appendChild(modeBtn);
@@ -87,10 +92,10 @@ class MemorySubsystemVisualization {
     updateViewModeButton() {
         if (!this.viewModeButton) return;
         const isFabric = this.viewMode === 'fabric';
-        this.viewModeButton.textContent = isFabric ? 'VIEW: FABRIC' : 'VIEW: STRIPS';
-        this.viewModeButton.style.background = isFabric ? 'rgba(22, 42, 62, 0.94)' : 'rgba(7, 10, 16, 0.92)';
-        this.viewModeButton.style.borderColor = isFabric ? 'rgba(138, 198, 255, 0.92)' : 'rgba(178,190,212,0.45)';
-        this.viewModeButton.style.color = isFabric ? '#e2f2ff' : '#d5dce8';
+        this.viewModeButton.textContent = isFabric ? 'HERO: FABRIC' : 'VIEW: STRIPS';
+        this.viewModeButton.style.background = isFabric ? 'rgba(0, 28, 36, 0.95)' : 'rgba(2, 10, 14, 0.92)';
+        this.viewModeButton.style.borderColor = isFabric ? 'rgba(220, 235, 200, 0.7)' : 'rgba(0, 220, 230, 0.45)';
+        this.viewModeButton.style.color = isFabric ? '#e8f0d0' : '#b8e8f0';
     }
 
     onMouseMove(event) {
@@ -100,6 +105,18 @@ class MemorySubsystemVisualization {
         const y = event.clientY - rect.top;
         this.lastMouseX = x;
         this.lastMouseY = y;
+
+        const b = this.fabricViewBounds;
+        if (b && x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
+            const nx = (x - (b.x + b.w * 0.5)) / Math.max(1, b.w * 0.5);
+            const ny = (y - (b.y + b.h * 0.5)) / Math.max(1, b.h * 0.5);
+            this.parallaxTX = Math.max(-1, Math.min(1, nx)) * 10;
+            this.parallaxTY = Math.max(-1, Math.min(1, ny)) * 6;
+        } else {
+            this.parallaxTX *= 0.86;
+            this.parallaxTY *= 0.86;
+        }
+
         this.memoryHoverStrip = null;
         this.memoryHoverCell = null;
         if (this.memoryFabricHits.length) {
@@ -115,7 +132,7 @@ class MemorySubsystemVisualization {
             for (const hit of this.memoryStripHits) {
                 if (x >= hit.x && x <= hit.x + hit.w && y >= hit.y && y <= hit.y + hit.h) {
                     this.memoryHoverStrip = hit;
-                    this.canvas.style.cursor = 'crosshair';
+                    this.canvas.style.cursor = 'pointer';
                     return;
                 }
             }
@@ -131,12 +148,221 @@ class MemorySubsystemVisualization {
         if (this.memoryFabricHits.length) {
             for (const hit of this.memoryFabricHits) {
                 if (x >= hit.x && x <= hit.x + hit.w && y >= hit.y && y <= hit.y + hit.h) {
-                    const same = this.memorySelectedCell && Number(this.memorySelectedCell.pid || 0) === Number(hit.pid || 0);
-                    this.memorySelectedCell = same ? null : hit;
+                    this.setFabricFocus(hit);
                     return;
                 }
             }
         }
+        if (this.memoryStripHits.length) {
+            for (const hit of this.memoryStripHits) {
+                if (x >= hit.x && x <= hit.x + hit.w && y >= hit.y && y <= hit.y + hit.h) {
+                    this.setFabricFocus({
+                        kind: hit.kind,
+                        rowId: hit.rowId,
+                        label: hit.label,
+                        heat: Number(hit.blk?.heat || 0),
+                        pid: hit.blk?.pid,
+                        name: hit.blk?.name
+                    });
+                    return;
+                }
+            }
+        }
+    }
+
+    setFabricFocus(hit) {
+        if (!hit) {
+            this.fabricFocus = null;
+            this.memorySelectedCell = null;
+            return;
+        }
+        const kind = String(hit.kind || 'anon');
+        const rowId = hit.rowId || this.kindToRowId(kind);
+        const same = this.fabricFocus
+            && String(this.fabricFocus.kind) === kind
+            && String(this.fabricFocus.rowId || '') === String(rowId || '')
+            && Number(this.fabricFocus.pid || 0) === Number(hit.pid || 0);
+        if (same) {
+            this.fabricFocus = null;
+            this.memorySelectedCell = null;
+            return;
+        }
+        this.fabricFocus = {
+            kind,
+            rowId,
+            label: hit.label || kind,
+            heat: Number(hit.heat || 0),
+            pid: hit.pid ? Number(hit.pid) : null,
+            name: hit.name || null,
+            role: hit.role || null,
+            pressure_score: hit.pressure_score,
+            rss_mb: hit.rss_mb,
+            swap_mb: hit.swap_mb,
+            anon_mb: hit.anon_mb,
+            file_mb: hit.file_mb,
+            majflt: hit.majflt
+        };
+        this.memorySelectedCell = hit.pid ? hit : null;
+    }
+
+    fabricKindTint(kind, heat, alpha) {
+        // Cold cyan mass (Tron) — weak kind bias only.
+        const u = Math.max(0, Math.min(1, heat));
+        const a = Math.max(0, Math.min(1, alpha));
+        const k = String(kind || 'anon');
+        // base cyan: r low, g mid-high, b high
+        let r = 20 + 25 * u;
+        let g = 110 + 70 * u;
+        let b = 140 + 70 * u;
+        if (k === 'cached' || k === 'buffers' || k === 'mapped') {
+            r = 15 + 20 * u; g = 130 + 60 * u; b = 170 + 50 * u;
+        } else if (k.includes('slab') || k === 'sreclaim' || k === 'sunreclaim' || k === 'kmeta') {
+            r = 40 + 30 * u; g = 100 + 50 * u; b = 170 + 55 * u;
+        } else if (k === 'dirty_wb' || k === 'writeback') {
+            r = 90 + 40 * u; g = 110 + 40 * u; b = 90 + 30 * u;
+        } else if (k === 'swap') {
+            r = 80 + 40 * u; g = 70 + 30 * u; b = 140 + 40 * u;
+        }
+        return `rgba(${Math.floor(r)}, ${Math.floor(g)}, ${Math.floor(b)}, ${a.toFixed(3)})`;
+    }
+
+    kindToRowId(kind) {
+        const k = String(kind || '');
+        const rows = this.telemetry?.memory_visual?.rows || [];
+        const exact = rows.find((r) => r.id === k || (r.blocks || []).some((b) => b.kind === k));
+        if (exact) return exact.id;
+        if (k.includes('anon')) return rows.find((r) => /anon/i.test(r.id || r.label || ''))?.id || k;
+        if (k.includes('cache') || k === 'buffers' || k === 'mapped') {
+            return rows.find((r) => /cache|file|map/i.test(r.id || r.label || ''))?.id || k;
+        }
+        if (k.includes('slab') || k === 'sreclaim' || k === 'sunreclaim' || k === 'kmeta') {
+            return rows.find((r) => /slab/i.test(r.id || r.label || ''))?.id || k;
+        }
+        if (k === 'swap') return rows.find((r) => /swap/i.test(r.id || r.label || ''))?.id || k;
+        return k;
+    }
+
+    getMemoryKindStory(kind) {
+        const k = String(kind || 'anon');
+        const table = {
+            anon: {
+                title: 'ANONYMOUS',
+                lines: [
+                    'heap/stack pages · no file backing',
+                    'fault → do_anonymous_page()',
+                    'pressure → reclaim / swap candidates'
+                ],
+                ghost: 'do_anonymous_page()'
+            },
+            cached: {
+                title: 'PAGE CACHE',
+                lines: [
+                    'file pages in address_space',
+                    'read hits avoid disk I/O',
+                    'reclaim via shrink_lruvec()'
+                ],
+                ghost: 'filemap_fault()'
+            },
+            buffers: {
+                title: 'BUFFERS',
+                lines: [
+                    'block device metadata cache',
+                    'feeds writeback / journal paths',
+                    'counted in meminfo Buffers'
+                ],
+                ghost: 'block_read_full_folio()'
+            },
+            mapped: {
+                title: 'FILE MAPPED',
+                lines: [
+                    'mmap file-backed VMAs',
+                    'shared with page cache',
+                    'msync / writeback on dirty'
+                ],
+                ghost: 'do_mmap()'
+            },
+            slab: {
+                title: 'SLAB / SLUB',
+                lines: [
+                    'kernel object caches',
+                    'kmem_cache_alloc path',
+                    'reclaimable vs unreclaimable'
+                ],
+                ghost: 'kmem_cache_alloc()'
+            },
+            sreclaim: {
+                title: 'SLAB RECLAIMABLE',
+                lines: [
+                    'dentries / inodes caches',
+                    'shrinkers can free under pressure',
+                    'SReclaimable in meminfo'
+                ],
+                ghost: 'super_cache_scan()'
+            },
+            sunreclaim: {
+                title: 'SLAB UNRECLAIMABLE',
+                lines: [
+                    'pinned kernel objects',
+                    'not shrinker-friendly',
+                    'SUnreclaim in meminfo'
+                ],
+                ghost: 'kmem_cache_alloc()'
+            },
+            dirty_wb: {
+                title: 'DIRTY / WRITEBACK',
+                lines: [
+                    'dirty pages await flush',
+                    'flusher threads · writeback',
+                    'pressure rises with Dirty+Writeback'
+                ],
+                ghost: 'wb_workfn()'
+            },
+            swap: {
+                title: 'SWAP',
+                lines: [
+                    'anon pages moved to swap',
+                    'swap_readpage / swap_writepage',
+                    'PSI full often tracks stalls'
+                ],
+                ghost: 'swap_read_folio()'
+            },
+            active: {
+                title: 'LRU ACTIVE',
+                lines: [
+                    'recently referenced pages',
+                    'protected from quick reclaim',
+                    'Active(anon/file) lists'
+                ],
+                ghost: 'mark_page_accessed()'
+            },
+            inactive: {
+                title: 'LRU INACTIVE',
+                lines: [
+                    'reclaim candidates',
+                    'kswapd / direct reclaim scan',
+                    'Inactive → free / swap'
+                ],
+                ghost: 'shrink_inactive_list()'
+            },
+            task: {
+                title: 'TASK RSS',
+                lines: [
+                    'sampled process pressure',
+                    'RSS = anon + file pages',
+                    'click dock row for bucket map'
+                ],
+                ghost: 'get_mm_rss()'
+            }
+        };
+        return table[k] || {
+            title: k.toUpperCase().slice(0, 18),
+            lines: [
+                'memory accounting bucket',
+                'linked from fabric pressure field',
+                'see topology dock highlight'
+            ],
+            ghost: null
+        };
     }
 
     fetchTelemetry() {
@@ -224,10 +450,173 @@ class MemorySubsystemVisualization {
     drawKernelHeader() {
         const w = window.innerWidth;
         this.ctx.textAlign = 'center';
-        this.ctx.fillStyle = 'rgba(232, 240, 252, 0.92)';
-        this.ctx.font = '12px "Share Tech Mono", monospace';
-        this.ctx.fillText('linux kernel · memory management subsystem', w * 0.5, 26);
+        this.ctx.fillStyle = 'rgba(0, 220, 230, 0.55)';
+        this.ctx.font = '10px "Share Tech Mono", monospace';
+        this.ctx.fillText('linux kernel · memory management subsystem', w * 0.5, 22);
         this.ctx.textAlign = 'start';
+    }
+
+    drawHudFrame(x, y, w, h) {
+        this.ctx.fillStyle = 'rgba(2, 8, 12, 0.78)';
+        this.ctx.fillRect(x, y, w, h);
+        this.ctx.strokeStyle = 'rgba(0, 220, 230, 0.55)';
+        this.ctx.lineWidth = 1;
+        this.ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+        // corner ticks
+        const t = 8;
+        this.ctx.beginPath();
+        this.ctx.moveTo(x + 1, y + t); this.ctx.lineTo(x + 1, y + 1); this.ctx.lineTo(x + t, y + 1);
+        this.ctx.moveTo(x + w - t, y + 1); this.ctx.lineTo(x + w - 1, y + 1); this.ctx.lineTo(x + w - 1, y + t);
+        this.ctx.moveTo(x + 1, y + h - t); this.ctx.lineTo(x + 1, y + h - 1); this.ctx.lineTo(x + t, y + h - 1);
+        this.ctx.moveTo(x + w - t, y + h - 1); this.ctx.lineTo(x + w - 1, y + h - 1); this.ctx.lineTo(x + w - 1, y + h - t);
+        this.ctx.strokeStyle = 'rgba(0, 210, 220, 0.45)';
+        this.ctx.stroke();
+    }
+
+    drawFabricHeroHud(viewX, viewY, viewW, viewH) {
+        const sum = this.telemetry?.memory_visual?.summary || {};
+        const psiMem = this.telemetry?.memory_visual?.kernel_memory_state?.psi_memory || {};
+        const procPressure = Array.isArray(this.telemetry?.memory_visual?.process_pressure)
+            ? this.telemetry.memory_visual.process_pressure
+            : [];
+        const pathItems = this.buildKernelMemoryPathItems(sum, psiMem);
+
+        // Left micro-rail
+        const sideW = 42;
+        const sx = viewX + 6;
+        const sy = viewY + 64;
+        const sh = Math.max(140, viewH - 170);
+        this.ctx.strokeStyle = 'rgba(0, 200, 220, 0.4)';
+        this.ctx.strokeRect(sx + 0.5, sy + 0.5, sideW - 1, sh - 1);
+        this.ctx.fillStyle = 'rgba(0, 210, 230, 0.55)';
+        this.ctx.font = '6px "Share Tech Mono", monospace';
+        this.ctx.fillText('SYS', sx + 6, sy + 10);
+        const bars = [
+            Math.min(1, Number(sum.used_percent || 0) / 100),
+            Math.min(1, Number(sum.swap_percent || 0) / 100),
+            Math.min(1, Number(psiMem.some_avg10 || 0) / 8),
+            Math.min(1, Number(sum.cached_mb || 0) / Math.max(1, Number(sum.total_mb || 1))),
+            Math.min(1, Number(sum.anon_mb || 0) / Math.max(1, Number(sum.total_mb || 1))),
+            Math.min(1, Number(sum.slab_mb || 0) / Math.max(1, Number(sum.total_mb || 1))),
+            Math.min(1, Number(sum.dirty_writeback_mb || 0) / 64)
+        ];
+        bars.forEach((v, i) => {
+            const by = sy + 16 + i * ((sh - 28) / bars.length);
+            this.ctx.fillStyle = 'rgba(0, 30, 40, 0.95)';
+            this.ctx.fillRect(sx + 6, by, 28, 3);
+            this.ctx.fillStyle = v > 0.55 ? 'rgba(240, 245, 200, 0.9)' : 'rgba(0, 210, 230, 0.75)';
+            this.ctx.fillRect(sx + 6, by, Math.max(1, 28 * v), 3);
+            // diamond tick
+            this.ctx.fillStyle = 'rgba(0, 200, 220, 0.45)';
+            this.ctx.fillRect(sx + 34, by, 2, 2);
+        });
+
+        // Right micro-rail (Tron symmetry)
+        const rx0 = viewX + viewW - sideW - 6;
+        this.ctx.strokeStyle = 'rgba(0, 200, 220, 0.4)';
+        this.ctx.strokeRect(rx0 + 0.5, sy + 0.5, sideW - 1, sh - 1);
+        this.ctx.fillStyle = 'rgba(0, 210, 230, 0.55)';
+        this.ctx.font = '6px "Share Tech Mono", monospace';
+        this.ctx.fillText('MM', rx0 + 8, sy + 10);
+        pathItems.forEach((item, i) => {
+            const by = sy + 18 + i * ((sh - 30) / Math.max(1, pathItems.length));
+            this.ctx.fillStyle = item.active ? 'rgba(240, 245, 200, 0.85)' : 'rgba(0, 90, 105, 0.7)';
+            this.ctx.fillRect(rx0 + 8, by, 24, 3);
+            this.ctx.fillStyle = 'rgba(140, 200, 210, 0.55)';
+            this.ctx.font = '5px "Share Tech Mono", monospace';
+            this.ctx.fillText(item.label.slice(0, 6), rx0 + 8, by + 10);
+        });
+
+        // Bottom telemetry row — three thin tables
+        const rowH = 70;
+        const rowY = viewY + viewH - rowH - 8;
+        const gap = 8;
+        const leftW = Math.floor((viewW - gap * 2 - 100) * 0.28);
+        const midW = Math.floor((viewW - gap * 2 - 100) * 0.4);
+        const rightW = Math.floor((viewW - gap * 2 - 100) * 0.32);
+        const leftX = viewX + 52;
+        const midX = leftX + leftW + gap;
+        const rightX = midX + midW + gap;
+
+        this.drawHudFrame(leftX, rowY, leftW, rowH);
+        this.ctx.fillStyle = 'rgba(0, 210, 230, 0.75)';
+        this.ctx.font = '7px "Share Tech Mono", monospace';
+        this.ctx.fillText('MEM · PHYSICAL', leftX + 8, rowY + 12);
+        this.ctx.fillStyle = 'rgba(235, 245, 250, 0.95)';
+        this.ctx.font = '10px "Share Tech Mono", monospace';
+        this.ctx.fillText(`${Number(sum.total_mb || 0).toFixed(0)} MiB`, leftX + 8, rowY + 28);
+        this.ctx.fillText(`${Number(sum.used_percent || 0).toFixed(1)}%`, leftX + 90, rowY + 28);
+        // mini util bar like GPU panel
+        this.ctx.fillStyle = 'rgba(0, 40, 50, 0.95)';
+        this.ctx.fillRect(leftX + 8, rowY + 36, leftW - 16, 5);
+        this.ctx.fillStyle = 'rgba(0, 210, 230, 0.85)';
+        this.ctx.fillRect(leftX + 8, rowY + 36, Math.max(1, (leftW - 16) * Math.min(1, Number(sum.used_percent || 0) / 100)), 5);
+        this.ctx.fillStyle = 'rgba(120, 180, 195, 0.85)';
+        this.ctx.font = '7px "Share Tech Mono", monospace';
+        this.ctx.fillText(`cache ${Number(sum.cached_mb || 0).toFixed(0)}  anon ${Number(sum.anon_mb || 0).toFixed(0)}  slab ${Number(sum.slab_mb || 0).toFixed(0)}`, leftX + 8, rowY + 54);
+        this.ctx.fillText(`swap ${Number(sum.swap_percent || 0).toFixed(1)}%  avail ${Number(sum.available_mb || 0).toFixed(0)}`, leftX + 8, rowY + 64);
+
+        this.drawHudFrame(midX, rowY, midW, rowH);
+        this.ctx.fillStyle = 'rgba(0, 210, 230, 0.75)';
+        this.ctx.font = '7px "Share Tech Mono", monospace';
+        this.ctx.fillText('KERNEL PATH', midX + 8, rowY + 12);
+        const step = (midW - 20) / pathItems.length;
+        pathItems.forEach((item, i) => {
+            const cx = midX + 14 + i * step;
+            const cy = rowY + 34;
+            if (i > 0) {
+                this.ctx.beginPath();
+                this.ctx.moveTo(cx - step + 5, cy);
+                this.ctx.lineTo(cx - 5, cy);
+                this.ctx.strokeStyle = 'rgba(0, 160, 180, 0.35)';
+                this.ctx.stroke();
+            }
+            this.ctx.beginPath();
+            this.ctx.arc(cx, cy, item.active ? 3.4 : 2.4, 0, Math.PI * 2);
+            this.ctx.fillStyle = item.active ? 'rgba(245, 248, 210, 0.95)' : 'rgba(0, 120, 135, 0.65)';
+            this.ctx.fill();
+            this.ctx.strokeStyle = 'rgba(0, 200, 220, 0.45)';
+            this.ctx.stroke();
+            this.ctx.fillStyle = 'rgba(140, 195, 210, 0.75)';
+            this.ctx.font = '5px "Share Tech Mono", monospace';
+            this.ctx.fillText(item.label.slice(0, 8), cx - 10, cy + 14);
+        });
+
+        this.drawHudFrame(rightX, rowY, rightW, rowH);
+        this.ctx.fillStyle = 'rgba(0, 210, 230, 0.75)';
+        this.ctx.font = '7px "Share Tech Mono", monospace';
+        this.ctx.fillText('PSI / VM', rightX + 8, rowY + 12);
+        const rows = [
+            { label: 'SOME10', v: Math.min(1, Number(psiMem.some_avg10 || 0) / 10), val: Number(psiMem.some_avg10 || 0).toFixed(2) },
+            { label: 'FULL10', v: Math.min(1, Number(psiMem.full_avg10 || 0) / 5), val: Number(psiMem.full_avg10 || 0).toFixed(2) },
+            { label: 'SWAP', v: Math.min(1, Number(sum.swap_percent || 0) / 100), val: `${Number(sum.swap_percent || 0).toFixed(1)}%` },
+            { label: 'DIRTY', v: Math.min(1, Number(sum.dirty_writeback_mb || 0) / 64), val: Number(sum.dirty_writeback_mb || 0).toFixed(1) }
+        ];
+        rows.forEach((r, i) => {
+            const yy = rowY + 24 + i * 11;
+            this.ctx.fillStyle = 'rgba(120, 175, 190, 0.8)';
+            this.ctx.font = '6px "Share Tech Mono", monospace';
+            this.ctx.fillText(r.label, rightX + 8, yy);
+            const trackX = rightX + 52;
+            const trackW = rightW - 88;
+            this.ctx.fillStyle = 'rgba(0, 30, 38, 0.95)';
+            this.ctx.fillRect(trackX, yy - 5, trackW, 4);
+            this.ctx.fillStyle = r.v > 0.55 ? 'rgba(245, 248, 210, 0.92)' : 'rgba(0, 210, 230, 0.8)';
+            this.ctx.fillRect(trackX, yy - 5, Math.max(1, trackW * r.v), 4);
+            this.ctx.fillStyle = 'rgba(160, 210, 220, 0.7)';
+            this.ctx.fillText(r.val, rightX + rightW - 30, yy);
+        });
+
+        const topProc = procPressure[0];
+        if (topProc) {
+            this.ctx.fillStyle = 'rgba(140, 195, 210, 0.6)';
+            this.ctx.font = '6px "Share Tech Mono", monospace';
+            this.ctx.fillText(
+                `${String(topProc.name || 'proc').slice(0, 10)}:${Number(topProc.pid || 0)}`,
+                sx,
+                sy + sh + 10
+            );
+        }
     }
 
     buildKernelMemoryPathItems(sum, psiMem) {
@@ -429,7 +818,8 @@ class MemorySubsystemVisualization {
         }
     }
 
-    drawMemoryFabricView(x, y, w, h) {
+    drawMemoryFabricView(x, y, w, h, opts = {}) {
+        const hero = opts.hero !== false;
         const mv = this.telemetry?.memory_visual;
         const stripRows = Array.isArray(mv?.rows) ? mv.rows : [];
         const summary = mv?.summary || {};
@@ -437,52 +827,115 @@ class MemorySubsystemVisualization {
         const kernelState = mv?.kernel_memory_state || {};
         const psiMem = kernelState.psi_memory || {};
         this.memoryFabricHits = [];
-        this.drawPanel(x, y, w, h, 'memory fabric map · panoramic pressure field', { alpha: 0.9 });
-        const innerX = x + 10;
-        const innerY = y + 30;
-        const innerW = w - 20;
-        const innerH = h - 40;
 
-        // Panoramic viewport to match cinematic reference rhythm.
-        const targetAspect = 2.35;
-        let viewW = innerW - 16;
-        let viewH = Math.floor(viewW / targetAspect);
-        if (viewH > innerH - 14) {
-            viewH = innerH - 14;
-            viewW = Math.floor(viewH * targetAspect);
-        }
-        const viewX = innerX + Math.floor((innerW - viewW) * 0.5);
-        const viewY = innerY + Math.floor((innerH - viewH) * 0.5);
+        // Smooth parallax toward mouse target
+        this.parallaxX += (this.parallaxTX - this.parallaxX) * 0.1;
+        this.parallaxY += (this.parallaxTY - this.parallaxY) * 0.1;
 
-        this.ctx.fillStyle = 'rgba(3, 8, 14, 0.88)';
-        this.ctx.fillRect(innerX, innerY, innerW, innerH);
-        this.ctx.fillStyle = 'rgba(5, 11, 18, 0.94)';
+        this.ctx.fillStyle = 'rgba(0, 2, 6, 0.98)';
+        this.ctx.fillRect(x, y, w, h);
+        this.ctx.strokeStyle = 'rgba(0, 180, 195, 0.5)';
+        this.ctx.lineWidth = 1;
+        this.ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+
+        const pad = 6;
+        const viewX = x + pad;
+        const viewY = y + pad;
+        const viewW = w - pad * 2;
+        const viewH = h - pad * 2;
+        this.fabricViewBounds = { x: viewX, y: viewY, w: viewW, h: viewH };
+
+        this.ctx.fillStyle = '#02080c';
         this.ctx.fillRect(viewX, viewY, viewW, viewH);
-        this.ctx.strokeStyle = 'rgba(118, 166, 220, 0.28)';
-        this.ctx.strokeRect(viewX + 0.5, viewY + 0.5, viewW - 1, viewH - 1);
 
-        const cols = Math.max(110, Math.min(220, Math.floor(viewW / 6)));
-        const rows = Math.max(24, Math.min(74, Math.floor(viewH / 6)));
+        // Far grid layer (slow parallax)
+        const gOffX = this.parallaxX * 0.25;
+        const gOffY = this.parallaxY * 0.25;
+        this.ctx.save();
+        this.ctx.beginPath();
+        this.ctx.rect(viewX, viewY, viewW, viewH);
+        this.ctx.clip();
+        this.ctx.strokeStyle = 'rgba(0, 120, 135, 0.28)';
+        this.ctx.lineWidth = 1;
+        const gStep = 10;
+        for (let gx = viewX - gStep * 2; gx <= viewX + viewW + gStep * 2; gx += gStep) {
+            const xx = gx + gOffX;
+            this.ctx.beginPath();
+            this.ctx.moveTo(xx + 0.5, viewY);
+            this.ctx.lineTo(xx + 0.5, viewY + viewH);
+            this.ctx.stroke();
+        }
+        for (let gy = viewY - gStep * 2; gy <= viewY + viewH + gStep * 2; gy += gStep) {
+            const yy = gy + gOffY;
+            this.ctx.beginPath();
+            this.ctx.moveTo(viewX, yy + 0.5);
+            this.ctx.lineTo(viewX + viewW, yy + 0.5);
+            this.ctx.stroke();
+        }
+        this.ctx.fillStyle = 'rgba(0, 140, 150, 0.16)';
+        for (let gy = viewY; gy <= viewY + viewH; gy += gStep * 2) {
+            for (let gx = viewX; gx <= viewX + viewW; gx += gStep * 2) {
+                this.ctx.fillRect(gx + gOffX, gy + gOffY, 1.2, 1.2);
+            }
+        }
+        this.ctx.restore();
+
+        // Bank scaffolding — larger Tron sections over fine grid
+        this.ctx.save();
+        this.ctx.beginPath();
+        this.ctx.rect(viewX, viewY, viewW, viewH);
+        this.ctx.clip();
+        const bankCols = 6;
+        const bankRows = 4;
+        this.ctx.strokeStyle = 'rgba(0, 160, 180, 0.14)';
+        this.ctx.lineWidth = 1;
+        for (let i = 1; i < bankCols; i++) {
+            const bx = viewX + (viewW * i) / bankCols + this.parallaxX * 0.15;
+            this.ctx.beginPath();
+            this.ctx.moveTo(bx + 0.5, viewY);
+            this.ctx.lineTo(bx + 0.5, viewY + viewH);
+            this.ctx.stroke();
+        }
+        for (let j = 1; j < bankRows; j++) {
+            const by = viewY + (viewH * j) / bankRows + this.parallaxY * 0.15;
+            this.ctx.beginPath();
+            this.ctx.moveTo(viewX, by + 0.5);
+            this.ctx.lineTo(viewX + viewW, by + 0.5);
+            this.ctx.stroke();
+        }
+        this.ctx.restore();
+
+        const cols = Math.max(80, Math.min(150, Math.floor(viewW / 8)));
+        const rows = Math.max(30, Math.min(58, Math.floor(viewH / 10)));
         const cellW = viewW / cols;
         const cellH = viewH / rows;
-        const writeLevel = Math.max(0, Math.min(1, Number(summary.dirty_writeback_mb || 0) / 512));
-        const swapLevel = Math.max(0, Math.min(1, Number(summary.swap_percent || 0) / 100));
-        const hugeLevel = Math.max(0, Math.min(1, Number(summary.anon_huge_mb || 0) / Math.max(1, Number(summary.total_mb || 1)) * 14));
+        const usedLevel = Math.max(0, Math.min(1, Number(summary.used_percent || 0) / 100));
+        const psiSome = Number(psiMem.some_avg10 || 0);
+        const psiFull = Number(psiMem.full_avg10 || 0);
+        const swapPct = Number(summary.swap_percent || 0);
+        const majfltDelta = Number(this.memoryVmstatDelta?.pgmajfault || 0);
+        const reclaimDelta = Number(this.memoryVmstatDelta?.pgscan_kswapd || 0)
+            + Number(this.memoryVmstatDelta?.pgscan_direct || 0);
+        // Atmosphere weights (field only — diagnosis stays in HUD/path).
+        const stallAtm = Math.max(0, Math.min(1, psiSome / 8 + psiFull / 3 + reclaimDelta / 4000));
+        const thrashAtm = Math.max(0, Math.min(1, swapPct / 40 + majfltDelta / 80 + psiFull / 4));
+        const pressureBoost = Math.max(0, Math.min(0.12, stallAtm * 0.08 + thrashAtm * 0.06));
 
-        // Flatten rows into weighted fabric source.
         const fabricCells = [];
         stripRows.forEach((row) => {
             const blocks = Array.isArray(row.blocks) ? row.blocks : [];
             blocks.forEach((blk) => fabricCells.push({
                 kind: blk.kind || row.id || 'anon',
                 heat: Number(blk.heat || 0),
-                width: Number(blk.w || 0)
+                rowId: row.id,
+                label: row.label || row.id
             }));
         });
         if (!fabricCells.length) {
-            this.ctx.fillStyle = 'rgba(192, 220, 255, 0.7)';
+            this.ctx.fillStyle = 'rgba(160, 210, 220, 0.7)';
             this.ctx.font = '11px "Share Tech Mono", monospace';
-            this.ctx.fillText('no memory fabric data', viewX + 12, viewY + 24);
+            this.ctx.fillText('no memory fabric data', viewX + 12, viewY + 40);
+            if (hero) this.drawFabricHeroHud(viewX, viewY, viewW, viewH);
             return;
         }
 
@@ -490,98 +943,172 @@ class MemorySubsystemVisualization {
         processPressure.slice(0, 12).forEach((proc) => {
             const score = Math.max(1, Number(proc?.pressure_score || 0));
             const reps = Math.max(1, Math.min(7, Math.floor(score / 18) + 1));
-            for (let i = 0; i < reps; i += 1) {
-                weightedProcPool.push(proc);
-            }
+            for (let i = 0; i < reps; i += 1) weightedProcPool.push(proc);
         });
 
         const centerX = viewX + viewW * 0.5;
         const centerY = viewY + viewH * 0.5;
-        const maxD = Math.max(1, Math.hypot(viewW * 0.5, viewH * 0.5));
-        const hotBias = 0.008 + writeLevel * 0.008 + swapLevel * 0.004;
         const hotspotPoints = [];
+        const hotMask = new Uint8Array(rows * cols);
+        const cellState = new Array(rows * cols);
+        const bandSigma = rows * 0.22;
+        const bandCenter = rows * 0.5;
+        let hotCount = 0;
+        const focusKind = this.fabricFocus?.kind || null;
+        const focusRow = this.fabricFocus?.rowId || null;
 
         for (let ry = 0; ry < rows; ry++) {
+            const dy = (ry - bandCenter) / Math.max(1, bandSigma);
+            const band = Math.exp(-0.5 * dy * dy);
+            const bandGate = 0.12 + band * 0.72;
             for (let cx = 0; cx < cols; cx++) {
-                const idx = (ry * cols + cx) % fabricCells.length;
-                const src = fabricCells[idx];
-                const px = viewX + cx * cellW;
-                const py = viewY + ry * cellH;
-                const noise = (Math.sin(this.tick * 0.028 + cx * 0.33 + ry * 0.21) + 1) * 0.5;
-                const corridor = 0.5 + 0.5 * Math.sin((cx / cols) * Math.PI * 2 + this.tick * 0.012 + Math.sin((ry / rows) * Math.PI * 2) * 1.2);
-                const heat = Math.max(0, Math.min(1, src.heat * 0.65 + noise * 0.2 + corridor * 0.15));
-                const dx = px - centerX;
-                const dy = py - centerY;
-                const edge = Math.max(0, Math.min(1, Math.hypot(dx, dy) / maxD));
-                const edgeFalloff = 1 - Math.pow(edge, 1.55);
-                let alpha = (0.05 + heat * 0.52) * edgeFalloff;
-                if (src.kind === 'dirty_wb') alpha += writeLevel * 0.25;
-                if (src.kind === 'swap') alpha += swapLevel * 0.2;
-                if (src.kind === 'anon_huge' || src.kind === 'shmem_huge') alpha += hugeLevel * 0.16;
-                alpha = Math.min(0.95, alpha);
-                const seed = ((cx + 11) * 73856093) ^ ((ry + 17) * 19349663) ^ Math.floor(this.tick * 0.8);
-                const hotGate = ((seed >>> 0) % 1000) / 1000;
-                const isHotspot = hotGate > (0.992 - hotBias) && heat > 0.48;
-                const procOwner = weightedProcPool.length
-                    ? weightedProcPool[(Math.abs((cx * 97 + ry * 53 + (seed >>> 4))) % weightedProcPool.length)]
-                    : null;
-
-                if (src.kind === 'dirty_wb') {
-                    this.ctx.fillStyle = `rgba(${Math.floor(200 + 55 * heat)}, ${Math.floor(140 + 70 * heat)}, ${Math.floor(80 + 28 * heat)}, ${alpha.toFixed(3)})`;
-                } else if (src.kind === 'cached' || src.kind === 'buffers' || src.kind === 'mapped') {
-                    this.ctx.fillStyle = `rgba(${Math.floor(52 + 32 * heat)}, ${Math.floor(180 + 64 * heat)}, 255, ${alpha.toFixed(3)})`;
-                } else if (src.kind === 'swap') {
-                    this.ctx.fillStyle = `rgba(${Math.floor(224 + 22 * heat)}, ${Math.floor(105 + 35 * heat)}, ${Math.floor(140 + 35 * heat)}, ${alpha.toFixed(3)})`;
-                } else {
-                    this.ctx.fillStyle = `rgba(${Math.floor(80 + 80 * heat)}, ${Math.floor(155 + 80 * heat)}, ${Math.floor(200 + 45 * heat)}, ${alpha.toFixed(3)})`;
-                }
-
-                const rw = Math.max(1, cellW - 1.2);
-                const rh = Math.max(1, cellH - 1.2);
-                this.ctx.fillRect(px, py, rw, rh);
-                if (isHotspot) {
-                    this.ctx.fillStyle = `rgba(255, 250, 232, ${(0.62 + heat * 0.32).toFixed(3)})`;
-                    this.ctx.fillRect(px, py, rw, rh);
-                    if (hotspotPoints.length < 180) {
-                        hotspotPoints.push({
-                            x: px + rw * 0.5,
-                            y: py + rh * 0.5,
-                            heat
-                        });
-                    }
-                }
-                if (procOwner && (isHotspot || heat > 0.7) && this.memoryFabricHits.length < 700) {
-                    this.memoryFabricHits.push({
-                        x: px,
-                        y: py,
-                        w: rw,
-                        h: rh,
-                        heat,
-                        kind: src.kind,
-                        pid: Number(procOwner.pid || 0),
-                        name: String(procOwner.name || 'proc'),
-                        role: String(procOwner.role || 'userspace'),
-                        pressure_score: Number(procOwner.pressure_score || 0),
-                        rss_mb: Number(procOwner.rss_mb || 0),
-                        swap_mb: Number(procOwner.swap_mb || 0),
-                        anon_mb: Number(procOwner.anon_mb || 0),
-                        file_mb: Number(procOwner.file_mb || 0),
-                        majflt: Number(procOwner.majflt || 0),
-                    });
-                }
+                const src = fabricCells[(ry * cols + cx) % fabricCells.length];
+                const n1 = Math.sin(cx * 0.31 + ry * 0.17 + this.tick * 0.0035);
+                const n2 = Math.cos(cx * 0.11 - ry * 0.29 + this.tick * 0.002);
+                const n3 = Math.sin((cx + ry * 3) * 0.19 + this.tick * 0.0012);
+                const noise = (n1 + n2 + n3 + 3) / 6;
+                const heat = Math.max(0, Math.min(1, src.heat * 0.5 + noise * 0.5));
+                // Slow discrete drift of lit pattern (~every ~40 frames)
+                const seed = ((cx + 13) * 73856093) ^ ((ry + 29) * 19349663) ^ (Math.floor(this.tick * 0.05) * 83492791);
+                const rnd = ((seed >>> 0) % 10000) / 10000;
+                const leftHot = cx > 0 && hotMask[ry * cols + cx - 1];
+                const aboveHot = ry > 0 && hotMask[(ry - 1) * cols + cx];
+                const clump = (leftHot ? 0.16 : 0) + (aboveHot ? 0.08 : 0);
+                // Cream = pressure now (PSI / reclaim / local heat), not byte occupancy.
+                const lit = rnd < (bandGate * (0.28 + heat * 0.4) + clump * 0.85 + usedLevel * 0.03 + pressureBoost);
+                hotMask[ry * cols + cx] = lit ? 1 : 0;
+                // depth layer: 0 far mass, 1 mid mass, 2 pressure hotspots
+                let layer = 0;
+                if (lit) layer = 2;
+                else if (heat > 0.32 && band > 0.15) layer = 1;
+                else if (rnd < 0.4) layer = 0;
+                else layer = -1;
+                if (lit) hotCount += 1;
+                cellState[ry * cols + cx] = { src, heat, rnd, lit, layer, seed, band };
             }
         }
 
-        // Soft bloom around sparse hotspot peaks.
+        const layers = [
+            { id: 0, parallax: 0.35, scale: 0.92 },
+            { id: 1, parallax: 0.65, scale: 0.97 },
+            { id: 2, parallax: 1.0, scale: 1.0 }
+        ];
+
+        this.ctx.save();
+        this.ctx.beginPath();
+        this.ctx.rect(viewX, viewY, viewW, viewH);
+        this.ctx.clip();
+
+        layers.forEach((L) => {
+            const ox = this.parallaxX * L.parallax;
+            const oy = this.parallaxY * L.parallax;
+            for (let ry = 0; ry < rows; ry++) {
+                for (let cx = 0; cx < cols; cx++) {
+                    const st = cellState[ry * cols + cx];
+                    if (!st || st.layer !== L.id) continue;
+                    const px0 = viewX + cx * cellW;
+                    const py0 = viewY + ry * cellH;
+                    const gapX = 1.4 + (2 - L.id) * 0.4;
+                    const gapY = 1.8 + (2 - L.id) * 0.5;
+                    let rw = Math.max(2, (cellW - gapX) * L.scale);
+                    let rh = Math.max(2, Math.min(cellH - gapY, cellW * 0.55) * L.scale);
+                    const px = px0 + ox + (cellW - rw) * 0.5;
+                    const py = py0 + oy + (cellH - rh) * 0.5;
+                    const related = focusKind
+                        && (st.src.kind === focusKind || st.src.rowId === focusRow);
+                    const dimUnrelated = focusKind && !related;
+
+                    if (L.id === 2) {
+                        // Pressure hotspot — pale yellow-white (FLYNN active)
+                        const thr = thrashAtm * 0.25;
+                        const r = Math.floor(235 + 20 * st.heat);
+                        const g = Math.floor(240 + 12 * st.heat - thr * 30);
+                        const b = Math.floor(200 + 30 * st.heat + thr * 25);
+                        const bright = (0.7 + st.heat * 0.3) * (dimUnrelated ? 0.25 : 1);
+                        // variable-length run bricks (1–4 cells feel)
+                        const runBoost = (st.rnd > 0.55) ? 1.0 : (st.rnd > 0.3 ? 0.65 : 0.35);
+                        const drawW = Math.max(2, rw * (0.85 + runBoost * 0.9));
+                        this.ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${bright.toFixed(3)})`;
+                        this.ctx.fillRect(px, py, Math.min(drawW, cellW * 3.2), rh);
+                        // soft glow edge
+                        this.ctx.fillStyle = `rgba(255, 255, 230, ${(0.12 * bright).toFixed(3)})`;
+                        this.ctx.fillRect(px - 0.5, py - 0.5, Math.min(drawW, cellW * 3.2) + 1, rh + 1);
+                        const usedW = Math.min(drawW, cellW * 3.2);
+                        if (related) {
+                            this.ctx.strokeStyle = 'rgba(255, 252, 220, 0.95)';
+                            this.ctx.lineWidth = 1;
+                            this.ctx.strokeRect(px + 0.5, py + 0.5, usedW - 1, rh - 1);
+                        }
+                        if (st.heat > 0.5 || st.rnd > 0.65) {
+                            hotspotPoints.push({ x: px + usedW * 0.5, y: py + rh * 0.5, heat: st.heat });
+                        }
+                        const procOwner = weightedProcPool.length
+                            ? weightedProcPool[(Math.abs(cx * 97 + ry * 53 + (st.seed >>> 4)) % weightedProcPool.length)]
+                            : null;
+                        if (this.memoryFabricHits.length < 1200) {
+                            this.memoryFabricHits.push({
+                                x: px, y: py, w: usedW, h: rh,
+                                heat: st.heat,
+                                kind: st.src.kind,
+                                rowId: st.src.rowId,
+                                label: st.src.label,
+                                pid: procOwner ? Number(procOwner.pid || 0) : null,
+                                name: procOwner ? String(procOwner.name || 'proc') : null,
+                                role: procOwner ? String(procOwner.role || 'userspace') : null,
+                                pressure_score: procOwner ? Number(procOwner.pressure_score || 0) : 0,
+                                rss_mb: procOwner ? Number(procOwner.rss_mb || 0) : 0,
+                                swap_mb: procOwner ? Number(procOwner.swap_mb || 0) : 0,
+                                anon_mb: procOwner ? Number(procOwner.anon_mb || 0) : 0,
+                                file_mb: procOwner ? Number(procOwner.file_mb || 0) : 0,
+                                majflt: procOwner ? Number(procOwner.majflt || 0) : 0
+                            });
+                        }
+                    } else if (L.id === 1) {
+                        // Cold cyan mass — more visible like FLYNN field
+                        const a = (0.22 + st.heat * 0.28) * (dimUnrelated ? 0.3 : 1) * (related ? 1.3 : 1);
+                        this.ctx.fillStyle = this.fabricKindTint(st.src.kind, st.heat, a);
+                        this.ctx.fillRect(px, py, rw, rh);
+                    } else {
+                        const a = (0.1 + st.heat * 0.14) * (dimUnrelated ? 0.35 : 1);
+                        this.ctx.fillStyle = this.fabricKindTint(st.src.kind, st.heat * 0.7, a);
+                        this.ctx.fillRect(px, py, rw, rh);
+                    }
+                }
+            }
+        });
+        this.ctx.restore();
+
+        // Stall smear — horizontal pressure band when MM is busy (atmosphere only)
+        if (stallAtm > 0.08) {
+            this.ctx.save();
+            this.ctx.beginPath();
+            this.ctx.rect(viewX, viewY, viewW, viewH);
+            this.ctx.clip();
+            const smearY = viewY + viewH * (0.42 + 0.04 * Math.sin(this.tick * 0.01));
+            const smearH = viewH * (0.1 + stallAtm * 0.12);
+            const smear = this.ctx.createLinearGradient(viewX, smearY, viewX, smearY + smearH);
+            smear.addColorStop(0, 'rgba(230, 240, 180, 0)');
+            smear.addColorStop(0.5, `rgba(230, 240, 180, ${(0.04 + stallAtm * 0.1).toFixed(3)})`);
+            smear.addColorStop(1, 'rgba(230, 240, 180, 0)');
+            this.ctx.fillStyle = smear;
+            this.ctx.fillRect(viewX, smearY, viewW, smearH);
+            this.ctx.restore();
+        }
+
         if (hotspotPoints.length) {
             this.ctx.save();
+            this.ctx.beginPath();
+            this.ctx.rect(viewX, viewY, viewW, viewH);
+            this.ctx.clip();
             this.ctx.globalCompositeOperation = 'lighter';
+            const bloomOx = this.parallaxX;
+            const bloomOy = this.parallaxY;
             hotspotPoints.forEach((p, i) => {
-                if (i % 2 !== 0) return;
-                const rr = 2.6 + p.heat * 6.4;
+                if (i % 4 !== 0) return;
+                const rr = 5 + p.heat * 12;
                 const glow = this.ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, rr);
-                glow.addColorStop(0, `rgba(244, 252, 255, ${(0.2 + p.heat * 0.33).toFixed(3)})`);
-                glow.addColorStop(1, 'rgba(180, 232, 255, 0)');
+                glow.addColorStop(0, `rgba(255, 255, 230, ${(0.16 + p.heat * 0.26).toFixed(3)})`);
+                glow.addColorStop(1, 'rgba(40, 120, 100, 0)');
                 this.ctx.fillStyle = glow;
                 this.ctx.beginPath();
                 this.ctx.arc(p.x, p.y, rr, 0, Math.PI * 2);
@@ -590,32 +1117,51 @@ class MemorySubsystemVisualization {
             this.ctx.restore();
         }
 
-        // Glow scanline to mimic cinematic analyzer rhythm.
-        const scanY = viewY + ((Math.sin(this.tick * 0.02) + 1) * 0.5) * viewH;
-        const grad = this.ctx.createLinearGradient(viewX, scanY - 14, viewX, scanY + 14);
-        grad.addColorStop(0, 'rgba(120, 210, 255, 0)');
-        grad.addColorStop(0.5, 'rgba(146, 232, 255, 0.18)');
-        grad.addColorStop(1, 'rgba(120, 210, 255, 0)');
-        this.ctx.fillStyle = grad;
-        this.ctx.fillRect(viewX, scanY - 14, viewW, 28);
-
-        // Vignette and glass pass.
-        const vignette = this.ctx.createRadialGradient(centerX, centerY, Math.min(viewW, viewH) * 0.2, centerX, centerY, Math.max(viewW, viewH) * 0.72);
+        const vignette = this.ctx.createRadialGradient(centerX, centerY, Math.min(viewW, viewH) * 0.2, centerX, centerY, Math.max(viewW, viewH) * 0.75);
         vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
-        vignette.addColorStop(1, 'rgba(0, 0, 0, 0.32)');
+        vignette.addColorStop(0.7, 'rgba(0, 0, 0, 0.08)');
+        vignette.addColorStop(1, 'rgba(0, 0, 0, 0.55)');
         this.ctx.fillStyle = vignette;
         this.ctx.fillRect(viewX, viewY, viewW, viewH);
-        const glass = this.ctx.createLinearGradient(viewX, viewY, viewX, viewY + viewH);
-        glass.addColorStop(0, 'rgba(176, 220, 255, 0.06)');
-        glass.addColorStop(0.2, 'rgba(176, 220, 255, 0.01)');
-        glass.addColorStop(1, 'rgba(176, 220, 255, 0)');
-        this.ctx.fillStyle = glass;
-        this.ctx.fillRect(viewX, viewY, viewW, viewH);
 
-        // HUD corner markers.
-        this.ctx.strokeStyle = 'rgba(148, 208, 255, 0.72)';
+        // Brand top — hollow FLYNN-style + flanking micro status
+        this.ctx.save();
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+        const brandSize = Math.max(40, Math.min(78, Math.floor(viewW * 0.07)));
+        const letters = ['M', 'E', 'M', 'O', 'R', 'Y'];
+        const tracking = brandSize * 0.86;
+        const brandW = tracking * (letters.length - 1);
+        const brandY = viewY + 30 + brandSize * 0.12;
+        const brandX0 = centerX - brandW * 0.5;
+        this.ctx.font = `600 ${brandSize}px "Share Tech Mono", monospace`;
+        letters.forEach((ch, i) => {
+            const lx = brandX0 + i * tracking;
+            this.ctx.lineWidth = 2;
+            this.ctx.strokeStyle = 'rgba(220, 240, 245, 0.88)';
+            this.ctx.strokeText(ch, lx, brandY);
+            this.ctx.lineWidth = 0.9;
+            this.ctx.strokeStyle = 'rgba(0, 220, 235, 0.4)';
+            this.ctx.strokeText(ch, lx, brandY);
+        });
+        // flanking micro bars (like FLYNN header chrome)
+        const flankY = brandY - 6;
+        const flankW = 54;
+        [[brandX0 - flankW - 28, true], [brandX0 + brandW + 28, false]].forEach(([fx, left]) => {
+            for (let i = 0; i < 4; i++) {
+                const bw = 10 + ((i * 17 + Math.floor(this.tick * 0.02)) % 28);
+                const bx = left ? fx + 54 - bw : fx;
+                this.ctx.fillStyle = i === 1 ? 'rgba(245, 248, 210, 0.55)' : 'rgba(0, 180, 200, 0.35)';
+                this.ctx.fillRect(bx, flankY + i * 5, bw, 3);
+            }
+        });
+        this.ctx.restore();
+        this.ctx.textAlign = 'start';
+        this.ctx.textBaseline = 'alphabetic';
+
+        this.ctx.strokeStyle = 'rgba(0, 210, 220, 0.55)';
         this.ctx.lineWidth = 1;
-        const cm = 16;
+        const cm = 14;
         this.ctx.beginPath();
         this.ctx.moveTo(viewX + 1, viewY + cm); this.ctx.lineTo(viewX + 1, viewY + 1); this.ctx.lineTo(viewX + cm, viewY + 1);
         this.ctx.moveTo(viewX + viewW - cm, viewY + 1); this.ctx.lineTo(viewX + viewW - 1, viewY + 1); this.ctx.lineTo(viewX + viewW - 1, viewY + cm);
@@ -623,67 +1169,76 @@ class MemorySubsystemVisualization {
         this.ctx.moveTo(viewX + viewW - cm, viewY + viewH - 1); this.ctx.lineTo(viewX + viewW - 1, viewY + viewH - 1); this.ctx.lineTo(viewX + viewW - 1, viewY + viewH - cm);
         this.ctx.stroke();
 
-        // Subtle terminal refresh jitter (rare, low amplitude).
-        const pulse = ((Math.sin(this.tick * 0.017) + 1) * 0.5);
-        if (pulse > 0.9) {
-            const bandCount = 2 + (Math.floor(this.tick) % 2);
-            for (let i = 0; i < bandCount; i++) {
-                const by = viewY + Math.floor((((i + 1) * 0.23) + (pulse * 0.19)) * viewH) % Math.max(1, viewH - 10);
-                const bh = 2 + ((i + Math.floor(this.tick)) % 3);
-                const shift = ((i % 2 === 0) ? 1 : -1) * (0.8 + pulse * 1.1);
-                this.ctx.drawImage(
-                    this.canvas,
-                    viewX,
-                    by,
-                    viewW,
-                    bh,
-                    viewX + shift,
-                    by,
-                    viewW,
-                    bh
-                );
-                this.ctx.fillStyle = `rgba(170, 225, 255, ${(0.03 + pulse * 0.05).toFixed(3)})`;
-                this.ctx.fillRect(viewX, by, viewW, bh);
-            }
-        }
-
-        // Thin scanline texture for cinematic monitor feel.
-        this.ctx.strokeStyle = 'rgba(150, 205, 242, 0.05)';
-        this.ctx.lineWidth = 1;
-        for (let ly = viewY + 1; ly < viewY + viewH; ly += 3) {
-            this.ctx.beginPath();
-            this.ctx.moveTo(viewX, ly + 0.5);
-            this.ctx.lineTo(viewX + viewW, ly + 0.5);
-            this.ctx.stroke();
-        }
-
-        // Right-side compact activity ruler (HUD micro-bars).
-        const hudX = viewX + viewW - 10;
-        const hudY = viewY + 12;
-        const hudH = Math.max(30, viewH - 24);
-        const segments = 22;
-        for (let i = 0; i < segments; i++) {
-            const t = i / Math.max(1, segments - 1);
-            const segY = hudY + t * hudH;
-            const pulse = 0.5 + 0.5 * Math.sin(this.tick * 0.05 + i * 0.7);
-            const level = Math.max(writeLevel * 0.8, swapLevel * 0.5, hugeLevel * 0.4) * 0.6 + pulse * 0.4;
-            this.ctx.fillStyle = `rgba(152, 220, 255, ${(0.08 + level * 0.24).toFixed(3)})`;
-            this.ctx.fillRect(hudX, segY, 4, 2);
-        }
-
-        this.ctx.fillStyle = 'rgba(160, 204, 232, 0.84)';
-        this.ctx.font = '8px "Share Tech Mono", monospace';
-        this.ctx.fillText(`nodes ${rows * cols} · hot ${(hotBias * 100).toFixed(1)}% · writer ${Math.round(writeLevel * 100)}%`, viewX + 8, viewY - 6);
+        const hotPct = ((hotCount / Math.max(1, rows * cols)) * 100);
+        this.ctx.fillStyle = 'rgba(0, 180, 195, 0.55)';
+        this.ctx.font = '7px "Share Tech Mono", monospace';
         this.ctx.fillText(
-            `psi some10 ${Number(psiMem.some_avg10 || 0).toFixed(2)} · full10 ${Number(psiMem.full_avg10 || 0).toFixed(2)}`,
-            viewX + Math.max(180, viewW - 250),
-            viewY - 6
+            `nodes ${rows * cols} · pressure ${hotPct.toFixed(1)}% · psi ${psiSome.toFixed(2)}/${psiFull.toFixed(2)}`
+                + (stallAtm > 0.15 ? ' · stall' : '')
+                + (thrashAtm > 0.15 ? ' · thrash' : ''),
+            viewX + 58,
+            viewY + 14
         );
-        this.ctx.fillText('cells represent memory buckets and pressure hotspots, not physical PFN map', viewX + 8, viewY + viewH - 8);
 
-        const tip = this.memorySelectedCell || this.memoryHoverCell;
+        // Field legend — what this plane means
+        const legY = viewY + viewH - (hero ? 96 : 18);
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+        this.ctx.fillRect(viewX + 8, legY - 11, Math.min(620, viewW - 16), 16);
+        this.ctx.fillStyle = 'rgba(236, 244, 200, 0.85)';
+        this.ctx.fillRect(viewX + 14, legY - 5, 8, 5);
+        this.ctx.fillStyle = 'rgba(0, 160, 170, 0.75)';
+        this.ctx.fillRect(viewX + 92, legY - 5, 8, 5);
+        this.ctx.fillStyle = 'rgba(160, 200, 210, 0.8)';
+        this.ctx.font = '7px "Share Tech Mono", monospace';
+        this.ctx.fillText(
+            'white = pressure   cyan = mass   tint = kind   click → story   ≠ byte / PFN map',
+            viewX + 28,
+            legY
+        );
+
+        if (hero) this.drawFabricHeroHud(viewX, viewY, viewW, viewH);
+        if (this.fabricFocus) this.drawFabricKernelStory(viewX, viewY, viewW, viewH);
+
+        const tip = this.memorySelectedCell || (this.memoryHoverCell?.pid ? this.memoryHoverCell : null);
         if (tip && tip.pid) {
             this.drawMemoryProcessTooltip(tip, viewX, viewY, viewW, viewH);
+        } else if (this.memoryHoverCell && !this.fabricFocus) {
+            // light kind hint near cursor
+            this.ctx.fillStyle = 'rgba(180, 220, 230, 0.75)';
+            this.ctx.font = '8px "Share Tech Mono", monospace';
+            this.ctx.fillText(
+                `${this.memoryHoverCell.kind} · click → dock story`,
+                Math.min(viewX + viewW - 180, this.lastMouseX + 12),
+                Math.min(viewY + viewH - 20, this.lastMouseY - 8)
+            );
+        }
+    }
+
+    drawFabricKernelStory(viewX, viewY, viewW, viewH) {
+        const focus = this.fabricFocus;
+        if (!focus) return;
+        const story = this.getMemoryKindStory(focus.kind);
+        const tw = Math.min(300, Math.max(240, viewW * 0.24));
+        const th = 118;
+        const tx = viewX + 62;
+        const ty = viewY + 56;
+        this.drawHudFrame(tx, ty, tw, th);
+        this.ctx.fillStyle = 'rgba(236, 244, 200, 0.92)';
+        this.ctx.font = '9px "Share Tech Mono", monospace';
+        this.ctx.fillText(`STORY · ${story.title}`, tx + 12, ty + 16);
+        this.ctx.fillStyle = 'rgba(160, 210, 220, 0.85)';
+        this.ctx.font = '8px "Share Tech Mono", monospace';
+        this.ctx.fillText(`bucket ${String(focus.label || focus.kind).slice(0, 28)}`, tx + 12, ty + 32);
+        (story.lines || []).forEach((line, i) => {
+            this.ctx.fillStyle = 'rgba(210, 230, 235, 0.9)';
+            this.ctx.font = '9px "Share Tech Mono", monospace';
+            this.ctx.fillText(String(line).slice(0, 42), tx + 12, ty + 50 + i * 14);
+        });
+        this.ctx.fillStyle = 'rgba(0, 200, 210, 0.65)';
+        this.ctx.font = '7px "Share Tech Mono", monospace';
+        this.ctx.fillText(story.ghost ? `kernel · ${story.ghost}` : 'click again to clear', tx + 12, ty + th - 12);
+        if (story.ghost && typeof this.flashArchGhost === 'function') {
+            // no-op on memory page — keep text only
         }
     }
 
@@ -722,18 +1277,25 @@ class MemorySubsystemVisualization {
         this.ctx.fillText(this.memorySelectedCell ? 'selected (click same process to clear)' : 'hover for process pressure details', tx + 10, ty + 72);
     }
 
-    drawMemoryView(x, y, w, h) {
+    drawMemoryView(x, y, w, h, opts = {}) {
         this.memoryMapHit = null;
         this.memoryStripHits = [];
         const mv = this.telemetry?.memory_visual;
         const stripRows = Array.isArray(mv?.rows) ? mv.rows : [];
-        const titleH = 34;
-        this.drawPanel(x, y, w, titleH, 'memory topology strip · kernel accounting (not PFN map)', { alpha: 0.9 });
+        const dock = Boolean(opts.dock);
+        const titleH = dock ? 22 : 34;
+        const focusTitle = this.fabricFocus
+            ? `topology dock · focus ${String(this.fabricFocus.kind || '').slice(0, 18)}`
+            : 'topology dock · kernel accounting';
+        const title = dock
+            ? focusTitle
+            : 'memory topology strip · kernel accounting (not PFN map)';
+        this.drawPanel(x, y, w, titleH, title, { alpha: 0.9 });
 
-        const side = 42;
-        const bottomH = 42;
-        const pad = 6;
-        const labelCol = 132;
+        const side = dock ? 0 : 42;
+        const bottomH = dock ? 8 : 42;
+        const pad = dock ? 4 : 6;
+        const labelCol = dock ? 100 : 132;
         const innerX = Math.floor(x + pad + side);
         const innerY = Math.floor(y + titleH + pad);
         const innerW = Math.floor(w - pad * 2 - side * 2);
@@ -772,8 +1334,10 @@ class MemorySubsystemVisualization {
             if (!bl.length) return 0.2;
             return Math.max(...bl.map((b) => Number(b.heat || 0)));
         });
-        this.drawMemorySidebarTron(Math.floor(x + pad), innerY, innerH, barL, 'SEG_A');
-        this.drawMemorySidebarTron(Math.floor(x + w - pad - 38), innerY, innerH, barR, 'SEG_B');
+        if (!dock) {
+            this.drawMemorySidebarTron(Math.floor(x + pad), innerY, innerH, barL, 'SEG_A');
+            this.drawMemorySidebarTron(Math.floor(x + w - pad - 38), innerY, innerH, barR, 'SEG_B');
+        }
 
         const gridDivs = 28;
         for (let g = 0; g <= gridDivs; g++) {
@@ -797,6 +1361,23 @@ class MemorySubsystemVisualization {
             this.ctx.font = '7px "Share Tech Mono", monospace';
             this.ctx.fillText(`${pct} · ${Number(row.kb || 0).toFixed(0)}k`, innerX + 4, ry + rowAreaH * 0.95);
 
+            const rowFocused = this.fabricFocus
+                && (String(this.fabricFocus.rowId || '') === String(row.id || '')
+                    || String(this.fabricFocus.kind || '') === String(row.id || '')
+                    || (row.blocks || []).some((b) => b.kind === this.fabricFocus.kind));
+            if (this.fabricFocus && !rowFocused) {
+                this.ctx.globalAlpha = 0.28;
+            } else {
+                this.ctx.globalAlpha = 1;
+            }
+            if (rowFocused) {
+                this.ctx.strokeStyle = 'rgba(236, 244, 200, 0.85)';
+                this.ctx.lineWidth = 1.2;
+                this.ctx.strokeRect(innerX + 1, ry + 0.5, innerW - 2, rowAreaH);
+                this.ctx.fillStyle = 'rgba(236, 244, 200, 0.08)';
+                this.ctx.fillRect(innerX + 1, ry + 0.5, innerW - 2, rowAreaH);
+            }
+
             let cx = stripX;
             blocks.forEach((blk, bi) => {
                 const bw = Number(blk.w || 0) * stripW;
@@ -808,11 +1389,20 @@ class MemorySubsystemVisualization {
                 cx += bw;
                 const ph = Math.max(4, Math.floor(rowAreaH) - 2);
                 const py = Math.floor(ry + 1);
+                const kindFocused = this.fabricFocus && (
+                    String(this.fabricFocus.kind) === String(kind)
+                    || String(this.fabricFocus.rowId || '') === String(row.id || '')
+                );
                 this.ctx.fillStyle = this.tronHeatColorKind(kind, t);
                 this.ctx.fillRect(px, py, pw, ph);
-                if (t > 0.58) {
-                    this.ctx.fillStyle = 'rgba(255, 255, 235, 0.28)';
+                if (t > 0.58 || kindFocused) {
+                    this.ctx.fillStyle = kindFocused ? 'rgba(236, 244, 200, 0.35)' : 'rgba(255, 255, 235, 0.28)';
                     this.ctx.fillRect(px, py, pw, ph);
+                }
+                if (kindFocused) {
+                    this.ctx.strokeStyle = 'rgba(236, 244, 200, 0.95)';
+                    this.ctx.lineWidth = 1;
+                    this.ctx.strokeRect(px + 0.5, py + 0.5, pw - 1, ph - 1);
                 }
                 const greeble = ((ri * 131 + bi) * 7919) % 997;
                 if (pw > 10 && (greeble % 5 === 0)) {
@@ -848,6 +1438,7 @@ class MemorySubsystemVisualization {
             this.ctx.lineTo(innerX + innerW, ly);
             this.ctx.strokeStyle = 'rgba(0, 229, 255, 0.11)';
             this.ctx.stroke();
+            this.ctx.globalAlpha = 1;
         });
 
         if (this.memoryHoverStrip) {
@@ -863,12 +1454,14 @@ class MemorySubsystemVisualization {
             this.ctx.fillText(detail.slice(0, 72), stripX, innerY + innerH - 6);
         }
 
-        this.ctx.fillStyle = 'rgba(0, 229, 255, 0.4)';
-        this.ctx.font = '7px "Share Tech Mono", monospace';
-        const base = innerY + innerH + 12;
-        for (let k = 0; k < 8; k++) {
-            const addr = 0xffff888000000000 + k * 0x2a00000;
-            this.ctx.fillText(`0x${addr.toString(16).slice(0, 12)}`, x + pad + k * (Math.min(140, w / 8.2)), base);
+        if (!dock) {
+            this.ctx.fillStyle = 'rgba(0, 229, 255, 0.4)';
+            this.ctx.font = '7px "Share Tech Mono", monospace';
+            const base = innerY + innerH + 12;
+            for (let k = 0; k < 8; k++) {
+                const addr = 0xffff888000000000 + k * 0x2a00000;
+                this.ctx.fillText(`0x${addr.toString(16).slice(0, 12)}`, x + pad + k * (Math.min(140, w / 8.2)), base);
+            }
         }
     }
 
@@ -879,30 +1472,29 @@ class MemorySubsystemVisualization {
         this.ctx.clearRect(0, 0, w, h);
         this.tick += 1;
 
-        const gap = 16;
-        const top = 58;
-        const statsH = 128;
-        const graphY = top + statsH + gap;
-        const graphH = Math.max(260, h - graphY - 36);
-
-        this.ctx.fillStyle = '#020305';
+        this.ctx.fillStyle = '#010305';
         this.ctx.fillRect(0, 0, w, h);
-        const gmem = this.ctx.createRadialGradient(w * 0.5, h * 0.45, 0, w * 0.5, h * 0.45, Math.max(w, h) * 0.65);
-        gmem.addColorStop(0, 'rgba(0, 45, 55, 0.35)');
-        gmem.addColorStop(0.5, 'rgba(0, 12, 18, 0.92)');
-        gmem.addColorStop(1, '#010203');
+        const gmem = this.ctx.createRadialGradient(w * 0.5, h * 0.42, 0, w * 0.5, h * 0.42, Math.max(w, h) * 0.7);
+        gmem.addColorStop(0, 'rgba(0, 40, 48, 0.4)');
+        gmem.addColorStop(0.55, 'rgba(0, 10, 14, 0.94)');
+        gmem.addColorStop(1, '#000102');
         this.ctx.fillStyle = gmem;
         this.ctx.fillRect(0, 0, w, h);
         this.drawKernelHeader();
-        this.drawMemoryStats(gap, top, w - gap * 2, statsH);
+
+        const gap = 12;
         if (this.viewMode === 'fabric') {
-            const fabricH = Math.max(220, Math.min(420, Math.floor(graphH * 0.58)));
-            const stripY = graphY + fabricH + gap;
-            const stripH = Math.max(160, graphH - fabricH - gap);
-            this.drawMemoryFabricView(gap, graphY, w - gap * 2, fabricH);
-            this.drawMemoryView(gap, stripY, w - gap * 2, stripH);
+            // Fabric-hero: full-bleed block field + thin accounting dock.
+            const top = 32;
+            const dockH = Math.max(72, Math.min(100, Math.floor(h * 0.1)));
+            const fabricY = top;
+            const fabricH = Math.max(300, h - fabricY - dockH - gap - 10);
+            this.drawMemoryFabricView(gap, fabricY, w - gap * 2, fabricH, { hero: true });
+            this.drawMemoryView(gap, fabricY + fabricH + gap, w - gap * 2, dockH, { dock: true });
         } else {
-            this.drawMemoryView(gap, graphY, w - gap * 2, graphH);
+            const top = 40;
+            const graphH = Math.max(260, h - top - 28);
+            this.drawMemoryView(gap, top, w - gap * 2, graphH);
         }
     }
 
@@ -914,6 +1506,7 @@ class MemorySubsystemVisualization {
 
     activate() {
         this.isActive = true;
+        try { window.__memoryViz = this; } catch (e) { /* ignore */ }
         this.fetchTelemetry();
         this.telemetryInterval = setInterval(() => {
             if (this.isActive) this.fetchTelemetry();
