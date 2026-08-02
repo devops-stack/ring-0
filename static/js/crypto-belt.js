@@ -35,6 +35,7 @@ class CryptoSubsystemVisualization {
         this.schemePlaying = false;
         this._schemePlayTimer = null;
         this.schemeRendered = false;
+        this.handshakeRendered = false;
         this.schemeNr = 10; // AES-128=10, AES-256=14
         this.schemeInspectByte = 0;
         this._archGhostEl = null;
@@ -285,7 +286,7 @@ class CryptoSubsystemVisualization {
             btn.textContent = label;
             btn.title = ({
                 ARCHITECTURE: 'Consumers → Crypto API → implementations · click kTLS/AES for scheme',
-                HANDSHAKE: 'TLS 1.3: ClientHello → X25519 → HKDF → AES-GCM',
+                HANDSHAKE: 'TLS 1.3: Hello → Certificate (auth) → X25519 → HKDF → AES-GCM',
                 LIVE_FLOW: 'Live interaction lanes',
                 LINEAR_ANALYSIS: 'AES linear analysis demo'
             })[id] || label;
@@ -307,6 +308,17 @@ class CryptoSubsystemVisualization {
                     this.stopSchemePlay();
                     this.schemeSource = null;
                     this.schemeRendered = false;
+                }
+                // Re-enter HANDSHAKE with a fresh step cascade; leave clears the latch.
+                this.handshakeRendered = false;
+                if (id !== 'HANDSHAKE') {
+                    if (this._handshakeTheater) this._handshakeTheater.stopAuto();
+                    if (this._handshakeKeyHandler) {
+                        window.removeEventListener('keydown', this._handshakeKeyHandler);
+                        this._handshakeKeyHandler = null;
+                    }
+                    this._handshakeTheater = null;
+                    this._handshakeTronBoard = null;
                 }
                 this.activeCryptoView = id;
                 this.updateCryptoViewToggle();
@@ -340,7 +352,7 @@ class CryptoSubsystemVisualization {
                 const kind = this.schemeKind === 'wg-chacha' ? 'WireGuard · ChaCha20-Poly1305' : 'kTLS · AES-GCM';
                 this.subtitleNode.textContent = `opened from Architecture · ${kind} · CODE refs → Elixir`;
             } else if (isHandshake) {
-                this.subtitleNode.textContent = 'ClientHello → X25519 → HKDF → AES-GCM keys — ECC bridge to symmetric';
+                this.subtitleNode.textContent = 'TLS story · theater + GRID board expand each step (userspace → Crypto API → kTLS)';
             } else if (!isLinear) {
                 this.subtitleNode.textContent = 'process -> protocol -> crypto subsystem -> algorithm';
             }
@@ -4945,6 +4957,7 @@ class CryptoSubsystemVisualization {
             hs.addEventListener('click', (e) => {
                 e.stopPropagation();
                 this.closeArchMorph();
+                this.handshakeRendered = false;
                 this.activeCryptoView = 'HANDSHAKE';
                 this.updateCryptoViewToggle();
                 this.syncOverlayForCurrentView();
@@ -5385,6 +5398,7 @@ class CryptoSubsystemVisualization {
             this.stopSchemePlay();
             this.schemeSource = null;
             this.schemeRendered = false;
+            this.handshakeRendered = false;
             this.activeCryptoView = 'HANDSHAKE';
             this.updateCryptoViewToggle();
             this.syncOverlayForCurrentView();
@@ -6135,164 +6149,1695 @@ class CryptoSubsystemVisualization {
             {
                 id: 'hello',
                 title: '1 · CLIENTHELLO',
+                does: 'PROPOSE',
                 sym: 'key_share · cipher suites',
-                body: 'TLS 1.3 offers X25519 + AES-GCM\n(no secrets yet — only proposals)',
+                body: 'client lists what it can speak\nX25519 + AES-GCM are offers only\nstill no secrets, no trust yet',
                 accent: '#a9d4e8',
-                kernel: 'userspace TLS stack'
+                kernel: 'userspace TLS stack',
+                layer: 'USERSPACE',
+                ring: 'TLS library (OpenSSL/BoringSSL)',
+                symbol: 'SSL_do_handshake()',
+                path: 'userspace · not in kernel yet',
+                story: 'Handshake begins above the kernel. The client only advertises capabilities — no crypto tfm is allocated in Linux yet.'
+            },
+            {
+                id: 'cert',
+                title: '2 · CERTIFICATE',
+                does: 'AUTHENTICATE',
+                sym: 'CertificateVerify · pubkey',
+                body: 'server proves its identity\nsigns the handshake transcript\ndoes NOT create AES keys',
+                accent: '#ffb4a2',
+                kernel: 'X.509 · asymmetric sign',
+                layer: 'USERSPACE → ASYM',
+                ring: 'X.509 verify + signature check',
+                symbol: 'X509_verify_cert() / EVP_DigestVerify',
+                path: 'crypto may assist via AF_ALG later',
+                story: 'Identity is proven by signing the transcript hash with the leaf private key. This gates trust — it never becomes the AES traffic key.'
             },
             {
                 id: 'x25519',
-                title: '2 · X25519',
+                title: '3 · X25519',
+                does: 'AGREE',
                 sym: 'crypto_alloc_kpp / curve25519',
-                body: 'ECDHE → 32-byte shared secret\nCurve25519 is agreement, not a cipher',
+                body: 'both sides run ECDHE\nget the same 32-byte secret\ncurve = agreement, not a cipher',
                 accent: '#8fdcff',
-                kernel: 'kpp · Curve25519'
+                kernel: 'kpp · Curve25519',
+                layer: 'KERNEL CRYPTO API',
+                ring: 'KPP · key-agreement',
+                symbol: 'crypto_alloc_kpp("curve25519")',
+                path: 'lib/crypto/curve25519.c',
+                story: 'Linux Crypto API allocates a KPP transform. curve25519_generic computes the shared secret — agreement only, not encryption.'
             },
             {
                 id: 'secret',
-                title: '3 · SHARED SECRET',
+                title: '4 · SHARED SECRET',
+                does: 'HOLD RAW',
                 sym: 'compute_shared_secret()',
-                body: 'raw ECDH output is not a key\nit must be extracted / expanded',
+                body: 'ECDH output is still raw bytes\nunsafe to use as a traffic key\nmust be distilled next',
                 accent: '#96ffbe',
-                kernel: 'handshake transcript'
+                kernel: 'handshake transcript',
+                layer: 'BOUNDARY',
+                ring: 'raw ECDH output buffer',
+                symbol: 'crypto_kpp_compute_shared_secret()',
+                path: 'include/crypto/kpp.h',
+                story: 'The kernel returns 32 raw bytes. They are not yet keys — HKDF must extract/expand them into the TLS key schedule.'
             },
             {
                 id: 'hkdf',
-                title: '4 · HKDF',
+                title: '5 · HKDF',
+                does: 'DERIVE',
                 sym: 'HKDF-Extract / Expand-Label',
-                body: 'SHA-256 key schedule → traffic secrets\nbridge from ECC into symmetric world',
+                body: 'hash-based key schedule\nturns secret → traffic secrets\nbridge from ECC into AES world',
                 accent: '#c4b0ff',
-                kernel: 'shash · SHA-2'
+                kernel: 'shash · SHA-2',
+                layer: 'USERSPACE (+ shash)',
+                ring: 'HKDF over SHA-256',
+                symbol: 'HKDF-Extract / Expand-Label',
+                path: 'TLS stack · optional crypto_shash',
+                story: 'HKDF distills the ECDHE secret into traffic secrets. This is the bridge from asymmetric agreement into the symmetric world.'
             },
             {
                 id: 'aesgcm',
-                title: '5 · AES-GCM KEYS',
+                title: '6 · AES-GCM KEYS',
+                does: 'ARM CIPHER',
                 sym: 'crypto_aead_setkey',
-                body: 'record keys + IV for AES-GCM\nnow the path looks like Architecture AES',
+                body: 'install record key + IV\nAES-GCM is ready to protect bytes\nthis is where “encryption” starts',
                 accent: '#e6c15a',
-                kernel: 'aead · AES-GCM'
+                kernel: 'aead · AES-GCM',
+                layer: 'KERNEL CRYPTO API',
+                ring: 'AEAD transform ready',
+                symbol: 'crypto_alloc_aead / crypto_aead_setkey',
+                path: 'crypto/aead.c · aesni/gcm drivers',
+                story: 'Now the kernel holds a keyed AEAD tfm. Encryption finally exists as a loaded transform — still waiting for record I/O.'
             },
             {
                 id: 'ktls',
-                title: '6 · RECORDS',
+                title: '7 · RECORDS',
+                does: 'ENCRYPT I/O',
                 sym: 'tls_sw_sendmsg / kTLS',
-                body: 'encrypted application data\nX25519 already left the hot path',
+                body: 'application data is sealed\ncert / X25519 already left the path\nhot path = symmetric AEAD only',
                 accent: '#e6c15a',
-                kernel: 'kTLS · crypto_aead'
+                kernel: 'kTLS · crypto_aead',
+                layer: 'kTLS HOT PATH',
+                ring: 'net/tls record offload',
+                symbol: 'tls_sw_sendmsg() → crypto_aead_encrypt()',
+                path: 'net/tls/tls_sw.c',
+                story: 'Application bytes hit kTLS. Cert and X25519 are gone — only AEAD seals records on the send/recv hot path.'
             }
         ];
+    }
+
+    _hsHexPath(cx, cy, r) {
+        const pts = [];
+        for (let i = 0; i < 6; i += 1) {
+            const a = (Math.PI / 6) + i * (Math.PI / 3);
+            pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+        }
+        return `M${pts.map((p) => p.join(',')).join('L')}Z`;
+    }
+
+    _hsHexToBytes(hex) {
+        const s = String(hex || '').replace(/[^0-9a-fA-F]/g, '');
+        const out = new Uint8Array(s.length / 2);
+        for (let i = 0; i < out.length; i += 1) {
+            out[i] = parseInt(s.substr(i * 2, 2), 16);
+        }
+        return out;
+    }
+
+    _hsBytesToHex(bytes, group = 0) {
+        const hex = Array.from(bytes || [], (b) => (b & 0xff).toString(16).padStart(2, '0')).join('');
+        if (!group) return hex;
+        const parts = hex.match(new RegExp(`.{1,${group}}`, 'g'));
+        return parts ? parts.join(' ') : hex;
+    }
+
+    /** Sync SHA-256 for handshake math strip (educational, deterministic). */
+    _hsSha256Hex(bytes) {
+        const K = new Uint32Array([
+            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+            0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+            0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+            0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+            0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+            0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+            0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+        ]);
+        const rotr = (x, n) => (x >>> n) | (x << (32 - n));
+        const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+        const bitLen = data.length * 8;
+        const withOne = data.length + 1;
+        let padLen = withOne % 64;
+        padLen = padLen <= 56 ? 56 - padLen : 120 - padLen;
+        const buf = new Uint8Array(withOne + padLen + 8);
+        buf.set(data);
+        buf[data.length] = 0x80;
+        const view = new DataView(buf.buffer);
+        // length in bits as big-endian 64-bit
+        const hi = Math.floor(bitLen / 0x100000000);
+        const lo = bitLen >>> 0;
+        view.setUint32(buf.length - 8, hi, false);
+        view.setUint32(buf.length - 4, lo, false);
+
+        let h0 = 0x6a09e667;
+        let h1 = 0xbb67ae85;
+        let h2 = 0x3c6ef372;
+        let h3 = 0xa54ff53a;
+        let h4 = 0x510e527f;
+        let h5 = 0x9b05688c;
+        let h6 = 0x1f83d9ab;
+        let h7 = 0x5be0cd19;
+        const w = new Uint32Array(64);
+
+        for (let i = 0; i < buf.length; i += 64) {
+            for (let j = 0; j < 16; j += 1) w[j] = view.getUint32(i + j * 4, false);
+            for (let j = 16; j < 64; j += 1) {
+                const s0 = rotr(w[j - 15], 7) ^ rotr(w[j - 15], 18) ^ (w[j - 15] >>> 3);
+                const s1 = rotr(w[j - 2], 17) ^ rotr(w[j - 2], 19) ^ (w[j - 2] >>> 10);
+                w[j] = (w[j - 16] + s0 + w[j - 7] + s1) >>> 0;
+            }
+            let a = h0;
+            let b = h1;
+            let c = h2;
+            let d = h3;
+            let e = h4;
+            let f = h5;
+            let g = h6;
+            let h = h7;
+            for (let j = 0; j < 64; j += 1) {
+                const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+                const ch = (e & f) ^ (~e & g);
+                const t1 = (h + S1 + ch + K[j] + w[j]) >>> 0;
+                const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+                const maj = (a & b) ^ (a & c) ^ (b & c);
+                const t2 = (S0 + maj) >>> 0;
+                h = g;
+                g = f;
+                f = e;
+                e = (d + t1) >>> 0;
+                d = c;
+                c = b;
+                b = a;
+                a = (t1 + t2) >>> 0;
+            }
+            h0 = (h0 + a) >>> 0;
+            h1 = (h1 + b) >>> 0;
+            h2 = (h2 + c) >>> 0;
+            h3 = (h3 + d) >>> 0;
+            h4 = (h4 + e) >>> 0;
+            h5 = (h5 + f) >>> 0;
+            h6 = (h6 + g) >>> 0;
+            h7 = (h7 + h) >>> 0;
+        }
+        const out = new Uint8Array(32);
+        const ov = new DataView(out.buffer);
+        ov.setUint32(0, h0, false);
+        ov.setUint32(4, h1, false);
+        ov.setUint32(8, h2, false);
+        ov.setUint32(12, h3, false);
+        ov.setUint32(16, h4, false);
+        ov.setUint32(20, h5, false);
+        ov.setUint32(24, h6, false);
+        ov.setUint32(28, h7, false);
+        return this._hsBytesToHex(out);
+    }
+
+    /**
+     * Deterministic demo TLS 1.3 material for GRID math strip.
+     * Public values shown in full; secret material only as SHA-256.
+     */
+    _ensureHandshakeDemoSession() {
+        if (this._hsDemoSession) return this._hsDemoSession;
+        // Fixed educational vectors (not a live capture) — stable across reloads.
+        const clientPub = this._hsHexToBytes(
+            '8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a'
+        );
+        const serverPub = this._hsHexToBytes(
+            'de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f'
+        );
+        // Demo ECDH shared secret Z (32 bytes) — display only via SHA-256.
+        const sharedZ = this._hsHexToBytes(
+            'c3da55379de9c782c7e6e93d11e8f4e4b6d5c6a9e1f0d2c3b4a5968778695a4b'
+        );
+        // Demo leaf SPKI bytes (truncated-shaped educational blob).
+        const leafSpki = this._hsHexToBytes(
+            '3059301306072a8648ce3d020106082a8648ce3d03010703420004'
+            + '6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296'
+            + '4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5'
+        );
+        const trafficKey = this._hsHexToBytes(
+            '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+        );
+        const transcript = this._hsHexToBytes(
+            '48656c6c6f436c69656e7448656c6c6f5365727665724365727469666963617465'
+        );
+        // Demo private scalars — NEVER shown raw; only SHA-256 provenance anchors.
+        const ephSk = this._hsHexToBytes(
+            '77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a'
+        );
+        const leafSk = this._hsHexToBytes(
+            'c37b7e3ab1e5f7d8c9a0b1c2d3e4f5061728394a5b6c7d8e9f00112233445566'
+        );
+
+        this._hsDemoSession = {
+            clientPubHex: this._hsBytesToHex(clientPub),
+            serverPubHex: this._hsBytesToHex(serverPub),
+            clientPubSha: this._hsSha256Hex(clientPub),
+            serverPubSha: this._hsSha256Hex(serverPub),
+            sharedSha: this._hsSha256Hex(sharedZ),
+            leafSpkiSha: this._hsSha256Hex(leafSpki),
+            leafPubHex: this._hsBytesToHex(leafSpki.slice(-64)), // last 64 bytes ≈ uncompressed point region
+            trafficKeySha: this._hsSha256Hex(trafficKey),
+            transcriptSha: this._hsSha256Hex(transcript),
+            // HKDF-Extract demo: SHA-256(salt || IKM) stand-in for PRK fingerprint
+            prkSha: this._hsSha256Hex(this._hsHexToBytes(
+                `${this._hsBytesToHex(sharedZ)}${this._hsBytesToHex(transcript)}`
+            )),
+            ephSkSha: this._hsSha256Hex(ephSk),
+            leafSkSha: this._hsSha256Hex(leafSk)
+        };
+        return this._hsDemoSession;
+    }
+
+    /**
+     * Session math tape for GRID board — full hex always visible;
+     * each step highlights only its segment (frame color).
+     */
+    getHandshakeMathTape() {
+        const S = this._ensureHandshakeDemoSession();
+        const segments = [
+            {
+                ids: ['hello'],
+                tag: 'PUBLIC',
+                label: 'client_pub · key_share',
+                hex: S.clientPubHex,
+                focus: [0, 16],
+                line: 'ecdh',
+                fromSk: 'eph',
+                provNode: 'pub'
+            },
+            {
+                ids: ['cert'],
+                tag: 'DIGEST',
+                label: 'leaf SPKI · SHA-256',
+                hex: S.leafSpkiSha,
+                focus: [0, 16],
+                line: 'cert',
+                fromSk: 'leaf',
+                provNode: 'spki'
+            },
+            {
+                ids: ['x25519'],
+                tag: 'PUBLIC',
+                label: 'server_pub · KPP input',
+                hex: S.serverPubHex,
+                focus: [0, 64],
+                line: 'ecdh',
+                fromSk: 'eph',
+                provNode: 'peer'
+            },
+            {
+                ids: ['secret'],
+                tag: 'DIGEST',
+                label: 'SHA256(Z) · shared secret',
+                hex: S.sharedSha,
+                focus: [0, 16],
+                line: 'ecdh',
+                fromSk: 'eph',
+                provNode: 'Z'
+            },
+            {
+                ids: ['hkdf'],
+                tag: 'DIGEST',
+                label: 'PRK⋆ · HKDF fingerprint',
+                hex: S.prkSha,
+                focus: [0, 16],
+                line: 'ecdh',
+                fromSk: 'eph',
+                provNode: 'PRK'
+            },
+            {
+                ids: ['aesgcm', 'ktls'],
+                tag: 'DIGEST',
+                label: 'SHA256(traffic_key)',
+                hex: S.trafficKeySha,
+                focus: [0, 16],
+                line: 'ecdh',
+                fromSk: 'eph',
+                provNode: 'key'
+            }
+        ];
+        let offset = 0;
+        return segments.map((seg) => {
+            const start = offset;
+            const end = offset + seg.hex.length;
+            offset = end;
+            return Object.assign({}, seg, { start, end });
+        });
+    }
+
+    /** Provenance chains — private keys only as SHA-256; segments are derived, not slices. */
+    getHandshakeSkProvenance(stepId) {
+        const S = this._ensureHandshakeDemoSession();
+        const active = this.getHandshakeMathTape().find((s) => s.ids.indexOf(stepId) >= 0);
+        const ecdhNodes = [
+            { id: 'sk', label: 'sk_eph', tip: 'SHA256(sk)', sha: S.ephSkSha, kind: 'private' },
+            { id: 'pub', label: 'client_pub', tip: 'X25519(sk)·G', kind: 'public' },
+            { id: 'peer', label: 'server_pub', tip: 'peer u-coord', kind: 'public' },
+            { id: 'Z', label: 'H(Z)', tip: 'SHA256(X25519(sk,peer))', kind: 'derived' },
+            { id: 'PRK', label: 'PRK⋆', tip: 'HKDF-Extract⋆', kind: 'derived' },
+            { id: 'key', label: 'H(key)', tip: 'SHA256(traffic_key)', kind: 'derived' }
+        ];
+        const certNodes = [
+            { id: 'sk', label: 'sk_leaf', tip: 'SHA256(sk)', sha: S.leafSkSha, kind: 'private' },
+            { id: 'spki', label: 'SPKI', tip: 'SHA256(SPKI)', kind: 'public' }
+        ];
+        // Which chain nodes are "reached" / lit for this step
+        const ecdhLit = {
+            hello: ['sk', 'pub'],
+            x25519: ['sk', 'pub', 'peer'],
+            secret: ['sk', 'pub', 'peer', 'Z'],
+            hkdf: ['sk', 'pub', 'peer', 'Z', 'PRK'],
+            aesgcm: ['sk', 'pub', 'peer', 'Z', 'PRK', 'key'],
+            ktls: ['sk', 'pub', 'peer', 'Z', 'PRK', 'key'],
+            cert: []
+        };
+        const certLit = {
+            cert: ['sk', 'spki'],
+            hello: [],
+            x25519: [],
+            secret: [],
+            hkdf: [],
+            aesgcm: [],
+            ktls: []
+        };
+        return {
+            activeLine: active ? active.line : 'ecdh',
+            activeNode: active ? active.provNode : null,
+            ecdh: {
+                title: 'ECDHE lineage  ·  sk ≠ slices of tape',
+                nodes: ecdhNodes,
+                lit: ecdhLit[stepId] || [],
+                skSha: S.ephSkSha
+            },
+            cert: {
+                title: 'CERT lineage  ·  separate private key',
+                nodes: certNodes,
+                lit: certLit[stepId] || [],
+                skSha: S.leafSkSha
+            }
+        };
+    }
+
+    getHandshakeMathForStep(stepId) {
+        const tape = this.getHandshakeMathTape();
+        const fullHex = tape.map((s) => s.hex).join('');
+        const active = tape.find((s) => s.ids.indexOf(stepId) >= 0) || tape[0];
+        const focusStart = active.start + active.focus[0];
+        const focusEnd = active.start + active.focus[1];
+        const prov = this.getHandshakeSkProvenance(stepId);
+        return {
+            tag: active.tag,
+            label: active.label,
+            fullHex,
+            tape,
+            active,
+            focusStart,
+            focusEnd,
+            provenance: prov,
+            note: active.tag === 'PUBLIC'
+                ? 'full public material on the tape · frame color = active fragment'
+                : 'secret material as SHA-256 only · frame color = active fragment'
+        };
+    }
+
+    /** Draw full key tape on the right; highlight active fragment + sk provenance. */
+    _drawHandshakeMathKeyPanel(parent, opts) {
+        const {
+            x, y, w, h, edge, stepId,
+            mono = 'Share Tech Mono, monospace'
+        } = opts;
+        const math = this.getHandshakeMathForStep(stepId);
+        if (!math) return;
+        const prov = math.provenance;
+
+        parent.append('rect')
+            .attr('x', x).attr('y', y)
+            .attr('width', w).attr('height', h)
+            .attr('rx', 6)
+            .style('fill', 'rgba(0, 8, 14, 0.96)')
+            .style('stroke', edge)
+            .style('stroke-opacity', 0.7)
+            .style('stroke-width', 1.6);
+
+        parent.append('text')
+            .attr('x', x + 12).attr('y', y + 15)
+            .style('font-family', mono)
+            .style('font-size', '9px')
+            .style('letter-spacing', '1.8px')
+            .style('fill', edge)
+            .text(`MATH · ${math.tag}  ·  ${math.active.label}`);
+
+        parent.append('text')
+            .attr('x', x + w - 12).attr('y', y + 15)
+            .attr('text-anchor', 'end')
+            .style('font-family', mono)
+            .style('font-size', '8px')
+            .style('fill', 'rgba(140, 180, 200, 0.55)')
+            .text('sk only as SHA-256 · not tape slices');
+
+        // Provenance rails (top of panel)
+        const railH = 54;
+        const drawRail = (railY, chain, accent) => {
+            const nodes = chain.nodes;
+            const n = nodes.length;
+            const x0 = x + 14;
+            const x1 = x + w - 14;
+            const span = x1 - x0;
+            parent.append('text')
+                .attr('x', x0).attr('y', railY - 2)
+                .style('font-family', mono)
+                .style('font-size', '7px')
+                .style('letter-spacing', '0.8px')
+                .style('fill', 'rgba(140, 170, 190, 0.65)')
+                .text(chain.title);
+
+            parent.append('line')
+                .attr('x1', x0 + 18).attr('x2', x1 - 18)
+                .attr('y1', railY + 14).attr('y2', railY + 14)
+                .style('stroke', accent)
+                .style('stroke-opacity', 0.25)
+                .style('stroke-width', 1.2);
+
+            nodes.forEach((node, i) => {
+                const nx = x0 + (n === 1 ? span / 2 : (i / (n - 1)) * span);
+                const lit = chain.lit.indexOf(node.id) >= 0;
+                const isHere = math.active.provNode === node.id
+                    || (node.id === 'sk' && lit && prov.activeLine === (chain === prov.ecdh ? 'ecdh' : 'cert'));
+                const col = lit ? accent : 'rgba(80, 100, 120, 0.55)';
+                parent.append('circle')
+                    .attr('cx', nx).attr('cy', railY + 14)
+                    .attr('r', isHere ? 6 : 4)
+                    .style('fill', lit ? accent : 'rgba(10, 16, 24, 0.95)')
+                    .style('stroke', col)
+                    .style('stroke-width', isHere ? 2 : 1)
+                    .style('fill-opacity', lit && node.kind === 'private' ? 0.35 : (lit ? 0.85 : 0.5));
+                parent.append('text')
+                    .attr('x', nx).attr('y', railY + 28)
+                    .attr('text-anchor', 'middle')
+                    .style('font-family', mono)
+                    .style('font-size', '7px')
+                    .style('fill', lit ? accent : 'rgba(120, 140, 160, 0.45)')
+                    .text(node.label);
+            });
+        };
+
+        const ecdhHot = prov.activeLine === 'ecdh' ? edge : 'rgba(110, 239, 255, 0.55)';
+        const certHot = prov.activeLine === 'cert' ? edge : 'rgba(255, 180, 140, 0.55)';
+        drawRail(y + 28, prov.ecdh, ecdhHot);
+        drawRail(y + 28 + railH, prov.cert, certHot);
+
+        const skLine = prov.activeLine === 'cert' ? prov.cert : prov.ecdh;
+        parent.append('text')
+            .attr('x', x + 12).attr('y', y + 28 + railH * 2 + 2)
+            .style('font-family', mono)
+            .style('font-size', '8px')
+            .style('fill', edge)
+            .text(`SHA256(${prov.activeLine === 'cert' ? 'sk_leaf' : 'sk_eph'})  ${skLine.skSha}`);
+
+        // Character grid — full tape
+        const padX = 12;
+        const padTop = 28 + railH * 2 + 12;
+        const availW = w - padX * 2;
+        const availH = h - padTop - 16;
+        const fontSize = availW > 340 ? 12 : (availW > 260 ? 11 : 10);
+        const pairW = fontSize * 1.55;
+        const cols = Math.max(8, Math.min(16, Math.floor(availW / pairW)));
+        const rowH = fontSize + 6;
+        const maxRows = Math.max(3, Math.floor(availH / rowH));
+        const pairs = [];
+        for (let i = 0; i < math.fullHex.length; i += 2) {
+            pairs.push({ hex: math.fullHex.substr(i, 2), ci: i });
+        }
+        let startPair = 0;
+        const activePair0 = Math.floor(math.active.start / 2);
+        const activePair1 = Math.ceil(math.active.end / 2);
+        if (activePair1 > cols * maxRows) {
+            startPair = Math.max(0, activePair0 - Math.floor(cols / 2));
+            const maxStart = Math.max(0, pairs.length - cols * maxRows);
+            startPair = Math.min(startPair, maxStart);
+        }
+        const windowPairs = pairs.slice(startPair, startPair + cols * maxRows);
+
+        const g = parent.append('g').attr('class', 'hs-math-tape');
+        windowPairs.forEach((p, idx) => {
+            const row = Math.floor(idx / cols);
+            const col = idx % cols;
+            const cx = x + padX + col * (availW / cols) + 2;
+            const cy = y + padTop + row * rowH + fontSize;
+            const inActive = p.ci >= math.active.start && p.ci < math.active.end;
+            const inFocus = p.ci >= math.focusStart && p.ci < math.focusEnd;
+            const seg = math.tape.find((s) => p.ci >= s.start && p.ci < s.end);
+            const sameLine = seg && seg.line === prov.activeLine;
+            let fill = sameLine ? 'rgba(90, 110, 130, 0.5)' : 'rgba(70, 80, 95, 0.28)';
+            let weight = '400';
+            let opacity = sameLine ? 0.45 : 0.28;
+            if (inActive) {
+                fill = edge;
+                weight = inFocus ? '700' : '500';
+                opacity = 1;
+            }
+            g.append('text')
+                .attr('x', cx).attr('y', cy)
+                .style('font-family', mono)
+                .style('font-size', `${fontSize}px`)
+                .style('font-weight', weight)
+                .style('fill', fill)
+                .style('opacity', opacity)
+                .text(p.hex);
+            if (inFocus) {
+                g.append('rect')
+                    .attr('x', cx - 1)
+                    .attr('y', cy - fontSize + 1)
+                    .attr('width', fontSize * 1.35)
+                    .attr('height', 2)
+                    .style('fill', edge)
+                    .style('opacity', 0.9);
+            }
+        });
+
+        const legY = y + h - 7;
+        let lx = x + 12;
+        math.tape.forEach((seg) => {
+            const on = seg.ids.indexOf(stepId) >= 0;
+            const lab = parent.append('text')
+                .attr('x', lx).attr('y', legY)
+                .style('font-family', mono)
+                .style('font-size', '7px')
+                .style('letter-spacing', '0.3px')
+                .style('fill', on ? edge : 'rgba(120, 140, 160, 0.4)')
+                .text(`${seg.label.split('·')[0].trim()}←${seg.fromSk === 'leaf' ? 'sk_leaf' : 'sk_eph'}`);
+            try {
+                lx += (lab.node().getComputedTextLength() || 50) + 8;
+            } catch (_) {
+                lx += 56;
+            }
+        });
+    }
+
+    /**
+     * Tron Legacy process board — expands the active handshake step
+     * under the theater (grid floor · light-path · identity disc · reveal panel).
+     */
+    drawHandshakeTronBoard(parent, opts) {
+        const {
+            x, y, w, h,
+            steps = this.getHandshakeStorySteps(),
+            onSelect = null
+        } = opts;
+
+        const CYAN = '#6EEFFF';
+        const ORANGE = '#FF8A3A';
+        const board = parent.append('g')
+            .attr('class', 'crypto-handshake-tron')
+            .style('opacity', 0);
+
+        // Void chassis (rounded windows — previous format)
+        board.append('rect')
+            .attr('x', x).attr('y', y)
+            .attr('width', w).attr('height', h)
+            .attr('rx', 8)
+            .style('fill', 'rgba(1, 4, 10, 0.94)')
+            .style('stroke', 'rgba(110, 239, 255, 0.45)')
+            .style('stroke-width', 1.4);
+
+        // Inner rim glow
+        board.append('rect')
+            .attr('x', x + 3).attr('y', y + 3)
+            .attr('width', w - 6).attr('height', h - 6)
+            .attr('rx', 6)
+            .style('fill', 'none')
+            .style('stroke', 'rgba(110, 239, 255, 0.12)')
+            .style('stroke-width', 1);
+
+        // Perspective floor grid (Tron Legacy board)
+        const floor = board.append('g').attr('class', 'tron-floor').style('opacity', 0.55);
+        const vanishingY = y + h * 0.42;
+        const floorTop = y + h * 0.48;
+        const floorBot = y + h - 10;
+        const cx = x + w / 2;
+        for (let i = 0; i <= 10; i += 1) {
+            const t = i / 10;
+            const yy = floorTop + t * t * (floorBot - floorTop);
+            const half = (w * 0.42) * (0.22 + t * 0.78);
+            floor.append('line')
+                .attr('x1', cx - half).attr('x2', cx + half)
+                .attr('y1', yy).attr('y2', yy)
+                .style('stroke', CYAN)
+                .style('stroke-opacity', 0.12 + t * 0.18)
+                .style('stroke-width', 0.7);
+        }
+        for (let i = -5; i <= 5; i += 1) {
+            const edge = (w * 0.42) * 0.98;
+            floor.append('line')
+                .attr('x1', cx + i * (edge / 5) * 0.22)
+                .attr('y1', floorTop)
+                .attr('x2', cx + i * (edge / 5))
+                .attr('y2', floorBot)
+                .style('stroke', CYAN)
+                .style('stroke-opacity', 0.1)
+                .style('stroke-width', 0.6);
+        }
+        // Horizon light bar
+        board.append('line')
+            .attr('x1', x + 24).attr('x2', x + w - 24)
+            .attr('y1', vanishingY).attr('y2', vanishingY)
+            .style('stroke', CYAN)
+            .style('stroke-opacity', 0.35)
+            .style('stroke-width', 1.2);
+
+        // Header
+        board.append('text')
+            .attr('x', x + 22).attr('y', y + 22)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '10px')
+            .style('letter-spacing', '2.2px')
+            .style('fill', CYAN)
+            .text('GRID · HANDSHAKE PROGRAM');
+
+        const stepMeta = board.append('text')
+            .attr('x', x + w - 22).attr('y', y + 22)
+            .attr('text-anchor', 'end')
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '9px')
+            .style('letter-spacing', '1.4px')
+            .style('fill', 'rgba(110, 239, 255, 0.55)')
+            .text('');
+
+        // Light-path nodes across top of board
+        const pathY = y + 48;
+        const pathX0 = x + 36;
+        const pathX1 = x + w - 36;
+        const lightBase = board.append('line')
+            .attr('x1', pathX0).attr('x2', pathX1)
+            .attr('y1', pathY).attr('y2', pathY)
+            .style('stroke', 'rgba(60, 90, 110, 0.55)')
+            .style('stroke-width', 2);
+        const lightFill = board.append('line')
+            .attr('x1', pathX0).attr('x2', pathX0)
+            .attr('y1', pathY).attr('y2', pathY)
+            .style('stroke', CYAN)
+            .style('stroke-width', 2.4)
+            .style('stroke-linecap', 'round')
+            .style('filter', 'url(#glow)');
+
+        if (this.svg) {
+            let defs = this.svg.select('defs');
+            if (defs.empty()) defs = this.svg.append('defs');
+            if (defs.select('#tron-cyan-glow').empty()) {
+                const filter = defs.append('filter')
+                    .attr('id', 'tron-cyan-glow')
+                    .attr('x', '-50%').attr('y', '-50%')
+                    .attr('width', '200%').attr('height', '200%');
+                filter.append('feGaussianBlur').attr('stdDeviation', '2.2').attr('result', 'b');
+                filter.append('feMerge').selectAll('feMergeNode').data(['b', 'SourceGraphic'])
+                    .enter().append('feMergeNode').attr('in', (d) => d);
+            }
+        }
+        lightFill.style('filter', 'url(#tron-cyan-glow)');
+        lightBase.style('pointer-events', 'none');
+
+        const nodes = steps.map((step, i) => {
+            const nx = pathX0 + (i / Math.max(1, steps.length - 1)) * (pathX1 - pathX0);
+            const g = board.append('g')
+                .style('cursor', 'pointer')
+                .on('click', (event) => {
+                    if (event && event.stopPropagation) event.stopPropagation();
+                    if (typeof onSelect === 'function') onSelect(i);
+                    setStep(i);
+                });
+            // Outer ring (identity disc)
+            const ring = g.append('circle')
+                .attr('cx', nx).attr('cy', pathY)
+                .attr('r', 9)
+                .style('fill', 'rgba(2, 8, 14, 0.95)')
+                .style('stroke', step.accent || CYAN)
+                .style('stroke-width', 1.2)
+                .style('stroke-opacity', 0.4);
+            const core = g.append('circle')
+                .attr('cx', nx).attr('cy', pathY)
+                .attr('r', 3.2)
+                .style('fill', 'rgba(40, 60, 80, 0.9)');
+            const num = g.append('text')
+                .attr('x', nx).attr('y', pathY - 14)
+                .attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '8px')
+                .style('fill', 'rgba(160, 190, 210, 0.55)')
+                .text(String(i + 1));
+            return { g, ring, core, num, nx, step };
+        });
+
+        // Reveal panel (expanded step)
+        const panelX = x + 18;
+        const panelY = y + 68;
+        const panelW = w - 36;
+        const panelH = Math.max(96, h - 84);
+        const reveal = board.append('g').attr('class', 'tron-reveal');
+
+        const wrapWords = (text, maxChars, maxLines) => {
+            const words = String(text || '').split(/\s+/);
+            const lines = [];
+            let cur = '';
+            words.forEach((word) => {
+                const next = cur ? `${cur} ${word}` : word;
+                if (next.length > maxChars) {
+                    if (cur) lines.push(cur);
+                    cur = word;
+                } else cur = next;
+            });
+            if (cur) lines.push(cur);
+            return lines.slice(0, maxLines);
+        };
+
+        const setStep = (idx) => {
+            const step = steps[idx];
+            if (!step) return;
+            const accent = step.accent || CYAN;
+            const isHot = step.id === 'cert' || step.id === 'aesgcm' || step.id === 'ktls';
+            const edge = isHot ? ORANGE : CYAN;
+
+            stepMeta.text(`STEP ${idx + 1}/${steps.length}  ·  ${step.does || ''}`);
+
+            nodes.forEach((n, i) => {
+                const on = i === idx;
+                const past = i < idx;
+                n.ring.transition().duration(320)
+                    .attr('r', on ? 12 : 9)
+                    .style('stroke', on ? edge : (n.step.accent || CYAN))
+                    .style('stroke-opacity', on ? 1 : (past ? 0.55 : 0.35))
+                    .style('stroke-width', on ? 2.2 : 1.2);
+                n.core.transition().duration(320)
+                    .attr('r', on ? 4.5 : 3.2)
+                    .style('fill', on ? edge : (past ? accent : 'rgba(40, 60, 80, 0.9)'));
+                n.num.style('fill', on ? edge : 'rgba(160, 190, 210, 0.55)');
+            });
+            lightFill
+                .style('stroke', edge)
+                .transition().duration(420)
+                .attr('x2', nodes[idx].nx);
+
+            reveal.selectAll('*').remove();
+            const pane = reveal.append('g').style('opacity', 0);
+
+            // Reveal chassis (rounded window)
+            pane.append('rect')
+                .attr('x', panelX).attr('y', panelY)
+                .attr('width', panelW).attr('height', panelH)
+                .attr('rx', 8)
+                .style('fill', 'rgba(4, 10, 18, 0.88)')
+                .style('stroke', edge)
+                .style('stroke-opacity', 0.65)
+                .style('stroke-width', 1.5);
+
+            // Split: left copy · right FULL key tape (large, fragment highlight)
+            const keyW = Math.min(Math.max(panelW * 0.52, 320), panelW - 220);
+            const keyX = panelX + panelW - keyW - 10;
+            const keyY = panelY + 10;
+            const keyH = panelH - 20;
+            const leftW = keyX - panelX - 16;
+
+            // Identity disc (left)
+            const discX = panelX + 44;
+            const discY = panelY + 52;
+            pane.append('circle')
+                .attr('cx', discX).attr('cy', discY)
+                .attr('r', 28)
+                .style('fill', 'rgba(2, 8, 14, 0.95)')
+                .style('stroke', edge)
+                .style('stroke-width', 2)
+                .style('filter', 'url(#tron-cyan-glow)');
+            pane.append('circle')
+                .attr('cx', discX).attr('cy', discY)
+                .attr('r', 20)
+                .style('fill', 'none')
+                .style('stroke', accent)
+                .style('stroke-opacity', 0.45)
+                .style('stroke-dasharray', '3 5');
+            pane.append('circle')
+                .attr('cx', discX).attr('cy', discY)
+                .attr('r', 6)
+                .style('fill', edge)
+                .style('fill-opacity', 0.85);
+            pane.append('text')
+                .attr('x', discX).attr('y', discY + 42)
+                .attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '7px')
+                .style('letter-spacing', '1.2px')
+                .style('fill', edge)
+                .text(String(step.layer || 'KERNEL').slice(0, 16));
+
+            const tx = panelX + 82;
+            const tw = leftW - 82;
+
+            pane.append('text')
+                .attr('x', tx).attr('y', panelY + 24)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '11px')
+                .style('letter-spacing', '2px')
+                .style('fill', edge)
+                .text(String(step.does || 'PROCESS'));
+
+            pane.append('text')
+                .attr('x', tx).attr('y', panelY + 46)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '16px')
+                .style('letter-spacing', '1.4px')
+                .style('fill', '#EAF6FF')
+                .text(String(step.title || ''));
+
+            const bodyLines = String(step.body || '').split('\n').filter(Boolean);
+            bodyLines.slice(0, 3).forEach((line, li) => {
+                pane.append('text')
+                    .attr('x', tx).attr('y', panelY + 70 + li * 13)
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', '10px')
+                    .style('fill', 'rgba(190, 215, 230, 0.9)')
+                    .text(line);
+            });
+
+            const dockH = 34;
+            const dockY = panelY + panelH - dockH - 10;
+            const storyY = panelY + 70 + Math.min(3, bodyLines.length) * 13 + 8;
+            wrapWords(step.story, tw < 200 ? 28 : 36, 3).forEach((line, li) => {
+                if (storyY + li * 12 > dockY - 8) return;
+                pane.append('text')
+                    .attr('x', tx).attr('y', storyY + li * 12)
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', '9px')
+                    .style('fill', 'rgba(150, 180, 200, 0.78)')
+                    .text(line);
+            });
+
+            pane.append('rect')
+                .attr('x', panelX + 10).attr('y', dockY)
+                .attr('width', leftW).attr('height', dockH)
+                .attr('rx', 4)
+                .style('fill', 'rgba(0, 12, 20, 0.92)')
+                .style('stroke', 'rgba(110, 239, 255, 0.35)');
+            pane.append('text')
+                .attr('x', panelX + 20).attr('y', dockY + 13)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '9px')
+                .style('fill', CYAN)
+                .text(String(step.symbol || step.sym || ''));
+            pane.append('text')
+                .attr('x', panelX + 20).attr('y', dockY + 26)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '8px')
+                .style('fill', 'rgba(140, 170, 190, 0.75)')
+                .text(`${step.path || ''}  ·  ${step.ring || ''}`);
+
+            // Right: full key tape — active fragment = frame color
+            this._drawHandshakeMathKeyPanel(pane, {
+                x: keyX,
+                y: keyY,
+                w: keyW,
+                h: keyH,
+                edge,
+                stepId: step.id
+            });
+
+            // Light streak sweep on enter
+            const streak = pane.append('rect')
+                .attr('x', panelX)
+                .attr('y', panelY)
+                .attr('width', 18)
+                .attr('height', panelH)
+                .style('fill', edge)
+                .style('fill-opacity', 0.18)
+                .style('pointer-events', 'none');
+            streak.transition().duration(700).ease(d3.easeCubicOut)
+                .attr('x', panelX + panelW - 18)
+                .style('fill-opacity', 0)
+                .on('end', function end() { d3.select(this).remove(); });
+
+            pane.transition().duration(380).style('opacity', 1);
+        };
+
+        board.transition().delay(160).duration(550).style('opacity', 1);
+        setStep(0);
+
+        const controller = { setStep };
+        this._handshakeTronBoard = controller;
+        return controller;
+    }
+
+    drawHandshakeAuthRitual(parent, opts) {
+        // Kernel Process Theater — one full scene per handshake step (designer reveal).
+        // Replaces the cramped multi-station conduit with a sequential stage.
+        return this.drawHandshakeKernelTheater(parent, opts);
+    }
+
+    drawHandshakeKernelTheater(parent, opts) {
+        const {
+            x, y, w, h,
+            steps = this.getHandshakeStorySteps(),
+            stepDelay = 700,
+            startDelay = 280
+        } = opts;
+
+        const theater = parent.append('g')
+            .attr('class', 'crypto-handshake-theater')
+            .style('opacity', 0);
+
+        // Chassis
+        theater.append('rect')
+            .attr('x', x).attr('y', y)
+            .attr('width', w).attr('height', h)
+            .attr('rx', 8)
+            .style('fill', 'rgba(1, 5, 12, 0.92)')
+            .style('stroke', 'rgba(110, 239, 255, 0.38)')
+            .style('stroke-width', 1.3);
+
+        // Ambient scan lines (subtle atmosphere)
+        const ambience = theater.append('g').style('opacity', 0.12);
+        for (let i = 0; i < 6; i += 1) {
+            ambience.append('line')
+                .attr('x1', x + 16).attr('x2', x + w - 16)
+                .attr('y1', y + 36 + i * ((h - 50) / 6))
+                .attr('y2', y + 36 + i * ((h - 50) / 6))
+                .style('stroke', '#8fdcff')
+                .style('stroke-width', 0.6);
+        }
+
+        // Header
+        theater.append('text')
+            .attr('x', x + 20).attr('y', y + 20)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '10px')
+            .style('letter-spacing', '1.6px')
+            .style('fill', '#8fdcff')
+            .text('KERNEL PROCESS THEATER');
+
+        theater.append('text')
+            .attr('x', x + w - 148).attr('y', y + 20)
+            .attr('text-anchor', 'end')
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '8px')
+            .style('fill', 'rgba(150, 180, 200, 0.55)')
+            .text('click card / rail · ◀ ▶ to browse');
+
+        // Prev / Next controls
+        const mkNav = (label, nx, onClick) => {
+            const btn = theater.append('g')
+                .style('cursor', 'pointer')
+                .on('click', (event) => {
+                    if (event && event.stopPropagation) event.stopPropagation();
+                    onClick();
+                });
+            btn.append('rect')
+                .attr('x', nx).attr('y', y + 8)
+                .attr('width', 28).attr('height', 18).attr('rx', 3)
+                .style('fill', 'rgba(20, 36, 48, 0.9)')
+                .style('stroke', 'rgba(143, 220, 255, 0.45)');
+            btn.append('text')
+                .attr('x', nx + 14).attr('y', y + 20)
+                .attr('text-anchor', 'middle')
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '11px')
+                .style('fill', '#8fdcff')
+                .text(label);
+            return btn;
+        };
+
+        // Progress rail
+        const railY = y + h - 18;
+        const railX0 = x + 56;
+        const railX1 = x + w - 56;
+        theater.append('line')
+            .attr('x1', railX0).attr('x2', railX1)
+            .attr('y1', railY).attr('y2', railY)
+            .style('stroke', 'rgba(90, 120, 150, 0.35)')
+            .style('stroke-width', 1.2);
+        const dots = steps.map((step, i) => {
+            const dx = railX0 + (i / Math.max(1, steps.length - 1)) * (railX1 - railX0);
+            const hit = theater.append('circle')
+                .attr('cx', dx).attr('cy', railY)
+                .attr('r', 10)
+                .style('fill', 'transparent')
+                .style('cursor', 'pointer');
+            const dot = theater.append('circle')
+                .attr('cx', dx).attr('cy', railY)
+                .attr('r', 3.2)
+                .style('fill', 'rgba(60, 80, 100, 0.8)')
+                .style('stroke', step.accent)
+                .style('stroke-width', 1)
+                .style('stroke-opacity', 0.35)
+                .style('pointer-events', 'none');
+            return { dot, hit, dx, step };
+        });
+        const railFill = theater.append('line')
+            .attr('x1', railX0).attr('x2', railX0)
+            .attr('y1', railY).attr('y2', railY)
+            .style('stroke', '#96ffbe')
+            .style('stroke-width', 2)
+            .style('stroke-linecap', 'round')
+            .style('pointer-events', 'none');
+
+        const stepLabel = theater.append('text')
+            .attr('x', (railX0 + railX1) / 2)
+            .attr('y', railY - 10)
+            .attr('text-anchor', 'middle')
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', '8px')
+            .style('fill', 'rgba(180, 200, 220, 0.7)')
+            .text('');
+
+        // Stage viewport (cleared/redrawn per step)
+        const stageRoot = theater.append('g').attr('class', 'hs-theater-stage');
+        const stageX = x + 16;
+        const stageY = y + 32;
+        const stageW = w - 32;
+        const stageH = h - 58;
+
+        const drawSceneGraphic = (g, step, gx, gy, gw, gh) => {
+            const cx = gx + gw * 0.42;
+            const cy = gy + gh * 0.52;
+            const accent = step.accent || '#8fdcff';
+
+            // Soft field
+            g.append('ellipse')
+                .attr('cx', cx).attr('cy', cy)
+                .attr('rx', Math.min(110, gw * 0.42))
+                .attr('ry', Math.min(48, gh * 0.38))
+                .style('fill', accent)
+                .style('fill-opacity', 0.06)
+                .style('stroke', 'none');
+
+            if (step.id === 'hello') {
+                // Offer packets floating toward stack
+                ['X25519', 'AES-GCM', 'SHA-256'].forEach((label, i) => {
+                    const px = gx + 28 + i * 52;
+                    const py = cy - 10 + (i % 2) * 12;
+                    const chip = g.append('g').style('opacity', 0);
+                    chip.append('rect')
+                        .attr('x', px).attr('y', py)
+                        .attr('width', 44).attr('height', 18).attr('rx', 3)
+                        .style('fill', 'rgba(20, 30, 42, 0.9)')
+                        .style('stroke', accent);
+                    chip.append('text')
+                        .attr('x', px + 22).attr('y', py + 12)
+                        .attr('text-anchor', 'middle')
+                        .style('font-family', 'Share Tech Mono, monospace')
+                        .style('font-size', '8px')
+                        .style('fill', accent)
+                        .text(label);
+                    chip.transition().delay(120 + i * 160).duration(400).style('opacity', 1)
+                        .attr('transform', `translate(0, ${-6 + i})`);
+                });
+                // Userspace slab
+                g.append('rect')
+                    .attr('x', gx + 20).attr('y', cy + 28)
+                    .attr('width', gw * 0.7).attr('height', 16).attr('rx', 3)
+                    .style('fill', 'rgba(30, 45, 60, 0.7)')
+                    .style('stroke', 'rgba(169, 212, 232, 0.35)');
+                g.append('text')
+                    .attr('x', gx + 28).attr('y', cy + 39)
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', '8px')
+                    .style('fill', '#a9d4e8')
+                    .text('USERSPACE TLS  ·  kernel idle');
+            } else if (step.id === 'cert') {
+                // Dual rails: SIG vs HASH into verify lens
+                const left = gx + 36;
+                const right = gx + gw * 0.55;
+                [['SIG', '#ff8a6a', cy - 18], ['HASH', '#8fdcff', cy + 10]].forEach(([lab, col, yy], i) => {
+                    g.append('rect')
+                        .attr('x', left).attr('y', yy)
+                        .attr('width', 36).attr('height', 16).attr('rx', 2)
+                        .style('fill', 'rgba(20, 16, 18, 0.9)')
+                        .style('stroke', col);
+                    g.append('text')
+                        .attr('x', left + 18).attr('y', yy + 11)
+                        .attr('text-anchor', 'middle')
+                        .style('font-family', 'Share Tech Mono, monospace')
+                        .style('font-size', '8px')
+                        .style('fill', col)
+                        .text(lab);
+                    const path = g.append('path')
+                        .attr('d', `M ${left + 36} ${yy + 8} L ${right - 8} ${cy}`)
+                        .style('fill', 'none')
+                        .style('stroke', col)
+                        .style('stroke-opacity', 0.35)
+                        .style('stroke-width', 1.4)
+                        .style('stroke-dasharray', '3 4');
+                    try {
+                        const n = path.node();
+                        const len = n.getTotalLength();
+                        const dot = g.append('circle').attr('r', 3).style('fill', col).style('opacity', 0);
+                        const p0 = n.getPointAtLength(0);
+                        dot.attr('cx', p0.x).attr('cy', p0.y)
+                            .transition().delay(200 + i * 180).duration(700)
+                            .style('opacity', 1)
+                            .attrTween('cx', () => (t) => n.getPointAtLength(t * len).x)
+                            .attrTween('cy', () => (t) => n.getPointAtLength(t * len).y);
+                    } catch (_) { /* ignore */ }
+                });
+                g.append('path')
+                    .attr('d', this._hsHexPath(right + 10, cy, 22))
+                    .style('fill', 'rgba(255, 140, 110, 0.08)')
+                    .style('stroke', '#ffb4a2')
+                    .style('stroke-width', 1.6);
+                g.append('text')
+                    .attr('x', right + 10).attr('y', cy + 4)
+                    .attr('text-anchor', 'middle')
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', '9px')
+                    .style('fill', '#96ffbe')
+                    .style('opacity', 0)
+                    .text('TRUST')
+                    .transition().delay(900).duration(400).style('opacity', 1);
+            } else if (step.id === 'x25519') {
+                // Two peer orbs → shared field (KPP)
+                const a = gx + 40;
+                const b = gx + gw * 0.62;
+                [a, b].forEach((px, i) => {
+                    g.append('circle')
+                        .attr('cx', px).attr('cy', cy)
+                        .attr('r', 16)
+                        .style('fill', 'rgba(20, 36, 48, 0.85)')
+                        .style('stroke', accent)
+                        .style('stroke-width', 1.5);
+                    g.append('text')
+                        .attr('x', px).attr('y', cy + 3)
+                        .attr('text-anchor', 'middle')
+                        .style('font-family', 'Share Tech Mono, monospace')
+                        .style('font-size', '8px')
+                        .style('fill', accent)
+                        .text(i === 0 ? 'A' : 'B');
+                });
+                const mid = (a + b) / 2;
+                g.append('path')
+                    .attr('d', `M ${a + 16} ${cy} Q ${mid} ${cy - 36}, ${b - 16} ${cy}`)
+                    .style('fill', 'none')
+                    .style('stroke', accent)
+                    .style('stroke-width', 1.6)
+                    .style('stroke-dasharray', '4 4')
+                    .style('opacity', 0)
+                    .transition().delay(200).duration(600).style('opacity', 0.8);
+                g.append('path')
+                    .attr('d', this._hsHexPath(mid, cy - 8, 14))
+                    .style('fill', 'rgba(143, 220, 255, 0.1)')
+                    .style('stroke', '#8fdcff')
+                    .style('opacity', 0)
+                    .transition().delay(500).duration(500).style('opacity', 1);
+                g.append('text')
+                    .attr('x', mid).attr('y', cy + 36)
+                    .attr('text-anchor', 'middle')
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', '8px')
+                    .style('fill', '#8fdcff')
+                    .text('KPP · curve25519_generic');
+            } else if (step.id === 'secret') {
+                // Raw buffer cells
+                for (let i = 0; i < 8; i += 1) {
+                    const cell = g.append('rect')
+                        .attr('x', gx + 30 + i * 22)
+                        .attr('y', cy - 12)
+                        .attr('width', 18).attr('height', 24).attr('rx', 2)
+                        .style('fill', 'rgba(30, 50, 40, 0.7)')
+                        .style('stroke', accent)
+                        .style('stroke-opacity', 0.3)
+                        .style('opacity', 0);
+                    cell.transition().delay(100 + i * 70).duration(280)
+                        .style('opacity', 1)
+                        .style('stroke-opacity', 0.8);
+                }
+                g.append('text')
+                    .attr('x', gx + 30).attr('y', cy + 36)
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', '8px')
+                    .style('fill', '#96ffbe')
+                    .text('32 raw bytes  ·  not a traffic key yet');
+                // Warning stripe
+                g.append('rect')
+                    .attr('x', gx + 30).attr('y', cy - 28)
+                    .attr('width', 170).attr('height', 10).attr('rx', 2)
+                    .style('fill', 'rgba(230, 193, 90, 0.12)')
+                    .style('stroke', 'rgba(230, 193, 90, 0.4)');
+                g.append('text')
+                    .attr('x', gx + 36).attr('y', cy - 20)
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', '7px')
+                    .style('fill', '#e6c15a')
+                    .text('UNSAFE AS KEY MATERIAL');
+            } else if (step.id === 'hkdf') {
+                // Funnel: secret → extract → expand → secrets
+                const nodes = [
+                    { lab: 'ECDHE', x: gx + 36, c: '#8fdcff' },
+                    { lab: 'Extract', x: gx + 110, c: '#c4b0ff' },
+                    { lab: 'Expand', x: gx + 184, c: '#c4b0ff' },
+                    { lab: 'secrets', x: gx + 258, c: '#e6c15a' }
+                ];
+                nodes.forEach((n, i) => {
+                    const ng = g.append('g').style('opacity', 0);
+                    ng.append('circle')
+                        .attr('cx', n.x).attr('cy', cy)
+                        .attr('r', 18)
+                        .style('fill', 'rgba(18, 22, 34, 0.9)')
+                        .style('stroke', n.c);
+                    ng.append('text')
+                        .attr('x', n.x).attr('y', cy + 3)
+                        .attr('text-anchor', 'middle')
+                        .style('font-family', 'Share Tech Mono, monospace')
+                        .style('font-size', '7px')
+                        .style('fill', n.c)
+                        .text(n.lab);
+                    ng.transition().delay(150 + i * 200).duration(400).style('opacity', 1);
+                    if (i < nodes.length - 1) {
+                        g.append('path')
+                            .attr('d', `M ${n.x + 18} ${cy} L ${nodes[i + 1].x - 18} ${cy}`)
+                            .style('fill', 'none')
+                            .style('stroke', n.c)
+                            .style('stroke-opacity', 0)
+                            .style('stroke-width', 1.5)
+                            .transition().delay(250 + i * 200).duration(350)
+                            .style('stroke-opacity', 0.7);
+                    }
+                });
+                g.append('text')
+                    .attr('x', gx + 36).attr('y', cy + 40)
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', '8px')
+                    .style('fill', '#c4b0ff')
+                    .text('HKDF = bridge ECC → symmetric schedule');
+            } else if (step.id === 'aesgcm') {
+                // AEAD tfm block with key slots lighting
+                g.append('rect')
+                    .attr('x', gx + 40).attr('y', cy - 34)
+                    .attr('width', 200).attr('height', 68).attr('rx', 6)
+                    .style('fill', 'rgba(28, 24, 12, 0.85)')
+                    .style('stroke', accent);
+                g.append('text')
+                    .attr('x', gx + 52).attr('y', cy - 16)
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', '9px')
+                    .style('fill', accent)
+                    .text('struct crypto_aead');
+                ['key', 'iv', 'tag'].forEach((lab, i) => {
+                    const sx = gx + 52 + i * 60;
+                    const slot = g.append('rect')
+                        .attr('x', sx).attr('y', cy)
+                        .attr('width', 48).attr('height', 18).attr('rx', 3)
+                        .style('fill', 'rgba(40, 36, 18, 0.9)')
+                        .style('stroke', accent)
+                        .style('stroke-opacity', 0.25);
+                    g.append('text')
+                        .attr('x', sx + 24).attr('y', cy + 12)
+                        .attr('text-anchor', 'middle')
+                        .style('font-family', 'Share Tech Mono, monospace')
+                        .style('font-size', '8px')
+                        .style('fill', accent)
+                        .text(lab);
+                    slot.transition().delay(200 + i * 220).duration(350)
+                        .style('stroke-opacity', 1)
+                        .style('fill', 'rgba(230, 193, 90, 0.12)');
+                });
+            } else if (step.id === 'ktls') {
+                // Packet through kTLS pipe into AEAD
+                const pipeY = cy;
+                g.append('rect')
+                    .attr('x', gx + 28).attr('y', pipeY - 16)
+                    .attr('width', gw * 0.72).attr('height', 32).attr('rx', 4)
+                    .style('fill', 'rgba(24, 22, 12, 0.75)')
+                    .style('stroke', accent)
+                    .style('stroke-dasharray', '4 3');
+                g.append('text')
+                    .attr('x', gx + 40).attr('y', pipeY - 24)
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', '8px')
+                    .style('fill', accent)
+                    .text('net/tls · tls_sw_sendmsg');
+                const pkt = g.append('rect')
+                    .attr('x', gx + 36).attr('y', pipeY - 8)
+                    .attr('width', 34).attr('height', 16).attr('rx', 2)
+                    .style('fill', 'rgba(230, 193, 90, 0.25)')
+                    .style('stroke', accent);
+                pkt.transition().delay(200).duration(1200).ease(d3.easeCubicInOut)
+                    .attr('x', gx + gw * 0.55);
+                g.append('text')
+                    .attr('x', gx + gw * 0.58).attr('y', pipeY + 36)
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', '8px')
+                    .style('fill', '#e6c15a')
+                    .text('→ crypto_aead_encrypt()');
+            } else {
+                g.append('path')
+                    .attr('d', this._hsHexPath(cx, cy, 26))
+                    .style('fill', 'rgba(143, 220, 255, 0.08)')
+                    .style('stroke', accent);
+            }
+        };
+
+        const showStep = (idx) => {
+            const step = steps[idx];
+            if (!step) return;
+            stageRoot.selectAll('*').remove();
+
+            // Highlight rail
+            dots.forEach((d, i) => {
+                d.dot.transition().duration(280)
+                    .attr('r', i === idx ? 5 : 3.2)
+                    .style('fill', i <= idx ? step.accent : 'rgba(60, 80, 100, 0.8)')
+                    .style('fill-opacity', i === idx ? 0.95 : (i < idx ? 0.55 : 0.8))
+                    .style('stroke-opacity', i === idx ? 1 : 0.35);
+            });
+            const fillX = dots[idx].dx;
+            railFill.transition().duration(400).attr('x2', fillX);
+
+            const g = stageRoot.append('g').style('opacity', 0);
+
+            // Split layout: graphic | copy
+            const split = Math.min(stageW * 0.52, 420);
+            drawSceneGraphic(g, step, stageX, stageY, split - 12, stageH);
+
+            const tx = stageX + split + 8;
+            const tw = stageW - split - 8;
+
+            // Layer badge
+            g.append('rect')
+                .attr('x', tx).attr('y', stageY + 4)
+                .attr('width', Math.min(210, tw)).attr('height', 18).attr('rx', 3)
+                .style('fill', 'rgba(20, 36, 48, 0.85)')
+                .style('stroke', step.accent)
+                .style('stroke-opacity', 0.55);
+            g.append('text')
+                .attr('x', tx + 10).attr('y', stageY + 16)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '9px')
+                .style('letter-spacing', '1px')
+                .style('fill', step.accent)
+                .text(String(step.layer || 'KERNEL'));
+
+            g.append('text')
+                .attr('x', tx).attr('y', stageY + 42)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '16px')
+                .style('letter-spacing', '1.5px')
+                .style('fill', '#e8eef6')
+                .text(String(step.does || ''));
+
+            g.append('text')
+                .attr('x', tx).attr('y', stageY + 60)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '10px')
+                .style('fill', step.accent)
+                .text(String(step.title || ''));
+
+            // Story wrapped roughly
+            const story = String(step.story || '');
+            const max = tw < 280 ? 42 : 54;
+            const words = story.split(/\s+/);
+            const lines = [];
+            let cur = '';
+            words.forEach((word) => {
+                const next = cur ? `${cur} ${word}` : word;
+                if (next.length > max) {
+                    if (cur) lines.push(cur);
+                    cur = word;
+                } else cur = next;
+            });
+            if (cur) lines.push(cur);
+            lines.slice(0, 4).forEach((line, li) => {
+                g.append('text')
+                    .attr('x', tx).attr('y', stageY + 84 + li * 14)
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', '10px')
+                    .style('fill', '#b7c6d6')
+                    .text(line);
+            });
+
+            // Kernel symbol dock
+            const dockY = stageY + stageH - 44;
+            g.append('rect')
+                .attr('x', tx).attr('y', dockY)
+                .attr('width', tw).attr('height', 40).attr('rx', 4)
+                .style('fill', 'rgba(8, 14, 22, 0.92)')
+                .style('stroke', 'rgba(143, 220, 255, 0.28)');
+            g.append('text')
+                .attr('x', tx + 12).attr('y', dockY + 16)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '9px')
+                .style('fill', '#8fdcff')
+                .text(String(step.symbol || step.sym || ''));
+            g.append('text')
+                .attr('x', tx + 12).attr('y', dockY + 32)
+                .style('font-family', 'Share Tech Mono, monospace')
+                .style('font-size', '8px')
+                .style('fill', 'rgba(150, 180, 200, 0.7)')
+                .text(`${step.path || ''}  ·  ${step.ring || ''}`);
+
+            g.transition().duration(420).style('opacity', 1);
+            stepLabel.text(`${idx + 1}/${steps.length}  ·  ${step.does || ''}  ·  ${step.title || ''}`);
+            if (typeof opts.onStep === 'function') opts.onStep(idx, step);
+        };
+
+        let currentIdx = 0;
+        let manual = false;
+        const autoTimers = [];
+        const stopAuto = () => {
+            manual = true;
+            while (autoTimers.length) {
+                clearTimeout(autoTimers.pop());
+            }
+        };
+        const goTo = (idx, fromUser = false) => {
+            if (fromUser) stopAuto();
+            const next = Math.max(0, Math.min(steps.length - 1, idx));
+            currentIdx = next;
+            if (!theater.node() || !theater.node().isConnected) return;
+            showStep(currentIdx);
+        };
+        const next = () => goTo(currentIdx + 1, true);
+        const prev = () => goTo(currentIdx - 1, true);
+
+        mkNav('◀', x + w - 72, prev);
+        mkNav('▶', x + w - 40, next);
+
+        dots.forEach((d, i) => {
+            d.hit.on('click', (event) => {
+                if (event && event.stopPropagation) event.stopPropagation();
+                goTo(i, true);
+            });
+        });
+
+        // Keyboard when handshake view is active
+        const onKey = (event) => {
+            if (this.activeCryptoView !== 'HANDSHAKE') return;
+            if (event.key === 'ArrowRight' || event.key === ']') {
+                event.preventDefault();
+                next();
+            } else if (event.key === 'ArrowLeft' || event.key === '[') {
+                event.preventDefault();
+                prev();
+            }
+        };
+        // Replace previous handshake key handler if any
+        if (this._handshakeKeyHandler) {
+            window.removeEventListener('keydown', this._handshakeKeyHandler);
+        }
+        this._handshakeKeyHandler = onKey;
+        window.addEventListener('keydown', onKey);
+
+        theater.transition().delay(80).duration(500).style('opacity', 1);
+
+        // Intro autoplay once; stops on first manual navigation
+        steps.forEach((_, idx) => {
+            const t = startDelay + idx * stepDelay;
+            autoTimers.push(setTimeout(() => {
+                if (manual) return;
+                if (!theater.node() || !theater.node().isConnected) return;
+                goTo(idx, false);
+            }, t));
+        });
+
+        const controller = { goTo, next, prev, stopAuto, get index() { return currentIdx; } };
+        this._handshakeTheater = controller;
+        return controller;
     }
 
     drawHandshakeStoryView(layer, payload, width, height) {
         const g = layer.append('g').attr('class', 'crypto-handshake-story');
         const steps = this.getHandshakeStorySteps();
-        const marginX = 36;
-        const top = 118;
-        const cardH = Math.min(168, Math.max(140, height * 0.22));
-        const gap = 14;
+        const marginX = 28;
+        const top = 96;
+        // Theater keeps full stage height; GRID expands into remaining bottom space.
+        const cardH = Math.min(88, Math.max(72, height * 0.095));
+        const theaterH = Math.min(220, Math.max(188, height * 0.24));
+        const gap = steps.length >= 7 ? 8 : 12;
         const usableW = width - marginX * 2;
-        const cardW = Math.min(190, Math.max(118, (usableW - gap * (steps.length - 1)) / steps.length));
+        const cardW = Math.min(168, Math.max(100, (usableW - gap * (steps.length - 1)) / steps.length));
         const totalW = steps.length * cardW + (steps.length - 1) * gap;
         const startX = marginX + Math.max(0, (usableW - totalW) / 2);
-        const cardY = top + 36;
+        const cardY = top + 30;
+        const theaterY = cardY + cardH + 10;
+        const bottomReserve = 48; // CTA + footer
+        const tronY = theaterY + theaterH + 10;
+        const tronH = Math.max(200, height - tronY - bottomReserve);
 
         g.append('rect')
             .attr('x', marginX - 8)
-            .attr('y', top - 20)
+            .attr('y', top - 18)
             .attr('width', width - marginX * 2 + 16)
-            .attr('height', cardH + 120)
+            .attr('height', Math.max(cardH + theaterH + tronH + 60, height - top - 8))
             .attr('rx', 10)
-            .style('fill', 'rgba(6, 10, 16, 0.35)')
-            .style('stroke', 'rgba(120, 140, 170, 0.22)');
+            .style('fill', 'rgba(2, 6, 12, 0.42)')
+            .style('stroke', 'rgba(110, 239, 255, 0.22)');
 
         g.append('text')
             .attr('x', marginX)
             .attr('y', top)
             .style('font-family', 'Share Tech Mono, monospace')
             .style('font-size', '11px')
-            .style('letter-spacing', '1px')
-            .style('fill', '#96ffbe')
-            .text('ECC BRIDGE → SYMMETRIC KEYS');
+            .style('letter-spacing', '1.6px')
+            .style('fill', '#6EEFFF')
+            .text('HANDSHAKE → KERNEL CRYPTO PATH');
 
         g.append('text')
             .attr('x', marginX)
-            .attr('y', top + 18)
+            .attr('y', top + 14)
             .style('font-family', 'Share Tech Mono, monospace')
-            .style('font-size', '10px')
+            .style('font-size', '9px')
             .style('fill', '#7f93a6')
-            .text('X25519 agrees on a secret · HKDF turns it into AES-GCM keys · records never use the curve');
+            .text('cards / theater / GRID board  ·  ◀ ▶ or ← →  ·  autoplay stops on first click');
 
         // Connector line behind cards
         const lineY = cardY + cardH / 2;
         g.append('path')
             .attr('d', `M ${startX + cardW / 2} ${lineY} L ${startX + totalW - cardW / 2} ${lineY}`)
             .style('fill', 'none')
-            .style('stroke', 'rgba(150, 255, 190, 0.28)')
+            .style('stroke', 'rgba(150, 255, 190, 0.22)')
             .style('stroke-width', 2)
             .style('stroke-dasharray', '4 6');
+
+        const cardNodes = [];
+        const paintCardSelection = (activeIdx) => {
+            cardNodes.forEach(({ rect, step }, i) => {
+                const on = i === activeIdx;
+                rect
+                    .style('stroke-opacity', on ? 1 : (step.id === 'cert' ? 0.9 : 0.55))
+                    .style('stroke-width', on ? 2.2 : (step.id === 'cert' ? 1.8 : 1))
+                    .style('fill', on
+                        ? 'rgba(18, 28, 40, 0.96)'
+                        : (step.id === 'cert' ? 'rgba(28, 16, 14, 0.94)' : 'rgba(10, 14, 20, 0.92)'));
+            });
+        };
 
         steps.forEach((step, idx) => {
             const x = startX + idx * (cardW + gap);
             const node = g.append('g')
-                .attr('class', 'crypto-handshake-step')
-                .style('opacity', 0);
+                .attr('class', `crypto-handshake-step${step.id === 'cert' ? ' is-cert' : ''}`)
+                .style('opacity', 0)
+                .style('cursor', 'pointer');
 
-            node.append('rect')
+            const cardFill = step.id === 'cert'
+                ? 'rgba(28, 16, 14, 0.94)'
+                : 'rgba(10, 14, 20, 0.92)';
+
+            const rect = node.append('rect')
                 .attr('x', x)
                 .attr('y', cardY)
                 .attr('width', cardW)
                 .attr('height', cardH)
                 .attr('rx', 8)
-                .style('fill', 'rgba(10, 14, 20, 0.92)')
+                .style('fill', cardFill)
                 .style('stroke', step.accent)
-                .style('stroke-opacity', 0.65);
+                .style('stroke-opacity', step.id === 'cert' ? 0.9 : 0.65)
+                .style('stroke-width', step.id === 'cert' ? 1.8 : 1);
+            cardNodes.push({ rect, step, node });
 
             node.append('circle')
                 .attr('cx', x + cardW / 2)
                 .attr('cy', cardY - 2)
-                .attr('r', 4)
+                .attr('r', step.id === 'cert' ? 5 : 4)
                 .style('fill', step.accent);
 
+            // Sci-fi identity badge on cert card
+            if (step.id === 'cert') {
+                const sx = x + cardW - 16;
+                const sy = cardY + 16;
+                node.append('path')
+                    .attr('d', this._hsHexPath(sx, sy, 8))
+                    .style('fill', 'rgba(255, 120, 90, 0.14)')
+                    .style('stroke', '#ff8a6a')
+                    .style('stroke-width', 1.2);
+                node.append('circle')
+                    .attr('cx', sx)
+                    .attr('cy', sy)
+                    .attr('r', 2.2)
+                    .style('fill', '#8fdcff');
+            }
+
             node.append('text')
-                .attr('x', x + 12)
-                .attr('y', cardY + 22)
+                .attr('x', x + 10)
+                .attr('y', cardY + 15)
                 .style('font-family', 'Share Tech Mono, monospace')
-                .style('font-size', '9px')
-                .style('letter-spacing', '0.5px')
+                .style('font-size', cardW < 120 ? '8px' : '9px')
+                .style('letter-spacing', '0.4px')
                 .style('fill', step.accent)
                 .text(step.title);
 
-            const bodyLines = String(step.body || '').split('\n');
+            // What this step does (verb)
+            if (step.does) {
+                node.append('text')
+                    .attr('x', x + 10)
+                    .attr('y', cardY + 28)
+                    .style('font-family', 'Share Tech Mono, monospace')
+                    .style('font-size', '8px')
+                    .style('letter-spacing', '1.1px')
+                    .style('fill', 'rgba(230, 236, 245, 0.88)')
+                    .text(String(step.does));
+            }
+
+            // Compact body — full story lives in the Tron GRID board below.
+            const bodyLines = String(step.body || '').split('\n').slice(0, 2);
+            const maxChars = cardW < 120 ? 22 : (cardW < 140 ? 26 : 30);
             bodyLines.forEach((line, li) => {
                 node.append('text')
-                    .attr('x', x + 12)
-                    .attr('y', cardY + 48 + li * 14)
+                    .attr('x', x + 10)
+                    .attr('y', cardY + 44 + li * 11)
                     .style('font-family', 'Share Tech Mono, monospace')
-                    .style('font-size', cardW < 140 ? '9px' : '10px')
-                    .style('fill', '#d7e3f0')
-                    .text(line.length > 28 ? `${line.slice(0, 27)}…` : line);
+                    .style('font-size', '8px')
+                    .style('fill', '#b8c6d6')
+                    .text(line.length > maxChars ? `${line.slice(0, maxChars - 1)}…` : line);
             });
 
             node.append('text')
-                .attr('x', x + 12)
-                .attr('y', cardY + cardH - 28)
+                .attr('x', x + 10)
+                .attr('y', cardY + cardH - 10)
                 .style('font-family', 'Share Tech Mono, monospace')
-                .style('font-size', '9px')
-                .style('fill', '#a9d4e8')
-                .text(String(step.sym).length > 26 ? `${String(step.sym).slice(0, 25)}…` : step.sym);
-
-            node.append('text')
-                .attr('x', x + 12)
-                .attr('y', cardY + cardH - 12)
-                .style('font-family', 'Share Tech Mono, monospace')
-                .style('font-size', '8px')
+                .style('font-size', '7px')
                 .style('fill', '#6f8597')
-                .text(step.kernel);
+                .text(String(step.kernel || '').length > 24
+                    ? `${String(step.kernel).slice(0, 23)}…`
+                    : step.kernel);
 
+            // Slow cascade so each card is readable (~0.7s apart).
             node.transition()
-                .delay(80 + idx * 120)
-                .duration(360)
+                .delay(280 + idx * 700)
+                .duration(650)
                 .style('opacity', 1);
+
+            node.on('click', (event) => {
+                if (event && event.stopPropagation) event.stopPropagation();
+                if (this._handshakeTheater && typeof this._handshakeTheater.goTo === 'function') {
+                    this._handshakeTheater.goTo(idx, true);
+                }
+                paintCardSelection(idx);
+            });
 
             if (idx < steps.length - 1) {
                 const ax = x + cardW + 2;
@@ -6305,26 +7850,38 @@ class CryptoSubsystemVisualization {
             }
         });
 
-        // Bridge callouts
-        const callY = cardY + cardH + 28;
-        g.append('text')
-            .attr('x', marginX)
-            .attr('y', callY)
-            .style('font-family', 'Share Tech Mono, monospace')
-            .style('font-size', '11px')
-            .style('fill', '#8fdcff')
-            .text('left half = key agreement (ECC)   ·   right half = record protection (AES-GCM)');
+        const tronBoard = this.drawHandshakeTronBoard(g, {
+            x: marginX,
+            y: tronY,
+            w: usableW,
+            h: tronH,
+            steps,
+            onSelect: (idx) => {
+                if (this._handshakeTheater && typeof this._handshakeTheater.goTo === 'function') {
+                    this._handshakeTheater.goTo(idx, true);
+                }
+                paintCardSelection(idx);
+            }
+        });
 
-        g.append('text')
-            .attr('x', marginX)
-            .attr('y', callY + 20)
-            .style('font-family', 'Share Tech Mono, monospace')
-            .style('font-size', '10px')
-            .style('fill', '#7f93a6')
-            .text('WireGuard tells a related story with Noise + ChaCha20-Poly1305 instead of HKDF + AES-GCM');
+        this.drawHandshakeKernelTheater(g, {
+            x: marginX,
+            y: theaterY,
+            w: usableW,
+            h: theaterH,
+            steps,
+            stepDelay: 700,
+            startDelay: 280,
+            onStep: (idx) => {
+                paintCardSelection(idx);
+                if (tronBoard && typeof tronBoard.setStep === 'function') {
+                    tronBoard.setStep(idx);
+                }
+            }
+        });
 
-        // CTA chips
-        const ctaY = Math.min(height - 48, callY + 48);
+        // CTA chips under Tron board (bottom edge)
+        const ctaY = Math.min(height - 36, tronY + tronH + 8);
         const makeCta = (label, x, fill, stroke, onClick) => {
             const cta = g.append('g').style('cursor', 'pointer').on('click', onClick);
             cta.append('rect')
@@ -6346,12 +7903,14 @@ class CryptoSubsystemVisualization {
                 .text(label);
         };
         makeCta('→ CURVE25519', marginX, 'rgba(143,220,255,0.10)', '#8fdcff', () => {
+            this.handshakeRendered = false;
             this.activeCryptoView = 'ARCHITECTURE';
             this.updateCryptoViewToggle();
             this.syncOverlayForCurrentView();
             this.openArchMorph({ layer: 'primitives', id: 'curve25519', label: 'Curve25519', hint: 'X25519 key exchange' });
         });
         makeCta('→ AES LAB', marginX + 166, 'rgba(230,193,90,0.10)', '#e6c15a', () => {
+            this.handshakeRendered = false;
             this.selectedCompetitionAlgorithm = 'AES';
             this.activeCryptoView = 'LINEAR_ANALYSIS';
             this.updateCryptoViewToggle();
@@ -6359,24 +7918,32 @@ class CryptoSubsystemVisualization {
             this.renderFlowMap(this.lastPayload || this.normalizeTelemetry(this.getFallbackTelemetry()));
         });
         makeCta('→ ARCHITECTURE', marginX + 332, 'rgba(169,212,232,0.10)', '#a9d4e8', () => {
+            this.handshakeRendered = false;
             this.activeCryptoView = 'ARCHITECTURE';
             this.updateCryptoViewToggle();
             this.syncOverlayForCurrentView();
             this.renderFlowMap(this.lastPayload || this.normalizeTelemetry(this.getFallbackTelemetry()));
         });
 
-        // Ghost cycle: agreement → derive → encrypt
-        const ghosts = ['curve25519_generic()', 'hkdf_expand_label()', 'crypto_aead_encrypt()'];
-        const ghostIdx = Math.floor(Date.now() / 1700) % ghosts.length;
+        // Ghost cycle: auth → agreement → derive → encrypt
+        const ghosts = [
+            'x509_verify_cert()',
+            'curve25519_generic()',
+            'hkdf_expand_label()',
+            'crypto_aead_encrypt()'
+        ];
+        const ghostIdx = Math.floor(Date.now() / 3200) % ghosts.length;
         this.flashArchGhost(ghosts[ghostIdx]);
 
         g.append('text')
             .attr('x', marginX)
-            .attr('y', height - 18)
+            .attr('y', height - 14)
             .style('font-family', 'Share Tech Mono, monospace')
             .style('font-size', '9px')
             .style('fill', '#6f8597')
             .text('handshake story · educational TLS 1.3 path · not a live packet decoder');
+
+        this.handshakeRendered = true;
     }
 
     getArchitectureModel(payload) {
@@ -6946,6 +8513,12 @@ class CryptoSubsystemVisualization {
             if (selected && this.svg) {
                 this.svg.select('.scheme-selected-driver').text(`live: ${selected}`);
             }
+            return;
+        }
+
+        // HANDSHAKE step cascade must not restart on every telemetry tick.
+        if (this.activeCryptoView === 'HANDSHAKE' && this.handshakeRendered) {
+            this.lastPayload = normalized;
             return;
         }
 
