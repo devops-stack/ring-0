@@ -62,13 +62,33 @@ def test_detector_privesc_rule():
         max_emit_per_tick=8,
     )
     # Pre-seed lineage so the edge is already normal.
-    det.lineage.load_counts([("bash", "sudo", 10)])
-    s = _sample(pid=7, comm="sudo", parent_comm="bash", ruid=1000, euid=0, age_sec=30.0)
+    det.lineage.load_counts([("bash", "evil-root", 10)])
+    s = _sample(pid=7, comm="evil-root", parent_comm="bash", ruid=1000, euid=0, age_sec=30.0)
     out = det.score([s], now=50.0)
     assert any(a["type"] == "proc_anomaly:euid_root" for a in out)
 
 
-def test_stage5_default_off():
-    from kernel_ai.ml.config import MLConfig
+def test_detector_privesc_allowlist_skips_sudo():
+    det = ProcBaselineDetector(
+        alpha=0.1,
+        warmup_samples=100,
+        z_warn=4.0,
+        z_crit=7.0,
+        lineage_min_count=1,
+        cooldown_sec=0.0,
+        max_emit_per_tick=8,
+    )
+    det.lineage.load_counts([("bash", "sudo", 10)])
+    s = _sample(pid=8, comm="sudo", parent_comm="bash", ruid=1000, euid=0, age_sec=30.0)
+    out = det.score([s], now=50.0)
+    assert not any(a["type"] == "proc_anomaly:euid_root" for a in out)
 
-    assert MLConfig().enable_stage5 is False
+
+def test_stage5_default_off(monkeypatch):
+    monkeypatch.delenv("KERNEL_AI_ML_STAGE5", raising=False)
+    import importlib
+
+    import kernel_ai.ml.config as cfg_mod
+
+    importlib.reload(cfg_mod)
+    assert cfg_mod.MLConfig().enable_stage5 is False

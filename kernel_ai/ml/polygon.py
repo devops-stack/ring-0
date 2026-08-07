@@ -105,7 +105,8 @@ def _synthetic_samples(scenario: str) -> list[ProcSample]:
     if scenario == "scanner":
         return [_sample(pid=9104, comm="nmap", parent_comm="bash", age_sec=5.0)]
     if scenario == "privesc":
-        return [_sample(pid=9105, comm="sudo", parent_comm="bash", ruid=1000, euid=0, age_sec=20.0)]
+        # Non-allowlisted setuid-shaped binary (sudo/fusermount are suppressed).
+        return [_sample(pid=9105, comm="evil-root", parent_comm="bash", ruid=1000, euid=0, age_sec=20.0)]
     if scenario == "lineage_shell":
         return [_sample(pid=9106, comm="sleep", parent_comm="bash", age_sec=4.0)]
     raise KeyError(scenario)
