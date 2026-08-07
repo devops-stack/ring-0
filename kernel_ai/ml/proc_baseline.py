@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 from kernel_ai.ml.baseline import EwmaBaseline
 from kernel_ai.ml.proc_features import PROC_MIN_STD, PROC_POSITION, PROC_SUBSYSTEM, ProcSample
+
+# Common setuid helpers: euid=0 with ruid≠0 is normal, not an attack signal.
+_DEFAULT_PRIVESC_ALLOW = (
+    "sudo,su,fusermount,fusermount3,pkexec,passwd,chage,newgrp,sg,mount,umount"
+)
+
+
+def _privesc_allowlist() -> frozenset[str]:
+    raw = os.getenv("KERNEL_AI_ML_PROC_PRIVESC_ALLOW", _DEFAULT_PRIVESC_ALLOW)
+    return frozenset(x.strip() for x in raw.split(",") if x.strip())
 
 
 @dataclass
@@ -66,6 +77,7 @@ class ProcBaselineDetector:
         self.lineage = LineageWhitelist(min_count=lineage_min_count)
         self._last_emit: dict[str, float] = {}
         self._seen_pids: set[int] = set()
+        self._privesc_allow = _privesc_allowlist()
 
     def _cooldown_ok(self, key: str, now: float) -> bool:
         last = self._last_emit.get(key, 0.0)
@@ -133,9 +145,11 @@ class ProcBaselineDetector:
             if len(out) >= self.max_emit:
                 return out
 
-        # --- euid root / ruid non-root ---
+        # --- euid root / ruid non-root (skip known setuid helpers) ---
         for sample in samples:
             if not (sample.euid == 0 and sample.ruid != 0):
+                continue
+            if sample.comm in self._privesc_allow:
                 continue
             ckey = f"privesc:{sample.comm}"
             if not self._cooldown_ok(ckey, now):

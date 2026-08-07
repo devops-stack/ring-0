@@ -29,6 +29,9 @@ _PAGE_ROUTES = [
     ("/linux-devices-subsystem", "linux_devices_subsystem_page", h.linux_devices_subsystem_page),
     ("/devices", "devices_page_legacy", h.devices_page_legacy),
     ("/linux-devices-subsystem.html", "linux_devices_subsystem_html", h.linux_devices_subsystem_html),
+    ("/linux-ebpf-subsystem", "linux_ebpf_subsystem_page", h.linux_ebpf_subsystem_page),
+    ("/ebpf", "ebpf_page_legacy", h.ebpf_page_legacy),
+    ("/linux-ebpf-subsystem.html", "linux_ebpf_subsystem_html", h.linux_ebpf_subsystem_html),
     ("/health", "health_check", h.health_check),
 ]
 
