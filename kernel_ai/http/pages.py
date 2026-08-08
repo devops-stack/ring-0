@@ -108,6 +108,30 @@ def linux_devices_subsystem_html():
     return redirect("/linux-devices-subsystem", code=301)
 
 
+def linux_ebpf_subsystem_page():
+    return render_template("linux-ebpf-subsystem.html")
+
+
+def ebpf_page_legacy():
+    return redirect("/linux-ebpf-subsystem", code=301)
+
+
+def linux_ebpf_subsystem_html():
+    return redirect("/linux-ebpf-subsystem", code=301)
+
+
+def linux_ebpf_cyberlab_page():
+    return render_template("linux-ebpf-cyberlab.html")
+
+
+def ebpf_lab_page_legacy():
+    return redirect("/linux-ebpf-cyberlab", code=301)
+
+
+def linux_ebpf_cyberlab_html():
+    return redirect("/linux-ebpf-cyberlab", code=301)
+
+
 def health_check():
     return jsonify(
         {

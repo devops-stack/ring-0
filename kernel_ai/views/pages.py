@@ -32,6 +32,9 @@ _PAGE_ROUTES = [
     ("/linux-ebpf-subsystem", "linux_ebpf_subsystem_page", h.linux_ebpf_subsystem_page),
     ("/ebpf", "ebpf_page_legacy", h.ebpf_page_legacy),
     ("/linux-ebpf-subsystem.html", "linux_ebpf_subsystem_html", h.linux_ebpf_subsystem_html),
+    ("/linux-ebpf-cyberlab", "linux_ebpf_cyberlab_page", h.linux_ebpf_cyberlab_page),
+    ("/ebpf-lab", "ebpf_lab_page_legacy", h.ebpf_lab_page_legacy),
+    ("/linux-ebpf-cyberlab.html", "linux_ebpf_cyberlab_html", h.linux_ebpf_cyberlab_html),
     ("/health", "health_check", h.health_check),
 ]
 
