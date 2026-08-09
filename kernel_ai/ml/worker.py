@@ -92,8 +92,15 @@ def _build_isoforest_anomaly(score: float, scores: dict[str, Score], cfg: MLConf
     }
 
 
-def _build_sequence_anomaly(mismatch: float, misses: int, window_len: int,
-                            top_unseen: list[str], cfg: MLConfig) -> dict:
+def _build_sequence_anomaly(
+    mismatch: float,
+    misses: int,
+    window_len: int,
+    top_unseen: list[str],
+    cfg: MLConfig,
+    *,
+    pid: int | None = None,
+) -> dict:
     """Build a mutation from a STIDE syscall-sequence verdict (Stage 4).
 
     Unlike Stages 1-2 (which judge *magnitudes*), this fires when the recent
@@ -102,6 +109,10 @@ def _build_sequence_anomaly(mismatch: float, misses: int, window_len: int,
     """
     severity = "high" if mismatch >= cfg.seq_mismatch_crit else "medium"
     cause = ("; novel: " + ", ".join(top_unseen)) if top_unseen else ""
+    pid_bit = f" pid={pid}" if pid is not None else ""
+    meta = {"stage": 4, "mismatch": round(mismatch, 4), "window": window_len}
+    if pid is not None:
+        meta["pid"] = int(pid)
     return {
         "source": "stage4_sequence",
         "feature": "syscall_seq",
@@ -114,10 +125,10 @@ def _build_sequence_anomaly(mismatch: float, misses: int, window_len: int,
         "baseline_std": None,
         "position": 0.22,
         "message": (
-            f"Unusual syscall sequencing: {mismatch * 100:.0f}% of recent "
+            f"Unusual syscall sequencing{pid_bit}: {mismatch * 100:.0f}% of recent "
             f"{window_len} n-grams are novel ({misses} unseen){cause}"
         ),
-        "meta": {"stage": 4, "mismatch": round(mismatch, 4), "window": window_len},
+        "meta": meta,
     }
 
 
@@ -282,17 +293,33 @@ class MLWorker:
 
         if self.seq_model is None:
             return None
-        window = self.seq_tracker.recent()
-        if len(window) < self.cfg.seq_min_window:
+
+        # Prefer per-pid windows (classic STIDE): high-volume connect/setuid
+        # spam from one process must not dilute a hostile chain on another.
+        best: tuple[float, int, list[str], int | None] | None = None
+        for pid, window in self.seq_tracker.recent_by_pid(
+            min_len=self.cfg.seq_pid_min_window
+        ):
+            mismatch, misses = self.seq_model.score_window(window)
+            if best is None or mismatch > best[0]:
+                best = (mismatch, misses, window, pid)
+        if best is None:
+            window = self.seq_tracker.recent()
+            if len(window) >= self.cfg.seq_min_window:
+                mismatch, misses = self.seq_model.score_window(window)
+                best = (mismatch, misses, window, None)
+        if best is None:
             return None
-        mismatch, misses = self.seq_model.score_window(window)
+        mismatch, misses, window, pid = best
         if mismatch < self.cfg.seq_mismatch_warn:
             return None
         if (now - self._last_seq_emit) < self.cfg.seq_cooldown_sec:
             return None
         self._last_seq_emit = now
         top = self.seq_model.top_unseen(window, limit=3)
-        return _build_sequence_anomaly(mismatch, misses, len(window), top, self.cfg)
+        return _build_sequence_anomaly(
+            mismatch, misses, len(window), top, self.cfg, pid=pid
+        )
 
     def _tick_stage8(self) -> dict | None:
         """Stage 8 stub: score the Stage 4 rolling window if a model is ready."""

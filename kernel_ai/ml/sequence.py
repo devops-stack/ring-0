@@ -80,10 +80,17 @@ class NgramTracker:
         self.window = window
         self.max_pids = max_pids
         self._hist: dict[int, deque[str]] = {}
-        # Rolling window of recent n-gram keys used for live scoring.
+        # Global rolling window (profile growth / Stage 8 / fallback scoring).
         self._recent: deque[str] = deque(maxlen=window)
+        # Per-pid rolling windows — STIDE scores these so connect-spam from one
+        # daemon cannot dilute a hostile short chain on another pid.
+        self._recent_by_pid: dict[int, deque[str]] = {}
         # Counts of every n-gram observed since the last flush (profile growth).
         self._pending: dict[str, int] = {}
+
+    def _drop_pid(self, pid: int) -> None:
+        self._hist.pop(pid, None)
+        self._recent_by_pid.pop(pid, None)
 
     def _append(self, pid: int, name: str) -> None:
         hist = self._hist.get(pid)
@@ -95,12 +102,17 @@ class NgramTracker:
             key = _SEP.join(hist)
             self._recent.append(key)
             self._pending[key] = self._pending.get(key, 0) + 1
+            pid_win = self._recent_by_pid.get(pid)
+            if pid_win is None:
+                pid_win = deque(maxlen=self.window)
+                self._recent_by_pid[pid] = pid_win
+            pid_win.append(key)
 
     def update(self, samples: dict[int, str]) -> None:
         # Drop histories for pids that vanished to bound memory.
         if len(self._hist) > self.max_pids:
             for dead in [p for p in self._hist if p not in samples]:
-                self._hist.pop(dead, None)
+                self._drop_pid(dead)
 
         for pid, name in samples.items():
             self._append(int(pid), str(name))
@@ -122,11 +134,20 @@ class NgramTracker:
                 # Bound memory: drop oldest pid histories opportunistically.
                 overflow = len(self._hist) - self.max_pids
                 for dead in list(self._hist.keys())[:overflow]:
-                    self._hist.pop(dead, None)
+                    self._drop_pid(dead)
         return n
 
     def recent(self) -> list[str]:
         return list(self._recent)
+
+    def recent_by_pid(self, *, min_len: int) -> list[tuple[int, list[str]]]:
+        """Return ``(pid, ngram_window)`` for pids with enough recent n-grams."""
+        need = max(1, int(min_len))
+        out: list[tuple[int, list[str]]] = []
+        for pid, dq in self._recent_by_pid.items():
+            if len(dq) >= need:
+                out.append((pid, list(dq)))
+        return out
 
     def drain_pending(self) -> dict[str, int]:
         """Return + clear n-gram counts accumulated since the last drain."""

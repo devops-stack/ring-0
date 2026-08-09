@@ -135,7 +135,9 @@ class MLConfig:
     seq_n: int = _env_int("KERNEL_AI_ML_SEQ_N", 3)                  # n-gram size
     seq_max_pids: int = _env_int("KERNEL_AI_ML_SEQ_MAX_PIDS", 512)  # pids sampled/tick
     seq_window: int = _env_int("KERNEL_AI_ML_SEQ_WINDOW", 400)      # rolling n-grams scored
-    seq_min_window: int = _env_int("KERNEL_AI_ML_SEQ_MIN_WINDOW", 120)  # before scoring
+    seq_min_window: int = _env_int("KERNEL_AI_ML_SEQ_MIN_WINDOW", 120)  # global fallback
+    # Per-pid STIDE window (avoids dilution by high-volume connect/setuid spam).
+    seq_pid_min_window: int = _env_int("KERNEL_AI_ML_SEQ_PID_MIN_WINDOW", 24)
     # 2s tick sampling only catches processes *parked* in a syscall. A short burst
     # of sub-samples per tick captures real syscall transitions (better sequences).
     seq_subsamples: int = _env_int("KERNEL_AI_ML_SEQ_SUBSAMPLES", 4)
