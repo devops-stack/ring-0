@@ -322,16 +322,16 @@ class MLWorker:
         )
 
     def _tick_stage8(self) -> dict | None:
-        """Stage 8 stub: score the Stage 4 rolling window if a model is ready."""
+        """Stage 8: score reconstructed syscall tokens if a Markov model is ready."""
         if self.deep_scorer is None or self.seq_tracker is None:
             return None
         self.deep_scorer.maybe_reload()
         if not self.deep_scorer.ready:
             return None
-        window = self.seq_tracker.recent()
-        if len(window) < max(8, self.cfg.stage8_window // 4):
+        tokens = self.seq_tracker.recent_tokens()
+        if len(tokens) < max(8, self.cfg.stage8_window // 4):
             return None
-        tokens = window[-self.cfg.stage8_window :]
+        tokens = tokens[-self.cfg.stage8_window :]
         score = self.deep_scorer.score_tokens(tokens)
         if not score:
             return None

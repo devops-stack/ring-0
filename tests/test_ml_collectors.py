@@ -19,6 +19,19 @@ def test_resolve_syscall_nr_arch_collision():
     assert resolve_syscall_name(117, AUDIT_ARCH_AARCH64) == "ptrace"
 
 
+def test_ngrams_to_tokens_stitches_overlap():
+    from kernel_ai.ml.sequence import ngrams_to_tokens
+
+    keys = ["clone|openat|execve", "openat|execve|connect", "execve|connect|setuid"]
+    assert ngrams_to_tokens(keys, n=3) == [
+        "clone",
+        "openat",
+        "execve",
+        "connect",
+        "setuid",
+    ]
+
+
 def test_encode_decode_roundtrip():
     events = [
         SyscallEvent(ts=1.0, pid=10, uid=0, comm="bash", syscall="clone"),
