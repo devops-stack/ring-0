@@ -140,6 +140,14 @@ class NgramTracker:
     def recent(self) -> list[str]:
         return list(self._recent)
 
+    def recent_tokens(self) -> list[str]:
+        """Reconstruct overlapping syscall tokens from the rolling n-gram window.
+
+        Stage 8 Markov trains on syscall names (from expanded n-grams); scoring
+        must use the same alphabet, not the ``a|b|c`` keys STIDE stores.
+        """
+        return ngrams_to_tokens(self.recent(), n=self.n)
+
     def recent_by_pid(self, *, min_len: int) -> list[tuple[int, list[str]]]:
         """Return ``(pid, ngram_window)`` for pids with enough recent n-grams."""
         need = max(1, int(min_len))
@@ -154,6 +162,27 @@ class NgramTracker:
         pending = self._pending
         self._pending = {}
         return pending
+
+
+def ngrams_to_tokens(ngrams: list[str], *, n: int = 3) -> list[str]:
+    """Stitch sliding n-gram keys back into a syscall token stream."""
+    if not ngrams:
+        return []
+    first = [t for t in str(ngrams[0]).split(_SEP) if t]
+    if not first:
+        return []
+    out = list(first)
+    width = max(2, int(n))
+    for key in ngrams[1:]:
+        parts = [t for t in str(key).split(_SEP) if t]
+        if not parts:
+            continue
+        # Overlapping slide: keep only the new trailing token when width matches.
+        if len(parts) == width and len(out) >= width - 1 and out[-(width - 1) :] == parts[:-1]:
+            out.append(parts[-1])
+        else:
+            out.extend(parts)
+    return out
 
 
 @dataclass
