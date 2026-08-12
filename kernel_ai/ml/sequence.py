@@ -26,7 +26,7 @@ import os
 from collections import deque
 from dataclasses import dataclass, field
 
-from kernel_ai.services.kernel_maps import SYSCALL_NAMES
+from kernel_ai.services.kernel_maps import get_syscall_names
 
 logger = logging.getLogger("kernel_ai.ml.sequence")
 
@@ -63,7 +63,7 @@ class SyscallSampler:
                 continue
             if num < 0:
                 continue
-            out[int(pid)] = SYSCALL_NAMES.get(num, f"sys_{num}")
+            out[int(pid)] = get_syscall_names().get(num, f"sys_{num}")
         return out
 
 

@@ -41,10 +41,12 @@ class SecurityRealtimeResponse(TypedDict):
 
 class FilesystemBlocksResponse(TypedDict):
     timestamp: str
-    rows: int
-    cols: int
-    zones: list
-    blocks: list
+    mounts: list
+    devices: list
+    writepath: dict
+    writeback: dict
+    # None when no real block device exposes a scheduler (containers, ram-only).
+    io_scheduler: dict | None
     meta: dict
 
 
@@ -151,11 +153,20 @@ def validate_security_realtime_response(payload: Any) -> None:
 def validate_filesystem_blocks_response(payload: Any) -> None:
     data = _expect_dict(payload, "filesystem_blocks")
     _expect_key(data, "timestamp", str, "filesystem_blocks")
-    _expect_key(data, "rows", int, "filesystem_blocks")
-    _expect_key(data, "cols", int, "filesystem_blocks")
-    _expect_key(data, "zones", list, "filesystem_blocks")
-    _expect_key(data, "blocks", list, "filesystem_blocks")
+    _expect_key(data, "mounts", list, "filesystem_blocks")
+    _expect_key(data, "devices", list, "filesystem_blocks")
+    _expect_key(data, "writepath", dict, "filesystem_blocks")
+    _expect_key(data, "writeback", dict, "filesystem_blocks")
+    # A machine without a real block device reports no scheduler at all.
+    _expect_key(data, "io_scheduler", (dict, type(None)), "filesystem_blocks")
     _expect_key(data, "meta", dict, "filesystem_blocks")
+    # The write-path strip and the headline are what the map actually draws.
+    _expect_key(data["writepath"], "stages", list, "filesystem_blocks.writepath")
+    _expect_key(data["writepath"], "hot", str, "filesystem_blocks.writepath")
+    _expect_key(data["writeback"], "dirty_mb", (int, float), "filesystem_blocks.writeback")
+    _expect_key(data["writeback"], "writeback_mb", (int, float), "filesystem_blocks.writeback")
+    _expect_key(data["meta"], "used_percent", (int, float), "filesystem_blocks.meta")
+    _expect_key(data["meta"], "mount_count", int, "filesystem_blocks.meta")
 
 
 def validate_processes_realtime_response(payload: Any) -> None:

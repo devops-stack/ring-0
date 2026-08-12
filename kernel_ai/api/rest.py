@@ -25,6 +25,8 @@ _API_ROUTES = [
     ("/process/<int:pid>/threads", "get_process_threads", h.get_process_threads, None),
     ("/process/<int:pid>/cpu", "get_process_cpu", h.get_process_cpu, None),
     ("/process/<int:pid>/fds", "get_process_fds", h.get_process_fds, None),
+    ("/process/<int:pid>/lineage", "get_process_lineage", h.get_process_lineage, None),
+    ("/process/<int:pid>/activity", "get_process_activity", h.get_process_activity, None),
     ("/processes-detailed", "get_processes_detailed", h.get_processes_detailed, None),
     ("/ipc-links", "get_ipc_links", h.get_ipc_links, None),
     ("/proc-matrix", "get_proc_matrix", h.get_proc_matrix, None),

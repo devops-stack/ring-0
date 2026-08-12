@@ -26,6 +26,14 @@ def get_process_fds(pid):
     return api_json(lambda: _process_inspect_service.get_process_fds_info(pid))
 
 
+def get_process_lineage(pid):
+    return api_json(lambda: _process_inspect_service.get_process_lineage_info(pid))
+
+
+def get_process_activity(pid):
+    return api_json(lambda: _process_inspect_service.get_process_activity_counters(pid))
+
+
 def get_processes_detailed():
     return api_json(lambda: {"processes": _processes_service.get_processes_detailed_data()})
 

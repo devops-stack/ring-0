@@ -8,6 +8,19 @@ from datetime import datetime
 
 from kernel_ai.sentry_helpers import capture_exception
 
+# A syscall row lists the processes parked in it. More than a dozen names is
+# already unreadable, and the row keeps the honest total next to the list.
+_MAX_WAITERS_PER_SYSCALL = 12
+
+
+def _read_comm(pid):
+    """Process name from /proc/<pid>/comm, or None if it just exited."""
+    try:
+        with open(f"/proc/{pid}/comm", "r", encoding="utf-8", errors="replace") as f:
+            return f.read().strip() or None
+    except (OSError, ValueError):
+        return None
+
 
 def _kernel_dna_read_proc_vmstat():
     """Parse /proc/vmstat into a dict of int counters."""
@@ -106,6 +119,7 @@ def get_real_system_calls(syscall_names, map_syscall_to_subsystem_fn, kernel_dna
 
         sampled = sorted(proc_dirs, key=int)[: min(kernel_dna_max_procs, len(proc_dirs))]
         syscall_counts = {}
+        syscall_waiters = {}
         for pid in sampled:
             try:
                 syscall_path = f"/proc/{pid}/syscall"
@@ -124,13 +138,23 @@ def get_real_system_calls(syscall_names, map_syscall_to_subsystem_fn, kernel_dna
                     continue
                 syscall_name = syscall_names.get(syscall_num, f"syscall_{syscall_num}")
                 syscall_counts[syscall_name] = syscall_counts.get(syscall_name, 0) + 1
+                # Keep who is parked here: the count is a set of processes, and the
+                # UI opens the dossier of any of them by pid.
+                waiters = syscall_waiters.setdefault(syscall_name, [])
+                if len(waiters) < _MAX_WAITERS_PER_SYSCALL:
+                    waiters.append({"pid": int(pid), "comm": _read_comm(pid)})
             except (PermissionError, FileNotFoundError, IOError, ValueError):
                 continue
 
         if syscall_counts:
             syscalls = []
             for name, count in sorted(syscall_counts.items(), key=lambda x: x[1], reverse=True)[:20]:
-                syscalls.append({"name": name, "count": count, "subsystem": map_syscall_to_subsystem_fn(name)})
+                syscalls.append({
+                    "name": name,
+                    "count": count,
+                    "subsystem": map_syscall_to_subsystem_fn(name),
+                    "waiters": syscall_waiters.get(name, []),
+                })
             return syscalls
 
         merged = []

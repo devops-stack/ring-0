@@ -16,6 +16,17 @@ logger = logging.getLogger(__name__)
 # Cached counters for per-second I/O pulse deltas (vmstat + disk_io + net + irq).
 _IO_PULSE_PREV = {"ts": None, "vmstat": {}, "disk": None, "net": None, "intr": None}
 
+# CPU time, I/O wait and throughput are rates, so subsystem load needs its own
+# baseline between polls. Kept separate from _IO_PULSE_PREV: the two are read on
+# different endpoints at different rhythms, and a shared baseline would leave both
+# dividing by the wrong interval.
+_SUBSYSTEM_PREV = {"ts": None, "cpu": None, "disk": None, "net": None, "net_peak": 0.0}
+
+# A throughput meter needs a full-scale mark. The busiest second we have seen sets
+# it, decaying slowly so one burst does not flatten the bar for the rest of uptime.
+_NET_SCALE_FLOOR = 64 * 1024
+_NET_SCALE_DECAY = 0.97
+
 
 def get_system_info():
     """Get system information."""
@@ -44,114 +55,184 @@ def get_mock_system_calls():
     ]
 
 
-def get_mock_kernel_subsystems():
-    """Mock data for kernel subsystems."""
+def _subsystem(metric, usage, value, unit, detail=None, detail_unit=None, processes=0, warming=False):
+    """One subsystem row: a meter fill plus the number the meter stands for."""
     return {
-        "memory_management": {"status": "active", "usage": 75, "processes": 25},
-        "process_scheduler": {"status": "active", "usage": 85, "processes": 45},
-        "file_system": {"status": "active", "usage": 60, "processes": 15},
-        "network_stack": {"status": "active", "usage": 50, "processes": 12},
+        "status": "active",
+        "usage": int(max(0, min(100, round(usage)))),
+        "processes": int(processes),
+        "metric": metric,
+        "value": value,
+        "unit": unit,
+        "detail": detail,
+        "detail_unit": detail_unit,
+        "warming": warming,
     }
 
 
+def get_mock_kernel_subsystems():
+    """Mock data for kernel subsystems (non-Linux hosts have no /proc to read)."""
+    return {
+        "memory_management": _subsystem("memory_used", 75, 75.0, "percent", 12884901888, "bytes"),
+        "process_scheduler": _subsystem("cpu_busy", 85, 85.0, "percent", 45, "runnable", processes=45),
+        "file_system": _subsystem("io_wait", 6, 6.0, "percent", 1048576, "bytes_per_sec"),
+        "network_stack": _subsystem("net_throughput", 50, 524288.0, "bytes_per_sec", 12, "sockets", processes=12),
+    }
+
+
+def _read_cpu_times():
+    """Aggregate jiffies from the /proc/stat cpu line."""
+    try:
+        with open("/proc/stat", "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if line.startswith("cpu "):
+                    return [int(part) for part in line.split()[1:]]
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _read_memory_used():
+    """Bytes in use and total, the way free(1) counts them."""
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8", errors="ignore") as f:
+            info = {}
+            for line in f:
+                key, _, value = line.partition(":")
+                value = value.strip().replace(" kB", "")
+                if value.isdigit():
+                    info[key.strip()] = int(value) * 1024
+        total = info.get("MemTotal", 0)
+        available = info.get("MemAvailable", 0)
+        if total > 0:
+            return total - available, total
+    except (OSError, ValueError):
+        pass
+    return 0, 0
+
+
+def _read_loadavg():
+    """Runnable processes now, plus the 1/5/15 minute load averages."""
+    try:
+        with open("/proc/loadavg", "r", encoding="utf-8", errors="ignore") as f:
+            parts = f.read().split()
+            runnable = int(parts[3].split("/")[0])
+            return runnable, [float(parts[0]), float(parts[1]), float(parts[2])]
+    except (OSError, ValueError, IndexError):
+        return 0, []
+
+
+def _read_tcp_inuse():
+    """TCP sockets currently in use, from /proc/net/sockstat."""
+    try:
+        with open("/proc/net/sockstat", "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if line.startswith("TCP:"):
+                    parts = line.split()
+                    return int(parts[parts.index("inuse") + 1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+def _read_mount_count():
+    """Mounted filesystems, from /proc/mounts."""
+    try:
+        with open("/proc/mounts", "r", encoding="utf-8", errors="ignore") as f:
+            return sum(1 for line in f if line.strip() and not line.startswith("#"))
+    except OSError:
+        return 0
+
+
 def get_kernel_subsystem_status():
-    """Get real kernel subsystem status from /proc filesystem."""
+    """Real load per kernel subsystem, read from /proc.
+
+    CPU time, I/O wait and network throughput are rates, so they are measured as
+    deltas between polls. The first call after start only lays down the baseline
+    and marks those three as warming rather than inventing a number for them.
+    """
     try:
         if platform.system() != "Linux":
             return get_mock_kernel_subsystems()
 
-        subsystems = {}
-
+        now = time.time()
+        cpu = _read_cpu_times()
         try:
-            with open("/proc/meminfo", "r", encoding="utf-8", errors="ignore") as f:
-                meminfo = {}
-                for line in f:
-                    if ":" in line:
-                        key, value = line.split(":", 1)
-                        meminfo[key.strip()] = value.strip()
-                mem_total_kb = int(meminfo.get("MemTotal", "0").replace(" kB", ""))
-                mem_available_kb = int(meminfo.get("MemAvailable", "0").replace(" kB", ""))
-                active_kb = int(meminfo.get("Active", "0").replace(" kB", ""))
-                memory_usage = int(((mem_total_kb - mem_available_kb) / mem_total_kb) * 100) if mem_total_kb > 0 else 0
-                processes_estimate = max(10, min(100, active_kb // 50000))
-                subsystems["memory_management"] = {"status": "active", "usage": memory_usage, "processes": processes_estimate}
-        except (IOError, ValueError, KeyError):
-            subsystems["memory_management"] = {"status": "active", "usage": 75, "processes": 25}
-
+            disk = psutil.disk_io_counters()
+        except (psutil.Error, OSError):
+            disk = None
         try:
-            with open("/proc/stat", "r", encoding="utf-8", errors="ignore") as f:
-                cpu_usage = 0
-                for line in f:
-                    if line.startswith("cpu "):
-                        parts = line.split()
-                        if len(parts) >= 5:
-                            user_time = int(parts[1])
-                            system_time = int(parts[3])
-                            idle_time = int(parts[4])
-                            total_time = user_time + system_time + idle_time
-                            cpu_usage = int(((user_time + system_time) / total_time) * 100) if total_time > 0 else 0
-                        break
-                scheduler_usage = min(100, max(50, cpu_usage))
-                try:
-                    with open("/proc/loadavg", "r", encoding="utf-8", errors="ignore") as f:
-                        loadavg = f.read().strip().split()
-                        running_processes = int(float(loadavg[3].split("/")[0]))
-                except (OSError, ValueError, IndexError, psutil.Error):
-                    running_processes = len(psutil.pids()) if "psutil" in sys.modules else 50
-                subsystems["process_scheduler"] = {"status": "active", "usage": scheduler_usage, "processes": running_processes}
-        except (IOError, ValueError, KeyError):
-            subsystems["process_scheduler"] = {"status": "active", "usage": 85, "processes": 45}
+            net = psutil.net_io_counters()
+        except (psutil.Error, OSError):
+            net = None
 
-        try:
-            with open("/proc/mounts", "r", encoding="utf-8", errors="ignore") as f:
-                mount_count = len([line for line in f if line.strip() and not line.startswith("#")])
-            try:
-                with open("/proc/stat", "r", encoding="utf-8", errors="ignore") as f:
-                    fs_usage = 60
-                    for line in f:
-                        if line.startswith("cpu "):
-                            parts = line.split()
-                            fs_usage = min(100, max(20, int(parts[5]) // 100)) if len(parts) >= 6 else 60
-                            break
-            except (OSError, ValueError, IndexError):
-                fs_usage = 60
-            fs_processes = max(5, min(50, mount_count * 2))
-            subsystems["file_system"] = {"status": "active", "usage": fs_usage, "processes": fs_processes}
-        except (IOError, ValueError):
-            subsystems["file_system"] = {"status": "active", "usage": 60, "processes": 15}
+        prev_ts = _SUBSYSTEM_PREV["ts"]
+        prev_cpu = _SUBSYSTEM_PREV["cpu"]
+        prev_disk = _SUBSYSTEM_PREV["disk"]
+        prev_net = _SUBSYSTEM_PREV["net"]
+        net_peak = _SUBSYSTEM_PREV["net_peak"]
 
-        try:
-            network_usage = 30
-            network_processes = 8
-            try:
-                with open("/proc/net/sockstat", "r", encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        if line.startswith("TCP:"):
-                            parts = line.split()
-                            try:
-                                inuse_idx = parts.index("inuse") + 1 if "inuse" in parts else -1
-                                alloc_idx = parts.index("alloc") + 1 if "alloc" in parts else -1
-                                tcp_inuse = int(parts[inuse_idx]) if 0 < inuse_idx < len(parts) else 0
-                                tcp_alloc = int(parts[alloc_idx]) if 0 < alloc_idx < len(parts) else tcp_inuse + 10
-                                network_usage = min(100, max(20, int((tcp_inuse / tcp_alloc) * 100))) if tcp_alloc > 0 else 30
-                                network_processes = max(8, min(50, tcp_inuse // 2))
-                            except (ValueError, IndexError):
-                                network_usage = 30
-                                network_processes = 12
-                            break
-            except FileNotFoundError:
-                try:
-                    with open("/proc/net/tcp", "r", encoding="utf-8", errors="ignore") as f:
-                        tcp_connections = len([line for line in f if line.strip() and not line.startswith("sl")])
-                    network_usage = min(100, max(20, tcp_connections // 10))
-                    network_processes = max(8, min(50, tcp_connections // 5))
-                except (OSError, ValueError, IndexError):
-                    pass
-            subsystems["network_stack"] = {"status": "active", "usage": network_usage, "processes": network_processes}
-        except (IOError, ValueError):
-            subsystems["network_stack"] = {"status": "active", "usage": 50, "processes": 12}
+        dt = max(0.001, now - prev_ts) if prev_ts else 0.0
 
-        return subsystems
+        # Memory is a level, not a rate, so it is honest from the very first call.
+        used_bytes, total_bytes = _read_memory_used()
+        memory_pct = (used_bytes / total_bytes * 100) if total_bytes else 0.0
+
+        cpu_busy = None
+        io_wait = None
+        if cpu and prev_cpu and len(cpu) == len(prev_cpu):
+            delta = [now_v - prev_v for now_v, prev_v in zip(cpu, prev_cpu)]
+            total_jiffies = sum(delta)
+            if total_jiffies > 0:
+                idle_jiffies = delta[3]
+                iowait_jiffies = delta[4] if len(delta) > 4 else 0
+                # Waiting on a disk is not the CPU being busy, so iowait is its own
+                # number and is excluded from the busy share.
+                cpu_busy = (total_jiffies - idle_jiffies - iowait_jiffies) / total_jiffies * 100
+                io_wait = iowait_jiffies / total_jiffies * 100
+
+        disk_bytes_s = None
+        if disk is not None and prev_disk is not None and dt:
+            moved = (disk.read_bytes - prev_disk.read_bytes) + (disk.write_bytes - prev_disk.write_bytes)
+            disk_bytes_s = max(0.0, moved / dt)
+
+        net_bytes_s = None
+        if net is not None and prev_net is not None and dt:
+            moved = (net.bytes_sent - prev_net.bytes_sent) + (net.bytes_recv - prev_net.bytes_recv)
+            net_bytes_s = max(0.0, moved / dt)
+            net_peak = max(net_bytes_s, net_peak * _NET_SCALE_DECAY, _NET_SCALE_FLOOR)
+
+        _SUBSYSTEM_PREV.update({"ts": now, "cpu": cpu, "disk": disk, "net": net, "net_peak": net_peak})
+
+        runnable, load_avg = _read_loadavg()
+        tcp_inuse = _read_tcp_inuse()
+
+        return {
+            "memory_management": _subsystem(
+                "memory_used", memory_pct, round(memory_pct, 1), "percent",
+                used_bytes, "bytes",
+            ),
+            "process_scheduler": dict(
+                _subsystem(
+                    "cpu_busy", cpu_busy or 0, round(cpu_busy, 1) if cpu_busy is not None else None, "percent",
+                    runnable, "runnable",
+                    processes=runnable, warming=cpu_busy is None,
+                ),
+                load=load_avg,
+            ),
+            "file_system": _subsystem(
+                "io_wait", io_wait or 0, round(io_wait, 1) if io_wait is not None else None, "percent",
+                round(disk_bytes_s) if disk_bytes_s is not None else None, "bytes_per_sec",
+                processes=_read_mount_count(), warming=io_wait is None,
+            ),
+            "network_stack": _subsystem(
+                "net_throughput",
+                (net_bytes_s / net_peak * 100) if net_bytes_s is not None and net_peak else 0,
+                round(net_bytes_s) if net_bytes_s is not None else None, "bytes_per_sec",
+                tcp_inuse, "sockets",
+                processes=tcp_inuse, warming=net_bytes_s is None,
+            ),
+        }
     except (OSError, ValueError, KeyError, psutil.Error) as exc:
         log_event(
             logger,
