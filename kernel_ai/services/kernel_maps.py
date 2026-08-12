@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import functools
+import platform
+import shutil
+import subprocess
 
-# System call number to name mapping (common Linux syscalls)
-SYSCALL_NAMES = {
+
+# Syscall numbers are per architecture: 73 is flock on x86_64 and ppoll on
+# arm64. This bundled table is the x86_64 numbering and is only used when the
+# machine really is x86_64 — see get_syscall_names().
+SYSCALL_NAMES_X86_64 = {
     0: "read",
     1: "write",
     2: "open",
@@ -402,6 +409,48 @@ SYSCALL_NAMES = {
     394: "futex_cmp_requeue_pi",
     395: "futex_wake_requeue_pi",
 }
+
+_X86_MACHINES = {"x86_64", "amd64"}
+
+
+def _names_from_ausyscall():
+    """Number to name for the running architecture, straight from auditd.
+
+    ``ausyscall --dump`` prints the table the kernel on this machine actually
+    uses, which is the only source that is right on every architecture.
+    """
+    binary = shutil.which("ausyscall")
+    if not binary:
+        return {}
+    try:
+        result = subprocess.run(
+            [binary, "--dump"], capture_output=True, text=True, timeout=5, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    table = {}
+    for line in (result.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit():
+            table[int(parts[0])] = parts[1]
+    return table
+
+
+@functools.lru_cache(maxsize=1)
+def get_syscall_names():
+    """The syscall table of the running kernel, resolved once per process.
+
+    Falls back to the bundled table only on x86_64, the architecture it
+    describes. When neither source applies the mapping stays empty on purpose:
+    callers then show ``syscall_<number>``, which can be looked up, instead of
+    a confident name borrowed from another architecture.
+    """
+    table = _names_from_ausyscall()
+    if table:
+        return table
+    if platform.machine().lower() in _X86_MACHINES:
+        return dict(SYSCALL_NAMES_X86_64)
+    return {}
 
 
 def map_syscall_to_subsystem(syscall_name):

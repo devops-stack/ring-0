@@ -329,6 +329,157 @@ def get_process_threads_info(pid):
         return {"error": str(e)}
 
 
+def _read_status_counters(pid):
+    """Context-switch and thread counters from world-readable /proc status."""
+    out = {"ctx_voluntary": None, "ctx_nonvoluntary": None, "num_threads": None}
+    try:
+        with open(f"/proc/{pid}/status", "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if ":" not in line:
+                    continue
+                key, value = line.split(":", 1)
+                value = value.strip()
+                if not value.isdigit():
+                    continue
+                if key == "voluntary_ctxt_switches":
+                    out["ctx_voluntary"] = int(value)
+                elif key == "nonvoluntary_ctxt_switches":
+                    out["ctx_nonvoluntary"] = int(value)
+                elif key == "Threads":
+                    out["num_threads"] = int(value)
+    except (OSError, PermissionError):
+        pass
+    return out
+
+
+def _read_io_counters(pid):
+    """Byte counters from /proc/<pid>/io, which only the owner may read."""
+    try:
+        with open(f"/proc/{pid}/io", "r", encoding="utf-8", errors="ignore") as f:
+            data = {}
+            for line in f:
+                if ":" not in line:
+                    continue
+                key, value = line.split(":", 1)
+                value = value.strip()
+                if value.isdigit():
+                    data[key.strip()] = int(value)
+        return {"read_bytes": data.get("read_bytes"), "write_bytes": data.get("write_bytes")}
+    except (OSError, PermissionError):
+        return {"read_bytes": None, "write_bytes": None}
+
+
+def get_process_activity_counters(pid):
+    """Cumulative counters for client-side delta sampling.
+
+    Deliberately cheap: no blocking ``cpu_percent`` call, just counter reads, so
+    the dossier can poll this every couple of seconds. Rates are derived on the
+    client from the difference between two samples, which is why the sample
+    timestamp travels with the payload.
+    """
+    try:
+        proc = psutil.Process(pid)
+    except psutil.NoSuchProcess as e:
+        return {"error": str(e), "pid": pid}
+
+    try:
+        times = proc.cpu_times()
+        cpu_user = round(float(times.user), 3)
+        cpu_system = round(float(times.system), 3)
+    except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+        cpu_user = None
+        cpu_system = None
+
+    payload = {
+        "pid": pid,
+        "ts": time.time(),
+        "cpu_user": cpu_user,
+        "cpu_system": cpu_system,
+    }
+    payload.update(_read_status_counters(pid))
+    payload.update(_read_io_counters(pid))
+    payload["io_readable"] = payload["read_bytes"] is not None
+    return payload
+
+
+_LINEAGE_MAX_DEPTH = 8
+
+
+def _describe_ancestor(proc):
+    """Snapshot of one process in the ancestry chain, with its real start time."""
+    info = proc.as_dict(["pid", "name", "create_time", "status", "username"])
+    create_time = info.get("create_time")
+    try:
+        cmdline = " ".join(proc.cmdline())
+    except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+        cmdline = ""
+    return {
+        "pid": int(info.get("pid") or 0),
+        "name": str(info.get("name") or "?"),
+        "status": info.get("status"),
+        "username": info.get("username"),
+        "cmdline": cmdline[:160],
+        "create_time": float(create_time) if create_time else None,
+        "age_s": round(time.time() - float(create_time), 1) if create_time else None,
+    }
+
+
+def get_process_lineage_info(pid):
+    """Ancestry chain from init down to ``pid``, ordered oldest first.
+
+    Unlike fd tables, ``/proc/<pid>/stat`` is world readable, so start times and
+    parent links resolve for foreign processes too. Timestamps here are real
+    kernel start times, not a synthetic window.
+    """
+    try:
+        proc = psutil.Process(pid)
+    except psutil.NoSuchProcess as e:
+        return {"error": str(e), "pid": pid}
+
+    try:
+        chain = []
+        node = proc
+        seen = set()
+        while node is not None and len(chain) < _LINEAGE_MAX_DEPTH:
+            if node.pid in seen:
+                break
+            seen.add(node.pid)
+            chain.append(_describe_ancestor(node))
+            try:
+                node = node.parent()
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                break
+        chain.reverse()
+
+        try:
+            children = proc.children()
+            child_rows = [
+                {"pid": c.pid, "name": c.name()}
+                for c in children[:6]
+            ]
+            child_count = len(children)
+        except (psutil.AccessDenied, psutil.NoSuchProcess):
+            child_rows = []
+            child_count = 0
+
+        self_row = chain[-1] if chain else None
+        return {
+            "pid": pid,
+            "chain": chain,
+            "depth": len(chain),
+            "truncated": len(chain) >= _LINEAGE_MAX_DEPTH,
+            "children": child_rows,
+            "child_count": child_count,
+            "boot_time": psutil.boot_time(),
+            "age_s": self_row.get("age_s") if self_row else None,
+        }
+    except psutil.AccessDenied as e:
+        return {"error": str(e), "pid": pid}
+    except Exception as e:
+        capture_exception(e, where="services.process_inspect.get_process_lineage_info")
+        return {"error": str(e), "pid": pid}
+
+
 def get_process_cpu_info(pid):
     try:
         proc = psutil.Process(pid)

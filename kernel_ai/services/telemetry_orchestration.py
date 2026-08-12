@@ -17,7 +17,10 @@ except ImportError:
     OPENAI_AVAILABLE = False
 
 
-SYSCALL_NAMES = _kernel_maps_service.SYSCALL_NAMES
+def get_syscall_names():
+    return _kernel_maps_service.get_syscall_names()
+
+
 KERNEL_DNA_MAX_PROCS = int(os.environ.get("KERNEL_DNA_MAX_PROCS", "1200"))
 
 
@@ -35,7 +38,7 @@ def get_mock_system_calls():
 
 def get_real_system_calls():
     return _syscalls_service.get_real_system_calls(
-        syscall_names=SYSCALL_NAMES,
+        syscall_names=get_syscall_names(),
         map_syscall_to_subsystem_fn=map_syscall_to_subsystem,
         kernel_dna_max_procs=KERNEL_DNA_MAX_PROCS,
         fallback_mock_calls_fn=get_mock_system_calls,
@@ -143,7 +146,7 @@ def get_kernel_dna_data():
 
 def get_execution_context_data(exec_context_prev):
     return _execution_service.get_execution_context_data(
-        syscall_names=SYSCALL_NAMES,
+        syscall_names=get_syscall_names(),
         map_interrupt_to_subsystem_fn=map_interrupt_to_subsystem,
         exec_context_prev=exec_context_prev,
     )
