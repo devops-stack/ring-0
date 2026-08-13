@@ -105,6 +105,82 @@ def test_build_anomaly_contract():
     assert anom["severity"] == "medium"
 
 
+def test_observe_weight_shapes_the_distribution():
+    """A chain seen 1000x must not look as likely as one seen 3x."""
+    hot = MarkovScorer()
+    hot.observe(["accept4", "accept4", "accept4"], weight=1000)
+    hot.observe(["accept4", "execve", "connect"], weight=3)
+
+    common = hot.score_window(["accept4", "accept4", "accept4"])
+    rare = hot.score_window(["accept4", "execve", "connect"])
+    assert rare["neg_avg_logprob"] > common["neg_avg_logprob"] * 2
+
+    # Same two chains without weights: the model believes both are ordinary.
+    flat = MarkovScorer()
+    flat.observe(["accept4", "accept4", "accept4"])
+    flat.observe(["accept4", "execve", "connect"])
+    flat_common = flat.score_window(["accept4", "accept4", "accept4"])
+    flat_rare = flat.score_window(["accept4", "execve", "connect"])
+    assert abs(flat_rare["neg_avg_logprob"] - flat_common["neg_avg_logprob"]) < 0.2
+
+
+def test_ngram_corpus_carries_counts_as_weights(monkeypatch):
+    from kernel_ai.ml.sequence_deep import train_markov as tm
+
+    monkeypatch.setattr(
+        "kernel_ai.ml.store.fetch_ngram_counts",
+        lambda dsn, n: {"accept4|accept4|accept4": 2500, "clone|execve|connect": 4},
+    )
+    corpus = tm.load_corpus_ngrams("dsn", n=3, min_count=3)
+    assert sorted(w for _, w in corpus) == [4, 2500]
+    assert tm._count_transitions(corpus) == 2 * 2500 + 2 * 4
+
+
+def test_per_pid_token_windows_isolate_a_short_chain():
+    """A hostile burst on one pid must be scored on its own, not averaged into noise."""
+    from kernel_ai.ml.collectors.base import SyscallEvent
+    from kernel_ai.ml.sequence import NgramTracker
+
+    tracker = NgramTracker(n=3, window=200)
+    tracker.update_stream(
+        [SyscallEvent(ts=i * 0.01, pid=1, uid=0, comm="nginx", syscall="accept4") for i in range(300)]
+        + [
+            SyscallEvent(ts=100 + i * 0.01, pid=2, uid=0, comm="evil", syscall=name)
+            for i, name in enumerate(["memfd_create", "execve", "connect", "ptrace"] * 5)
+        ]
+    )
+    by_pid = dict(tracker.recent_tokens_by_pid(min_len=8))
+    assert set(by_pid) == {1, 2}
+    assert set(by_pid[1]) == {"accept4"}
+    assert "ptrace" in by_pid[2]
+
+    m = MarkovScorer()
+    m.observe(["accept4"] * 50, weight=1000)
+    hostile = m.score_window(by_pid[2])["neg_avg_logprob"]
+    mixed = m.score_window(tracker.recent_tokens())["neg_avg_logprob"]
+    assert hostile > mixed
+
+
+def test_nightly_retrain_refreshes_markov_only_when_stage8_is_on(monkeypatch):
+    from kernel_ai.ml import retrain
+
+    calls = []
+    monkeypatch.setattr(
+        "kernel_ai.ml.sequence_deep.train_markov.train_markov",
+        lambda cfg, **kw: calls.append(kw) or {"n_transitions": 1234, "vocab": 21},
+    )
+
+    off = SimpleNamespace(enable_stage8=False, stage8_backend="markov")
+    retrain._refresh_markov(off, {})
+    assert calls == []
+
+    metrics: dict = {}
+    on = SimpleNamespace(enable_stage8=True, stage8_backend="markov")
+    retrain._refresh_markov(on, metrics)
+    assert calls == [{"use_ngrams": True}]
+    assert metrics["stage8_transitions"] == 1234
+
+
 def test_corpus_file_train(tmp_path):
     corpus = tmp_path / "norm.txt"
     corpus.write_text(
