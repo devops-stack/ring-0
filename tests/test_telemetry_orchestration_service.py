@@ -14,7 +14,8 @@ def test_get_real_system_calls_delegates(monkeypatch):
     out = svc.get_real_system_calls()
 
     assert out == [{"name": "read"}]
-    assert called["syscall_names"] is svc.SYSCALL_NAMES
+    # The table of the running kernel, not a bundled one for another machine.
+    assert called["syscall_names"] == svc.get_syscall_names()
     assert callable(called["map_syscall_to_subsystem_fn"])
     assert callable(called["fallback_mock_calls_fn"])
 

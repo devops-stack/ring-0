@@ -149,8 +149,16 @@ class MLConfig:
     seq_mismatch_warn: float = _env_float("KERNEL_AI_ML_SEQ_MISMATCH_WARN", 0.30)
     seq_mismatch_crit: float = _env_float("KERNEL_AI_ML_SEQ_MISMATCH_CRIT", 0.55)
     seq_cooldown_sec: float = _env_float("KERNEL_AI_ML_SEQ_COOLDOWN_SEC", 30.0)
+    # How long the event source may stay silent before it is reported. A dead feed
+    # used to be indistinguishable from a quiet host: on 2026-08-11 the kernel audit
+    # switch went off for 30 hours and Stage 4 kept re-scoring its frozen window,
+    # emitting one anomaly per cooldown (120/hour) the whole time.
+    seq_stale_warn_sec: float = _env_float("KERNEL_AI_ML_SEQ_STALE_WARN_SEC", 300.0)
     # Flush newly observed n-grams to the store every N seconds (profile growth).
     seq_flush_sec: float = _env_float("KERNEL_AI_ML_SEQ_FLUSH_SEC", 30.0)
+    # Forget a pid whose last event is this many events old — bounds memory and
+    # keeps windows of long-gone processes out of the candidate set.
+    seq_pid_idle_events: int = _env_int("KERNEL_AI_ML_SEQ_PID_IDLE_EVENTS", 5000)
     # Training keeps n-grams seen at least this many times (frequency-based poison
     # guard: a one-off attack sequence never enters the "normal" profile).
     seq_min_ngram_count: int = _env_int("KERNEL_AI_ML_SEQ_MIN_COUNT", 3)
@@ -191,6 +199,9 @@ class MLConfig:
     stage8_score_warn: float = _env_float("KERNEL_AI_ML_STAGE8_SCORE_WARN", 3.0)
     stage8_score_crit: float = _env_float("KERNEL_AI_ML_STAGE8_SCORE_CRIT", 5.0)
     stage8_cooldown_sec: float = _env_float("KERNEL_AI_ML_STAGE8_COOLDOWN_SEC", 30.0)
+    # Heartbeat of the raw window score (no anomaly attached): lets the thresholds
+    # above be derived from the live distribution of a given host.
+    stage8_log_every_sec: float = _env_float("KERNEL_AI_ML_STAGE8_LOG_EVERY_SEC", 60.0)
 
     @property
     def alpha(self) -> float:

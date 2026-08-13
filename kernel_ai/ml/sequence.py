@@ -33,6 +33,14 @@ logger = logging.getLogger("kernel_ai.ml.sequence")
 # Separator for serialising an n-gram tuple into a stable string key.
 _SEP = "|"
 
+# Synthetic events from the Stage 6 collector's demo mode carry these comms. They
+# may be scored (that is how the demo proves the wiring is alive) but must never
+# enter the persisted profile: on 2026-08-03 a single demo minute wrote ~34k
+# observations of connect→vfork→memfd_create→userfaultfd into ml_syscall_ngrams,
+# making the fileless-payload syscalls we watch for the most "normal" chain on the
+# host, far above any frequency-based poison guard.
+DEMO_COMMS = frozenset({"demo", "mimic", "novel"})
+
 
 class SyscallSampler:
     """Sample the current syscall of running processes from procfs."""
@@ -79,6 +87,15 @@ class NgramTracker:
         self.n = max(2, n)
         self.window = window
         self.max_pids = max_pids
+        # Monotonic count of samples ever appended. The rolling windows below keep
+        # their contents when the event source dies, so scoring them again would
+        # re-report the same window forever; callers compare this counter against
+        # the value they last scored to tell fresh evidence from a frozen feed.
+        self.ingested = 0
+        # Value of ``ingested`` when each pid last produced something. A pid window
+        # survives the process that filled it, so scorers need to tell "this pid is
+        # still doing that" from "this pid died holding an odd-looking window".
+        self._pid_stamp: dict[int, int] = {}
         self._hist: dict[int, deque[str]] = {}
         # Global rolling window (profile growth / Stage 8 / fallback scoring).
         self._recent: deque[str] = deque(maxlen=window)
@@ -91,8 +108,11 @@ class NgramTracker:
     def _drop_pid(self, pid: int) -> None:
         self._hist.pop(pid, None)
         self._recent_by_pid.pop(pid, None)
+        self._pid_stamp.pop(pid, None)
 
-    def _append(self, pid: int, name: str) -> None:
+    def _append(self, pid: int, name: str, *, learn: bool = True) -> None:
+        self.ingested += 1
+        self._pid_stamp[pid] = self.ingested
         hist = self._hist.get(pid)
         if hist is None:
             hist = deque(maxlen=self.n)
@@ -101,7 +121,8 @@ class NgramTracker:
         if len(hist) == self.n:
             key = _SEP.join(hist)
             self._recent.append(key)
-            self._pending[key] = self._pending.get(key, 0) + 1
+            if learn:
+                self._pending[key] = self._pending.get(key, 0) + 1
             pid_win = self._recent_by_pid.get(pid)
             if pid_win is None:
                 pid_win = deque(maxlen=self.window)
@@ -128,7 +149,8 @@ class NgramTracker:
                 continue
             if not name:
                 continue
-            self._append(pid, name)
+            comm = getattr(ev, "comm", None) if not isinstance(ev, dict) else ev.get("comm")
+            self._append(pid, name, learn=str(comm or "") not in DEMO_COMMS)
             n += 1
             if len(self._hist) > self.max_pids:
                 # Bound memory: drop oldest pid histories opportunistically.
@@ -147,6 +169,34 @@ class NgramTracker:
         must use the same alphabet, not the ``a|b|c`` keys STIDE stores.
         """
         return ngrams_to_tokens(self.recent(), n=self.n)
+
+    def pid_stamps(self) -> dict[int, int]:
+        """``{pid: ingest counter when it last emitted}`` — freshness per pid."""
+        return dict(self._pid_stamp)
+
+    def evict_idle(self, *, older_than: int) -> int:
+        """Forget pids silent for the last ``older_than`` ingested events."""
+        cutoff = self.ingested - max(1, int(older_than))
+        dead = [pid for pid, stamp in self._pid_stamp.items() if stamp < cutoff]
+        for pid in dead:
+            self._drop_pid(pid)
+        return len(dead)
+
+    def recent_tokens_by_pid(self, *, min_len: int) -> list[tuple[int, list[str]]]:
+        """Per-pid syscall token streams, for scorers that work on tokens (Stage 8).
+
+        Averaging over the global mix hides short chains: a busy daemon emitting
+        thousands of ``accept4`` transitions drags any window average back to normal,
+        so a five-syscall hostile burst on another pid moves it by ~0.1. Stage 4 hit
+        exactly this and moved to per-pid windows; the deep scorer needs the same.
+        """
+        need = max(2, int(min_len))
+        out: list[tuple[int, list[str]]] = []
+        for pid, dq in self._recent_by_pid.items():
+            tokens = ngrams_to_tokens(list(dq), n=self.n)
+            if len(tokens) >= need:
+                out.append((pid, tokens))
+        return out
 
     def recent_by_pid(self, *, min_len: int) -> list[tuple[int, list[str]]]:
         """Return ``(pid, ngram_window)`` for pids with enough recent n-grams."""

@@ -1,6 +1,6 @@
-"""Stage 3 + Stage 4 auto-retrain orchestrator (run by a systemd timer).
+"""Stage 3 + Stage 4 + Stage 8 auto-retrain orchestrator (run by a systemd timer).
 
-    measure drift  ->  decide  ->  IsolationForest on clean data  ->  STIDE profile
+    measure drift -> decide -> IsolationForest on clean data -> STIDE -> Markov
 
 Decision:
   * default: always retrain IsolationForest (the timer cadence IS the schedule).
@@ -47,12 +47,44 @@ def _refresh_stide(cfg: MLConfig, metrics: dict) -> None:
         logger.warning("STIDE profile build failed: %s", exc)
 
 
+def _refresh_markov(cfg: MLConfig, metrics: dict) -> None:
+    """Best-effort Stage 8 rebuild from the same n-gram corpus as STIDE.
+
+    Without this the transition model freezes on the day it was trained while the
+    vocabulary underneath it keeps growing. Note that a rebuild can move the score
+    scale, and ``KERNEL_AI_ML_STAGE8_SCORE_WARN`` is tuned against a scale — the
+    numbers below are logged so a drift away from the tuned thresholds is visible
+    (the worker's periodic window-score line is the other half of that check).
+    """
+    if not getattr(cfg, "enable_stage8", False):
+        return
+    if (getattr(cfg, "stage8_backend", "markov") or "markov") != "markov":
+        return
+    try:
+        from kernel_ai.ml.sequence_deep.train_markov import train_markov
+
+        seq_meta = train_markov(cfg, use_ngrams=True)
+        metrics["stage8_transitions"] = float(seq_meta.get("n_transitions") or 0)
+        logger.info(
+            "Stage 8 Markov refreshed: transitions=%s vocab=%s common=%s rare=%s",
+            seq_meta.get("n_transitions"),
+            seq_meta.get("vocab"),
+            seq_meta.get("corpus_common_neg_avg_logprob"),
+            seq_meta.get("corpus_rare_neg_avg_logprob"),
+        )
+    except SystemExit as exc:
+        logger.info("Stage 8 Markov not rebuilt: %s", exc)
+    except Exception as exc:  # noqa: BLE001 - deep sequence model is optional
+        logger.warning("Stage 8 Markov build failed: %s", exc)
+
+
 def run(*, only_if_drift: bool, min_samples: int, stide_only: bool = False) -> int:
     cfg = MLConfig()
     metrics: dict = {}
 
     if stide_only:
         _refresh_stide(cfg, metrics)
+        _refresh_markov(cfg, metrics)
         logger.info("stide-only retrain complete: %s", metrics)
         return 0
 
@@ -81,6 +113,7 @@ def run(*, only_if_drift: bool, min_samples: int, stide_only: bool = False) -> i
             metrics = {}
 
     _refresh_stide(cfg, metrics)
+    _refresh_markov(cfg, metrics)
     logger.info("retrain complete: %s", metrics)
     return 0
 

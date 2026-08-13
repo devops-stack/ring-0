@@ -92,6 +92,8 @@ class DeepSequenceScorer:
         severity = "high" if neg >= crit else "medium"
         worst = score.get("worst_tokens") or []
         why = " → ".join(str(t) for t in worst) if worst else score.get("model", "deep-seq")
+        pid = score.get("pid")
+        pid_bit = f" pid={pid}" if pid else ""
         return {
             "source": "stage8_sequence",
             "feature": "syscall_seq_deep",
@@ -104,11 +106,12 @@ class DeepSequenceScorer:
             "baseline_std": None,
             "position": 0.18,
             "message": (
-                f"Deep sequence model ({score.get('model', '?')}): "
+                f"Deep sequence model ({score.get('model', '?')}){pid_bit}: "
                 f"neg_avg_logprob={neg:.2f} (warn={warn}); unlikely transition near {why}"
             ),
             "meta": {
                 "stage": 8,
+                "pid": pid,
                 "model": score.get("model"),
                 "perplexity": score.get("perplexity"),
                 "neg_avg_logprob": neg,
