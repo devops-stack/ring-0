@@ -157,6 +157,11 @@ class MLWorker:
         self._seq_model_mtime: float | None = None
         self._last_seq_emit = 0.0
         self._last_seq_flush = 0.0
+        # Ingest counter at the last scoring, and when evidence last arrived.
+        self._seq_scored_at = -1
+        self._seq_last_event_at = 0.0
+        self._seq_stale_logged = False
+        self._seq_pid_marks: dict[int, int] = {}
         self._seq_source = (self.cfg.seq_source or "procfs").strip().lower()
         if self.cfg.enable_stage4 and self._seq_source != "off":
             from kernel_ai.ml.sequence import NgramTracker, SyscallSampler
@@ -206,6 +211,9 @@ class MLWorker:
         # Stage 8 — deep sequence stub (Markov/LSTM). No-op without artifact.
         self.deep_scorer = None
         self._last_stage8_emit = 0.0
+        self._last_stage8_log = 0.0
+        self._stage8_scored_at = -1
+        self._stage8_pid_marks: dict[int, int] = {}
         if self.cfg.enable_stage8:
             from kernel_ai.ml.sequence_deep import DeepSequenceScorer
 
@@ -260,6 +268,62 @@ class MLWorker:
         except Exception as exc:  # noqa: BLE001 - keep running without Stage 4
             logger.warning("failed to load STIDE profile: %s", exc)
 
+    def _sequence_evidence_is_fresh(self, now: float) -> bool:
+        """True when syscalls arrived since the last time a window was scored.
+
+        The rolling windows outlive their source: when the stream stops they keep
+        their last contents, so re-scoring them produces the same verdict forever —
+        one anomaly per cooldown, indefinitely. That is what happened while the
+        kernel audit switch was off on 2026-08-11: for 30 hours with zero events
+        Stage 4 reported a steady 120 anomalies an hour about a frozen window.
+        """
+        ingested = self.seq_tracker.ingested
+        if self._seq_last_event_at == 0.0:
+            self._seq_last_event_at = now
+        if ingested != self._seq_scored_at:
+            self._seq_scored_at = ingested
+            self._seq_last_event_at = now
+            if self._seq_stale_logged:
+                logger.info("syscall stream resumed (source=%s)", self._seq_source)
+                self._seq_stale_logged = False
+            return True
+        silence = now - self._seq_last_event_at
+        if silence >= self.cfg.seq_stale_warn_sec and not self._seq_stale_logged:
+            # Said once per outage, and filebeat ships it: a silent feed should
+            # look like a problem rather than like a calm system.
+            logger.warning(
+                "syscall stream silent for %.0fs (source=%s): sequence scoring "
+                "paused until events resume",
+                silence,
+                self._seq_source,
+            )
+            self._seq_stale_logged = True
+        return False
+
+    def _fresh_pid_windows(
+        self,
+        entries: list[tuple[int, list[str]]],
+        marks: dict[int, int],
+        stamps: dict[int, int],
+    ) -> list[tuple[int, list[str]]]:
+        """Keep only pid windows that changed since this scorer last looked.
+
+        The per-pid twin of the stream guard. A window outlives its process, so a
+        short-lived pid that ended on an odd chain stays the loudest thing on the
+        host and gets re-reported every cooldown — the same anomaly, forever, about
+        a process that no longer exists.
+        """
+        fresh: list[tuple[int, list[str]]] = []
+        for pid, window in entries:
+            stamp = stamps.get(pid)
+            if stamp is None or marks.get(pid) == stamp:
+                continue
+            marks[pid] = stamp
+            fresh.append((pid, window))
+        for gone in [pid for pid in marks if pid not in stamps]:
+            marks.pop(gone, None)
+        return fresh
+
     def _tick_sequence(self) -> dict | None:
         """Ingest syscalls, grow the n-gram vocabulary, and score the window."""
         if self.seq_tracker is None:
@@ -289,16 +353,23 @@ class MLWorker:
             pending = self.seq_tracker.drain_pending()
             if pending:
                 self.store.upsert_ngram_counts(self.cfg.seq_n, pending)
+            self.seq_tracker.evict_idle(older_than=self.cfg.seq_pid_idle_events)
             self._last_seq_flush = now
 
         if self.seq_model is None:
             return None
 
+        if not self._sequence_evidence_is_fresh(now):
+            return None
+
         # Prefer per-pid windows (classic STIDE): high-volume connect/setuid
         # spam from one process must not dilute a hostile chain on another.
         best: tuple[float, int, list[str], int | None] | None = None
-        for pid, window in self.seq_tracker.recent_by_pid(
-            min_len=self.cfg.seq_pid_min_window
+        stamps = self.seq_tracker.pid_stamps()
+        for pid, window in self._fresh_pid_windows(
+            self.seq_tracker.recent_by_pid(min_len=self.cfg.seq_pid_min_window),
+            self._seq_pid_marks,
+            stamps,
         ):
             mismatch, misses = self.seq_model.score_window(window)
             if best is None or mismatch > best[0]:
@@ -328,17 +399,58 @@ class MLWorker:
         self.deep_scorer.maybe_reload()
         if not self.deep_scorer.ready:
             return None
-        tokens = self.seq_tracker.recent_tokens()
-        if len(tokens) < max(8, self.cfg.stage8_window // 4):
+        # Same frozen-window trap as Stage 4, and Stage 8 keeps its own mark because
+        # both stages read the tracker in the same tick.
+        ingested = self.seq_tracker.ingested
+        if ingested == self._stage8_scored_at:
             return None
-        tokens = tokens[-self.cfg.stage8_window :]
-        score = self.deep_scorer.score_tokens(tokens)
-        if not score:
-            return None
-        neg = float(score.get("neg_avg_logprob") or score.get("perplexity") or 0.0)
+        self._stage8_scored_at = ingested
+
+        # Score per pid and keep the least likely one; the global mix is only a
+        # fallback for hosts where no single pid has enough history yet.
+        min_tokens = max(8, self.cfg.stage8_window // 4)
+        best: tuple[float, dict, int | None] | None = None
+        for pid, tokens in self._fresh_pid_windows(
+            self.seq_tracker.recent_tokens_by_pid(min_len=min_tokens),
+            self._stage8_pid_marks,
+            self.seq_tracker.pid_stamps(),
+        ):
+            score = self.deep_scorer.score_tokens(tokens[-self.cfg.stage8_window :])
+            if not score:
+                continue
+            neg = float(score.get("neg_avg_logprob") or score.get("perplexity") or 0.0)
+            if best is None or neg > best[0]:
+                best = (neg, score, pid)
+        if best is None:
+            tokens = self.seq_tracker.recent_tokens()
+            if len(tokens) < min_tokens:
+                return None
+            score = self.deep_scorer.score_tokens(tokens[-self.cfg.stage8_window :])
+            if not score:
+                return None
+            best = (
+                float(score.get("neg_avg_logprob") or score.get("perplexity") or 0.0),
+                score,
+                None,
+            )
+        neg, score, pid = best
+        score["pid"] = pid
+        now = time.time()
+        # A heartbeat of the score itself: thresholds for a fresh host should be read
+        # off the live distribution, not guessed, and later it shows the model is
+        # still scoring rather than quietly dormant.
+        if (now - self._last_stage8_log) >= self.cfg.stage8_log_every_sec:
+            self._last_stage8_log = now
+            logger.info(
+                "Stage 8 window score: pid=%s neg_avg_logprob=%.3f (warn=%.2f crit=%.2f) worst=%s",
+                pid,
+                neg,
+                self.cfg.stage8_score_warn,
+                self.cfg.stage8_score_crit,
+                ",".join(str(t) for t in (score.get("worst_tokens") or [])[:3]),
+            )
         if neg < self.cfg.stage8_score_warn:
             return None
-        now = time.time()
         if (now - self._last_stage8_emit) < self.cfg.stage8_cooldown_sec:
             return None
         self._last_stage8_emit = now

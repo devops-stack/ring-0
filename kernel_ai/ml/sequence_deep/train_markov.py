@@ -58,21 +58,19 @@ def load_corpus_file(path: str | Path) -> list[list[str]]:
     return sequences
 
 
-def load_corpus_ngrams(dsn: str, *, n: int, min_count: int = 1) -> list[list[str]]:
+def load_corpus_ngrams(dsn: str, *, n: int, min_count: int = 1) -> list[tuple[list[str], int]]:
+    """Return ``(tokens, weight)`` where the weight is the observed n-gram count."""
     from kernel_ai.ml.store import fetch_ngram_counts
 
     counts = fetch_ngram_counts(dsn, n=n)
-    sequences: list[list[str]] = []
+    sequences: list[tuple[list[str], int]] = []
     for key, cnt in counts.items():
         if cnt < min_count:
             continue
         toks = [t for t in str(key).split("|") if t]
         if len(toks) < 2:
             continue
-        # Cap repeats so a hot n-gram cannot dominate the table entirely.
-        reps = min(int(cnt), 50)
-        for _ in range(reps):
-            sequences.append(toks)
+        sequences.append((toks, int(cnt)))
     return sequences
 
 
@@ -83,8 +81,8 @@ def load_corpus_synthetic(*, repeats: int = 40) -> list[list[str]]:
     return sequences
 
 
-def _count_transitions(sequences: list[list[str]]) -> int:
-    return sum(max(0, len(s) - 1) for s in sequences)
+def _count_transitions(sequences: list[tuple[list[str], int]]) -> int:
+    return sum(max(0, len(s) - 1) * w for s, w in sequences)
 
 
 def train_markov(
@@ -97,14 +95,14 @@ def train_markov(
 ) -> dict:
     """Fit Markov + encoder and persist artifact. Returns metrics dict."""
     cfg = cfg or MLConfig()
-    sequences: list[list[str]] = []
+    sequences: list[tuple[list[str], int]] = []
     source = "empty"
 
     if corpus_path:
-        sequences = load_corpus_file(corpus_path)
+        sequences = [(seq, 1) for seq in load_corpus_file(corpus_path)]
         source = f"file:{corpus_path}"
     elif use_synthetic:
-        sequences = load_corpus_synthetic()
+        sequences = [(seq, 1) for seq in load_corpus_synthetic()]
         source = "synthetic"
     elif use_ngrams:
         try:
@@ -112,7 +110,7 @@ def train_markov(
             source = "ml_syscall_ngrams"
         except Exception as exc:  # noqa: BLE001
             logger.warning("ngram corpus unavailable (%s) — falling back to synthetic", exc)
-            sequences = load_corpus_synthetic()
+            sequences = [(seq, 1) for seq in load_corpus_synthetic()]
             source = "synthetic_fallback"
 
     n_trans = _count_transitions(sequences)
@@ -124,9 +122,9 @@ def train_markov(
 
     encoder = SequenceEncoder()
     markov = MarkovScorer(order=1, meta={"stage": 8, "source": source})
-    for seq in sequences:
+    for seq, weight in sequences:
         encoder.fit(seq)
-        markov.observe(seq)
+        markov.observe(seq, weight=weight)
 
     artifact = {
         "encoder": encoder.state_dict(),
@@ -136,7 +134,14 @@ def train_markov(
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     joblib.dump(artifact, out_path)
 
-    # Quick self-check: normal-ish window vs weird jump.
+    # Self-check against the corpus itself. The synthetic probes below stay for
+    # continuity, but they are meaningless for an audit-sourced model: they are made
+    # of tokens (read/write/close) the audit allowlist never emits, so they only
+    # measure the unknown-token penalty. The corpus probes compare the most and the
+    # least frequent real sequences, which is what separation actually means here.
+    ranked = sorted(sequences, key=lambda sw: sw[1], reverse=True)
+    common_score = markov.score_window(ranked[0][0]) if ranked else None
+    rare_score = markov.score_window(ranked[-1][0]) if ranked else None
     normal_score = markov.score_window(_SYNTHETIC_NORMAL[0])
     weird_score = markov.score_window(["openat", "execve", "connect", "dup2"])
     metrics = {
@@ -146,6 +151,9 @@ def train_markov(
         "vocab": len(encoder.token_to_id),
         "states": len(markov._counts),
         "path": out_path,
+        "corpus_common": "|".join(ranked[0][0]) if ranked else None,
+        "corpus_common_neg_avg_logprob": (common_score or {}).get("neg_avg_logprob"),
+        "corpus_rare_neg_avg_logprob": (rare_score or {}).get("neg_avg_logprob"),
         "normal_neg_avg_logprob": (normal_score or {}).get("neg_avg_logprob"),
         "weird_neg_avg_logprob": (weird_score or {}).get("neg_avg_logprob"),
     }

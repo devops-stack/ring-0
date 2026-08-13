@@ -4,6 +4,7 @@ from kernel_ai.http.api_handlers.kernel import (
     get_execution_context,
     io_open_files,
     io_pulse,
+    irq_detail,
     kernel_data,
     kernel_dna,
     ml_anomalies,
@@ -12,6 +13,7 @@ from kernel_ai.http.api_handlers.kernel import (
     process_kernel_map,
     sentry_test,
     siem_alerts,
+    syscall_detail,
     syscalls_realtime,
 )
 from kernel_ai.http.api_handlers.network_system import (
@@ -78,6 +80,7 @@ __all__ = [
     "ingest_frontend_logs",
     "io_open_files",
     "io_pulse",
+    "irq_detail",
     "isolation_context",
     "kernel_data",
     "kernel_dna",
@@ -91,6 +94,7 @@ __all__ = [
     "security_realtime",
     "sentry_test",
     "siem_alerts",
+    "syscall_detail",
     "syscalls_realtime",
     "traceroute_info",
 ]
