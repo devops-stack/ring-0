@@ -8,6 +8,9 @@ from kernel_ai.services import process_inspect as _process_inspect_service
 from kernel_ai.services import process_timeline as _process_timeline_service
 from kernel_ai.services import processes as _processes_service
 from kernel_ai.services import scheduler_pelt as _scheduler_pelt_service
+from kernel_ai.services import memory as _memory_service
+from kernel_ai.services import threads as _threads_service
+from kernel_ai.services import waits as _waits_service
 
 
 def get_processes():
@@ -15,7 +18,15 @@ def get_processes():
 
 
 def get_process_threads(pid):
-    return api_json(lambda: _process_inspect_service.get_process_threads_info(pid))
+    return api_json(lambda: _threads_service.describe(pid))
+
+
+def get_process_memory(pid):
+    return api_json(lambda: _memory_service.describe(pid))
+
+
+def get_thread_wait(pid, tid):
+    return api_json(lambda: _waits_service.describe(pid, tid))
 
 
 def get_process_cpu(pid):

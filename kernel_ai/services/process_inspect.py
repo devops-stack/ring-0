@@ -296,39 +296,6 @@ def get_ipc_links_summary(max_pairs=120, max_nodes=24):
     }
 
 
-def get_process_threads_info(pid):
-    try:
-        proc = psutil.Process(pid)
-        threads = proc.threads()
-        thread_count = proc.num_threads()
-
-        try:
-            with open(f"/proc/{pid}/status", "r", encoding="utf-8", errors="ignore") as f:
-                status_data = {}
-                for line in f:
-                    if ":" in line:
-                        key, value = line.split(":", 1)
-                        status_data[key.strip()] = value.strip()
-                voluntary_switches = int(status_data.get("voluntary_ctxt_switches", 0))
-                nonvoluntary_switches = int(status_data.get("nonvoluntary_ctxt_switches", 0))
-        except Exception:
-            voluntary_switches = 0
-            nonvoluntary_switches = 0
-
-        return {
-            "pid": pid,
-            "thread_count": thread_count,
-            "threads": [{"id": t.id, "user_time": t.user_time, "system_time": t.system_time} for t in threads],
-            "voluntary_ctxt_switches": voluntary_switches,
-            "nonvoluntary_ctxt_switches": nonvoluntary_switches,
-        }
-    except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
-        return {"error": str(e)}
-    except Exception as e:
-        capture_exception(e, where="services.process_inspect.get_process_threads_info")
-        return {"error": str(e)}
-
-
 def _read_status_counters(pid):
     """Context-switch and thread counters from world-readable /proc status."""
     out = {"ctx_voluntary": None, "ctx_nonvoluntary": None, "num_threads": None}

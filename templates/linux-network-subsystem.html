@@ -65,9 +65,34 @@ linux kernel networking
             height: 1px;
             overflow: hidden;
         }
+        .page-nav {
+            position: fixed;
+            left: 18px;
+            top: 18px;
+            z-index: 10020;
+            display: flex;
+            gap: 8px;
+        }
+        .page-nav a {
+            display: inline-block;
+            text-decoration: none;
+            color: #d2d8e2;
+            border: 1px solid rgba(165, 178, 200, 0.34);
+            padding: 8px 12px;
+            font-size: 11px;
+            background: rgba(10, 14, 21, 0.86);
+            font-family: "Share Tech Mono", monospace;
+        }
+        .page-nav a:hover {
+            color: #ffffff;
+            background: rgba(18, 24, 36, 0.92);
+        }
     </style>
 </head>
 <body>
+    <nav class="page-nav">
+        <a href="/">BACK TO MAIN</a>
+    </nav>
     <h1 class="seo-network">Linux Network Stack Kernel Subsystem</h1>
     <section class="seo-network">
         <h2>The Packet Path Through the Linux Kernel</h2>
@@ -104,7 +129,7 @@ linux kernel networking
     <div id="network-stack-container" style="position:fixed;inset:0;background:#0E1114;z-index:1;"></div>
     <script src="/static/js/safe-utils.js?v=2"></script>
     <script src="/static/js/frontend-logger.js?v=2"></script>
-    <script src="/static/js/network-stack.js?v=59"></script>
+    <script src="/static/js/network-stack.js?v=61"></script>
     <script>
         (function startNetworkPage() {
             try {

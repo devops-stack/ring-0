@@ -4,8 +4,16 @@
 #   rm -rf "$PROMETHEUS_MULTIPROC_DIR" && mkdir -p "$PROMETHEUS_MULTIPROC_DIR"
 
 
+import os
+
+
 def child_exit(server, worker):
     """Required for prometheus_client multiprocess mode (gunicorn -w N > 1)."""
+    # Without the directory there are no per-worker metric files to clean up, and
+    # prometheus_client raises TypeError on the None path rather than saying so —
+    # once per worker exit, which is every restart.
+    if not os.environ.get("PROMETHEUS_MULTIPROC_DIR", "").strip():
+        return
     try:
         from prometheus_client import multiprocess
 

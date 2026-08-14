@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import platform
+import time
 from datetime import datetime
 
 from kernel_ai.sentry_helpers import capture_exception
@@ -11,6 +13,26 @@ from kernel_ai.sentry_helpers import capture_exception
 # A syscall row lists the processes parked in it. More than a dozen names is
 # already unreadable, and the row keeps the honest total next to the list.
 _MAX_WAITERS_PER_SYSCALL = 12
+
+# Reading /proc/<pid>/syscall of a foreign task needs ptrace-level access, which
+# the backend deliberately does not have. The root collector samples the whole
+# machine instead and leaves the result here; see the unit file
+# deploy/kernel-ai-syscall-snapshot.service.
+_SYSCALLS_SNAPSHOT = os.environ.get("SYSCALLS_OUT", "/run/kernel-ai/syscalls.json")
+_SNAPSHOT_MAX_AGE = 6.0
+
+
+def _is_kernel_thread(pid):
+    """A kernel thread has no command line, and makes no syscalls.
+
+    Its /proc/<pid>/syscall still reads, as ``0 0x0 …``, and counting that
+    invents a row for syscall number 0 with every kthread parked in it.
+    """
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return not f.read(1)
+    except OSError:
+        return True
 
 
 def _read_comm(pid):
@@ -106,8 +128,80 @@ def _kernel_dna_sockstat_activity_nucleotides():
     return result
 
 
+def read_snapshot():
+    """The root collector's system-wide sample, if it is present and fresh.
+
+    A stale file is worth less than nothing here — the panel would claim
+    processes are parked in calls they left minutes ago — so anything older
+    than a few sample intervals is discarded and the caller falls back to what
+    it can see itself.
+    """
+    try:
+        with open(_SYSCALLS_SNAPSHOT, "r", encoding="utf-8", errors="replace") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    ts = data.get("ts")
+    try:
+        age = time.time() - float(ts)
+    except (TypeError, ValueError):
+        return None
+    if age > _SNAPSHOT_MAX_AGE:
+        return None
+    data["age"] = round(age, 2)
+    return data
+
+
+def get_syscall_sample(syscall_names, map_syscall_to_subsystem_fn, kernel_dna_max_procs, fallback_mock_calls_fn):
+    """Rows of parked calls together with how honestly they were obtained.
+
+    ``scope`` is the part callers must not lose: ``machine`` means the root
+    collector answered and the rows cover every task on the box, ``self`` means
+    only the backend's own processes were readable and the panel is looking at
+    itself.
+    """
+    snapshot = read_snapshot()
+    if snapshot and snapshot.get("syscalls"):
+        # The collector deliberately leaves the subsystem out: it samples, and
+        # naming things is the app's job.
+        rows = snapshot["syscalls"]
+        for row in rows:
+            row["subsystem"] = map_syscall_to_subsystem_fn(row.get("name", ""))
+        return {
+            "syscalls": rows,
+            "source": "collector",
+            "scope": "machine",
+            "tasks_total": snapshot.get("tasks_total"),
+            "blocked_total": snapshot.get("blocked_total"),
+            "age": snapshot.get("age"),
+        }
+    rows = _sample_visible_processes(
+        syscall_names, map_syscall_to_subsystem_fn, kernel_dna_max_procs, fallback_mock_calls_fn
+    )
+    return {
+        "syscalls": rows,
+        "source": "backend",
+        "scope": "self",
+        "tasks_total": None,
+        "blocked_total": sum(row.get("count", 0) for row in rows if isinstance(row.get("count"), int)),
+        "age": 0.0,
+    }
+
+
 def get_real_system_calls(syscall_names, map_syscall_to_subsystem_fn, kernel_dna_max_procs, fallback_mock_calls_fn):
-    """Sample blocked syscalls from /proc or fallback to vm/block/net counters."""
+    """Just the rows, for callers that do not care how they were obtained."""
+    return get_syscall_sample(
+        syscall_names, map_syscall_to_subsystem_fn, kernel_dna_max_procs, fallback_mock_calls_fn
+    )["syscalls"]
+
+
+def _sample_visible_processes(syscall_names, map_syscall_to_subsystem_fn, kernel_dna_max_procs, fallback_mock_calls_fn):
+    """Sample blocked syscalls from /proc or fallback to vm/block/net counters.
+
+    Without ptrace-level access this only ever sees the backend's own
+    processes, which is why the collector exists; this is what is left when it
+    is not running.
+    """
     try:
         if platform.system() != "Linux":
             return fallback_mock_calls_fn()
@@ -120,10 +214,13 @@ def get_real_system_calls(syscall_names, map_syscall_to_subsystem_fn, kernel_dna
         sampled = sorted(proc_dirs, key=int)[: min(kernel_dna_max_procs, len(proc_dirs))]
         syscall_counts = {}
         syscall_waiters = {}
+        syscall_numbers = {}
         for pid in sampled:
             try:
                 syscall_path = f"/proc/{pid}/syscall"
                 if not os.path.exists(syscall_path):
+                    continue
+                if _is_kernel_thread(pid):
                     continue
                 with open(syscall_path, "r", encoding="utf-8", errors="replace") as f:
                     line = f.read().strip()
@@ -138,6 +235,7 @@ def get_real_system_calls(syscall_names, map_syscall_to_subsystem_fn, kernel_dna
                     continue
                 syscall_name = syscall_names.get(syscall_num, f"syscall_{syscall_num}")
                 syscall_counts[syscall_name] = syscall_counts.get(syscall_name, 0) + 1
+                syscall_numbers[syscall_name] = syscall_num
                 # Keep who is parked here: the count is a set of processes, and the
                 # UI opens the dossier of any of them by pid.
                 waiters = syscall_waiters.setdefault(syscall_name, [])
@@ -151,6 +249,7 @@ def get_real_system_calls(syscall_names, map_syscall_to_subsystem_fn, kernel_dna
             for name, count in sorted(syscall_counts.items(), key=lambda x: x[1], reverse=True)[:20]:
                 syscalls.append({
                     "name": name,
+                    "nr": syscall_numbers.get(name),
                     "count": count,
                     "subsystem": map_syscall_to_subsystem_fn(name),
                     "waiters": syscall_waiters.get(name, []),

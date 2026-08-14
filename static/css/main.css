@@ -174,91 +174,128 @@ svg {
     max-width: 300px;
 }
 
-/* Namespace HUD tooltip (ink-on-paper FUI style) */
+/* Namespace hover chip — card language shared with the process dossier */
 .ns-hud-tooltip {
-    background: rgba(20, 22, 26, 0.94);
-    color: #e8eaef;
-    border: 1px solid rgba(120, 126, 138, 0.5);
-    border-radius: 3px;
-    padding: 9px 11px;
-    min-width: 172px;
-    max-width: 240px;
-    box-shadow: 0 6px 22px rgba(0, 0, 0, 0.35);
+    background: none;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    color: #f4f4ec;
+    /* Filters are applied before clipping, so the shadow lives on this wrapper
+       and the chamfer on the card inside it. */
+    filter: drop-shadow(0 7px 13px rgba(7, 9, 12, 0.45));
+    max-width: none;
 }
-.ns-hud-top {
+.ns-hud-card {
+    min-width: 214px;
+    max-width: 254px;
+    background: #090c10;
+    border: 1px solid rgba(236, 236, 226, 0.17);
+    clip-path: polygon(0 0, calc(100% - 13px) 0, 100% 13px, 100% 100%, 0 100%);
+}
+/* The clip cuts the border along the chamfer, so redraw that hairline. */
+.ns-hud-card::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: calc(100% - 13px);
+    width: 19px;
+    height: 1px;
+    background: rgba(236, 236, 226, 0.17);
+    transform-origin: 0 0;
+    transform: rotate(45deg);
+}
+.ns-hud-head {
     display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 10px;
-    padding-bottom: 6px;
-    margin-bottom: 6px;
-    border-bottom: 1px solid rgba(120, 126, 138, 0.35);
+    align-items: center;
+    gap: 8px;
+    height: 25px;
+    padding: 0 13px 0 10px;
+    background: rgba(244, 244, 236, 0.055);
+    border-bottom: 1px solid rgba(236, 236, 226, 0.17);
 }
-.ns-hud-over {
-    font-size: 7.5px;
-    letter-spacing: 1.8px;
-    color: #7f8794;
-}
-.ns-hud-name {
-    font-size: 13px;
-    letter-spacing: 1.6px;
-    color: #ffffff;
-    line-height: 1.15;
-}
-.ns-hud-pill {
+.ns-hud-glyph {
+    position: relative;
     flex: none;
-    margin-top: 2px;
-    font-size: 7.5px;
+    width: 9px;
+    height: 9px;
+    border: 1px solid rgba(244, 244, 236, 0.5);
+    border-radius: 50%;
+}
+.ns-hud-glyph::after {
+    content: '';
+    position: absolute;
+    inset: 2px;
+    border-radius: 50%;
+    background: #e2a33e;
+}
+.ns-hud-title {
+    flex: 1;
+    font-size: 9px;
+    letter-spacing: 1.7px;
+    color: #f4f4ec;
+}
+.ns-hud-flag {
+    flex: none;
+    font-size: 9px;
     letter-spacing: 1px;
-    padding: 2px 7px;
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.22);
-    color: #aeb4c0;
+    color: rgba(244, 244, 236, 0.5);
     white-space: nowrap;
 }
-.ns-hud-pill.is-iso {
-    background: rgba(88, 182, 216, 0.16);
-    border-color: rgba(88, 182, 216, 0.7);
-    color: #7fd0ea;
+.ns-hud-flag.is-iso { color: #e2a33e; }
+.ns-hud-body { padding: 10px 13px 11px; }
+.ns-hud-name {
+    font-size: 17px;
+    line-height: 1;
+    letter-spacing: 2.4px;
+    color: #f4f4ec;
 }
 .ns-hud-desc {
-    font-size: 9.5px;
+    margin: 6px 0 9px;
+    font-size: 10px;
     line-height: 1.35;
-    color: #aab0bc;
-    margin-bottom: 7px;
+    color: rgba(244, 244, 236, 0.5);
 }
-.ns-hud-rows { margin: 6px 0; }
 .ns-hud-row {
     display: flex;
     justify-content: space-between;
-    font-size: 9.5px;
+    align-items: baseline;
+    gap: 10px;
+    padding: 3px 0;
+    border-top: 1px solid rgba(236, 236, 226, 0.1);
+}
+.ns-hud-row span {
+    font-size: 9px;
+    letter-spacing: 1.2px;
+    color: rgba(244, 244, 236, 0.5);
+}
+.ns-hud-row b {
+    font-size: 11px;
+    font-weight: 400;
     letter-spacing: 0.4px;
-    padding: 1px 0;
+    color: #f4f4ec;
 }
-.ns-hud-row span { color: #8b909c; }
-.ns-hud-row b { color: #e8eaef; font-weight: 600; }
-.ns-hud-bar {
-    margin-top: 7px;
-    height: 4px;
-    border-radius: 2px;
-    background: rgba(120, 126, 138, 0.25);
-    overflow: hidden;
+.ns-hud-row b.is-live { color: #e2a33e; }
+.ns-hud-meter {
+    margin-top: 10px;
+    height: 3px;
+    background: rgba(236, 236, 226, 0.1);
 }
-.ns-hud-bar i {
+.ns-hud-meter i {
     display: block;
     height: 100%;
-    background: rgba(88, 182, 216, 0.85);
+    background: #e2a33e;
 }
 .ns-hud-foot {
     display: flex;
     justify-content: space-between;
-    margin-top: 5px;
-    font-size: 8px;
+    gap: 10px;
+    margin-top: 7px;
+    font-size: 9px;
     letter-spacing: 1.2px;
-    color: #7f8794;
+    color: rgba(244, 244, 236, 0.26);
 }
-.ns-hud-hint { color: #7fd0ea; }
+.ns-hud-hint { color: rgba(226, 163, 62, 0.8); }
 
 /* Marker for namespace cells that contain real isolation (unique_count > 1) */
 .ns-isolated-marker {
@@ -271,93 +308,229 @@ svg {
     50% { opacity: 1; }
 }
 
-/* Namespace system-info tree (unfolds from a namespace cell) */
-.ns-tree-conn { stroke: rgba(90, 94, 102, 0.75); stroke-width: 1.3; fill: none; }
-.ns-tree-anchor { fill: rgba(60, 63, 70, 0.9); }
+/* Namespace detail panel (unfolds from a namespace cell) */
+.ns-tree-conn { stroke: rgba(58, 61, 68, 0.55); stroke-width: 1.1; fill: none; }
+.ns-tree-anchor { fill: rgba(58, 61, 68, 0.85); }
 .ns-tree-frame {
-    fill: rgba(20, 22, 26, 0.95);
-    stroke: rgba(120, 126, 138, 0.5);
+    fill: rgba(9, 12, 16, 0.975);
+    stroke: rgba(236, 236, 226, 0.17);
     stroke-width: 1;
 }
+.ns-tree-strip { fill: rgba(244, 244, 236, 0.055); }
+.ns-tree-glyph-ring { fill: none; stroke: rgba(244, 244, 236, 0.5); stroke-width: 1.1; }
+.ns-tree-glyph-dot { fill: #e2a33e; }
 .ns-tree-title {
-    fill: #ffffff;
+    fill: #f4f4ec;
     font-family: 'Share Tech Mono', monospace;
-    font-size: 10px;
-    letter-spacing: 1.5px;
+    font-size: 9px;
+    letter-spacing: 1.7px;
 }
-.ns-tree-pill rect {
-    fill: rgba(255, 255, 255, 0.08);
-    stroke: rgba(255, 255, 255, 0.24);
-    stroke-width: 1;
-}
-.ns-tree-pill text {
-    fill: #aeb4c0;
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 7.5px;
-    letter-spacing: 1px;
-}
-.ns-tree-pill.is-iso rect {
-    fill: rgba(88, 182, 216, 0.18);
-    stroke: rgba(88, 182, 216, 0.7);
-}
-.ns-tree-pill.is-iso text { fill: #7fd0ea; }
-.ns-tree-close {
-    fill: #8b909c;
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 15px;
-}
-.ns-tree-close:hover { fill: #ffffff; }
-.ns-tree-track { fill: rgba(255, 255, 255, 0.12); }
-.ns-tree-track-fill { fill: rgba(150, 156, 168, 0.6); }
-.ns-tree-track-fill.is-iso { fill: rgba(88, 182, 216, 0.85); }
-.ns-tree-divider { stroke: rgba(120, 126, 138, 0.3); stroke-width: 1; }
-.ns-tree-foot {
-    fill: rgba(160, 166, 178, 0.7);
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 7.5px;
-    letter-spacing: 0.8px;
-}
-.ns-tree-link { stroke: rgba(150, 156, 168, 0.5); stroke-width: 1; fill: none; }
-.ns-tree-root rect {
-    fill: rgba(88, 182, 216, 0.9);
-    stroke: rgba(88, 182, 216, 1);
-    stroke-width: 1;
-}
-.ns-tree-root text {
-    fill: #06131b;
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 9.5px;
-    font-weight: 600;
-    letter-spacing: 0.6px;
-}
-.ns-tree-branch rect {
-    fill: rgba(255, 255, 255, 0.1);
-    stroke: rgba(255, 255, 255, 0.28);
-    stroke-width: 1;
-}
-.ns-tree-branch text {
-    fill: #eef1f5;
+.ns-tree-meta {
+    fill: rgba(244, 244, 236, 0.5);
     font-family: 'Share Tech Mono', monospace;
     font-size: 9px;
     letter-spacing: 1px;
 }
-.ns-tree-branch.is-iso rect {
-    fill: rgba(88, 182, 216, 0.14);
-    stroke: rgba(88, 182, 216, 0.6);
+.ns-tree-meta.is-iso { fill: #e2a33e; }
+.ns-tree-divider { stroke: rgba(236, 236, 226, 0.17); stroke-width: 0.9; }
+.ns-tree-track { fill: rgba(236, 236, 226, 0.1); }
+.ns-tree-track-fill { fill: #e2a33e; }
+.ns-tree-foot {
+    fill: rgba(244, 244, 236, 0.26);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 1.2px;
 }
-.ns-tree-branch.is-iso text { fill: #dff0f7; }
+.ns-tree-link { stroke: rgba(236, 236, 226, 0.14); stroke-width: 1; fill: none; }
+.ns-tree-root path {
+    fill: rgba(244, 244, 236, 0.06);
+    stroke: rgba(236, 236, 226, 0.17);
+    stroke-width: 1;
+}
+.ns-tree-root text {
+    fill: #f4f4ec;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 1.6px;
+}
+.ns-tree-root.is-iso path { stroke: rgba(226, 163, 62, 0.5); }
+.ns-tree-root.is-iso text { fill: #e2a33e; }
+.ns-tree-branch rect {
+    fill: rgba(244, 244, 236, 0.045);
+    stroke: rgba(236, 236, 226, 0.1);
+    stroke-width: 1;
+}
+.ns-tree-branch text {
+    fill: #f4f4ec;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 1.6px;
+}
+.ns-tree-branch.is-iso rect { stroke: rgba(226, 163, 62, 0.38); }
+.ns-tree-branch.is-iso text { fill: #e2a33e; }
 .ns-tree-leaf rect {
-    fill: rgba(255, 255, 255, 0.045);
-    stroke: rgba(120, 126, 138, 0.42);
+    fill: rgba(244, 244, 236, 0.025);
+    stroke: rgba(236, 236, 226, 0.08);
     stroke-width: 1;
 }
 .ns-tree-leaf text {
-    fill: #c4c9d3;
+    fill: rgba(244, 244, 236, 0.72);
     font-family: 'Share Tech Mono', monospace;
-    font-size: 8.5px;
+    font-size: 9.5px;
     letter-spacing: 0.3px;
 }
-.ns-tree-leaf.is-iso rect { stroke: rgba(88, 182, 216, 0.4); }
+.ns-tree-leaf.is-iso text { fill: #f4f4ec; }
+
+/* The card language shared by the kernel-element cards: a chamfered frame that
+   unfolds from the row it was opened on, a header strip, and a rail of stages
+   below it. Used by the syscall card and the interrupt card. */
+.kcard-conn { stroke: rgba(58, 61, 68, 0.55); stroke-width: 1.1; fill: none; }
+.kcard-anchor { fill: rgba(58, 61, 68, 0.85); }
+.kcard-frame {
+    fill: rgba(9, 12, 16, 0.975);
+    stroke: rgba(236, 236, 226, 0.17);
+    stroke-width: 1;
+}
+.kcard-strip { fill: rgba(244, 244, 236, 0.055); }
+.kcard-glyph-ring { fill: none; stroke: rgba(244, 244, 236, 0.5); stroke-width: 1.1; }
+.kcard-glyph-dot { fill: #e2a33e; }
+.kcard-divider { stroke: rgba(236, 236, 226, 0.17); stroke-width: 0.9; }
+.kcard-title {
+    fill: #f4f4ec;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 1.7px;
+}
+.kcard-meta {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 1px;
+}
+.kcard-line {
+    fill: rgba(244, 244, 236, 0.72);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9.5px;
+    letter-spacing: 0.9px;
+}
+.kcard-faint {
+    fill: rgba(244, 244, 236, 0.34);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 8.5px;
+    letter-spacing: 0.8px;
+}
+.kcard-signature {
+    fill: #e2a33e;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9.5px;
+    letter-spacing: 0.2px;
+}
+.kcard-summary {
+    fill: rgba(244, 244, 236, 0.56);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.3px;
+}
+.kcard-section {
+    fill: rgba(244, 244, 236, 0.5);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 8.5px;
+    letter-spacing: 1.6px;
+}
+.kcard-rail { stroke: rgba(236, 236, 226, 0.16); stroke-width: 1; }
+.kcard-node { fill: rgba(244, 244, 236, 0.55); }
+.kcard-node.is-unconfirmed { fill: none; stroke: rgba(244, 244, 236, 0.34); stroke-width: 1; }
+.kcard-node.is-sleep { fill: #e2a33e; }
+.kcard-stage {
+    fill: rgba(244, 244, 236, 0.3);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 7.5px;
+    letter-spacing: 1.1px;
+}
+.kcard-symbol {
+    fill: #f4f4ec;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.2px;
+}
+.kcard-symbol.is-sleep { fill: #e2a33e; }
+.kcard-note {
+    fill: rgba(244, 244, 236, 0.3);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 7.5px;
+    letter-spacing: 0.9px;
+}
+.kcard-waiter {
+    fill: rgba(244, 244, 236, 0.82);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9.5px;
+    letter-spacing: 0.2px;
+}
+.kcard-waiter-dim {
+    fill: rgba(244, 244, 236, 0.42);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.2px;
+}
+.kcard-foot {
+    fill: rgba(244, 244, 236, 0.26);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 1.2px;
+}
+/* Share of a counter: how the interrupts of one line fell across the CPUs, and
+   what came through an aggregate counter. The amber fill marks the largest. */
+.kcard-bar-bg { fill: rgba(244, 244, 236, 0.08); }
+.kcard-bar-fill { fill: rgba(244, 244, 236, 0.4); }
+.kcard-bar-fill.is-top { fill: #e2a33e; }
+/* The interrupt route map: a pale track that changes lane at 45°, stations
+   with their own small block of text, and ticks marking the CPUs that took a
+   share of the line. A dashed leg means the step it leads to is reasoned from
+   the device class rather than measured. */
+.irq-track {
+    fill: none;
+    stroke: rgba(226, 226, 214, 0.5);
+    stroke-width: 1.1;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+}
+.irq-track.is-reasoned { stroke: rgba(226, 163, 62, 0.55); stroke-dasharray: 3 3; }
+.irq-station {
+    fill: rgba(9, 12, 16, 0.98);
+    stroke: rgba(236, 236, 226, 0.7);
+    stroke-width: 1.1;
+}
+.irq-station.is-reasoned { stroke: #e2a33e; }
+.irq-tick { fill: rgba(244, 244, 236, 0.14); }
+.irq-tick.is-lit { fill: #e2a33e; }
+.irq-station-title {
+    fill: rgba(240, 240, 232, 0.92);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.6px;
+}
+.irq-station-line {
+    fill: rgba(244, 244, 236, 0.42);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 7.5px;
+    letter-spacing: 0.7px;
+}
+/* The state letter of a thread. Amber is a thread the kernel has on a CPU or
+   ready for one; the warm tint is an uninterruptible wait, which is the state
+   worth noticing; everything else is asleep and stays quiet. */
+.kcard-state {
+    fill: rgba(244, 244, 236, 0.4);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9.5px;
+    letter-spacing: 0.2px;
+}
+.kcard-state.is-run { fill: #e2a33e; }
+.kcard-state.is-block { fill: #d98a6a; }
+.kcard-inferred {
+    fill: rgba(226, 163, 62, 0.75);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 7.5px;
+    letter-spacing: 0.9px;
+}
 
 /* Bezier curve styles - matching connection lines */
 .bezier-curve {
