@@ -45,6 +45,15 @@ def get_real_system_calls():
     )
 
 
+def get_syscall_sample():
+    return _syscalls_service.get_syscall_sample(
+        syscall_names=get_syscall_names(),
+        map_syscall_to_subsystem_fn=map_syscall_to_subsystem,
+        kernel_dna_max_procs=KERNEL_DNA_MAX_PROCS,
+        fallback_mock_calls_fn=get_mock_system_calls,
+    )
+
+
 def get_kernel_subsystem_status():
     return _core_observability_service.get_kernel_subsystem_status()
 

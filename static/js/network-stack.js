@@ -2030,6 +2030,17 @@ class NetworkStackVisualization {
         this.container.appendChild(lifecyclePanel);
         this.overlayNodes.push(lifecyclePanel);
         this.lifecyclePanelNode = lifecyclePanel;
+        lifecyclePanel.addEventListener('click', (event) => {
+            const nav = event.target && event.target.closest
+                ? event.target.closest('[data-ns-nav]')
+                : null;
+            if (!nav) return;
+            const href = nav.getAttribute('data-ns-nav');
+            if (!href) return;
+            event.preventDefault();
+            event.stopPropagation();
+            window.location.assign(href);
+        });
 
         const layerTip = document.createElement('div');
         layerTip.style.cssText = `
@@ -2516,8 +2527,20 @@ class NetworkStackVisualization {
                 ? 'rgba(159, 233, 255, 0.88)'
                 : (softActive ? 'rgba(230, 193, 90, 0.5)' : 'rgba(115, 128, 145, 0.34)');
             const text = active ? '#ecfbff' : (softActive ? '#f2e2b5' : '#bac4cf');
+            const navHref = node.id === 'crypto'
+                ? '/linux-crypto-subsystem'
+                : (node.id === 'security' ? '/linux-security-subsystem' : '');
+            const navAttrs = navHref
+                ? ` data-ns-nav="${navHref}" title="Open ${node.label} subsystem" role="link"`
+                : '';
+            const navStyle = navHref
+                ? 'cursor:pointer; text-decoration:none;'
+                : '';
+            const tagLine = navHref
+                ? `${node.tags} · open →`
+                : node.tags;
             return `
-                <span style="
+                <span${navAttrs} style="
                     display:inline-block;
                     margin:2px 3px 3px 0;
                     padding:4px 8px;
@@ -2529,9 +2552,10 @@ class NetworkStackVisualization {
                     line-height:1.25;
                     white-space:nowrap;
                     box-shadow:${emphasized ? '0 0 0 1px rgba(230,193,90,0.35), 0 0 14px rgba(126,220,246,0.3)' : 'none'};
+                    ${navStyle}
                 ">
                     <span style="color:${text};font-size:9px">${node.label}</span>
-                    <span style="display:block;color:#7f8fa2;font-size:8px">${node.tags}</span>
+                    <span style="display:block;color:#7f8fa2;font-size:8px">${tagLine}</span>
                 </span>
             `;
         };

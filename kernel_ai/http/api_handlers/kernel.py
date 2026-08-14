@@ -14,15 +14,108 @@ from kernel_ai.state import get_state_container
 
 
 def syscalls_realtime():
-    return api_json(
-        lambda: {
+    def _payload():
+        sample = _telemetry.get_syscall_sample()
+        return {
             "timestamp": datetime.now().isoformat(),
-            "syscalls": _telemetry.get_real_system_calls(),
+            "syscalls": sample.get("syscalls", []),
+            # How the sample was taken. "self" means the root collector is not
+            # running and the panel can only see the backend's own processes,
+            # which the UI has to say out loud rather than pass off as the machine.
+            "sample": {
+                "source": sample.get("source"),
+                "scope": sample.get("scope"),
+                "tasks_total": sample.get("tasks_total"),
+                "blocked_total": sample.get("blocked_total"),
+                "age": sample.get("age"),
+            },
             "cpu_usage": psutil.cpu_percent(interval=1),
             "memory_usage": psutil.virtual_memory().percent,
             "system_info": _core_observability_service.get_system_info(),
         }
-    )
+
+    return api_json(_payload)
+
+
+def syscall_detail(name):
+    """What one syscall is inside this kernel, plus who is parked in it.
+
+    The number, the chain of kernel symbols and the sleeping function all come
+    from the running machine. A call nobody is parked in right now still has an
+    answer — the waiter list is simply empty.
+    """
+
+    def _payload():
+        from collections import Counter
+
+        from kernel_ai.services import syscall_anatomy
+
+        clean = "".join(ch for ch in str(name)[:64] if ch.isalnum() or ch == "_")
+        sample = _telemetry.get_syscall_sample()
+        rows = sample.get("syscalls") or []
+        row = next((r for r in rows if str(r.get("name", "")).lower() == clean.lower()), None)
+
+        waiters = list(row.get("waiters") or []) if row else []
+        numbers = {v: k for k, v in _telemetry.get_syscall_names().items()}
+        nr = (row or {}).get("nr")
+        if nr is None:
+            nr = numbers.get(clean)
+        subsystem = (row or {}).get("subsystem") or _telemetry.map_syscall_to_subsystem(clean)
+
+        wchans = Counter(w.get("wchan") for w in waiters if w.get("wchan"))
+        anatomy = syscall_anatomy.describe(
+            clean, nr=nr, subsystem=subsystem, wchans=wchans.most_common(), sampled=len(waiters)
+        )
+
+        return {
+            "timestamp": datetime.now().isoformat(),
+            **anatomy,
+            "count": (row or {}).get("count", 0),
+            "waiters": waiters,
+            "sample": {"source": sample.get("source"), "scope": sample.get("scope")},
+        }
+
+    return api_json(_payload)
+
+
+def wakeups():
+    """Who woke whom, over the window the collector last sampled."""
+
+    def _payload():
+        from kernel_ai.services import wakeups as wakeups_service
+        return {"timestamp": datetime.now().isoformat(), **wakeups_service.describe()}
+    return api_json(_payload)
+
+
+def runqueue():
+    """Who is competing for a CPU right now, and who would be taken next."""
+
+    def _payload():
+        from kernel_ai.services import runqueue as runqueue_service
+
+        return {"timestamp": datetime.now().isoformat(), **runqueue_service.describe()}
+
+    return api_json(_payload)
+
+
+def irq_detail(irq):
+    """What one interrupt line is on this machine.
+
+    Identity, affinity, the per-CPU counters and the deferred half, all read
+    from /sys and /proc. Rates are not part of the answer: the panel measures
+    them over its polling interval, which is a steadier window than a single
+    request could sample, and the card uses those.
+    """
+
+    def _payload():
+        from kernel_ai.services import irq_anatomy
+
+        anatomy = irq_anatomy.describe(irq)
+        if anatomy is None:
+            return {"timestamp": datetime.now().isoformat(), "irq": str(irq), "found": False}
+        return {"timestamp": datetime.now().isoformat(), "found": True, **anatomy}
+
+    return api_json(_payload)
 
 
 def io_pulse():

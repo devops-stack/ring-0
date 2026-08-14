@@ -81,6 +81,22 @@ const NS_KIND = {
 
 let expandedNsId = null;
 
+// Cells on the outer edge of the ring would push the chip off screen, so it
+// flips to the other side of the cursor instead of being clipped.
+function placeNamespaceTooltip(tip, event) {
+    const node = tip.node();
+    if (!node) return;
+    const gap = 14;
+    const margin = 10;
+    let left = event.pageX + gap;
+    if (left + node.offsetWidth > window.innerWidth - margin) {
+        left = event.pageX - gap - node.offsetWidth;
+    }
+    const top = Math.min(event.pageY - 10, window.innerHeight - node.offsetHeight - margin);
+    tip.style('left', `${Math.max(margin, left)}px`)
+        .style('top', `${Math.max(margin, top)}px`);
+}
+
 function drawNamespaceShell(centerX, centerY, namespaces) {
     const shellGroup = svg.selectAll('.tag-icon').empty()
         ? svg.append('g').attr('class', 'namespace-shell-layer')
@@ -196,34 +212,32 @@ function drawNamespaceShell(centerX, centerY, namespaces) {
             .on('mouseenter', (event) => {
                 setFocus(idx);
                 d3.selectAll('.ns-tooltip').remove();
-                d3.select('body')
+                const tip = d3.select('body')
                     .append('div')
                     .attr('class', 'tooltip ns-tooltip ns-hud-tooltip')
-                    .style('left', `${event.pageX + 14}px`)
-                    .style('top', `${event.pageY - 10}px`)
                     .html(`
-                        <div class="ns-hud-top">
-                            <div>
-                                <div class="ns-hud-over">NAMESPACE</div>
-                                <div class="ns-hud-name">${nsName.toUpperCase()}</div>
+                        <div class="ns-hud-card">
+                            <div class="ns-hud-head">
+                                <i class="ns-hud-glyph"></i>
+                                <span class="ns-hud-title">NAMESPACE</span>
+                                <span class="ns-hud-flag ${isolated ? 'is-iso' : ''}">${isolated ? 'ISOLATED' : 'SINGLE'}</span>
                             </div>
-                            <div class="ns-hud-pill ${isolated ? 'is-iso' : ''}">${isolated ? 'ISOLATED' : 'SINGLE'}</div>
+                            <div class="ns-hud-body">
+                                <div class="ns-hud-name">${nsName.toUpperCase()}</div>
+                                <div class="ns-hud-desc">${meta.isolates || 'Resource isolation'}</div>
+                                <div class="ns-hud-row"><span>WORLDS</span><b class="${isolated ? 'is-live' : ''}">${ns.unique_count || 0}</b></div>
+                                <div class="ns-hud-row"><span>DOMINANT</span><b>${ns.dominant_count || 0} procs</b></div>
+                                <div class="ns-hud-row"><span>INODE</span><b>${ns.dominant_inode || 'n/a'}</b></div>
+                                <div class="ns-hud-row"><span>VIA</span><b>${kind}</b></div>
+                                <div class="ns-hud-meter"><i style="width:${Math.round(activity * 100)}%"></i></div>
+                                <div class="ns-hud-foot"><span>ACTIVITY ${Math.round(activity * 100)}%</span><span class="ns-hud-hint">CLICK TO UNFOLD ▸</span></div>
+                            </div>
                         </div>
-                        <div class="ns-hud-desc">${meta.isolates || 'Resource isolation'}</div>
-                        <div class="ns-hud-rows">
-                            <div class="ns-hud-row"><span>WORLDS</span><b>${ns.unique_count || 0}</b></div>
-                            <div class="ns-hud-row"><span>DOMINANT</span><b>${ns.dominant_count || 0} procs</b></div>
-                            <div class="ns-hud-row"><span>INODE</span><b>${ns.dominant_inode || 'n/a'}</b></div>
-                            <div class="ns-hud-row"><span>VIA</span><b>${kind}</b></div>
-                        </div>
-                        <div class="ns-hud-bar"><i style="width:${Math.round(activity * 100)}%"></i></div>
-                        <div class="ns-hud-foot"><span>ACTIVITY ${Math.round(activity * 100)}%</span><span class="ns-hud-hint">click to unfold ▸</span></div>
                     `);
+                placeNamespaceTooltip(tip, event);
             })
             .on('mousemove', (event) => {
-                d3.selectAll('.ns-tooltip')
-                    .style('left', `${event.pageX + 14}px`)
-                    .style('top', `${event.pageY - 10}px`);
+                placeNamespaceTooltip(d3.selectAll('.ns-tooltip'), event);
             })
             .on('mouseleave', () => {
                 restoreFocus();
@@ -242,8 +256,13 @@ function drawNamespaceShell(centerX, centerY, namespaces) {
     }
 }
 
+// Живые слои сцены дорисовываются в svg постоянно, поэтому пока панель открыта,
+// её держит тот же сторож z-порядка, что и досье процесса.
+let nsTreeTopKeeper = null;
+
 function collapseNamespaceTree(animated = true) {
     expandedNsId = null;
+    if (nsTreeTopKeeper) nsTreeTopKeeper.stop();
     d3.select('body').on('keydown.nstree', null);
     const layer = svg.selectAll('.ns-tree-layer');
     const scrim = svg.selectAll('.ns-tree-scrim');
@@ -262,17 +281,22 @@ function expandNamespaceTree(ns, meta, nsName, cx, cy, mid) {
     const W = (svgNode && svgNode.clientWidth) || window.innerWidth;
     const H = (svgNode && svgNode.clientHeight) || window.innerHeight;
 
-    // Light scrim calms the busy ring behind the readout.
+    // Same focus veil the process dossier uses, so overlays read as one system.
     svg.append('rect')
         .attr('class', 'ns-tree-scrim')
         .attr('x', 0).attr('y', 0).attr('width', W).attr('height', H)
-        .attr('fill', 'rgba(230, 231, 233, 0.62)')
+        .attr('fill', ensureFocusVeilGradient())
         .style('opacity', 0)
         .style('cursor', 'pointer')
         .on('click', () => collapseNamespaceTree())
         .transition().duration(220).style('opacity', 1);
 
     const layer = svg.append('g').attr('class', 'ns-tree-layer');
+
+    if (!nsTreeTopKeeper) {
+        nsTreeTopKeeper = createOverlayTopKeeper('ns-tree-scrim', ['ns-tree-layer'], () => !!expandedNsId);
+    }
+    nsTreeTopKeeper.start();
 
     // Anchor = outer-mid point of the clicked cell (the "square" it grows from).
     const a = mid - Math.PI / 2;
@@ -287,10 +311,16 @@ function expandNamespaceTree(ns, meta, nsName, cx, cy, mid) {
     const worlds = Array.isArray(ns.worlds) ? ns.worlds : [];
     const worldLeaves = worlds.length
         ? worlds.map((w) => ({
-            label: clip(`${w.count}p · ${(w.sample && w.sample[0]) || '—'}`, 20),
+            label: clip(`${w.count}p · ${(w.sample && w.sample[0]) || '—'}`, 22),
             title: `inode ${w.inode} · ${w.count} procs\n${(w.sample || []).join(', ') || 'n/a'}`,
         }))
         : [{ label: `${ns.dominant_count || 0} procs` }];
+    // Only the richest inodes come back from the API, so name the remainder
+    // instead of letting the branch count disagree with the rows.
+    const hiddenWorlds = Math.max(0, Number(ns.unique_count || 0) - worlds.length);
+    if (worlds.length && hiddenWorlds) {
+        worldLeaves.push({ label: `+${hiddenWorlds} smaller ${hiddenWorlds === 1 ? 'world' : 'worlds'}` });
+    }
 
     const branches = [
         { label: 'IDENTITY', leaves: [
@@ -303,9 +333,10 @@ function expandNamespaceTree(ns, meta, nsName, cx, cy, mid) {
     ];
 
     // Panel geometry (local content coords).
-    const rowH = 24;
-    const headerH = 40;
-    const footerH = 16;
+    const rowH = 25;
+    const headerH = 25;   // header strip, same height as the dossier cards
+    const meterH = 2;
+    const footerH = 26;
     const padX = 14;
     const col0 = padX;        // root chip
     const rootW = 56;
@@ -315,7 +346,7 @@ function expandNamespaceTree(ns, meta, nsName, cx, cy, mid) {
     const leafW = 152;
     const panelW = col2 + leafW + padX;
     const totalLeaves = branches.reduce((s, b) => s + b.leaves.length, 0);
-    const contentTop = headerH + 8;
+    const contentTop = headerH + meterH + 12;
     const panelH = contentTop + totalLeaves * rowH + footerH;
 
     // Assign rows: leaves stack, branch = mean of its leaves, root = mean of branches.
@@ -353,36 +384,63 @@ function expandNamespaceTree(ns, meta, nsName, cx, cy, mid) {
         .on('click', (event) => event.stopPropagation());
 
     // Frame unfolds vertically from its centre (mechanical open).
-    panel.append('rect')
+    ensureDossierDefs();
+    const cut = 15;
+    panel.append('path')
         .attr('class', 'ns-tree-frame')
-        .attr('width', panelW).attr('height', panelH).attr('rx', 4)
+        .attr('d', dossierCardPath(0, 0, panelW, panelH, cut))
+        .attr('filter', 'url(#dossier-drop)')
         .attr('transform', `translate(0, ${panelH / 2}) scale(1, 0.02)`)
         .transition().delay(140).duration(220).ease(d3.easeCubicOut)
         .attr('transform', 'translate(0,0) scale(1,1)');
 
-    // Header: name + status pill + activity track + close affordance.
-    const header = panel.append('g').attr('class', 'ns-tree-header').style('opacity', 0);
-    header.transition().delay(280).duration(200).style('opacity', 1);
+    // Chrome: header strip with the ring glyph, activity meter, close hint.
+    const chrome = panel.append('g').attr('class', 'ns-tree-chrome').style('opacity', 0);
+    chrome.transition().delay(280).duration(200).style('opacity', 1);
 
-    header.append('text')
+    chrome.append('path')
+        .attr('class', 'ns-tree-strip')
+        .attr('d', `M0,0 H${panelW - cut} L${panelW},${cut} V${headerH} H0 Z`);
+    chrome.append('circle')
+        .attr('class', 'ns-tree-glyph-ring')
+        .attr('cx', padX).attr('cy', headerH / 2).attr('r', 4.2);
+    chrome.append('circle')
+        .attr('class', 'ns-tree-glyph-dot')
+        .attr('cx', padX).attr('cy', headerH / 2).attr('r', 1.6);
+
+    chrome.append('text')
         .attr('class', 'ns-tree-title')
-        .attr('x', padX).attr('y', 16)
+        .attr('x', padX + 12).attr('y', headerH / 2 + 3.5)
         .text(`NAMESPACE · ${nsName.toUpperCase()}`);
-
-    const pct = Math.round((ns.activity || 0) * 100);
-    const trackX = padX, trackY = 26, trackW = panelW - padX * 2;
-    header.append('rect')
-        .attr('class', 'ns-tree-track')
-        .attr('x', trackX).attr('y', trackY).attr('width', trackW).attr('height', 3).attr('rx', 1.5);
-    header.append('rect')
-        .attr('class', isolated ? 'ns-tree-track-fill is-iso' : 'ns-tree-track-fill')
-        .attr('x', trackX).attr('y', trackY).attr('width', 0).attr('height', 3).attr('rx', 1.5)
-        .transition().delay(340).duration(320).ease(d3.easeCubicOut)
-        .attr('width', Math.max(2, trackW * (pct / 100)));
-
-    header.append('line')
+    chrome.append('text')
+        .attr('class', isolated ? 'ns-tree-meta is-iso' : 'ns-tree-meta')
+        .attr('x', panelW - 13).attr('y', headerH / 2 + 3.5)
+        .attr('text-anchor', 'end')
+        .text(isolated ? 'ISOLATED' : 'SINGLE');
+    chrome.append('line')
         .attr('class', 'ns-tree-divider')
-        .attr('x1', padX).attr('y1', headerH - 4).attr('x2', panelW - padX).attr('y2', headerH - 4);
+        .attr('x1', 0).attr('y1', headerH).attr('x2', panelW).attr('y2', headerH);
+
+    // Activity reads as a hairline meter across the full width of the strip.
+    const pct = Math.round((ns.activity || 0) * 100);
+    chrome.append('rect')
+        .attr('class', 'ns-tree-track')
+        .attr('x', 0).attr('y', headerH).attr('width', panelW).attr('height', meterH);
+    chrome.append('rect')
+        .attr('class', 'ns-tree-track-fill')
+        .attr('x', 0).attr('y', headerH).attr('width', 0).attr('height', meterH)
+        .transition().delay(340).duration(320).ease(d3.easeCubicOut)
+        .attr('width', Math.max(2, panelW * (pct / 100)));
+
+    chrome.append('text')
+        .attr('class', 'ns-tree-foot')
+        .attr('x', padX).attr('y', panelH - 10)
+        .text('ESC OR CLICK OUTSIDE TO CLOSE');
+    chrome.append('text')
+        .attr('class', 'ns-tree-foot')
+        .attr('x', panelW - padX).attr('y', panelH - 10)
+        .attr('text-anchor', 'end')
+        .text(`ACTIVITY ${pct}%`);
 
     const linksG = panel.append('g').attr('class', 'ns-tree-links');
     const nodesG = panel.append('g').attr('class', 'ns-tree-nodes');
@@ -401,7 +459,7 @@ function expandNamespaceTree(ns, meta, nsName, cx, cy, mid) {
             .transition().delay(delay).duration(260).ease(d3.easeCubicOut)
             .attr('stroke-dashoffset', 0);
     };
-    const addChip = (fromX, fromY, x, y, w, label, cls, delay, title) => {
+    const addChip = (fromX, fromY, x, y, w, label, cls, delay, title, chamfer = 0) => {
         const g = nodesG.append('g')
             .attr('class', cls)
             .attr('transform', `translate(${fromX}, ${fromY}) scale(0.1)`)
@@ -409,8 +467,12 @@ function expandNamespaceTree(ns, meta, nsName, cx, cy, mid) {
         if (title) {
             g.style('cursor', 'help').append('title').text(title);
         }
-        g.append('rect')
-            .attr('x', 0).attr('y', -9).attr('width', w).attr('height', 18).attr('rx', 3);
+        if (chamfer) {
+            g.append('path').attr('d', dossierCardPath(0, -9, w, 18, chamfer));
+        } else {
+            g.append('rect')
+                .attr('x', 0).attr('y', -9).attr('width', w).attr('height', 18);
+        }
         g.append('text')
             .attr('x', 9).attr('y', 4)
             .text(label);
@@ -420,8 +482,8 @@ function expandNamespaceTree(ns, meta, nsName, cx, cy, mid) {
         return g;
     };
 
-    // Root chip (accent when the namespace holds real isolation).
-    addChip(col0, rootY, col0, rootY, rootW, nsName.toUpperCase(), isolated ? 'ns-tree-root is-iso' : 'ns-tree-root', 120);
+    // Root chip echoes the panel's clipped corner (accent when truly isolated).
+    addChip(col0, rootY, col0, rootY, rootW, nsName.toUpperCase(), isolated ? 'ns-tree-root is-iso' : 'ns-tree-root', 120, null, 5);
 
     // Branches + leaves.
     let leafSeq = 0;

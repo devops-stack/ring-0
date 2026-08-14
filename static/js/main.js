@@ -10,6 +10,20 @@ let rightSemicircleMenuManager;
 let connectionsManager; // make available for cleanup handlers
 let pinnedProcessDossier = null;
 const MOBILE_LAYOUT_BREAKPOINT = 900;
+// Pixels-per-user-unit of the mobile hero frame; text divides by it to stay a
+// constant size across screens. Set when the mobile viewBox is computed.
+let mobileFrameScale = 1;
+const MOBILE_HUD_FALLBACK_H = 72;
+// Margin the mobile overlays keep from the screen edge and from each other.
+const MOBILE_EDGE_GAP = 12;
+const MOBILE_CHAMFER = 'polygon(0 0, calc(100% - 9px) 0, 100% 9px, 100% 100%, 0 100%)';
+// Strip kept for the activity tape, and the height below which the hero stops
+// giving it up because it would no longer read as the hero.
+const MOBILE_TAPE_RESERVE = 150;
+const MOBILE_HERO_MIN = 300;
+const MOBILE_LABEL_MIN_SCALE = 0.64;
+// Advance of Share Tech Mono at the 9px the ring labels render at.
+const MOBILE_LABEL_CHAR_PX = 5.7;
 const MOBILE_TOUCH_SHORT_SIDE = 820;
 function isMobileLayout() {
     // Primary signal: narrow viewport.
@@ -220,9 +234,47 @@ function draw() {
         // the hero with a viewBox so the whole composition scales to fit and
         // stays centered (pointer/tooltip math uses pageX/Y, so hit-testing is
         // unaffected by the coordinate scaling).
+        //
+        // The notice above and the HUD below both cover the screen, so the hero
+        // is fitted to the band between them rather than to the viewport: sizing
+        // against the full height pushes it underneath one of them in landscape.
+        renderMobileHud();
+        const noticeEl = renderMobileNotice();
+        const hudEl = document.getElementById('mobile-hud');
+        const hudH = hudEl && hudEl.offsetHeight ? hudEl.offsetHeight : MOBILE_HUD_FALLBACK_H;
+        const bandTop = noticeEl && noticeEl.offsetHeight
+            ? MOBILE_EDGE_GAP + noticeEl.offsetHeight + MOBILE_EDGE_GAP
+            : MOBILE_EDGE_GAP;
+        const bandH = Math.max(180, height - hudH - bandTop);
         const frameHalf = 255;
-        svg.attr('viewBox', `${centerX - frameHalf} ${centerY - frameHalf} ${frameHalf * 2} ${frameHalf * 2}`)
+
+        // A width-limited hero would otherwise take the whole band on a short
+        // phone and squeeze the tape out of existence, so it gives up a strip
+        // for the feed — but only while enough height is left to stay a hero.
+        // What counts as "still a hero" scales with the screen: 300px is the
+        // floor on a normal phone, less on a narrow one where the width caps it
+        // anyway.
+        const heroMin = Math.min(MOBILE_HERO_MIN, width * 0.8);
+        const heroBand = bandH - MOBILE_TAPE_RESERVE >= heroMin
+            ? bandH - MOBILE_TAPE_RESERVE
+            : bandH;
+
+        // Match the viewBox aspect to the viewport so `meet` yields exactly this
+        // scale, which is the largest the hero can be in the space it is given.
+        mobileFrameScale = Math.min(width, heroBand) / (frameHalf * 2);
+        const vbW = width / mobileFrameScale;
+        const vbH = height / mobileFrameScale;
+
+        // On a narrow screen the hero is limited by width, so it can never fill
+        // the height — centring it would strand that slack above and below.
+        // Pinning it to the top of the band collects the slack into one band
+        // underneath, which the activity tape then fills.
+        const compH = frameHalf * 2 * mobileFrameScale;
+        const vbY = centerY - frameHalf - bandTop / mobileFrameScale;
+        svg.attr('viewBox', `${centerX - vbW / 2} ${vbY} ${vbW} ${vbH}`)
             .attr('preserveAspectRatio', 'xMidYMid meet');
+        // The tape docks to whatever the hero leaves behind.
+        window.__mobileHeroBottom = Math.round(bandTop + compH);
     } else {
         // Desktop renders 1:1 with the viewport — make sure no mobile viewBox lingers.
         svg.attr('viewBox', null).attr('preserveAspectRatio', null);
@@ -289,16 +341,12 @@ function draw() {
     if (mobileLayout) {
         // Keep Icon1 content in mobile center composition as requested.
         drawTagIcons(centerX, centerY);
-        drawMobileFormulaAndCaption(centerX, centerY, width, height);
+        drawMobileFormula(centerX, centerY);
         // Draw process ring only (no side/bottom UI layers, no tag/menu shells).
+        // Ring labels are drawn once the process data lands, from real names.
         drawProcessKernelMap2(centerX, centerY);
-        drawMobileDefaultProcessLabels(centerX, centerY);
         // Restore namespace shell segments in mobile mode.
         drawIsolationConceptLayer(centerX, centerY, width, height);
-        // Live, readable kernel metrics at the bottom (HTML overlay).
-        renderMobileHud();
-        // Advise that the full experience is built for desktop.
-        renderMobileNotice();
         return;
     }
 
@@ -340,61 +388,88 @@ function draw() {
     }
 }
 
-function drawMobileFormulaAndCaption(centerX, centerY, width, height) {
+function drawMobileFormula(centerX, centerY) {
     const group = svg.append('g')
         .attr('class', 'mobile-formula-layer')
         .attr('pointer-events', 'none');
 
-    const formulaY = Math.max(34, centerY - 245);
-    const captionY = Math.min(height - 22, centerY + 235);
-
-    // Subtle text-only treatment to keep the mobile center clean.
-    group.append('text')
-        .attr('x', centerX)
-        .attr('y', formulaY)
-        .attr('text-anchor', 'middle')
-        .style('font-family', 'JetBrains Mono, Share Tech Mono, monospace')
-        .style('font-size', '13px')
-        .style('letter-spacing', '-0.1px')
-        .style('fill', 'rgba(52, 52, 52, 0.76)')
-        .text('L_new=L_old*e^(-dt/tau)+N*(1-e^(-dt/tau))');
+    // This lives in user units, which the frame scales. The size is divided by
+    // that scale so the type lands at the same pixel size on a phone and on a
+    // tablet instead of ballooning with the composition.
+    const s = mobileFrameScale || 1;
 
     group.append('text')
         .attr('x', centerX)
-        .attr('y', captionY)
+        .attr('y', centerY - 246)
         .attr('text-anchor', 'middle')
         .style('font-family', 'Share Tech Mono, monospace')
-        .style('font-size', '11px')
-        .style('letter-spacing', '0.4px')
-        .style('fill', 'rgba(62, 62, 62, 0.58)')
-        .text('linux kernel · live process map');
+        .style('font-size', `${(11 / s).toFixed(2)}px`)
+        .style('letter-spacing', `${(0.4 / s).toFixed(2)}px`)
+        .style('fill', 'rgba(52, 52, 52, 0.7)')
+        .text('L_new = L_old·e^(-dt/tau) + N·(1-e^(-dt/tau))');
 }
 
-function drawMobileDefaultProcessLabels(centerX, centerY) {
+// Names the busiest processes around the hero. Drawn outside the node ring: the
+// band inside it is already taken by the Ring-1 spokes and the KERNEL MODE
+// label. Angles are offset by half a step so no name lands at the top or bottom,
+// where the formula and the caption sit.
+function drawMobileProcessLabels(centerX, centerY, names) {
     if (!isMobileLayout()) return;
-    const names = ['sshd', 'python3', 'nginx', 'cron', 'bash', 'systemd'];
-    const radius = 95;
-    const startAngle = -Math.PI / 2;
+    svg.selectAll('.mobile-process-labels').remove();
+    if (!Array.isArray(names) || !names.length) return;
+    // Names are held at a constant pixel size, so the smaller the composition
+    // the more of it they take up. Past this point they crowd the ring instead
+    // of annotating it, and the ring reads better bare.
+    if ((mobileFrameScale || 1) < MOBILE_LABEL_MIN_SCALE) return;
+
+    // Diagonals only. On the horizontal and vertical axes a name has nowhere to
+    // grow — outward runs past the frame, inward crowds the ring — while on a
+    // diagonal both the frame corner and the ring leave room.
+    const radius = 226;
+    const startAngle = -Math.PI / 4;
     const step = (2 * Math.PI) / names.length;
 
     const group = svg.append('g')
-        .attr('class', 'mobile-default-process-labels')
+        .attr('class', 'mobile-process-labels')
         .attr('pointer-events', 'none');
+
+    // How many characters fit between the anchor and the screen edge. All four
+    // diagonals share the same horizontal offset, so one budget covers them.
+    const s = mobileFrameScale || 1;
+    const room = window.innerWidth / 2 - Math.abs(Math.cos(startAngle)) * radius * s - 8;
+    const maxChars = Math.max(6, Math.floor(room / MOBILE_LABEL_CHAR_PX));
 
     names.forEach((name, i) => {
         const angle = startAngle + i * step;
         const x = centerX + Math.cos(angle) * radius;
         const y = centerY + Math.sin(angle) * radius;
+        // Grow outward, away from the ring, into the free frame corner.
+        const anchor = Math.cos(angle) > 0 ? 'start' : 'end';
         group.append('text')
             .attr('x', x)
             .attr('y', y)
-            .attr('text-anchor', 'middle')
-            .style('font-family', 'JetBrains Mono, Share Tech Mono, monospace')
-            .style('font-size', '9px')
-            .style('letter-spacing', '0.15px')
-            .style('fill', 'rgba(96, 96, 96, 0.52)')
-            .text(name);
+            .attr('text-anchor', anchor)
+            .style('font-family', 'Share Tech Mono, monospace')
+            .style('font-size', `${(9 / (mobileFrameScale || 1)).toFixed(2)}px`)
+            .style('letter-spacing', `${(0.6 / (mobileFrameScale || 1)).toFixed(2)}px`)
+            .style('fill', 'rgba(96, 96, 96, 0.62)')
+            .text(name.length > maxChars ? `${name.slice(0, maxChars - 1)}…` : name);
     });
+}
+
+// The busiest distinct process names, which is what the hero ring labels.
+function topProcessNames(processes, limit) {
+    const seen = new Set();
+    const out = [];
+    [...processes]
+        .sort((a, b) => (b.memory_mb || 0) - (a.memory_mb || 0))
+        .forEach((p) => {
+            const name = (p.name || '').trim();
+            if (!name || seen.has(name) || out.length >= limit) return;
+            seen.add(name);
+            out.push(name);
+        });
+    return out;
 }
 
 // ---- Mobile HUD: a compact, readable strip of live kernel metrics ----------
@@ -415,26 +490,33 @@ function renderMobileHud() {
         hud.id = 'mobile-hud';
         Object.assign(hud.style, {
             position: 'fixed', left: '0', right: '0', bottom: '0', zIndex: '8000',
-            display: 'flex', gap: '1px', justifyContent: 'center',
+            display: 'flex', gap: '6px', justifyContent: 'center',
             padding: '8px 8px calc(8px + env(safe-area-inset-bottom))',
             background: 'linear-gradient(0deg, rgba(8,10,13,0.94) 0%, rgba(8,10,13,0.0) 100%)',
-            fontFamily: "'JetBrains Mono','Share Tech Mono',monospace", pointerEvents: 'none'
+            fontFamily: DOSSIER.mono, pointerEvents: 'none'
         });
+        // Chamfered like the dossier cards. clip-path drops the border, so the
+        // edge is a second clipped layer showing through by one pixel.
         MOBILE_HUD_TILES.forEach((tile) => {
             const cell = document.createElement('div');
             Object.assign(cell.style, {
-                flex: '1 1 0', maxWidth: '120px', textAlign: 'center',
-                background: 'rgba(16,20,27,0.9)', border: '1px solid rgba(103,190,224,0.22)',
-                borderRadius: '8px', padding: '7px 4px 8px', margin: '0 3px'
+                flex: '1 1 0', maxWidth: '120px', background: DOSSIER.edge,
+                clipPath: MOBILE_CHAMFER, padding: '1px'
+            });
+            const inner = document.createElement('div');
+            Object.assign(inner.style, {
+                textAlign: 'center', background: '#090c10', clipPath: MOBILE_CHAMFER,
+                padding: '7px 4px 8px'
             });
             const val = document.createElement('div');
             val.id = `mobile-hud-${tile.id}`;
             val.textContent = '--';
-            Object.assign(val.style, { color: '#dbe6ef', fontSize: '15px', fontWeight: '600', lineHeight: '1.1' });
+            Object.assign(val.style, { color: DOSSIER.text, fontSize: '20px', lineHeight: '1.1' });
             const lab = document.createElement('div');
             lab.textContent = tile.label;
-            Object.assign(lab.style, { color: '#6f8895', fontSize: '8.5px', letterSpacing: '1px', marginTop: '3px' });
-            cell.append(val, lab);
+            Object.assign(lab.style, { color: DOSSIER.faint, fontSize: '9px', letterSpacing: '1.7px', marginTop: '4px' });
+            inner.append(val, lab);
+            cell.appendChild(inner);
             hud.appendChild(cell);
         });
         document.body.appendChild(hud);
@@ -455,42 +537,63 @@ function hideMobileHud() {
     }
 }
 
-// Top banner advising that the experience is built for desktop. Dismissible,
-// and once dismissed it stays hidden for the session.
+// Says plainly that the full console is a desktop composition. Same card
+// language as the HUD and the activity tape, and dismissible for the session.
 function renderMobileNotice() {
-    if (window.__mobileNoticeDismissed) return;
+    if (window.__mobileNoticeDismissed) return null;
     let notice = document.getElementById('mobile-notice');
     if (!notice) {
         notice = document.createElement('div');
         notice.id = 'mobile-notice';
         Object.assign(notice.style, {
-            position: 'fixed', left: '0', right: '0', top: '0', zIndex: '8200',
-            display: 'flex', alignItems: 'center', gap: '8px',
-            padding: '9px 12px', paddingTop: 'calc(9px + env(safe-area-inset-top))',
-            background: 'rgba(12,16,22,0.92)', borderBottom: '1px solid rgba(103,190,224,0.25)',
-            backdropFilter: 'blur(4px)',
-            fontFamily: "'JetBrains Mono','Share Tech Mono',monospace", color: '#bcd3de'
+            position: 'fixed', left: `${MOBILE_EDGE_GAP}px`, right: `${MOBILE_EDGE_GAP}px`,
+            top: `calc(${MOBILE_EDGE_GAP}px + env(safe-area-inset-top))`, zIndex: '8200',
+            background: DOSSIER.edge, clipPath: MOBILE_CHAMFER, padding: '1px',
+            fontFamily: DOSSIER.mono
         });
-        const icon = document.createElement('span');
-        icon.textContent = '🖥';
-        Object.assign(icon.style, { fontSize: '13px', flex: '0 0 auto', opacity: '0.9' });
-        const text = document.createElement('span');
-        text.textContent = 'Best viewed on desktop — this dashboard is designed for a large screen.';
-        Object.assign(text.style, { flex: '1 1 auto', fontSize: '11px', lineHeight: '1.35', letterSpacing: '0.2px' });
+
+        const inner = document.createElement('div');
+        Object.assign(inner.style, {
+            background: '#090c10', clipPath: MOBILE_CHAMFER, padding: '8px 10px 9px'
+        });
+
+        const head = document.createElement('div');
+        Object.assign(head.style, { display: 'flex', alignItems: 'center', gap: '7px' });
+        const glyph = document.createElement('span');
+        glyph.textContent = '◉';
+        Object.assign(glyph.style, { color: DOSSIER.dim, fontSize: '9px', flex: '0 0 auto' });
+        const title = document.createElement('span');
+        title.textContent = 'DESIGNED FOR DESKTOP';
+        Object.assign(title.style, {
+            color: DOSSIER.text, fontSize: '10px', letterSpacing: '1.7px', flex: '1 1 auto'
+        });
         const close = document.createElement('button');
         close.textContent = '×';
         Object.assign(close.style, {
             flex: '0 0 auto', cursor: 'pointer', background: 'transparent', border: 'none',
-            color: '#7f97a4', fontSize: '18px', lineHeight: '1', padding: '0 2px'
+            color: DOSSIER.faint, font: `13px/1 ${DOSSIER.mono}`, padding: '0 0 0 4px'
         });
         close.addEventListener('click', () => {
             window.__mobileNoticeDismissed = true;
             notice.style.display = 'none';
+            // Reclaim the strip the notice was holding.
+            if (typeof draw === 'function') draw();
         });
-        notice.append(icon, text, close);
+        head.append(glyph, title, close);
+
+        const detail = document.createElement('div');
+        detail.textContent = 'panels · dossier · kernel map need a large screen';
+        Object.assign(detail.style, {
+            color: DOSSIER.faint, fontSize: '9px', letterSpacing: '0.5px',
+            lineHeight: '1.4', marginTop: '5px'
+        });
+
+        inner.append(head, detail);
+        notice.appendChild(inner);
         document.body.appendChild(notice);
     }
-    notice.style.display = 'flex';
+    notice.style.display = 'block';
+    return notice;
 }
 
 function hideMobileNotice() {
@@ -528,25 +631,6 @@ function formatProcessValue(value, fallback = 'n/a') {
     return value === null || value === undefined || value === '' ? fallback : value;
 }
 
-function processDossierRows(processData, details = {}) {
-    const threadsData = details.threadsData || {};
-    const cpuData = details.cpuData || {};
-    const fdsData = details.fdsData || {};
-    const cpuTimes = cpuData.cpu_times || {};
-    return [
-        ['identity', `${formatProcessValue(processData.name, 'process')} · pid ${formatProcessValue(processData.pid)}`],
-        ['state', `${formatProcessValue(processData.status)} · mem ${formatProcessValue(processData.memory_mb, 0)} MB`],
-        ['threads', formatProcessValue(threadsData.thread_count, 'loading')],
-        ['vol ctx', threadsData.voluntary_ctxt_switches ? threadsData.voluntary_ctxt_switches.toLocaleString() : 'loading'],
-        ['nonvol ctx', threadsData.nonvoluntary_ctxt_switches ? threadsData.nonvoluntary_ctxt_switches.toLocaleString() : 'loading'],
-        ['cpu time', cpuTimes.user !== undefined ? `usr ${cpuTimes.user}s · sys ${cpuTimes.system}s` : 'loading'],
-        ['nice', cpuData.nice !== undefined && cpuData.nice !== null ? cpuData.nice : 'loading'],
-        ['fds', fdsData.num_fds !== undefined ? fdsData.num_fds : formatProcessValue(processData.num_fds, 'loading')],
-        ['open files', Array.isArray(fdsData.open_files) ? fdsData.open_files.length : 'loading'],
-        ['sockets', Array.isArray(fdsData.connections) ? fdsData.connections.length : 'loading']
-    ];
-}
-
 function processIoSummary(processData, details = {}) {
     const fdsData = details.fdsData || {};
     return {
@@ -556,16 +640,6 @@ function processIoSummary(processData, details = {}) {
     };
 }
 
-function descriptorTone(type) {
-    const normalized = String(type || '').toLowerCase();
-    if (normalized.includes('stdin') || normalized.includes('stdout') || normalized.includes('stderr')) return '#2f2f2f';
-    if (normalized.includes('unix')) return '#1f1f1f';
-    if (normalized.includes('tcp') || normalized.includes('inet') || normalized.includes('socket')) return '#17455a';
-    if (normalized.includes('pipe')) return '#5a5a5a';
-    if (normalized.includes('file')) return '#634a1f';
-    return '#4a4a4a';
-}
-
 function descriptorTargetLabel(descriptor) {
     if (!descriptor) return '';
     if (descriptor.remote_address) return descriptor.remote_address;
@@ -573,837 +647,820 @@ function descriptorTargetLabel(descriptor) {
     return String(descriptor.target || '');
 }
 
-function processControlStrip(processData, details = {}) {
-    const threadsData = details.threadsData || {};
-    const cpuData = details.cpuData || {};
-    const io = processIoSummary(processData, details);
-    const cpuPercent = Number(cpuData.cpu_percent || processData.cpu_percent || 0);
-    const memoryMb = Number(processData.memory_mb || 0);
-    const threadCount = Number(threadsData.thread_count || processData.num_threads || 0);
-    return [
-        { id: 'SYSCALL', active: true, value: formatProcessValue(processData.status, 'state') },
-        { id: 'VFS', active: io.files > 0, value: `${io.files} files` },
-        { id: 'SOCKET', active: io.sockets > 0, value: `${io.sockets} conns` },
-        { id: 'IRQ', active: threadCount > 8, value: `${threadCount} th` },
-        { id: 'SCHED', active: cpuPercent > 0 || threadCount > 1, value: `${cpuPercent}% cpu` },
-        { id: 'MEM', active: memoryMb > 1, value: `${memoryMb.toFixed ? memoryMb.toFixed(1) : memoryMb} MB` },
-        { id: 'FD', active: Number(io.fds || 0) > 0, value: `${io.fds} fd` }
-    ];
-}
+// ── Process dossier ─────────────────────────────────────────────────────────
+// Layered dark cards over the dimmed map: identity → vitals → descriptors.
+// One cascading stack instead of scattered panels, so the eye reads top-down.
+const DOSSIER = {
+    ink: 'rgba(9, 12, 16, 0.975)',
+    edge: 'rgba(236, 236, 226, 0.17)',
+    rule: 'rgba(236, 236, 226, 0.1)',
+    tint: 'rgba(244, 244, 236, 0.055)',
+    text: '#f4f4ec',
+    dim: 'rgba(244, 244, 236, 0.5)',
+    faint: 'rgba(244, 244, 236, 0.26)',
+    accent: '#e2a33e',
+    mono: 'Share Tech Mono, monospace'
+};
 
-function processTraceMapSteps(processData, details = {}) {
-    const threadsData = details.threadsData || {};
-    const cpuData = details.cpuData || {};
-    const io = processIoSummary(processData, details);
-    const threadCount = Number(threadsData.thread_count || processData.num_threads || 0);
-    const cpuPercent = Number(cpuData.cpu_percent || processData.cpu_percent || 0);
-    return [
-        {
-            id: 'PROCESS',
-            title: String(processData.name || 'process').slice(0, 14),
-            value: `pid ${formatProcessValue(processData.pid)}`,
-            active: true
-        },
-        {
-            id: 'FD TABLE',
-            title: 'FD TABLE',
-            value: `${io.fds} fd`,
-            active: Number(io.fds || 0) > 0
-        },
-        {
-            id: 'VFS',
-            title: 'VFS',
-            value: `${io.files} files`,
-            active: Number(io.files || 0) > 0
-        },
-        {
-            id: 'SOCKET/PIPE',
-            title: 'SOCKET/PIPE',
-            value: `${io.sockets} sockets`,
-            active: Number(io.sockets || 0) > 0
-        },
-        {
-            id: 'SCHED',
-            title: 'SCHED',
-            value: `${threadCount} th · ${cpuPercent}%`,
-            active: threadCount > 1 || cpuPercent > 0
-        },
-        {
-            id: 'KERNEL',
-            title: 'KERNEL',
-            value: formatProcessValue(processData.status, 'state'),
-            active: true
-        }
-    ];
-}
+const KERNEL_THREAD_RE = /^(kworker|ksoftirqd|migration|rcu_|rcub|rcuc|kthreadd|kswapd|kcompactd|khugepaged|kdevtmpfs|kauditd|jbd2|ext4-|xfs-|watchdog|irq\/|idle_inject|cpuhp|netns|kblockd|blkcg|scsi_|nvme|kstrp|oom_reaper|writeback|kintegrityd|kthrotld|dmcrypt|edac-|devfreq|acpi_|ipv6_addrconf)/i;
 
-function processInteractionNodes(processData, details = {}) {
-    const threadsData = details.threadsData || {};
-    const cpuData = details.cpuData || {};
-    const io = processIoSummary(processData, details);
-    const cpuPercent = Number(cpuData.cpu_percent || processData.cpu_percent || 0);
-    const memoryMb = Number(processData.memory_mb || 0);
-    const threadCount = Number(threadsData.thread_count || processData.num_threads || 0);
-    return [
-        { id: 'FD', label: 'FD', value: `${io.fds}`, active: Number(io.fds || 0) > 0 },
-        { id: 'VFS', label: 'VFS', value: `${io.files}`, active: Number(io.files || 0) > 0 },
-        { id: 'SOCK', label: 'SOCK', value: `${io.sockets}`, active: Number(io.sockets || 0) > 0 },
-        { id: 'SCHED', label: 'SCHED', value: `${threadCount}`, active: threadCount > 1 || cpuPercent > 0 },
-        { id: 'MEM', label: 'MEM', value: `${Math.round(memoryMb)}M`, active: memoryMb > 1 },
-        { id: 'CPU', label: 'CPU', value: `${Math.round(cpuPercent)}%`, active: cpuPercent > 0 },
-        { id: 'IPC', label: 'IPC', value: 'pipe', active: false },
-        { id: 'IRQ', label: 'IRQ', value: 'ctx', active: threadCount > 8 }
-    ];
-}
-
-function renderProcessInteractionModule(centerX, centerY, processData, anchor = null, details = {}) {
-    d3.selectAll('.process-interaction-module').remove();
-    if (!processData || isMobileLayout()) return;
-
-    const moduleCx = Math.max(310, centerX - 265);
-    const moduleCy = Math.max(190, centerY - 58);
-    const moduleR = anchor ? 80 : 74;
-    const nodes = processInteractionNodes(processData, details);
-    const activeCount = nodes.filter(n => n.active).length;
-
-    const group = svg.append('g')
-        .attr('class', 'process-interaction-module')
-        .attr('pointer-events', 'none');
-
-    if (anchor) {
-        group.append('path')
-            .attr('d', `M${moduleCx + moduleR * 0.72},${moduleCy + moduleR * 0.58} C${moduleCx + 132},${moduleCy + 118} ${anchor.x - 74},${anchor.y + 22} ${anchor.x},${anchor.y}`)
-            .attr('fill', 'none')
-            .attr('stroke', 'rgba(12, 12, 12, 0.48)')
-            .attr('stroke-width', 1.1)
-            .attr('stroke-dasharray', '5 6');
-    } else {
-        group.append('path')
-            .attr('d', `M${moduleCx + moduleR + 28},${moduleCy} C${moduleCx + moduleR + 90},${moduleCy - 36} ${centerX - 160},${centerY - 110} ${centerX - 80},${centerY - 76}`)
-            .attr('fill', 'none')
-            .attr('stroke', 'rgba(28, 28, 28, 0.22)')
-            .attr('stroke-width', 0.8);
+// kthreadd (pid 2) fathers every kernel thread, so the ancestry settles this
+// definitively. The name pattern is only a stand-in until lineage arrives.
+function isKernelThreadProcess(processData, lineage) {
+    const chain = lineage && Array.isArray(lineage.chain) ? lineage.chain : null;
+    if (chain && chain.length) {
+        return Number(processData.pid) === 2 || chain.some((row) => Number(row.pid) === 2);
     }
+    return KERNEL_THREAD_RE.test(String(processData.name || ''))
+        && Number(processData.memory_mb || 0) === 0;
+}
 
-    if (anchor) {
-        const pimDefs = group.append('defs');
-        const pimFilter = pimDefs.append('filter')
-            .attr('id', 'pim-elevation')
-            .attr('x', '-60%')
-            .attr('y', '-60%')
-            .attr('width', '220%')
-            .attr('height', '220%');
-        pimFilter.append('feDropShadow')
-            .attr('dx', 0)
-            .attr('dy', 3)
-            .attr('stdDeviation', 8)
-            .attr('flood-color', '#000')
-            .attr('flood-opacity', 0.42);
-
-        // Radial gradient gives the disc instrument-like volume: dark core, lighter rim.
-        const pimGrad = pimDefs.append('radialGradient')
-            .attr('id', 'pim-disc-grad')
-            .attr('cx', '50%')
-            .attr('cy', '42%')
-            .attr('r', '62%');
-        pimGrad.append('stop').attr('offset', '0%').attr('stop-color', '#0a0a0a');
-        pimGrad.append('stop').attr('offset', '58%').attr('stop-color', '#141414');
-        pimGrad.append('stop').attr('offset', '100%').attr('stop-color', '#2a2a28');
-
-        // Soft light halo separates the module from the busy scene behind it.
-        group.append('circle')
-            .attr('cx', moduleCx)
-            .attr('cy', moduleCy)
-            .attr('r', moduleR + 34)
-            .attr('fill', 'rgba(247, 247, 240, 0.62)')
-            .attr('stroke', 'none')
-            .style('filter', 'blur(3px)');
-
-        group.append('circle')
-            .attr('cx', moduleCx)
-            .attr('cy', moduleCy)
-            .attr('r', moduleR + 16)
-            .attr('fill', 'none')
-            .attr('stroke', 'rgba(20, 20, 20, 0.16)')
-            .attr('stroke-width', 1)
-            .attr('stroke-dasharray', '2 6');
+function ensureDossierDefs() {
+    let defs = svg.select('defs');
+    if (defs.empty()) defs = svg.append('defs');
+    if (svg.select('#dossier-drop').empty()) {
+        defs.append('filter')
+            .attr('id', 'dossier-drop')
+            .attr('x', '-35%').attr('y', '-35%')
+            .attr('width', '190%').attr('height', '200%')
+            .append('feDropShadow')
+            .attr('dx', 0).attr('dy', 7)
+            .attr('stdDeviation', 10)
+            .attr('flood-color', '#07090c')
+            .attr('flood-opacity', 0.45);
     }
+}
 
-    group.append('circle')
-        .attr('cx', moduleCx)
-        .attr('cy', moduleCy)
-        .attr('r', moduleR + (anchor ? 6 : 20))
-        .attr('fill', anchor ? 'rgba(12, 12, 12, 0.10)' : 'rgba(240, 240, 232, 0.08)')
-        .attr('stroke', anchor ? 'rgba(8, 8, 8, 0.36)' : 'none')
-        .attr('stroke-width', anchor ? 1.2 : 1.1);
+// Square card with the clipped top-right corner of the reference dossier.
+function dossierCardPath(x, y, w, h, cut = 15) {
+    return `M${x},${y} H${x + w - cut} L${x + w},${y + cut} V${y + h} H${x} Z`;
+}
 
-    group.append('circle')
-        .attr('cx', moduleCx)
-        .attr('cy', moduleCy)
-        .attr('r', moduleR)
-        .attr('fill', anchor ? 'url(#pim-disc-grad)' : 'rgba(240, 240, 232, 0.24)')
-        .attr('stroke', anchor ? 'rgba(0, 0, 0, 0.92)' : 'rgba(28, 28, 28, 0.26)')
-        .attr('stroke-width', anchor ? 1.8 : 1)
-        .style('filter', anchor ? 'url(#pim-elevation)' : null);
+function dossierCard(layer, box, title, meta) {
+    const g = layer.append('g');
 
-    if (anchor) {
-        group.append('circle')
-            .attr('cx', moduleCx)
-            .attr('cy', moduleCy)
-            .attr('r', moduleR - 4)
-            .attr('fill', 'none')
-            .attr('stroke', 'rgba(247, 247, 240, 0.55)')
-            .attr('stroke-width', 1.1);
+    g.append('path')
+        .attr('d', dossierCardPath(box.x, box.y, box.w, box.h))
+        .attr('fill', DOSSIER.ink)
+        .attr('stroke', DOSSIER.edge)
+        .attr('stroke-width', 1)
+        .attr('filter', 'url(#dossier-drop)');
 
-        // Slowly rotating tick ring conveys live telemetry on the instrument rim.
-        const tickRing = group.append('g');
-        const tickR = moduleR - 9;
-        const tickCount = 48;
-        for (let t = 0; t < tickCount; t++) {
-            const ta = (t / tickCount) * Math.PI * 2;
-            const major = t % 6 === 0;
-            const inner = tickR - (major ? 6 : 3);
-            tickRing.append('line')
-                .attr('x1', moduleCx + Math.cos(ta) * tickR)
-                .attr('y1', moduleCy + Math.sin(ta) * tickR)
-                .attr('x2', moduleCx + Math.cos(ta) * inner)
-                .attr('y2', moduleCy + Math.sin(ta) * inner)
-                .attr('stroke', `rgba(238, 238, 228, ${major ? 0.5 : 0.24})`)
-                .attr('stroke-width', major ? 1.1 : 0.7);
+    g.append('path')
+        .attr('d', `M${box.x},${box.y} H${box.x + box.w - 15} L${box.x + box.w},${box.y + 15} V${box.y + 25} H${box.x} Z`)
+        .attr('fill', DOSSIER.tint);
+
+    g.append('line')
+        .attr('x1', box.x).attr('x2', box.x + box.w)
+        .attr('y1', box.y + 25).attr('y2', box.y + 25)
+        .attr('stroke', DOSSIER.edge)
+        .attr('stroke-width', 0.9);
+
+    g.append('circle')
+        .attr('cx', box.x + 14).attr('cy', box.y + 12.5).attr('r', 4.2)
+        .attr('fill', 'none')
+        .attr('stroke', DOSSIER.dim)
+        .attr('stroke-width', 1.1);
+    g.append('circle')
+        .attr('cx', box.x + 14).attr('cy', box.y + 12.5).attr('r', 1.6)
+        .attr('fill', DOSSIER.accent);
+
+    g.append('text')
+        .attr('x', box.x + 26).attr('y', box.y + 16)
+        .attr('font-family', DOSSIER.mono)
+        .attr('font-size', '9px')
+        .attr('letter-spacing', '1.7')
+        .attr('fill', DOSSIER.text)
+        .text(title);
+
+    if (meta) {
+        g.append('text')
+            .attr('x', box.x + box.w - 13).attr('y', box.y + 16)
+            .attr('text-anchor', 'end')
+            .attr('font-family', DOSSIER.mono)
+            .attr('font-size', '9px')
+            .attr('letter-spacing', '1')
+            .attr('fill', DOSSIER.dim)
+            .text(meta);
+    }
+    return g;
+}
+
+// Paths carry their meaning at the tail, so clip the front, not the end.
+function elideDescriptorTarget(target, max) {
+    const text = String(target || '');
+    if (text.length <= max) return text;
+    return text.includes('/') ? `…${text.slice(-(max - 1))}` : `${text.slice(0, max - 1)}…`;
+}
+
+function schedulingRows(processData, threadsData, cpuData, kernelThread, fdsData) {
+    if (!fdsData) return [{ key: 'reading', value: `/proc/${processData.pid} …` }];
+
+    const times = cpuData.cpu_times || {};
+    const vol = threadsData.voluntary_ctxt_switches;
+    const nonvol = threadsData.nonvoluntary_ctxt_switches;
+    const affinity = Array.isArray(cpuData.cpu_affinity) ? cpuData.cpu_affinity : null;
+    const rows = [];
+
+    if (vol !== undefined || nonvol !== undefined) {
+        rows.push({ key: 'ctx switches', value: `${Number(vol || 0).toLocaleString()} vol · ${Number(nonvol || 0).toLocaleString()} forced` });
+    }
+    if (times.user !== undefined) {
+        rows.push({ key: 'cpu time', value: `usr ${times.user}s · sys ${times.system}s` });
+    }
+    if (affinity) {
+        rows.push({ key: 'affinity', value: `cpu ${affinity.length > 4 ? `${affinity.length} cores` : affinity.join(',')}` });
+    }
+    rows.push({
+        key: 'descriptors',
+        value: kernelThread ? 'none — kernel task' : 'not readable at this privilege'
+    });
+    return rows;
+}
+
+function dossierVerdict(processData, fp, kernelThread) {
+    if (kernelThread) {
+        return 'Kernel thread — no userspace address space or file table.';
+    }
+    const isolated = fp ? Number(fp.isolated_count || 0) : 0;
+    if (isolated > 0) {
+        return `Containerized — ${isolated} of ${fp.total} namespaces isolated from host.`;
+    }
+    if (fp && Number(fp.readable || 0) === 0) {
+        return 'Host process — namespace table not readable at this privilege.';
+    }
+    if (fp) {
+        return `Host process — shares all ${fp.total} namespaces with the host.`;
+    }
+    return 'Reading namespace table…';
+}
+
+// ── live activity sampling ──────────────────────────────────────────────────
+// The API only exposes cumulative counters, so rates come from differencing two
+// samples client-side. Nothing is drawn until a second sample lands.
+const DOSSIER_SAMPLE_INTERVAL_MS = 2000;
+const DOSSIER_SAMPLE_LIMIT = 31;
+const ACTIVITY_BAR_SLOTS = 22;
+const ACTIVITY_METRICS = [
+    {
+        id: 'ctx',
+        label: 'ctx rate',
+        rate: (a, b, dt) => {
+            const prev = numOrNull(a.ctx_voluntary, a.ctx_nonvoluntary);
+            const next = numOrNull(b.ctx_voluntary, b.ctx_nonvoluntary);
+            return prev === null || next === null ? null : (next - prev) / dt;
+        },
+        format: (v) => `${v < 10 ? v.toFixed(1) : Math.round(v)}/s`,
+        unavailable: 'counter not readable'
+    },
+    {
+        id: 'cpu',
+        label: 'cpu burn',
+        rate: (a, b, dt) => {
+            const prev = numOrNull(a.cpu_user, a.cpu_system);
+            const next = numOrNull(b.cpu_user, b.cpu_system);
+            return prev === null || next === null ? null : ((next - prev) / dt) * 100;
+        },
+        format: (v) => `${v < 10 ? v.toFixed(1) : Math.round(v)}%`,
+        unavailable: 'cpu times denied'
+    },
+    {
+        id: 'io',
+        label: 'disk i/o',
+        rate: (a, b, dt) => {
+            const prev = numOrNull(a.read_bytes, a.write_bytes);
+            const next = numOrNull(b.read_bytes, b.write_bytes);
+            return prev === null || next === null ? null : (next - prev) / dt;
+        },
+        format: (v) => formatByteRate(v),
+        unavailable: 'io counters denied'
+    }
+];
+
+// Sums the arguments, or reports null when any part is missing.
+function numOrNull(...values) {
+    let total = 0;
+    for (const value of values) {
+        if (value === null || value === undefined) return null;
+        total += Number(value);
+    }
+    return total;
+}
+
+function formatByteRate(bytesPerSec) {
+    const v = Math.max(0, Number(bytesPerSec) || 0);
+    if (v < 1024) return `${Math.round(v)} B/s`;
+    if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KB/s`;
+    return `${(v / (1024 * 1024)).toFixed(1)} MB/s`;
+}
+
+function activitySeries(metric, samples) {
+    const series = [];
+    for (let i = 1; i < samples.length; i += 1) {
+        const dt = Math.max(0.2, Number(samples[i].ts) - Number(samples[i - 1].ts));
+        const rate = metric.rate(samples[i - 1], samples[i], dt);
+        // Counters only climb; a negative step means the pid was recycled.
+        series.push(rate === null || rate < 0 ? null : rate);
+    }
+    return series.slice(-ACTIVITY_BAR_SLOTS);
+}
+
+let dossierActivityTimer = null;
+
+function startDossierActivityPolling(pid) {
+    stopDossierActivityPolling();
+    const tick = () => {
+        if (!pinnedProcessDossier || pinnedProcessDossier.process?.pid !== pid) {
+            stopDossierActivityPolling();
+            return;
         }
-        tickRing.append('animateTransform')
-            .attr('attributeName', 'transform')
-            .attr('type', 'rotate')
-            .attr('from', `0 ${moduleCx} ${moduleCy}`)
-            .attr('to', `360 ${moduleCx} ${moduleCy}`)
-            .attr('dur', '48s')
-            .attr('repeatCount', 'indefinite');
+        if (document.hidden) return;
+        fetch(`/api/process/${pid}/activity`)
+            .then((r) => r.json())
+            .then((sample) => {
+                if (!pinnedProcessDossier || pinnedProcessDossier.process?.pid !== pid) return;
+                if (!sample || sample.error) return;
+                const samples = pinnedProcessDossier.samples || (pinnedProcessDossier.samples = []);
+                samples.push(sample);
+                if (samples.length > DOSSIER_SAMPLE_LIMIT) samples.shift();
+                drawActivityRows();
+            })
+            .catch(() => {});
+    };
+    tick();
+    dossierActivityTimer = setInterval(tick, DOSSIER_SAMPLE_INTERVAL_MS);
+}
 
-        // Counter-rotating faint scan marker for extra liveliness.
-        const scan = group.append('g');
-        scan.append('line')
-            .attr('x1', moduleCx)
-            .attr('y1', moduleCy)
-            .attr('x2', moduleCx)
-            .attr('y2', moduleCy - (moduleR - 12))
-            .attr('stroke', 'rgba(238, 238, 228, 0.16)')
-            .attr('stroke-width', 1);
-        scan.append('animateTransform')
-            .attr('attributeName', 'transform')
-            .attr('type', 'rotate')
-            .attr('from', `360 ${moduleCx} ${moduleCy}`)
-            .attr('to', `0 ${moduleCx} ${moduleCy}`)
-            .attr('dur', '11s')
-            .attr('repeatCount', 'indefinite');
+function stopDossierActivityPolling() {
+    if (dossierActivityTimer) {
+        clearInterval(dossierActivityTimer);
+        dossierActivityTimer = null;
+    }
+}
 
-        // Segmented activity arc: one segment per channel, aligned to its node.
-        const arcR = moduleR + 11;
-        const segGap = (Math.PI * 2 / nodes.length) * 0.22;
-        const segSpan = (Math.PI * 2 / nodes.length) - segGap;
-        const arcPoint = (a) => `${(moduleCx + Math.cos(a) * arcR).toFixed(2)},${(moduleCy + Math.sin(a) * arcR).toFixed(2)}`;
-        nodes.forEach((node, idx) => {
-            const center = -Math.PI / 2 + (idx / nodes.length) * Math.PI * 2;
-            const a0 = center - segSpan / 2;
-            const a1 = center + segSpan / 2;
-            const seg = group.append('path')
-                .attr('d', `M${arcPoint(a0)} A${arcR},${arcR} 0 0 1 ${arcPoint(a1)}`)
-                .attr('fill', 'none')
-                .attr('stroke', node.active ? 'rgba(238, 238, 228, 0.92)' : 'rgba(238, 238, 228, 0.16)')
-                .attr('stroke-width', node.active ? 2.6 : 1.4)
-                .attr('stroke-linecap', 'round');
-            if (node.active) {
-                seg.append('animate')
-                    .attr('attributeName', 'stroke-opacity')
-                    .attr('values', '0.55;0.95;0.55')
-                    .attr('dur', '2.6s')
-                    .attr('begin', `${(idx % 5) * 0.32}s`)
-                    .attr('repeatCount', 'indefinite');
-            }
+// Redraws only the activity rows so polling never restarts the rest of the
+// dossier (the containment halo animates, and a full redraw would reset it).
+function drawActivityRows() {
+    const host = d3.select('.process-dossier-layer').select('.dossier-activity-rows');
+    if (host.empty() || !pinnedProcessDossier || !pinnedProcessDossier.activityBox) return;
+    host.selectAll('*').remove();
+
+    const box = pinnedProcessDossier.activityBox;
+    const samples = pinnedProcessDossier.samples || [];
+
+    // Drawn here rather than in the card header so the span stays current.
+    const spanS = samples.length > 1
+        ? Math.round(Number(samples[samples.length - 1].ts) - Number(samples[0].ts))
+        : 0;
+    host.append('text')
+        .attr('x', box.x + box.w - 13).attr('y', box.y + 16)
+        .attr('text-anchor', 'end')
+        .attr('font-family', DOSSIER.mono)
+        .attr('font-size', '9px')
+        .attr('letter-spacing', '1')
+        .attr('fill', DOSSIER.dim)
+        .text(spanS > 0 ? `mean over ${spanS}s` : 'starting…');
+    const barW = 4;
+    const barGap = 1;
+    const stripW = ACTIVITY_BAR_SLOTS * (barW + barGap);
+    const stripX = box.x + box.w - 82 - stripW;
+    const maxBarH = 11;
+
+    ACTIVITY_METRICS.forEach((metric, idx) => {
+        const y = box.y + 42 + idx * 18;
+
+        host.append('text')
+            .attr('x', box.x + 16).attr('y', y)
+            .attr('font-family', DOSSIER.mono)
+            .attr('font-size', '9px')
+            .attr('fill', DOSSIER.dim)
+            .text(metric.label);
+
+        if (samples.length < 2) {
+            host.append('text')
+                .attr('x', box.x + box.w - 14).attr('y', y)
+                .attr('text-anchor', 'end')
+                .attr('font-family', DOSSIER.mono)
+                .attr('font-size', '9px')
+                .attr('fill', DOSSIER.faint)
+                .text(samples.length ? 'sampling…' : 'waiting…');
+            return;
+        }
+
+        const series = activitySeries(metric, samples);
+        const known = series.filter((v) => v !== null);
+        if (!known.length) {
+            host.append('text')
+                .attr('x', box.x + box.w - 14).attr('y', y)
+                .attr('text-anchor', 'end')
+                .attr('font-family', DOSSIER.mono)
+                .attr('font-size', '9px')
+                .attr('fill', DOSSIER.faint)
+                .text(metric.unavailable);
+            return;
+        }
+
+        // Each row scales to its own peak; absolute units live in the readout.
+        const peak = Math.max(...known);
+        series.forEach((value, i) => {
+            const x = stripX + (ACTIVITY_BAR_SLOTS - series.length + i) * (barW + barGap);
+            if (value === null) return;
+            const h = peak > 0 ? Math.max(1, (value / peak) * maxBarH) : 1;
+            host.append('rect')
+                .attr('x', x).attr('y', y - 2 - h)
+                .attr('width', barW).attr('height', h)
+                .attr('fill', value > 0 ? DOSSIER.accent : 'rgba(244, 244, 236, 0.16)');
         });
 
-        // Activity gauge readout at the top gap of the arc.
-        group.append('text')
-            .attr('x', moduleCx)
-            .attr('y', moduleCy - arcR - 5)
-            .attr('text-anchor', 'middle')
-            .attr('font-family', 'Share Tech Mono, monospace')
-            .attr('font-size', '6px')
-            .attr('fill', 'rgba(20, 20, 20, 0.6)')
-            .text(`◆ ${activeCount}/${nodes.length}`);
-    }
-
-    group.append('circle')
-        .attr('cx', moduleCx)
-        .attr('cy', moduleCy)
-        .attr('r', moduleR - 18)
-        .attr('fill', 'none')
-        .attr('stroke', anchor ? 'rgba(238, 238, 228, 0.22)' : 'rgba(28, 28, 28, 0.18)')
-        .attr('stroke-width', anchor ? 1.05 : 0.8);
-
-    group.append('circle')
-        .attr('cx', moduleCx)
-        .attr('cy', moduleCy)
-        .attr('r', anchor ? 26 : 22)
-        .attr('fill', anchor ? 'rgba(238, 238, 228, 0.92)' : 'rgba(32, 32, 32, 0.86)')
-        .attr('stroke', anchor ? 'rgba(0, 0, 0, 0.86)' : 'rgba(20, 20, 20, 0.72)')
-        .attr('stroke-width', 1.2);
-
-    group.append('text')
-        .attr('x', moduleCx)
-        .attr('y', moduleCy - 2)
-        .attr('text-anchor', 'middle')
-        .attr('font-family', 'Share Tech Mono, monospace')
-        .attr('font-size', '7.5px')
-        .attr('font-weight', '700')
-        .attr('fill', anchor ? '#161616' : '#f1f1ec')
-        .text(String(processData.name || 'PROC').slice(0, 8).toUpperCase());
-
-    group.append('text')
-        .attr('x', moduleCx)
-        .attr('y', moduleCy + 11)
-        .attr('text-anchor', 'middle')
-        .attr('font-family', 'Share Tech Mono, monospace')
-        .attr('font-size', '6.5px')
-        .attr('fill', anchor ? '#333' : '#c9c9c0')
-        .text(`PID ${formatProcessValue(processData.pid)}`);
-
-    group.append('text')
-        .attr('x', moduleCx - moduleR)
-        .attr('y', moduleCy - moduleR - 12)
-        .attr('font-family', 'Share Tech Mono, monospace')
-        .attr('font-size', '8px')
-        .attr('font-weight', '700')
-        .attr('fill', anchor ? 'rgba(20, 20, 20, 0.82)' : 'rgba(28, 28, 28, 0.72)')
-        .text('PROCESS INTERACTION MODULE');
-
-    group.append('text')
-        .attr('x', moduleCx + moduleR - 2)
-        .attr('y', moduleCy - moduleR - 12)
-        .attr('text-anchor', 'end')
-        .attr('font-family', 'Share Tech Mono, monospace')
-        .attr('font-size', '7px')
-        .attr('fill', anchor ? 'rgba(20, 20, 20, 0.58)' : 'rgba(28, 28, 28, 0.52)')
-        .text(`ACTIVE ${activeCount}/${nodes.length}`);
-
-    nodes.forEach((node, idx) => {
-        const angle = -Math.PI / 2 + (idx / nodes.length) * Math.PI * 2;
-        const nx = moduleCx + Math.cos(angle) * (moduleR + 8);
-        const ny = moduleCy + Math.sin(angle) * (moduleR + 8);
-        const labelOffset = Math.cos(angle) >= 0 ? 14 : -14;
-        const labelX = nx + labelOffset;
-        const labelAnchor = Math.cos(angle) >= 0 ? 'start' : 'end';
-        const nodeFill = anchor
-            ? (node.active ? 'rgba(238, 238, 228, 0.96)' : 'rgba(28, 28, 28, 0.92)')
-            : (node.active ? 'rgba(28, 28, 28, 0.86)' : 'rgba(248, 248, 240, 0.72)');
-        const nodeStroke = anchor
-            ? (node.active ? 'rgba(238, 238, 228, 0.84)' : 'rgba(238, 238, 228, 0.18)')
-            : 'rgba(28, 28, 28, 0.44)';
-        const labelFill = anchor
-            ? (node.active ? 'rgba(238, 238, 228, 0.95)' : '#222')
-            : (node.active ? '#f1f1ec' : '#282828');
-        const valueFill = anchor
-            ? (node.active ? 'rgba(238, 238, 228, 0.72)' : 'rgba(42, 42, 42, 0.62)')
-            : (node.active ? '#c9c9c0' : 'rgba(28, 28, 28, 0.55)');
-
-        group.append('line')
-            .attr('x1', moduleCx + Math.cos(angle) * 28)
-            .attr('y1', moduleCy + Math.sin(angle) * 28)
-            .attr('x2', nx)
-            .attr('y2', ny)
-            .attr('stroke', anchor
-                ? (node.active ? 'rgba(238, 238, 228, 0.36)' : 'rgba(238, 238, 228, 0.11)')
-                : (node.active ? 'rgba(28, 28, 28, 0.42)' : 'rgba(28, 28, 28, 0.16)'))
-            .attr('stroke-width', node.active ? 1.05 : 0.65);
-
-        if (anchor && node.active) {
-            // Breathing pulse halo so active channels read as live telemetry.
-            const pulse = group.append('circle')
-                .attr('cx', nx)
-                .attr('cy', ny)
-                .attr('r', 7.8)
-                .attr('fill', 'none')
-                .attr('stroke', 'rgba(238, 238, 228, 0.5)')
-                .attr('stroke-width', 1.1);
-            const phase = `${(idx % 5) * 0.32}s`;
-            pulse.append('animate')
-                .attr('attributeName', 'r')
-                .attr('values', '7.8;14;7.8')
-                .attr('dur', '2.6s')
-                .attr('begin', phase)
-                .attr('repeatCount', 'indefinite');
-            pulse.append('animate')
-                .attr('attributeName', 'stroke-opacity')
-                .attr('values', '0.55;0;0.55')
-                .attr('dur', '2.6s')
-                .attr('begin', phase)
-                .attr('repeatCount', 'indefinite');
-        }
-
-        const nodeCircle = group.append('circle')
-            .attr('cx', nx)
-            .attr('cy', ny)
-            .attr('r', node.active ? 7.8 : 6.2)
-            .attr('fill', nodeFill)
-            .attr('stroke', nodeStroke)
-            .attr('stroke-width', anchor && node.active ? 1.2 : 0.8);
-
-        if (anchor && node.active) {
-            // Subtle core breathing keeps the node itself alive, not just its halo.
-            const corePhase = `${(idx % 5) * 0.32}s`;
-            nodeCircle.append('animate')
-                .attr('attributeName', 'r')
-                .attr('values', '7.2;8.4;7.2')
-                .attr('dur', '2.6s')
-                .attr('begin', corePhase)
-                .attr('repeatCount', 'indefinite');
-        }
-
-        group.append('rect')
-            .attr('x', Math.cos(angle) >= 0 ? nx + 10 : nx - 80)
-            .attr('y', ny - 9)
-            .attr('width', 70)
-            .attr('height', 18)
-            .attr('rx', 9)
-            .attr('fill', anchor
-                ? (node.active ? 'rgba(18, 18, 18, 0.92)' : 'rgba(238, 238, 228, 0.82)')
-                : (node.active ? 'rgba(28, 28, 28, 0.86)' : 'rgba(248, 248, 240, 0.58)'))
-            .attr('stroke', anchor ? 'rgba(238, 238, 228, 0.34)' : 'rgba(28, 28, 28, 0.22)')
-            .attr('stroke-width', anchor ? 0.9 : 0.7);
-
-        group.append('text')
-            .attr('x', labelX)
-            .attr('y', ny - 1)
-            .attr('text-anchor', labelAnchor)
-            .attr('font-family', 'Share Tech Mono, monospace')
-            .attr('font-size', anchor ? '8px' : '7.5px')
-            .attr('font-weight', '700')
-            .attr('fill', labelFill)
-            .text(node.label);
-
-        group.append('text')
-            .attr('x', labelX)
-            .attr('y', ny + 8)
-            .attr('text-anchor', labelAnchor)
-            .attr('font-family', 'Share Tech Mono, monospace')
-            .attr('font-size', anchor ? '6.4px' : '6px')
-            .attr('fill', valueFill)
-            .text(String(node.value).slice(0, 8));
+        // Bursty processes read 0 on any single sample, so the readout is the
+        // window mean and the bars carry the per-sample shape.
+        const mean = known.reduce((sum, v) => sum + v, 0) / known.length;
+        host.append('text')
+            .attr('x', box.x + box.w - 14).attr('y', y)
+            .attr('text-anchor', 'end')
+            .attr('font-family', DOSSIER.mono)
+            .attr('font-size', '11px')
+            .attr('fill', mean > 0 ? DOSSIER.accent : DOSSIER.faint)
+            .text(metric.format(mean));
     });
+}
+
+// Ancestry rows for the lineage card: init first, the process itself last.
+// Each row carries the gap since its parent started, so the card reads as a
+// spawn chronology rather than repeating the same age on every line.
+// Long chains collapse in the middle so the card never outgrows the viewport.
+function lineageRows(lineage, maxRows) {
+    const chain = lineage && Array.isArray(lineage.chain) ? lineage.chain : [];
+    if (!chain.length) return [];
+
+    const withDelta = chain.map((row, i) => {
+        const prev = i > 0 ? chain[i - 1] : null;
+        const delta = prev && row.create_time && prev.create_time
+            ? row.create_time - prev.create_time
+            : null;
+        return { row, delta };
+    });
+
+    if (withDelta.length <= maxRows) return withDelta;
+    return [
+        withDelta[0],
+        { gap: withDelta.length - (maxRows - 1) },
+        ...withDelta.slice(-(maxRows - 2))
+    ];
+}
+
+function formatSpawnDelta(seconds) {
+    const s = Number(seconds);
+    if (!Number.isFinite(s)) return '';
+    if (s < 1) return '+<1s';
+    if (s < 90) return `+${Math.round(s)}s`;
+    if (s < 5400) return `+${(s / 60).toFixed(1)}m`;
+    if (s < 172800) return `+${(s / 3600).toFixed(1)}h`;
+    return `+${(s / 86400).toFixed(1)}d`;
+}
+
+function formatProcessAge(seconds) {
+    const s = Number(seconds || 0);
+    if (!Number.isFinite(s) || s <= 0) return '—';
+    if (s < 60) return `${Math.round(s)}s`;
+    if (s < 3600) return `${Math.round(s / 60)}m`;
+    if (s < 86400) return `${(s / 3600).toFixed(1)}h`;
+    return `${(s / 86400).toFixed(1)}d`;
+}
+
+function formatStartClock(createTime) {
+    if (!createTime) return '—';
+    const d = new Date(Number(createTime) * 1000);
+    if (Number.isNaN(d.getTime())) return '—';
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 function renderProcessDossier() {
     d3.selectAll('.process-dossier-layer').remove();
     if (!pinnedProcessDossier || !pinnedProcessDossier.process || !pinnedProcessDossier.anchor) return;
 
+    ensureDossierDefs();
+
     const width = window.innerWidth;
     const height = window.innerHeight;
     const processData = pinnedProcessDossier.process;
     const anchor = pinnedProcessDossier.anchor;
-    const ioSummary = processIoSummary(processData, pinnedProcessDossier.details);
-    const controlRows = processControlStrip(processData, pinnedProcessDossier.details);
-    const threadsData = pinnedProcessDossier.details?.threadsData || {};
-    const cpuData = pinnedProcessDossier.details?.cpuData || {};
-    const menuW = Math.min(760, width - 220);
-    const menuH = 118;
-    const menuX = Math.max(120, width / 2 - menuW / 2);
-    const menuY = Math.min(height - menuH - 34, Math.max(height * 0.68, anchor.y + 210));
+    const details = pinnedProcessDossier.details || {};
+    const fdsData = details.fdsData || null;
+    const threadsData = details.threadsData || {};
+    const cpuData = details.cpuData || {};
+    const lineage = details.lineage || null;
+    const fp = fdsData ? (fdsData.namespace_fingerprint || null) : null;
+    const io = processIoSummary(processData, details);
+    const kernelThread = isKernelThreadProcess(processData, lineage);
+
     const cpuPercent = Number(cpuData.cpu_percent || processData.cpu_percent || 0);
+    const memoryMb = Number(processData.memory_mb || 0);
     const threadCount = Number(threadsData.thread_count || processData.num_threads || 0);
-    const actionRows = [
-        { id: 'STATE', value: formatProcessValue(processData.status, 'state'), active: true },
-        { id: 'CPU', value: `${cpuPercent}%`, active: cpuPercent > 0 },
-        { id: 'FD TABLE', value: `${ioSummary.fds} fd`, active: Number(ioSummary.fds || 0) > 0 },
-        { id: 'VFS', value: `${ioSummary.files} files`, active: Number(ioSummary.files || 0) > 0 },
-        { id: 'SOCKET', value: `${ioSummary.sockets} conns`, active: Number(ioSummary.sockets || 0) > 0 },
-        { id: 'SCHED', value: `${threadCount} th`, active: threadCount > 1 || cpuPercent > 0 },
-        { id: 'MEM', value: `${formatProcessValue(processData.memory_mb, 0)} MB`, active: Number(processData.memory_mb || 0) > 1 },
-        { id: 'KERNEL', value: 'CONTACT', active: true }
-    ];
+
+    const cardW = 358;
+    const stackX = Math.max(72, Math.min(width * 0.5 - 300, width - cardW - 380));
+    const overlap = 6;
+
+    // ── measure every card before placing the stack ────────────────────────
+    const nsList = fp && Array.isArray(fp.namespaces) ? fp.namespaces : [];
+    const showChips = nsList.some((ns) => ns.isolated);
+
+    const heroName = String(processData.name || 'process').toUpperCase().slice(0, 20);
+    const heroSize = heroName.length > 17 ? 17 : (heroName.length > 13 ? 21 : 26);
+    const verdictLines = wrapDossierLines(dossierVerdict(processData, fp, kernelThread), 12, cardW - 32, 2);
+
+    const heroRel = 39 + heroSize * 0.76;
+    const classRel = heroRel + 19;
+    const ruleRel = classRel + 14;
+    const labelRel = ruleRel + 17;
+    const verdictRel = labelRel + 16;
+    const chipsRel = verdictRel + verdictLines.length * 13 + 4;
+    const idH = (showChips ? chipsRel + 16 : chipsRel) + 14;
+
+    const vitH = 84;
+
+    const descriptors = fdsData && Array.isArray(fdsData.descriptors) ? fdsData.descriptors : [];
+    const fdRows = descriptors.slice(0, 6);
+    const bodyRows = fdRows.length
+        ? fdRows.map((d) => ({
+            key: `fd ${d.fd}`,
+            mid: String(d.type || 'fd').toLowerCase().slice(0, 10),
+            // Drop the prefixes the type column already states.
+            value: elideDescriptorTarget(
+                descriptorTargetLabel(d)
+                    .replace(/^socket:\[/, 'socket[')
+                    .replace(/^anon_inode:/, ''),
+                20
+            )
+        }))
+        : schedulingRows(processData, threadsData, cpuData, kernelThread, fdsData);
+    const fdTotal = Math.max(Number(io.fds || 0), descriptors.length);
+    const hasFooter = fdRows.length > 0 && fdTotal > fdRows.length;
+    const fdH = 36 + bodyRows.length * 16 + 10 + (hasFooter ? 14 : 0);
+
+    const actH = 34 + ACTIVITY_METRICS.length * 18 + 8;
+
+    // Activity is live, so it keeps its slot; lineage takes what is left over.
+    const fixedH = idH + (vitH - overlap) + (fdH - overlap) + (actH - overlap);
+    const roomForLineage = height - 72 - fixedH - 36;
+    const maxLineRows = Math.max(0, Math.min(6, Math.floor((roomForLineage - 52) / 20)));
+    const lineRows = maxLineRows >= 3 ? lineageRows(lineage, maxLineRows) : [];
+    const lineH = lineRows.length ? 34 + lineRows.length * 20 + 8 : 0;
+
+    const totalH = fixedH + (lineH ? lineH - overlap : 0);
+    const stackY = Math.max(64, Math.min(height * 0.17, height - totalH - 32));
 
     const layer = svg.append('g')
         .attr('class', 'process-dossier-layer')
         .attr('pointer-events', 'none');
 
+    // ── link back to the selected node on the map ──────────────────────────
+    const linkX = stackX + cardW;
+    const linkY = stackY + 46;
     layer.append('path')
-        .attr('d', `M${anchor.x},${anchor.y} C${anchor.x + 34},${anchor.y + 96} ${menuX + 34},${menuY - 44} ${menuX + 54},${menuY + 52}`)
+        .attr('d', `M${anchor.x},${anchor.y} C${anchor.x - 60},${anchor.y} ${linkX + 70},${linkY} ${linkX},${linkY}`)
         .attr('fill', 'none')
-        .attr('stroke', 'rgba(16, 16, 16, 0.36)')
-        .attr('stroke-width', 1.05);
-
-    layer.append('text')
-        .attr('x', (anchor.x + menuX) / 2)
-        .attr('y', (anchor.y + menuY) / 2)
-        .attr('text-anchor', 'middle')
-        .attr('font-family', 'Share Tech Mono, monospace')
-        .attr('font-size', '8px')
-        .attr('fill', 'rgba(24, 24, 24, 0.72)')
-        .text('PROCESS LINK');
-
-    layer.append('rect')
-        .attr('x', menuX)
-        .attr('y', menuY)
-        .attr('width', menuW)
-        .attr('height', menuH)
-        .attr('rx', 6)
-        .attr('fill', 'rgba(238, 238, 228, 0.68)')
-        .attr('stroke', 'rgba(24, 24, 24, 0.2)')
-        .attr('stroke-width', 0.9);
-
-    layer.append('rect')
-        .attr('x', menuX + 10)
-        .attr('y', menuY + 10)
-        .attr('width', menuW - 20)
-        .attr('height', 26)
-        .attr('rx', 3)
-        .attr('fill', 'rgba(24, 24, 24, 0.86)');
-
-    layer.append('text')
-        .attr('x', menuX + 20)
-        .attr('y', menuY + 28)
-        .attr('font-family', 'Share Tech Mono, monospace')
-        .attr('font-size', '10px')
-        .attr('font-weight', '700')
-        .attr('fill', '#f2f2ea')
-        .text('PROCESS ACTION MENU');
-
-    layer.append('text')
-        .attr('x', menuX + menuW - 20)
-        .attr('y', menuY + 28)
-        .attr('text-anchor', 'end')
-        .attr('font-family', 'Share Tech Mono, monospace')
-        .attr('font-size', '8px')
-        .attr('fill', '#cfcfc8')
-        .text(`${String(processData.name || 'process').slice(0, 18)} · PID ${formatProcessValue(processData.pid)}`);
-
+        .attr('stroke', 'rgba(20, 24, 30, 0.42)')
+        .attr('stroke-width', 1)
+        .attr('stroke-dasharray', '4 4');
     layer.append('circle')
-        .attr('cx', anchor.x)
-        .attr('cy', anchor.y)
-        .attr('r', 9)
+        .attr('cx', anchor.x).attr('cy', anchor.y).attr('r', 8.5)
         .attr('fill', 'none')
-        .attr('stroke', 'rgba(16, 16, 16, 0.72)')
-        .attr('stroke-width', 1.1);
+        .attr('stroke', DOSSIER.accent)
+        .attr('stroke-width', 1.6);
+    layer.append('circle')
+        .attr('cx', anchor.x).attr('cy', anchor.y).attr('r', 2.4)
+        .attr('fill', DOSSIER.accent);
 
-    const itemW = (menuW - 44) / 4;
-    actionRows.forEach((row, idx) => {
-        const col = idx % 4;
-        const r = Math.floor(idx / 4);
-        const x = menuX + 14 + col * itemW;
-        const y = menuY + 48 + r * 30;
-        const w = itemW - 8;
-        layer.append('rect')
-            .attr('x', x)
-            .attr('y', y)
-            .attr('width', w)
-            .attr('height', 22)
-            .attr('rx', 11)
-            .attr('fill', row.active ? 'rgba(24, 24, 24, 0.86)' : 'rgba(255, 255, 255, 0.44)')
-            .attr('stroke', 'rgba(24, 24, 24, 0.18)')
-            .attr('stroke-width', row.active ? 1 : 0.7);
+    // ── card 1 · identity ──────────────────────────────────────────────────
+    const idBox = { x: stackX, y: stackY, w: cardW, h: idH };
+    const idCard = dossierCard(layer, idBox, 'PROCESS DOSSIER', `PID ${formatProcessValue(processData.pid)}`);
 
-        layer.append('circle')
-            .attr('cx', x + 11)
-            .attr('cy', y + 11)
-            .attr('r', 2.2)
-            .attr('fill', row.active ? '#f2f2ea' : 'rgba(24, 24, 24, 0.46)');
+    idCard.append('text')
+        .attr('x', idBox.x + 16).attr('y', idBox.y + heroRel)
+        .attr('font-family', DOSSIER.mono)
+        .attr('font-size', `${heroSize}px`)
+        .attr('letter-spacing', '1.2')
+        .attr('fill', DOSSIER.text)
+        .text(heroName);
 
-        layer.append('text')
-            .attr('x', x + 20)
-            .attr('y', y + 10)
-            .attr('font-family', 'Share Tech Mono, monospace')
-            .attr('font-size', '8px')
-            .attr('font-weight', '700')
-            .attr('fill', row.active ? '#f2f2ea' : '#2f2f2f')
-            .text(row.id);
+    idCard.append('text')
+        .attr('x', idBox.x + 16).attr('y', idBox.y + classRel)
+        .attr('font-family', DOSSIER.mono)
+        .attr('font-size', '11px')
+        .attr('letter-spacing', '1.4')
+        .attr('fill', DOSSIER.dim)
+        .text(`${kernelThread ? 'KERNEL THREAD' : 'USER PROCESS'} [${String(processData.status || '?').slice(0, 1).toUpperCase()}]`);
 
-        layer.append('text')
-            .attr('x', x + w - 8)
-            .attr('y', y + 17)
+    idCard.append('line')
+        .attr('x1', idBox.x + 16).attr('x2', idBox.x + idBox.w - 16)
+        .attr('y1', idBox.y + ruleRel).attr('y2', idBox.y + ruleRel)
+        .attr('stroke', DOSSIER.rule)
+        .attr('stroke-width', 1);
+
+    idCard.append('text')
+        .attr('x', idBox.x + 16).attr('y', idBox.y + labelRel)
+        .attr('font-family', DOSSIER.mono)
+        .attr('font-size', '9px')
+        .attr('letter-spacing', '1.2')
+        .attr('fill', DOSSIER.faint)
+        .text('ASSESSMENT');
+
+    verdictLines.forEach((line, i) => {
+        idCard.append('text')
+            .attr('x', idBox.x + 16).attr('y', idBox.y + verdictRel + i * 13)
+            .attr('font-family', DOSSIER.mono)
+            .attr('font-size', '12px')
+            .attr('fill', DOSSIER.text)
+            .text(line);
+    });
+
+    if (showChips) {
+        const chipW = (idBox.w - 32 - 5 * 5) / 6;
+        nsList.slice(0, 6).forEach((ns, i) => {
+            const cx = idBox.x + 16 + i * (chipW + 5);
+            const cy = idBox.y + chipsRel;
+            const own = !!ns.isolated;
+            idCard.append('rect')
+                .attr('x', cx).attr('y', cy)
+                .attr('width', chipW).attr('height', 16)
+                .attr('rx', 3)
+                .attr('fill', own ? 'rgba(226, 163, 62, 0.18)' : 'rgba(255, 255, 255, 0.04)')
+                .attr('stroke', own ? DOSSIER.accent : DOSSIER.edge)
+                .attr('stroke-width', own ? 1 : 0.8)
+                .style('pointer-events', 'all')
+                .style('cursor', 'help')
+                .on('mouseenter', (event) => showNamespaceCellTooltip(event, ns))
+                .on('mousemove', (event) => {
+                    d3.selectAll('.ns-fp-tooltip')
+                        .style('left', `${event.pageX + 12}px`)
+                        .style('top', `${event.pageY - 10}px`);
+                })
+                .on('mouseleave', () => d3.selectAll('.ns-fp-tooltip').remove());
+
+            idCard.append('text')
+                .attr('x', cx + chipW / 2).attr('y', cy + 11)
+                .attr('text-anchor', 'middle')
+                .attr('font-family', DOSSIER.mono)
+                .attr('font-size', '9px')
+                .attr('fill', own ? DOSSIER.accent : DOSSIER.dim)
+                .text(ns.label || String(ns.id || '').toUpperCase());
+        });
+    }
+
+    // ── card 2 · vitals ────────────────────────────────────────────────────
+    const vitBox = { x: stackX + 30, y: stackY + idH - overlap, w: cardW - 26, h: vitH };
+    const vitCard = dossierCard(layer, vitBox, 'RESOURCES', kernelThread ? 'kernel space' : 'userspace');
+
+    // Amber marks a live value, grey a zero — the row reads at a glance.
+    const vitals = [
+        { label: 'CPU', value: `${Math.round(cpuPercent)}`, unit: '%', live: cpuPercent > 0 },
+        {
+            label: 'MEMORY',
+            value: memoryMb >= 100 ? `${Math.round(memoryMb)}` : memoryMb.toFixed(1),
+            unit: 'MB',
+            live: memoryMb > 0,
+            open: window.MemoryCard ? MemoryCard.open : null
+        },
+        // The count is a door: the threads are what the kernel schedules, and
+        // the card behind it says what each of them is doing.
+        {
+            label: 'THREADS',
+            value: `${threadCount}`,
+            unit: '',
+            live: threadCount > 0,
+            open: threadCount > 0 && window.ThreadsCard ? ThreadsCard.open : null
+        },
+        // Named for what it is: inet connections, not every socket fd.
+        { label: 'NET CONNS', value: `${io.sockets}`, unit: '', live: Number(io.sockets || 0) > 0 }
+    ];
+    const colW = (vitBox.w - 28) / vitals.length;
+    vitals.forEach((v, i) => {
+        const cx = vitBox.x + 14 + i * colW;
+        vitCard.append('text')
+            .attr('x', cx).attr('y', vitBox.y + 56)
+            .attr('font-family', DOSSIER.mono)
+            .attr('font-size', '20px')
+            .attr('fill', v.live ? DOSSIER.accent : DOSSIER.faint)
+            .text(v.value);
+        if (v.unit) {
+            vitCard.append('text')
+                .attr('x', cx + String(v.value).length * 12 + 2).attr('y', vitBox.y + 56)
+                .attr('font-family', DOSSIER.mono)
+                .attr('font-size', '9px')
+                .attr('fill', v.live ? 'rgba(226, 163, 62, 0.7)' : DOSSIER.faint)
+                .text(v.unit);
+        }
+        const label = vitCard.append('text')
+            .attr('x', cx).attr('y', vitBox.y + 72)
+            .attr('font-family', DOSSIER.mono)
+            .attr('font-size', '9px')
+            .attr('letter-spacing', '1.2')
+            .attr('fill', DOSSIER.dim)
+            .text(v.label);
+
+        if (!v.open) return;
+        const labelW = v.label.length * 6.6;
+        const rule = vitCard.append('line')
+            .attr('x1', cx).attr('x2', cx + labelW)
+            .attr('y1', vitBox.y + 76).attr('y2', vitBox.y + 76)
+            .attr('stroke', DOSSIER.accent)
+            .attr('stroke-width', 1)
+            .attr('opacity', 0.35);
+        vitCard.append('rect')
+            .attr('x', cx - 8).attr('y', vitBox.y + 36)
+            .attr('width', Math.max(46, colW - 6)).attr('height', 44)
+            .attr('fill', 'transparent')
+            .style('pointer-events', 'all')
+            .style('cursor', 'pointer')
+            .on('mouseenter', () => {
+                rule.attr('opacity', 1);
+                label.attr('fill', DOSSIER.accent);
+            })
+            .on('mouseleave', () => {
+                rule.attr('opacity', 0.35);
+                label.attr('fill', DOSSIER.dim);
+            })
+            .on('click', (event) => {
+                event.stopPropagation();
+                v.open(processData.pid, {
+                    x: cx + 20,
+                    y: vitBox.y + 56,
+                    // Each card of the stack is inset further right than the
+                    // one above it; clear the widest of them.
+                    clearOf: stackX + cardW + 34
+                });
+            });
+    });
+
+    // ── card 3 · descriptors when readable, otherwise scheduling ───────────
+    // /proc/<pid>/fd is unreadable for foreign processes at our privilege, so
+    // rather than a permanently empty table we fall back to data we do have.
+    const fdBox = { x: stackX + 60, y: vitBox.y + vitBox.h - overlap, w: cardW - 52, h: fdH };
+    const fdCard = dossierCard(
+        layer,
+        fdBox,
+        fdRows.length ? 'DESCRIPTOR TABLE' : 'SCHEDULING',
+        fdRows.length
+            ? `${formatProcessValue(io.fds, 0)} fd`
+            : (kernelThread ? 'kernel task' : `nice ${formatProcessValue(cpuData.nice, '—')}`)
+    );
+
+    bodyRows.forEach((row, idx) => {
+        const y = fdBox.y + 42 + idx * 16;
+        fdCard.append('text')
+            .attr('x', fdBox.x + 16).attr('y', y)
+            .attr('font-family', DOSSIER.mono)
+            .attr('font-size', '11px')
+            .attr('fill', DOSSIER.dim)
+            .text(row.key);
+
+        if (row.mid) {
+            fdCard.append('text')
+                .attr('x', fdBox.x + 74).attr('y', y)
+                .attr('font-family', DOSSIER.mono)
+                .attr('font-size', '11px')
+                .attr('fill', DOSSIER.text)
+                .text(row.mid);
+        }
+
+        fdCard.append('text')
+            .attr('x', fdBox.x + fdBox.w - 14).attr('y', y)
             .attr('text-anchor', 'end')
-            .attr('font-family', 'Share Tech Mono, monospace')
-            .attr('font-size', '6.5px')
-            .attr('fill', row.active ? '#cfcfc8' : '#666')
-            .text(String(row.value).slice(0, 12));
+            .attr('font-family', DOSSIER.mono)
+            .attr('font-size', '11px')
+            .attr('fill', row.mid ? DOSSIER.faint : DOSSIER.text)
+            .text(row.value);
     });
 
-    renderFdDescriptorMap(layer, processData, pinnedProcessDossier.details, {
-        x: menuX + menuW - 258,
-        y: Math.max(88, menuY - 166),
-        width: 258,
-        height: 142,
-        anchor: { x: menuX + menuW - 42, y: menuY + 12 }
-    });
+    if (hasFooter) {
+        fdCard.append('text')
+            .attr('x', fdBox.x + fdBox.w - 14).attr('y', fdBox.y + fdBox.h - 9)
+            .attr('text-anchor', 'end')
+            .attr('font-family', DOSSIER.mono)
+            .attr('font-size', '9px')
+            .attr('fill', DOSSIER.faint)
+            .text(`showing ${fdRows.length} of ${fdTotal}`);
+    }
 
-    renderNamespaceFingerprint(layer, processData, pinnedProcessDossier.details, {
-        x: menuX,
-        y: Math.max(88, menuY - 150),
-        width: 226,
-        height: 126,
-        anchor: { x: menuX + 28, y: menuY + 12 }
-    });
+    // ── card 4 · live activity ─────────────────────────────────────────────
+    const actBox = { x: stackX + 90, y: fdBox.y + fdBox.h - overlap, w: cardW - 78, h: actH };
+    pinnedProcessDossier.activityBox = actBox;
+    dossierCard(layer, actBox, 'ACTIVITY', null);
+    layer.append('g').attr('class', 'dossier-activity-rows');
+    drawActivityRows();
 
-    const nsFingerprint = pinnedProcessDossier.details?.fdsData?.namespace_fingerprint;
-    const containmentPeers = nsFingerprint && Array.isArray(nsFingerprint.peer_pids)
-        ? nsFingerprint.peer_pids
-        : [];
+    // ── card 5 · lineage ───────────────────────────────────────────────────
+    // Real kernel start times walked up the parent chain, oldest at the top.
+    if (lineRows.length) {
+        const lineBox = { x: stackX + 90, y: actBox.y + actBox.h - overlap, w: cardW - 78, h: lineH };
+        const childMeta = lineage.child_count
+            ? `${lineage.child_count} child${lineage.child_count === 1 ? '' : 'ren'}`
+            : `age ${formatProcessAge(lineage.age_s)}`;
+        const lineCard = dossierCard(layer, lineBox, 'LINEAGE', childMeta);
+
+        const spineX = lineBox.x + 22;
+        const firstY = lineBox.y + 44;
+        const lastY = firstY + (lineRows.length - 1) * 20;
+        lineCard.append('line')
+            .attr('x1', spineX).attr('x2', spineX)
+            .attr('y1', firstY - 4).attr('y2', lastY - 4)
+            .attr('stroke', DOSSIER.edge)
+            .attr('stroke-width', 1);
+
+        lineRows.forEach((entry, idx) => {
+            const y = firstY + idx * 20;
+
+            if (entry.gap) {
+                lineCard.append('text')
+                    .attr('x', spineX - 4).attr('y', y - 1)
+                    .attr('text-anchor', 'middle')
+                    .attr('font-family', DOSSIER.mono)
+                    .attr('font-size', '11px')
+                    .attr('fill', DOSSIER.faint)
+                    .text('⋮');
+                lineCard.append('text')
+                    .attr('x', spineX + 18).attr('y', y - 1)
+                    .attr('font-family', DOSSIER.mono)
+                    .attr('font-size', '9px')
+                    .attr('fill', DOSSIER.faint)
+                    .text(`${entry.gap} more ancestors`);
+                return;
+            }
+
+            const row = entry.row;
+            const isSelf = Number(row.pid) === Number(processData.pid);
+
+            lineCard.append('line')
+                .attr('x1', spineX).attr('x2', spineX + 10)
+                .attr('y1', y - 4).attr('y2', y - 4)
+                .attr('stroke', DOSSIER.edge)
+                .attr('stroke-width', 1);
+
+            lineCard.append('circle')
+                .attr('cx', spineX).attr('cy', y - 4).attr('r', isSelf ? 3.4 : 2.4)
+                .attr('fill', isSelf ? DOSSIER.accent : DOSSIER.ink)
+                .attr('stroke', isSelf ? DOSSIER.accent : DOSSIER.dim)
+                .attr('stroke-width', 1.1);
+
+            lineCard.append('text')
+                .attr('x', spineX + 16).attr('y', y)
+                .attr('font-family', DOSSIER.mono)
+                .attr('font-size', '11px')
+                .attr('fill', isSelf ? DOSSIER.accent : DOSSIER.text)
+                .text(elideDescriptorTarget(String(row.name || '?'), 15));
+
+            lineCard.append('text')
+                .attr('x', lineBox.x + lineBox.w - 76).attr('y', y)
+                .attr('text-anchor', 'end')
+                .attr('font-family', DOSSIER.mono)
+                .attr('font-size', '9px')
+                .attr('fill', DOSSIER.faint)
+                .text(`pid ${row.pid}`);
+
+            // Root shows its wall clock start; the rest show the spawn gap.
+            lineCard.append('text')
+                .attr('x', lineBox.x + lineBox.w - 14).attr('y', y)
+                .attr('text-anchor', 'end')
+                .attr('font-family', DOSSIER.mono)
+                .attr('font-size', '9px')
+                .attr('fill', isSelf ? 'rgba(226, 163, 62, 0.75)' : DOSSIER.dim)
+                .text(entry.delta === null || entry.delta === undefined
+                    ? formatStartClock(row.create_time)
+                    : formatSpawnDelta(entry.delta));
+        });
+    }
+
+    const containmentPeers = fp && Array.isArray(fp.peer_pids) ? fp.peer_pids : [];
     if (containmentPeers.length) {
         drawContainmentHalo(layer, processData, containmentPeers);
     }
 }
 
-function renderFdDescriptorMap(layer, processData, details = {}, box) {
-    const fdsData = details.fdsData || {};
-    const descriptors = Array.isArray(fdsData.descriptors) ? fdsData.descriptors : [];
-    const rows = descriptors.length
-        ? descriptors.slice(0, 8)
-        : [
-            { fd: 0, type: 'stdin', target: 'loading' },
-            { fd: 1, type: 'stdout', target: 'loading' },
-            { fd: 2, type: 'stderr', target: 'loading' }
-        ];
-
-    layer.append('path')
-        .attr('d', `M${box.anchor.x},${box.anchor.y} C${box.anchor.x - 18},${box.anchor.y - 42} ${box.x + box.width - 20},${box.y + box.height + 18} ${box.x + box.width - 32},${box.y + box.height - 4}`)
-        .attr('fill', 'none')
-        .attr('stroke', 'rgba(20, 20, 20, 0.22)')
-        .attr('stroke-width', 0.8);
-
-    layer.append('rect')
-        .attr('x', box.x)
-        .attr('y', box.y)
-        .attr('width', box.width)
-        .attr('height', box.height)
-        .attr('rx', 6)
-        .attr('fill', 'rgba(238, 238, 228, 0.76)')
-        .attr('stroke', 'rgba(24, 24, 24, 0.18)')
-        .attr('stroke-width', 0.85);
-
-    layer.append('rect')
-        .attr('x', box.x + 8)
-        .attr('y', box.y + 8)
-        .attr('width', box.width - 16)
-        .attr('height', 22)
-        .attr('rx', 3)
-        .attr('fill', 'rgba(24, 24, 24, 0.84)');
-
-    layer.append('text')
-        .attr('x', box.x + 16)
-        .attr('y', box.y + 23)
-        .attr('font-family', 'Share Tech Mono, monospace')
-        .attr('font-size', '8.5px')
-        .attr('font-weight', '700')
-        .attr('fill', '#f2f2ea')
-        .text('FD DESCRIPTOR MAP');
-
-    layer.append('text')
-        .attr('x', box.x + box.width - 16)
-        .attr('y', box.y + 23)
-        .attr('text-anchor', 'end')
-        .attr('font-family', 'Share Tech Mono, monospace')
-        .attr('font-size', '6.5px')
-        .attr('fill', '#cfcfc8')
-        .text(`PID ${formatProcessValue(processData.pid)}`);
-
-    rows.forEach((descriptor, idx) => {
-        const y = box.y + 42 + idx * 12;
-        const tone = descriptorTone(descriptor.type);
-        const fdLabel = `fd ${formatProcessValue(descriptor.fd)}`;
-        const typeLabel = String(descriptor.type || 'descriptor').toUpperCase().slice(0, 11);
-        const targetLabel = descriptorTargetLabel(descriptor).replace(/^socket:\[/, 'socket[').slice(0, 22);
-
-        layer.append('line')
-            .attr('x1', box.x + 16)
-            .attr('y1', y + 4)
-            .attr('x2', box.x + box.width - 16)
-            .attr('y2', y + 4)
-            .attr('stroke', 'rgba(24, 24, 24, 0.08)')
-            .attr('stroke-width', 0.6);
-
-        layer.append('circle')
-            .attr('cx', box.x + 18)
-            .attr('cy', y)
-            .attr('r', 2.2)
-            .attr('fill', tone);
-
-        layer.append('text')
-            .attr('x', box.x + 28)
-            .attr('y', y + 2.5)
-            .attr('font-family', 'Share Tech Mono, monospace')
-            .attr('font-size', '7px')
-            .attr('font-weight', '700')
-            .attr('fill', '#272727')
-            .text(fdLabel);
-
-        layer.append('text')
-            .attr('x', box.x + 74)
-            .attr('y', y + 2.5)
-            .attr('font-family', 'Share Tech Mono, monospace')
-            .attr('font-size', '7px')
-            .attr('fill', tone)
-            .text(typeLabel);
-
-        layer.append('text')
-            .attr('x', box.x + box.width - 16)
-            .attr('y', y + 2.5)
-            .attr('text-anchor', 'end')
-            .attr('font-family', 'Share Tech Mono, monospace')
-            .attr('font-size', '6.3px')
-            .attr('fill', 'rgba(36, 36, 36, 0.62)')
-            .text(targetLabel);
+// Naive greedy wrap for the assessment line; SVG has no flow text.
+function wrapDossierLines(text, fontSize, maxWidth, maxLines) {
+    const maxChars = Math.max(12, Math.floor(maxWidth / (fontSize * 0.6)));
+    const lines = [];
+    let current = '';
+    String(text).split(/\s+/).forEach((word) => {
+        const candidate = current ? `${current} ${word}` : word;
+        if (candidate.length > maxChars && current) {
+            lines.push(current);
+            current = word;
+        } else {
+            current = candidate;
+        }
     });
+    if (current) lines.push(current);
 
-    if (descriptors.length > rows.length) {
-        layer.append('text')
-            .attr('x', box.x + box.width - 16)
-            .attr('y', box.y + box.height - 10)
-            .attr('text-anchor', 'end')
-            .attr('font-family', 'Share Tech Mono, monospace')
-            .attr('font-size', '6.5px')
-            .attr('fill', 'rgba(36, 36, 36, 0.56)')
-            .text(`+${descriptors.length - rows.length} more descriptors`);
+    if (lines.length > maxLines) {
+        const kept = lines.slice(0, maxLines);
+        kept[maxLines - 1] = `${kept[maxLines - 1].slice(0, maxChars - 1)}…`;
+        return kept;
     }
-}
-
-const NS_FINGERPRINT_PLACEHOLDER = [
-    { id: 'mnt', label: 'MNT', isolated: false },
-    { id: 'pid', label: 'PID', isolated: false },
-    { id: 'net', label: 'NET', isolated: false },
-    { id: 'ipc', label: 'IPC', isolated: false },
-    { id: 'uts', label: 'UTS', isolated: false },
-    { id: 'user', label: 'USER', isolated: false }
-];
-
-function renderNamespaceFingerprint(layer, processData, details = {}, box) {
-    const fdsData = details.fdsData || {};
-    const fp = fdsData.namespace_fingerprint || null;
-    const nsList = fp && Array.isArray(fp.namespaces) ? fp.namespaces : NS_FINGERPRINT_PLACEHOLDER;
-    const isolatedCount = fp ? Number(fp.isolated_count || 0) : 0;
-    const total = fp ? Number(fp.total || nsList.length) : nsList.length;
-    const verdict = fp ? String(fp.verdict || '') : 'reading…';
-
-    layer.append('path')
-        .attr('d', `M${box.anchor.x},${box.anchor.y} C${box.anchor.x + 18},${box.anchor.y - 42} ${box.x + 24},${box.y + box.height + 18} ${box.x + 32},${box.y + box.height - 4}`)
-        .attr('fill', 'none')
-        .attr('stroke', 'rgba(20, 20, 20, 0.22)')
-        .attr('stroke-width', 0.8);
-
-    layer.append('rect')
-        .attr('x', box.x)
-        .attr('y', box.y)
-        .attr('width', box.width)
-        .attr('height', box.height)
-        .attr('rx', 6)
-        .attr('fill', 'rgba(238, 238, 228, 0.76)')
-        .attr('stroke', 'rgba(24, 24, 24, 0.18)')
-        .attr('stroke-width', 0.85);
-
-    layer.append('rect')
-        .attr('x', box.x + 8)
-        .attr('y', box.y + 8)
-        .attr('width', box.width - 16)
-        .attr('height', 22)
-        .attr('rx', 3)
-        .attr('fill', 'rgba(24, 24, 24, 0.84)');
-
-    layer.append('text')
-        .attr('x', box.x + 16)
-        .attr('y', box.y + 23)
-        .attr('font-family', 'Share Tech Mono, monospace')
-        .attr('font-size', '8.5px')
-        .attr('font-weight', '700')
-        .attr('fill', '#f2f2ea')
-        .text('NAMESPACE ISOLATION');
-
-    layer.append('text')
-        .attr('x', box.x + box.width - 16)
-        .attr('y', box.y + 23)
-        .attr('text-anchor', 'end')
-        .attr('font-family', 'Share Tech Mono, monospace')
-        .attr('font-size', '7px')
-        .attr('font-weight', '700')
-        .attr('fill', isolatedCount > 0 ? '#9fe0c2' : '#cfcfc8')
-        .text(`${isolatedCount}/${total}`);
-
-    layer.append('text')
-        .attr('x', box.x + 16)
-        .attr('y', box.y + 42)
-        .attr('font-family', 'Share Tech Mono, monospace')
-        .attr('font-size', '6.8px')
-        .attr('fill', isolatedCount > 0 ? 'rgba(20, 90, 64, 0.9)' : 'rgba(36, 36, 36, 0.6)')
-        .text(verdict.toUpperCase());
-
-    const cols = 3;
-    const gap = 7;
-    const cellW = (box.width - 32 - gap * (cols - 1)) / cols;
-    const cellH = 24;
-    const gridY = box.y + 52;
-
-    nsList.slice(0, 6).forEach((ns, i) => {
-        const c = i % cols;
-        const r = Math.floor(i / cols);
-        const x = box.x + 16 + c * (cellW + gap);
-        const y = gridY + r * (cellH + 7);
-        const isolated = !!ns.isolated;
-
-        layer.append('rect')
-            .attr('x', x)
-            .attr('y', y)
-            .attr('width', cellW)
-            .attr('height', cellH)
-            .attr('rx', 4)
-            .attr('fill', isolated ? 'rgba(24, 24, 24, 0.86)' : 'rgba(255, 255, 255, 0.5)')
-            .attr('stroke', isolated ? 'rgba(20, 90, 64, 0.55)' : 'rgba(24, 24, 24, 0.16)')
-            .attr('stroke-width', isolated ? 1 : 0.7)
-            .style('pointer-events', fp ? 'all' : 'none')
-            .style('cursor', fp ? 'help' : 'default')
-            .on('mouseenter', (event) => showNamespaceCellTooltip(event, ns))
-            .on('mousemove', (event) => {
-                d3.selectAll('.ns-fp-tooltip')
-                    .style('left', `${event.pageX + 12}px`)
-                    .style('top', `${event.pageY - 10}px`);
-            })
-            .on('mouseleave', () => d3.selectAll('.ns-fp-tooltip').remove());
-
-        // Filled node = own (isolated) namespace; hollow ring = shares host's.
-        layer.append('circle')
-            .attr('cx', x + 9)
-            .attr('cy', y + cellH / 2)
-            .attr('r', 3)
-            .attr('fill', isolated ? '#7fd6b0' : 'none')
-            .attr('stroke', isolated ? 'none' : 'rgba(24, 24, 24, 0.42)')
-            .attr('stroke-width', 0.9);
-
-        layer.append('text')
-            .attr('x', x + 18)
-            .attr('y', y + cellH / 2 + 2.5)
-            .attr('font-family', 'Share Tech Mono, monospace')
-            .attr('font-size', '7.5px')
-            .attr('font-weight', '700')
-            .attr('fill', isolated ? '#f2f2ea' : '#2f2f2f')
-            .text(ns.label || String(ns.id || '').toUpperCase());
-
-        layer.append('text')
-            .attr('x', x + cellW - 5)
-            .attr('y', y + cellH / 2 + 2.5)
-            .attr('text-anchor', 'end')
-            .attr('font-family', 'Share Tech Mono, monospace')
-            .attr('font-size', '5.5px')
-            .attr('fill', isolated ? '#9fe0c2' : 'rgba(36, 36, 36, 0.45)')
-            .text(isolated ? 'OWN' : 'host');
-    });
-
-    const peerCount = fp ? Number(fp.peer_count || 0) : 0;
-    const footer = fp
-        ? (isolatedCount > 0
-            ? `CO-RESIDENT: ${peerCount} proc${peerCount === 1 ? '' : 's'}`
-            : 'CO-RESIDENT: host namespace (shared)')
-        : 'hover a cell for inode';
-    layer.append('text')
-        .attr('x', box.x + 16)
-        .attr('y', box.y + box.height - 9)
-        .attr('font-family', 'Share Tech Mono, monospace')
-        .attr('font-size', '6.3px')
-        .attr('fill', peerCount > 0 ? 'rgba(20, 90, 64, 0.85)' : 'rgba(36, 36, 36, 0.5)')
-        .text(footer);
+    return lines;
 }
 
 function showNamespaceCellTooltip(event, ns) {
@@ -1498,7 +1555,8 @@ function clearPinnedProcessDossier() {
     const pinnedPid = pinnedProcessDossier.process?.pid;
     const isHighlighted = window.__highlightedProcess && window.__highlightedProcess.pid === pinnedPid;
     pinnedProcessDossier = null;
-    stopProcessModalTopKeeper();
+    processModalTopKeeper.stop();
+    stopDossierActivityPolling();
     d3.selectAll('.process-modal-scrim').remove();
     d3.selectAll('.process-dossier-layer').remove();
     d3.selectAll('.process-interaction-module').remove();
@@ -1524,10 +1582,8 @@ function clearPinnedProcessDossier() {
 // Единый "модальный" скрим под панелями открытого меню процесса.
 // Мягкая бумажная вуаль с лёгкой виньеткой к краям гасит плотную основную
 // сцену, чтобы панели читались как сфокусированный слой, а не случайные окна.
-function ensureProcessModalScrim() {
-    if (isMobileLayout()) return;
-    if (!svg.select('.process-modal-scrim').empty()) return;
-
+// Общая вуаль для всех накладок (досье, namespace), чтобы фокус читался одинаково.
+function ensureFocusVeilGradient() {
     let defs = svg.select('defs');
     if (defs.empty()) defs = svg.append('defs');
     if (svg.select('#process-scrim-grad').empty()) {
@@ -1538,6 +1594,14 @@ function ensureProcessModalScrim() {
         grad.append('stop').attr('offset', '68%').attr('stop-color', '#deded8').attr('stop-opacity', 0.58);
         grad.append('stop').attr('offset', '100%').attr('stop-color', '#d3d3cc').attr('stop-opacity', 0.76);
     }
+    return 'url(#process-scrim-grad)';
+}
+
+function ensureProcessModalScrim() {
+    if (isMobileLayout()) return;
+    if (!svg.select('.process-modal-scrim').empty()) return;
+
+    ensureFocusVeilGradient();
 
     const w = window.innerWidth;
     const h = window.innerHeight;
@@ -1554,57 +1618,88 @@ function ensureProcessModalScrim() {
 // Держим фокус-слой корректным по z-order: любые "живые" элементы (анимация
 // syscalls и т.п.), дорисованные в svg ПОСЛЕ вуали, задвигаем ПОД неё. Панели
 // меню (scrim/dossier/module) не трогаем — иначе рестартовали бы их анимации.
-let processModalTopObserver = null;
-
-function buryLiveLayersUnderScrim() {
+function buryLiveLayersUnderScrim(scrimClass, overlayClasses) {
     const svgNode = svg.node();
     if (!svgNode) return;
-    const scrimNode = svgNode.querySelector('.process-modal-scrim');
+    const scrimNode = svgNode.querySelector(`.${scrimClass}`);
     if (!scrimNode) return;
-    const modalClasses = ['process-modal-scrim', 'process-dossier-layer', 'process-interaction-module'];
+    const keepAbove = [scrimClass, ...overlayClasses];
     const toMove = [];
     for (let sib = scrimNode.nextSibling; sib; sib = sib.nextSibling) {
         if (sib.nodeType !== 1) continue;
         const cl = sib.classList;
-        if (cl && modalClasses.some(c => cl.contains(c))) continue;
+        if (cl && keepAbove.some(c => cl.contains(c))) continue;
         toMove.push(sib);
     }
     toMove.forEach(n => svgNode.insertBefore(n, scrimNode));
 }
 
-function startProcessModalTopKeeper() {
-    const svgNode = svg.node();
-    if (!svgNode || typeof MutationObserver === 'undefined') return;
-    buryLiveLayersUnderScrim();
-    if (processModalTopObserver) return;
-    processModalTopObserver = new MutationObserver(() => {
-        if (!pinnedProcessDossier) return;
-        processModalTopObserver.disconnect();
-        buryLiveLayersUnderScrim();
-        processModalTopObserver.observe(svgNode, { childList: true });
-    });
-    processModalTopObserver.observe(svgNode, { childList: true });
+// Накладки, открытые сейчас: самая старая первой.
+//
+// A keeper must not drag another overlay's nodes across its scrim, or two of
+// them will exchange the same nodes forever and wedge the tab — which is what
+// a card opened over a pinned dossier used to do. So an overlay buries the live
+// layers of the page and the overlays opened before it, and leaves anything
+// opened after it alone: the newest overlay stays on top, and the exchange has
+// nowhere to start.
+const openOverlays = [];
+
+// Один сторож на накладку: пока она открыта, живые слои остаются под вуалью.
+function createOverlayTopKeeper(scrimClass, overlayClasses, isOpen) {
+    let observer = null;
+    const entry = { classes: [scrimClass, ...overlayClasses] };
+    const bury = () => {
+        const mine = openOverlays.indexOf(entry);
+        const newer = mine === -1
+            ? []
+            : openOverlays.slice(mine + 1).reduce((all, o) => all.concat(o.classes), []);
+        buryLiveLayersUnderScrim(scrimClass, overlayClasses.concat(newer));
+    };
+    return {
+        start() {
+            const svgNode = svg.node();
+            if (!svgNode || typeof MutationObserver === 'undefined') return;
+            if (!openOverlays.includes(entry)) openOverlays.push(entry);
+            bury();
+            if (observer) return;
+            observer = new MutationObserver(() => {
+                if (!isOpen()) return;
+                observer.disconnect();
+                bury();
+                observer.observe(svgNode, { childList: true });
+            });
+            observer.observe(svgNode, { childList: true });
+        },
+        stop() {
+            const mine = openOverlays.indexOf(entry);
+            if (mine !== -1) openOverlays.splice(mine, 1);
+            if (observer) {
+                observer.disconnect();
+                observer = null;
+            }
+        }
+    };
 }
 
-function stopProcessModalTopKeeper() {
-    if (processModalTopObserver) {
-        processModalTopObserver.disconnect();
-        processModalTopObserver = null;
-    }
-}
+const processModalTopKeeper = createOverlayTopKeeper(
+    'process-modal-scrim',
+    ['process-dossier-layer', 'process-interaction-module'],
+    () => !!pinnedProcessDossier
+);
 
 function pinProcessDossier(processData, anchor) {
+    const samePid = pinnedProcessDossier && pinnedProcessDossier.process?.pid === processData.pid;
     pinnedProcessDossier = {
         process: processData,
         anchor,
-        details: pinnedProcessDossier && pinnedProcessDossier.process?.pid === processData.pid
-            ? pinnedProcessDossier.details
-            : {}
+        details: samePid ? pinnedProcessDossier.details : {},
+        // Counter history is only comparable within one pid.
+        samples: samePid ? pinnedProcessDossier.samples : []
     };
     ensureProcessModalScrim();
     renderProcessDossier();
-    renderProcessInteractionModule(window.innerWidth / 2, window.innerHeight / 2, processData, anchor, pinnedProcessDossier.details);
-    startProcessModalTopKeeper();
+    processModalTopKeeper.start();
+    startDossierActivityPolling(processData.pid);
     if (window.nginxFilesManager && typeof window.nginxFilesManager.highlightProcessFiles === 'function') {
         window.nginxFilesManager.highlightProcessFiles(processData.pid);
     }
@@ -1612,12 +1707,12 @@ function pinProcessDossier(processData, anchor) {
     Promise.all([
         fetch(`/api/process/${processData.pid}/threads`).then(r => r.json()).catch(() => null),
         fetch(`/api/process/${processData.pid}/cpu`).then(r => r.json()).catch(() => null),
-        fetch(`/api/process/${processData.pid}/fds`).then(r => r.json()).catch(() => null)
-    ]).then(([threadsData, cpuData, fdsData]) => {
+        fetch(`/api/process/${processData.pid}/fds`).then(r => r.json()).catch(() => null),
+        fetch(`/api/process/${processData.pid}/lineage`).then(r => r.json()).catch(() => null)
+    ]).then(([threadsData, cpuData, fdsData, lineage]) => {
         if (!pinnedProcessDossier || pinnedProcessDossier.process?.pid !== processData.pid) return;
-        pinnedProcessDossier.details = { threadsData, cpuData, fdsData };
+        pinnedProcessDossier.details = { threadsData, cpuData, fdsData, lineage };
         renderProcessDossier();
-        renderProcessInteractionModule(window.innerWidth / 2, window.innerHeight / 2, processData, anchor, pinnedProcessDossier.details);
         if (window.nginxFilesManager && typeof window.nginxFilesManager.showProcessFiles === 'function' && fdsData && !fdsData.error) {
             window.nginxFilesManager.showProcessFiles(processData.pid, fdsData);
         }
@@ -2079,13 +2174,8 @@ function drawTagIcons(centerX, centerY) {
 
 // Draw panels
 function drawPanels(width, height) {
-    // Left panel
-    svg.append("rect")
-        .attr("x", 20)
-        .attr("y", 20)
-        .attr("width", 250)
-        .attr("height", 330)
-        .attr("class", "feature-panel");
+    // The left frame is drawn by the syscall readout instead: its height has to
+    // follow the number of waiting processes, which changes between polls.
 
     // Right top status module, styled as a compact HUD window.
     const panelWidth = 214;
@@ -2807,6 +2897,7 @@ function drawProcessKernelMap2(centerX, centerY) {
                 drawIpcRelationshipRing(centerX, centerY, processAnchorsByName);
             } else {
                 d3.selectAll('.ipc-ring-layer').remove();
+                drawMobileProcessLabels(centerX, centerY, topProcessNames(processes, 4));
             }
             renderProcessDossier();
 

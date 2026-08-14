@@ -11,10 +11,12 @@ from kernel_ai.http.api_handlers.kernel import (
     ml_drift,
     nginx_files,
     process_kernel_map,
+    runqueue,
     sentry_test,
     siem_alerts,
     syscall_detail,
     syscalls_realtime,
+    wakeups,
 )
 from kernel_ai.http.api_handlers.network_system import (
     active_connections,
@@ -39,7 +41,9 @@ from kernel_ai.http.api_handlers.processes import (
     get_process_activity,
     get_process_files,
     get_process_lineage,
+    get_process_memory,
     get_process_threads,
+    get_thread_wait,
     get_processes,
     get_processes_detailed,
     processes_realtime,
@@ -74,7 +78,9 @@ __all__ = [
     "get_process_activity",
     "get_process_kernel_map",
     "get_process_lineage",
+    "get_process_memory",
     "get_process_threads",
+    "get_thread_wait",
     "get_processes",
     "get_processes_detailed",
     "ingest_frontend_logs",
@@ -90,6 +96,7 @@ __all__ = [
     "nginx_files",
     "process_kernel_map",
     "processes_realtime",
+    "runqueue",
     "scheduler_pelt",
     "security_realtime",
     "sentry_test",
@@ -97,5 +104,6 @@ __all__ = [
     "syscall_detail",
     "syscalls_realtime",
     "traceroute_info",
+    "wakeups",
 ]
 

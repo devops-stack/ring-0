@@ -5,17 +5,38 @@
     if (window.KernelTape) return;
 
     const POLL_MS = 1400;
+    const MOBILE_POLL_MS = 3200;
+    // Below this the band cannot hold enough rows to be worth showing.
+    const MOBILE_MIN_H = 116;
     const MAX_ROWS = 80;
     const MAX_NEW_PER_TICK = 6;
 
-    const TAGS = {
-        network_stack: { text: 'NET', color: 'rgba(103, 190, 224, 0.95)' },
-        file_system: { text: 'FS', color: 'rgba(200, 206, 214, 0.95)' },
-        process_scheduler: { text: 'SCHED', color: 'rgba(167, 200, 120, 0.95)' },
-        memory_management: { text: 'MEM', color: 'rgba(186, 166, 220, 0.95)' }
+    // Mirrors the DOSSIER palette in main.js so the tape and the process cards
+    // read as one instrument. Amber is reserved for live values.
+    const D = {
+        // The dossier cards float over empty map and can afford a hint of
+        // translucency; this panel spans the full height over the bright HUD,
+        // where the same 2.5% lets the status module ghost through.
+        ink: '#090c10',
+        edge: 'rgba(236, 236, 226, 0.17)',
+        headerFill: 'rgba(244, 244, 236, 0.055)',
+        text: '#f4f4ec',
+        dim: 'rgba(244, 244, 236, 0.5)',
+        faint: 'rgba(244, 244, 236, 0.26)',
+        accent: '#e2a33e',
+        mono: "'Share Tech Mono', monospace"
     };
-    const ERR_COLOR = 'rgba(232, 96, 104, 0.98)';
-    const WARN_COLOR = 'rgba(230, 193, 90, 0.95)';
+
+    const CARD = { cut: 15, header: 25, width: 360 };
+
+    const TAGS = {
+        network_stack: { text: 'NET' },
+        file_system: { text: 'FS' },
+        process_scheduler: { text: 'SCHED' },
+        memory_management: { text: 'MEM' }
+    };
+    const ERR_COLOR = 'rgba(226, 96, 88, 0.95)';
+    const WARN_COLOR = D.accent;
 
     function tagForSyscall(name) {
         const n = String(name || '').toLowerCase();
@@ -69,20 +90,46 @@
         const style = document.createElement('style');
         style.id = 'kernel-tape-styles';
         style.textContent = `
-@keyframes ktape-blink { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+@keyframes ktape-blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 @keyframes ktape-rowin { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes ktape-flash { 0% { background: rgba(232,96,104,0.28); } 100% { background: transparent; } }
-#kernel-tape { font-family: 'JetBrains Mono','SFMono-Regular',Menlo,Consolas,monospace; }
-#kernel-tape ::-webkit-scrollbar { width: 7px; }
-#kernel-tape ::-webkit-scrollbar-thumb { background: rgba(120,150,170,0.35); border-radius: 4px; }
+@keyframes ktape-flash { 0% { background: rgba(226,96,88,0.22); } 100% { background: transparent; } }
+#kernel-tape { font-family: ${D.mono}; }
+#kernel-tape ::-webkit-scrollbar { width: 6px; }
+#kernel-tape ::-webkit-scrollbar-thumb { background: rgba(244,244,236,0.16); }
+#kernel-tape ::-webkit-scrollbar-track { background: transparent; }
 .ktape-row { animation: ktape-rowin 180ms ease-out; }
 .ktape-row.err { animation: ktape-rowin 180ms ease-out, ktape-flash 900ms ease-out; }
+.ktape-glyph-dot { animation: ktape-blink 1.6s infinite; }
+.ktape-btn:hover { color: ${D.text}; }
 `;
         document.head.appendChild(style);
     }
 
+    // Same chamfered outline the dossier cards use, so both read as one system.
+    // Docked to the right edge only the left and top sides are on screen, so the
+    // floating variant closes the outline on all four.
+    function cardPath(w, h, cut, floating) {
+        return floating
+            ? `M0.5,0.5 H${w - cut} L${w - 0.5},${cut} V${h - 0.5} H0.5 Z`
+            : `M0.5,0 V${h} H${w} V${cut} L${w - cut},0.5 Z`;
+    }
+
+    function buildSkin(w, h, floating) {
+        const cut = CARD.cut;
+        const hd = CARD.header;
+        const right = floating ? w - 0.5 : w;
+        return `
+<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMinYMin meet" style="display:block;pointer-events:none">
+  <path d="${cardPath(w, h, cut, floating)}" fill="${D.ink}" stroke="${D.edge}" stroke-width="1"/>
+  <path d="M0.5,0.5 H${w - cut} L${right},${cut} V${hd} H0.5 Z" fill="${D.headerFill}"/>
+  <line x1="0.5" x2="${w - 0.5}" y1="${hd}" y2="${hd}" stroke="${D.edge}" stroke-width="0.9"/>
+  <circle cx="14" cy="12.5" r="4.2" fill="none" stroke="${D.dim}" stroke-width="1.1"/>
+  <circle class="ktape-glyph-dot" cx="14" cy="12.5" r="1.6" fill="${D.accent}"/>
+</svg>`;
+    }
+
     function buildDom() {
-        // Toggle pill (visible when drawer is closed).
+        // Toggle pill (visible when the card is closed).
         const toggle = document.createElement('button');
         toggle.id = 'kernel-tape-toggle';
         Object.assign(toggle.style, {
@@ -97,104 +144,182 @@
         toggle.innerHTML = '<span style="width:7px;height:7px;border-radius:50%;background:#67c8e0;display:inline-block;animation:ktape-blink 1.4s infinite"></span> ACTIVITY';
         toggle.addEventListener('click', () => api.setOpen(true));
 
-        // Drawer.
+        // Card.
         const root = document.createElement('div');
         root.id = 'kernel-tape';
         Object.assign(root.style, {
-            position: 'fixed', top: '0', right: '0', bottom: '0', width: '330px',
-            zIndex: '9000', display: 'flex', flexDirection: 'column',
-            background: 'linear-gradient(180deg, rgba(10,12,16,0.95) 0%, rgba(9,11,15,0.93) 100%)',
-            borderLeft: '1px solid rgba(103,190,224,0.28)',
-            boxShadow: '-8px 0 28px rgba(0,0,0,0.35)',
-            color: '#c5d0da', backdropFilter: 'blur(6px)',
-            transform: 'translateX(0)', transition: 'transform 260ms ease',
+            position: 'fixed', top: '0', right: '0', zIndex: '9000',
+            display: 'flex', flexDirection: 'column',
+            color: D.text, transition: 'transform 260ms ease',
+            filter: 'drop-shadow(-8px 0 12px rgba(7,9,12,0.42))',
             overflow: 'hidden'
         });
 
-        // Header.
+        const skin = document.createElement('div');
+        Object.assign(skin.style, { position: 'absolute', inset: '0', pointerEvents: 'none' });
+
+        // Header sits on top of the skin's header strip.
         const header = document.createElement('div');
         Object.assign(header.style, {
-            display: 'flex', alignItems: 'center', gap: '8px',
-            padding: '11px 12px 9px', borderBottom: '1px solid rgba(120,150,170,0.16)'
+            position: 'relative', display: 'flex', alignItems: 'center', gap: '8px',
+            height: `${CARD.header}px`, padding: '0 12px 0 26px', flex: '0 0 auto'
         });
-        const dot = document.createElement('span');
-        Object.assign(dot.style, { width: '7px', height: '7px', borderRadius: '50%', background: '#67c8e0', boxShadow: '0 0 6px rgba(103,200,224,0.8)', animation: 'ktape-blink 1.4s infinite' });
         const title = document.createElement('span');
         title.textContent = 'KERNEL ACTIVITY';
-        Object.assign(title.style, { font: '700 11px/1 monospace', letterSpacing: '2px', color: '#9fd2e4' });
-        const live = document.createElement('span');
-        live.textContent = 'live';
-        Object.assign(live.style, { font: '10px/1 monospace', letterSpacing: '1px', color: '#5d7886' });
+        Object.assign(title.style, { font: `9px/1 ${D.mono}`, letterSpacing: '1.7px', color: D.text });
         const spacer = document.createElement('span');
         spacer.style.flex = '1';
-        const close = document.createElement('button');
-        close.textContent = '×';
-        Object.assign(close.style, { cursor: 'pointer', background: 'transparent', border: 'none', color: '#7f97a4', font: '16px/1 monospace', padding: '0 2px' });
-        close.addEventListener('click', () => api.setOpen(false));
-        header.append(dot, title, live, spacer, close);
-
-        // Controls strip.
-        const controls = document.createElement('div');
-        Object.assign(controls.style, {
-            display: 'flex', alignItems: 'center', gap: '10px',
-            padding: '6px 12px', borderBottom: '1px solid rgba(120,150,170,0.1)',
-            font: '9.5px/1 monospace', letterSpacing: '0.5px', color: '#6f8895'
-        });
-        const pause = document.createElement('button');
-        pause.textContent = 'PAUSE';
-        Object.assign(pause.style, { cursor: 'pointer', background: 'rgba(120,150,170,0.12)', border: '1px solid rgba(120,150,170,0.25)', color: '#9fb3bf', font: '600 9px/1 monospace', letterSpacing: '1px', padding: '4px 8px', borderRadius: '4px' });
-        pause.addEventListener('click', () => api.setPaused(!state.paused));
         const eps = document.createElement('span');
         eps.textContent = '0 ev/s';
-        const ctrlSpacer = document.createElement('span');
-        ctrlSpacer.style.flex = '1';
-        const legend = document.createElement('span');
-        legend.innerHTML = '<span style="color:rgba(103,190,224,0.95)">NET</span> <span style="color:rgba(200,206,214,0.95)">FS</span> <span style="color:rgba(186,166,220,0.95)">MEM</span> <span style="color:rgba(167,200,120,0.95)">SCHED</span>';
-        controls.append(pause, ctrlSpacer, eps, legend);
+        Object.assign(eps.style, { font: `9px/1 ${D.mono}`, letterSpacing: '1px', color: D.faint });
+        const pause = document.createElement('button');
+        pause.className = 'ktape-btn';
+        pause.textContent = 'PAUSE';
+        Object.assign(pause.style, {
+            cursor: 'pointer', background: 'transparent', border: `1px solid ${D.edge}`,
+            color: D.dim, font: `9px/1 ${D.mono}`, letterSpacing: '1.2px', padding: '3px 6px'
+        });
+        pause.addEventListener('click', () => api.setPaused(!state.paused));
+        const close = document.createElement('button');
+        close.className = 'ktape-btn';
+        close.textContent = '×';
+        Object.assign(close.style, {
+            cursor: 'pointer', background: 'transparent', border: 'none',
+            color: D.dim, font: `12px/1 ${D.mono}`, padding: '0 0 0 2px'
+        });
+        close.addEventListener('click', () => api.setOpen(false));
+        header.append(title, spacer, eps, pause, close);
+        el.closeBtn = close;
 
         // Body (newest on top).
         const body = document.createElement('div');
-        Object.assign(body.style, { flex: '1', overflowY: 'auto', overflowX: 'hidden', padding: '4px 0 10px' });
+        Object.assign(body.style, {
+            position: 'relative', flex: '1', overflowY: 'auto', overflowX: 'hidden',
+            padding: '5px 0 7px', minHeight: '0',
+            maskImage: 'linear-gradient(to bottom, #000 calc(100% - 16px), transparent)',
+            webkitMaskImage: 'linear-gradient(to bottom, #000 calc(100% - 16px), transparent)'
+        });
 
-        root.append(header, controls, body);
+        root.append(skin, header, body);
         document.body.append(toggle, root);
 
         el.toggle = toggle;
         el.root = root;
+        el.skin = skin;
         el.body = body;
         el.pauseBtn = pause;
         el.eps = eps;
+
+        placeCard();
+        // The hero re-renders a beat after a resize, so the band it leaves is
+        // only measurable once that settles.
+        let replace = null;
+        window.addEventListener('resize', () => {
+            placeCard();
+            window.clearTimeout(replace);
+            replace = window.setTimeout(placeCard, 320);
+        });
+        [260, 1100, 2600].forEach((d) => window.setTimeout(placeCard, d));
+    }
+
+    function onMobile() {
+        return typeof isMobileLayout === 'function' && isMobileLayout();
+    }
+
+    // On a phone the hero is width-limited, so it leaves a band of dead space
+    // under the caption. The tape fills that band instead of docking to an edge.
+    function placeMobileCard() {
+        const margin = 12;
+        const hud = document.getElementById('mobile-hud');
+        const hudTop = hud && hud.offsetHeight
+            ? window.innerHeight - hud.offsetHeight
+            : window.innerHeight;
+
+        // The hero publishes where it ends; the tape starts a gap below that.
+        const heroBottom = typeof window.__mobileHeroBottom === 'number'
+            ? window.__mobileHeroBottom
+            : window.innerHeight * 0.62;
+
+        const top = Math.round(heroBottom + margin);
+        const h = Math.round(hudTop - margin - top);
+        const w = Math.round(window.innerWidth - margin * 2);
+
+        // Landscape leaves no usable band; a stub of a feed is worse than none.
+        if (h < MOBILE_MIN_H) {
+            el.root.style.display = 'none';
+            state.mobileGeom = 'hidden';
+            return;
+        }
+        // The hero is drawn asynchronously, so placement is re-checked on every
+        // poll. Skip the repaint unless the band actually moved.
+        const key = `${top}:${w}:${h}`;
+        if (state.mobileGeom === key) return;
+        state.mobileGeom = key;
+
+        el.root.style.display = 'flex';
+        Object.assign(el.root.style, {
+            top: `${top}px`, left: `${margin}px`, right: 'auto',
+            width: `${w}px`, height: `${h}px`,
+            filter: 'drop-shadow(0 6px 16px rgba(7,9,12,0.34))'
+        });
+        el.skin.innerHTML = buildSkin(w, h, true);
+    }
+
+    function placeCard() {
+        if (!el.root) return;
+        if (onMobile()) {
+            placeMobileCard();
+            return;
+        }
+        const w = Math.round(Math.min(CARD.width, window.innerWidth * 0.34));
+        const h = window.innerHeight;
+        Object.assign(el.root.style, {
+            display: 'flex', top: '0', left: 'auto', right: '0',
+            width: `${w}px`, height: `${h}px`,
+            filter: 'drop-shadow(-8px 0 12px rgba(7,9,12,0.42))'
+        });
+        el.skin.innerHTML = buildSkin(w, h);
     }
 
     function pushRow(ev) {
         if (!el.body) return;
         const row = document.createElement('div');
         row.className = 'ktape-row' + (ev.level === 'err' ? ' err' : '');
+        const idle = ev.level === 'dim';
         Object.assign(row.style, {
-            display: 'flex', alignItems: 'baseline', gap: '8px',
-            padding: '2px 12px', whiteSpace: 'nowrap', fontSize: '11px', lineHeight: '15px',
+            display: 'flex', alignItems: 'baseline', gap: '7px',
+            padding: '1px 12px', whiteSpace: 'nowrap', lineHeight: '15px',
             borderLeft: ev.level === 'err' ? `2px solid ${ERR_COLOR}` : '2px solid transparent'
         });
 
         const t = document.createElement('span');
         t.textContent = ev.ts;
-        Object.assign(t.style, { color: '#5a7280', flex: '0 0 auto', fontSize: '10px' });
+        Object.assign(t.style, { color: D.faint, flex: '0 0 auto', fontSize: '9px' });
 
         const sym = document.createElement('span');
         sym.textContent = ev.sym || '·';
-        Object.assign(sym.style, { color: ev.symColor || '#6f8895', flex: '0 0 auto', width: '10px', textAlign: 'center' });
+        Object.assign(sym.style, { color: ev.symColor || D.faint, flex: '0 0 auto', width: '9px', textAlign: 'center', fontSize: '11px' });
 
         const name = document.createElement('span');
         name.textContent = ev.name;
-        Object.assign(name.style, { color: ev.level === 'err' ? ERR_COLOR : '#d6e0e8', flex: '0 0 auto', fontWeight: ev.level === 'err' ? '700' : '500' });
+        Object.assign(name.style, {
+            color: ev.level === 'err' ? ERR_COLOR : (idle ? D.dim : D.text),
+            flex: '0 1 auto', fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis'
+        });
 
         const tag = document.createElement('span');
         tag.textContent = ev.tagText;
-        Object.assign(tag.style, { color: ev.tagColor, flex: '0 0 auto', fontSize: '9px', letterSpacing: '0.5px' });
+        Object.assign(tag.style, { color: D.faint, flex: '0 0 auto', fontSize: '9px', letterSpacing: '1px' });
 
+        // Every row in a feed is an event, so amber cannot mean "an event
+        // happened" — it is kept for the ones that are climbing or hurting.
         const detail = document.createElement('span');
         detail.textContent = ev.detail || '';
-        Object.assign(detail.style, { color: '#6f8895', flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'right', fontSize: '10px' });
+        Object.assign(detail.style, {
+            color: ev.level === 'err' ? ERR_COLOR : (idle ? D.faint : (ev.live ? D.accent : D.dim)),
+            flex: '1 0 auto', overflow: 'hidden', textOverflow: 'ellipsis',
+            textAlign: 'right', fontSize: '9px'
+        });
 
         row.append(t, sym, name, tag, detail);
         el.body.prepend(row);
@@ -264,7 +389,7 @@
             const tag = tagForSyscall(c.nm);
             const up = c.delta > 0;
             const sym = c.isNew ? '✦' : (c.delta > 0 ? '▲' : (c.delta < 0 ? '▼' : '·'));
-            const symColor = c.isNew ? '#9fd2e4' : (up ? 'rgba(167,200,120,0.95)' : (c.delta < 0 ? '#7f97a4' : '#566a76'));
+            const symColor = c.isNew ? D.accent : (up ? D.accent : (c.delta < 0 ? D.dim : D.faint));
             const detail = c.delta !== 0
                 ? `${c.delta > 0 ? '+' : ''}${c.delta} → ${c.c} proc`
                 : `${c.c} proc`;
@@ -272,8 +397,9 @@
                 ts: timeStamp(),
                 sym, symColor,
                 name: c.nm.toUpperCase(),
-                tagText: tag.text, tagColor: tag.color,
+                tagText: tag.text,
                 detail,
+                live: c.delta > 0,
                 level: c.heartbeat ? 'dim' : 'normal'
             });
         });
@@ -297,17 +423,17 @@
         const pkts = pktIn + pktOut;
 
         if (retrans > 0) {
-            pushRow({ ts: timeStamp(), sym: '!', symColor: ERR_COLOR, name: 'TCP RETRANSMIT', tagText: 'NET', tagColor: TAGS.network_stack.color, detail: `${retrans}/s`, level: 'err' });
+            pushRow({ ts: timeStamp(), sym: '!', symColor: ERR_COLOR, name: 'TCP RETRANSMIT', tagText: 'NET', detail: `${retrans}/s`, level: 'err' });
         }
         if (ipDrop > 0) {
-            pushRow({ ts: timeStamp(), sym: '!', symColor: ERR_COLOR, name: 'IP DROP', tagText: 'NET', tagColor: TAGS.network_stack.color, detail: `${ipDrop}/s`, level: 'err' });
+            pushRow({ ts: timeStamp(), sym: '!', symColor: ERR_COLOR, name: 'IP DROP', tagText: 'NET', detail: `${ipDrop}/s`, level: 'err' });
         }
         if (ifDrop > 0) {
-            pushRow({ ts: timeStamp(), sym: '!', symColor: ERR_COLOR, name: 'NIC DROP', tagText: 'NET', tagColor: TAGS.network_stack.color, detail: `${ifDrop}/s`, level: 'err' });
+            pushRow({ ts: timeStamp(), sym: '!', symColor: ERR_COLOR, name: 'NIC DROP', tagText: 'NET', detail: `${ifDrop}/s`, level: 'err' });
         }
         if (pkts > 0) {
             const fmt = pkts >= 1000 ? `${(pkts / 1000).toFixed(1)}k pkt/s` : `${Math.round(pkts)} pkt/s`;
-            pushRow({ ts: timeStamp(), sym: '⇅', symColor: TAGS.network_stack.color, name: 'ip flow', tagText: 'NET', tagColor: TAGS.network_stack.color, detail: fmt, level: 'normal' });
+            pushRow({ ts: timeStamp(), sym: '⇅', symColor: D.dim, name: 'ip flow', tagText: 'NET', detail: fmt, level: 'normal' });
         }
     }
 
@@ -349,15 +475,15 @@
 
         fresh.slice(0, 3).forEach((c) => {
             pushRow({
-                ts: timeStamp(), sym: '→', symColor: 'rgba(167,200,120,0.95)',
-                name: `${c.local} → ${c.remote}`, tagText: 'NET', tagColor: TAGS.network_stack.color,
-                detail: 'ESTAB', level: 'normal'
+                ts: timeStamp(), sym: '→', symColor: D.accent,
+                name: `${c.local} → ${c.remote}`, tagText: 'NET', 
+                detail: 'ESTAB', live: true, level: 'normal'
             });
         });
         closed.slice(0, 2).forEach((key) => {
             pushRow({
-                ts: timeStamp(), sym: '×', symColor: '#7f97a4',
-                name: key.replace('>', ' × '), tagText: 'NET', tagColor: TAGS.network_stack.color,
+                ts: timeStamp(), sym: '×', symColor: D.dim,
+                name: key.replace('>', ' × '), tagText: 'NET', 
                 detail: 'CLOSE', level: 'normal'
             });
         });
@@ -400,19 +526,19 @@
 
         spawned.slice(0, 4).forEach((p) => {
             pushRow({
-                ts: timeStamp(), sym: '✦', symColor: 'rgba(167,200,120,0.95)',
-                name: `exec ${p.nm}`, tagText: 'SCHED', tagColor: TAGS.process_scheduler.color,
-                detail: `pid ${p.pid}`, level: 'normal'
+                ts: timeStamp(), sym: '✦', symColor: D.accent,
+                name: `exec ${p.nm}`, tagText: 'SCHED', 
+                detail: `pid ${p.pid}`, live: true, level: 'normal'
             });
-            pulseNode(p.pid, 'rgba(167, 200, 120, 0.95)');
+            pulseNode(p.pid, D.accent);
         });
         exited.slice(0, 3).forEach((p) => {
             pushRow({
-                ts: timeStamp(), sym: '⊝', symColor: '#7f97a4',
-                name: `exit ${p.nm}`, tagText: 'SCHED', tagColor: TAGS.process_scheduler.color,
+                ts: timeStamp(), sym: '⊝', symColor: D.dim,
+                name: `exit ${p.nm}`, tagText: 'SCHED', 
                 detail: `pid ${p.pid}`, level: 'normal'
             });
-            pulseNode(p.pid, 'rgba(127, 151, 164, 0.9)');
+            pulseNode(p.pid, D.dim);
         });
     }
 
@@ -439,22 +565,22 @@
         const wiops = d.disk_write_iops || 0;
 
         if (pf > 50) {
-            pushRow({ ts: timeStamp(), sym: '·', symColor: TAGS.memory_management.color, name: 'page faults', tagText: 'MEM', tagColor: TAGS.memory_management.color, detail: `${fmtRate(pf)}/s`, level: 'normal' });
+            pushRow({ ts: timeStamp(), sym: '·', symColor: D.dim, name: 'page faults', tagText: 'MEM', detail: `${fmtRate(pf)}/s`, level: 'normal' });
         }
         if (maj > 0) {
-            pushRow({ ts: timeStamp(), sym: '▲', symColor: WARN_COLOR, name: 'major fault', tagText: 'MEM', tagColor: TAGS.memory_management.color, detail: `${maj}/s`, level: 'normal' });
+            pushRow({ ts: timeStamp(), sym: '▲', symColor: WARN_COLOR, name: 'major fault', tagText: 'MEM', detail: `${maj}/s`, live: true, level: 'normal' });
         }
         if (swin > 0) {
-            pushRow({ ts: timeStamp(), sym: '↧', symColor: WARN_COLOR, name: 'swap in', tagText: 'MEM', tagColor: TAGS.memory_management.color, detail: `${fmtRate(swin)}/s`, level: 'normal' });
+            pushRow({ ts: timeStamp(), sym: '↧', symColor: WARN_COLOR, name: 'swap in', tagText: 'MEM', detail: `${fmtRate(swin)}/s`, live: true, level: 'normal' });
         }
         if (swout > 0) {
-            pushRow({ ts: timeStamp(), sym: '↥', symColor: WARN_COLOR, name: 'swap out', tagText: 'MEM', tagColor: TAGS.memory_management.color, detail: `${fmtRate(swout)}/s`, level: 'normal' });
+            pushRow({ ts: timeStamp(), sym: '↥', symColor: WARN_COLOR, name: 'swap out', tagText: 'MEM', detail: `${fmtRate(swout)}/s`, live: true, level: 'normal' });
         }
         if (rmb > 0.05) {
-            pushRow({ ts: timeStamp(), sym: '◀', symColor: TAGS.file_system.color, name: 'block read', tagText: 'FS', tagColor: TAGS.file_system.color, detail: `${rmb.toFixed(2)} MB/s · ${riops} iops`, level: 'normal' });
+            pushRow({ ts: timeStamp(), sym: '◀', symColor: D.dim, name: 'block read', tagText: 'FS', detail: `${rmb.toFixed(2)} MB/s · ${riops} iops`, level: 'normal' });
         }
         if (wmb > 0.05) {
-            pushRow({ ts: timeStamp(), sym: '▶', symColor: TAGS.file_system.color, name: 'block write', tagText: 'FS', tagColor: TAGS.file_system.color, detail: `${wmb.toFixed(2)} MB/s · ${wiops} iops`, level: 'normal' });
+            pushRow({ ts: timeStamp(), sym: '▶', symColor: D.dim, name: 'block write', tagText: 'FS', detail: `${wmb.toFixed(2)} MB/s · ${wiops} iops`, level: 'normal' });
         }
     }
 
@@ -486,7 +612,7 @@
         const ring = d3.select('svg').append('circle')
             .attr('cx', cx).attr('cy', cy).attr('r', 56)
             .attr('fill', 'none')
-            .attr('stroke', `rgba(103, 190, 224, ${(0.16 + amp * 0.24).toFixed(2)})`)
+            .attr('stroke', `rgba(226, 163, 62, ${(0.14 + amp * 0.2).toFixed(2)})`)
             .attr('stroke-width', 1).style('pointer-events', 'none');
         ring.transition().duration(1100).ease(d3.easeCubicOut)
             .attr('r', 80 + amp * 60).attr('stroke-width', 0.2).attr('opacity', 0)
@@ -495,6 +621,7 @@
 
     function tick() {
         if (state.paused || !state.open) return;
+        if (onMobile()) placeCard();
         const i = state.tickIndex++;
         // Core "breath" reflects activity accumulated since the previous tick.
         pulseCore(state.eventsSinceCore);
@@ -506,32 +633,56 @@
         updateEps();
     }
 
+    // Delta-based feeds need a baseline sample before they can say anything, so
+    // opening primes them silently and the rate-based feeds fill the card at once.
+    function primeAndFill() {
+        state.firstSyscallSample = true;
+        state.firstConnSample = true;
+        state.firstProcSample = true;
+        tickSyscalls();
+        tickConnections();
+        tickProcesses();
+        tickNetwork();
+        tickIoPulse();
+        window.setTimeout(() => {
+            if (state.open && !state.paused) tickSyscalls();
+        }, 700);
+    }
+
     const api = {
         setOpen(open) {
-            state.open = !!open;
-            if (el.root) el.root.style.transform = open ? 'translateX(0)' : 'translateX(100%)';
-            if (el.toggle) el.toggle.style.display = open ? 'none' : 'inline-flex';
+            // The phone layout has no toggle: the tape lives in the dead band
+            // under the hero, so it is always on.
+            const mobile = onMobile();
+            const wasOpen = state.open;
+            state.open = mobile ? true : !!open;
+            if (el.root) {
+                placeCard();
+                el.root.style.transform = state.open ? 'translateX(0)' : 'translateX(100%)';
+                el.root.style.pointerEvents = state.open ? 'auto' : 'none';
+            }
+            if (el.toggle) el.toggle.style.display = (!mobile && !state.open) ? 'inline-flex' : 'none';
+            if (el.closeBtn) el.closeBtn.style.display = mobile ? 'none' : 'inline-block';
+            if (state.open && !wasOpen) primeAndFill();
         },
         setPaused(paused) {
             state.paused = !!paused;
             if (el.pauseBtn) {
                 el.pauseBtn.textContent = paused ? 'RESUME' : 'PAUSE';
-                el.pauseBtn.style.color = paused ? '#e8c15a' : '#9fb3bf';
+                el.pauseBtn.style.color = paused ? D.accent : D.dim;
             }
         }
     };
     window.KernelTape = api;
 
     function start() {
-        if (typeof isMobileLayout === 'function' && isMobileLayout()) return;
         injectStyles();
         buildDom();
-        // Hidden by default: only the ACTIVITY pill shows until the user opens it.
-        api.setOpen(false);
-        state.timer = setInterval(tick, POLL_MS);
-        // Prime quickly so the feed comes alive without waiting a full interval
-        // once it's opened (tick() is a no-op while the drawer is closed).
-        setTimeout(tick, 250);
+        // Desktop hides it behind the ACTIVITY pill; mobile shows it outright.
+        api.setOpen(onMobile());
+        // Slower cadence on a phone: four endpoints every 1.4s is not a fair
+        // trade against a battery.
+        state.timer = setInterval(tick, onMobile() ? MOBILE_POLL_MS : POLL_MS);
     }
 
     if (document.readyState === 'loading') {

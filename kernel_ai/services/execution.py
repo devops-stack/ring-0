@@ -12,6 +12,61 @@ import psutil
 from kernel_ai.sentry_helpers import capture_exception
 
 
+_IRQ_DEVICE_CACHE: dict = {}
+
+
+def _irq_vector(device: str, desc: str):
+    from kernel_ai.services import irq_anatomy
+
+    return irq_anatomy.vector_for(device or desc, desc)
+
+
+def _softirq_symbol(vector: str):
+    """The kernel function a softirq vector runs, if this kernel exports it."""
+    from kernel_ai.services import irq_anatomy
+
+    symbol = irq_anatomy.VECTOR_SYMBOL.get(str(vector).upper())
+    if not symbol:
+        return None
+    symbols = irq_anatomy.kernel_symbols()
+    return symbol if (symbols and symbol in symbols) else None
+
+
+def _irq_device(irq: str) -> str:
+    """The handler name the driver registered for a numbered line.
+
+    /proc/interrupts prints the chip and the trigger before the device, so the
+    raw description truncates to something useless like "xen-dyn-latee…" in a
+    narrow panel. /sys/kernel/irq/<n>/actions gives the device on its own.
+    A line's handler is fixed once the driver has probed, so it is read once.
+    """
+    if irq in _IRQ_DEVICE_CACHE:
+        return _IRQ_DEVICE_CACHE[irq]
+    device = ""
+    if irq.isdigit():
+        try:
+            with open(f"/sys/kernel/irq/{irq}/actions", "r", encoding="utf-8", errors="replace") as fh:
+                device = fh.read().strip()
+        except OSError:
+            device = ""
+    _IRQ_DEVICE_CACHE[irq] = device
+    return device
+
+
+def _irq_short_label(desc: str) -> str:
+    """The kernel's description of a lettered counter, minus the obvious word.
+
+    Those rows read "Hypervisor callback interrupts" and "Machine check polls";
+    under a panel already titled INTERRUPTS the last word is a waste of the
+    twenty characters the column has.
+    """
+    text = str(desc or "").strip()
+    for tail in (" interrupts", " polls", " events"):
+        if text.lower().endswith(tail):
+            return text[: -len(tail)]
+    return text
+
+
 def _read_key_value_proc_file(path: str) -> dict:
     out = {}
     try:
@@ -332,14 +387,22 @@ def get_execution_context_data(syscall_names, map_interrupt_to_subsystem_fn, exe
                 per_sec = max(0.0, (total - prev_total) / dt)
 
             top_cpu = int(max(range(len(counts)), key=lambda i: counts[i])) if counts else None
+            device = _irq_device(irq_name)
+            vector = _irq_vector(device, desc)
             irq_rows.append(
                 {
                     "irq": irq_name,
                     "label": desc,
+                    # What the panel prints: the device, when the driver named
+                    # one, and otherwise the kernel's own description.
+                    "device": device or _irq_short_label(desc),
                     "total": int(total),
                     "per_sec": round(per_sec, 2),
                     "top_cpu": top_cpu,
-                    "subsystem": map_interrupt_to_subsystem_fn(desc),
+                    "subsystem": map_interrupt_to_subsystem_fn(device or desc),
+                    # Concluded from the class of the device, never measured;
+                    # the route map that shows it says so on the same line.
+                    "vector": vector,
                 }
             )
     except (IOError, PermissionError):
@@ -367,7 +430,16 @@ def get_execution_context_data(syscall_names, map_interrupt_to_subsystem_fn, exe
             per_sec = 0.0
             if dt and prev_total is not None:
                 per_sec = max(0.0, (total - prev_total) / dt)
-            softirq_rows.append({"name": name, "total": int(total), "per_sec": round(per_sec, 2)})
+            softirq_rows.append(
+                {
+                    "name": name,
+                    "total": int(total),
+                    "per_sec": round(per_sec, 2),
+                    # The function this vector runs, so the route map can end on
+                    # a real kernel symbol instead of a placeholder.
+                    "symbol": _softirq_symbol(name),
+                }
+            )
     except (IOError, PermissionError):
         pass
 
