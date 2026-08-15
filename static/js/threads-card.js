@@ -17,6 +17,9 @@
 // deadline is what EEVDF actually compares when it picks. It is filled in only
 // for the threads holding a place in the queue, which on an idle machine is one
 // row out of twenty — a queue is the only thing those numbers describe.
+//
+// While the card is open it re-reads the same payload every couple of seconds
+// and repaints the table. The frame stays put.
 const ThreadsCard = (() => {
     const W = 640;
     const PAD = 14;
@@ -39,10 +42,14 @@ const ThreadsCard = (() => {
     // Both scheduler columns are right-aligned, the verdict clear of the
     // deadline that follows it.
     const VERDICT_INSET = 52;
+    const POLL_MS = 2000;
 
     let openPid = null;
     let topKeeper = null;
     let requestSeq = 0;
+    let pollTimer = null;
+    let lastAnchor = null;
+    let layout = null;
 
     function clip(text, max) {
         const value = String(text || "");
@@ -61,13 +68,46 @@ const ThreadsCard = (() => {
         return v > 0 ? "<1ms" : "0";
     }
 
+    function stopPoll() {
+        if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+        }
+    }
+
     function close() {
+        stopPoll();
         openPid = null;
+        lastAnchor = null;
+        layout = null;
         requestSeq += 1;
         svg.selectAll(".threads-card-scrim, .threads-card-layer").remove();
         if (topKeeper) topKeeper.stop();
         d3.select("body").on("keydown.threadscard", null);
         window.dispatchEvent(new CustomEvent("kcard-closed"));
+    }
+
+    function startPoll(pid) {
+        stopPoll();
+        pollTimer = setInterval(() => {
+            if (openPid !== pid) {
+                stopPoll();
+                return;
+            }
+            if (document.hidden) return;
+            const seq = requestSeq;
+            fetch(`/api/process/${pid}/threads`, { cache: "no-store" })
+                .then((r) => r.json())
+                .then((data) => {
+                    if (seq !== requestSeq || openPid !== pid) return;
+                    if (!data || data.error) {
+                        close();
+                        return;
+                    }
+                    draw(data, lastAnchor, true);
+                })
+                .catch(() => {});
+        }, POLL_MS);
     }
 
     function open(pid, anchor) {
@@ -79,6 +119,7 @@ const ThreadsCard = (() => {
         }
         close();
         openPid = key;
+        lastAnchor = anchor;
         const seq = ++requestSeq;
 
         fetch(`/api/process/${key}/threads`, { cache: "no-store" })
@@ -89,7 +130,8 @@ const ThreadsCard = (() => {
                     openPid = null;
                     return;
                 }
-                draw(data, anchor);
+                draw(data, anchor, false);
+                startPoll(key);
             })
             .catch(() => {
                 if (seq !== requestSeq) return;
@@ -137,11 +179,11 @@ const ThreadsCard = (() => {
         return `due ${Math.abs(due) >= 100 ? Math.round(due) : due.toFixed(1)}`;
     }
 
-    function draw(data, anchor) {
+    function draw(data, anchor, live) {
         const svgNode = svg.node();
         const viewW = (svgNode && svgNode.clientWidth) || window.innerWidth;
         const viewH = (svgNode && svgNode.clientHeight) || window.innerHeight;
-        const cw = Math.min(W, viewW - 24);
+        const cw = (live && layout) ? layout.cw : Math.min(W, viewW - 24);
         // Below this the table cannot hold every column, so the name and the
         // bar go and the row keeps what it cannot be read without.
         const compact = cw < 520;
@@ -190,56 +232,83 @@ const ThreadsCard = (() => {
 
         // The card opens beside the dossier that spawned it, clear of the whole
         // stack rather than of the tile, so the two are read side by side.
-        const from = anchor && Number.isFinite(anchor.x) ? anchor.x : 290;
-        let x = Number.isFinite(anchor && anchor.clearOf) ? anchor.clearOf : from + 44;
-        if (x + cw + 16 > viewW) x = from - cw - 44;
-        if (x < 12) x = Math.max(12, viewW - cw - 16);
-        let y = (anchor && anchor.y ? anchor.y : 90) - 40;
-        y = Math.max(12, Math.min(viewH - h - 12, y));
-
-        ensureDossierDefs();
-        svg.append("rect")
-            .attr("class", "threads-card-scrim")
-            .attr("x", 0).attr("y", 0).attr("width", viewW).attr("height", viewH)
-            .attr("fill", ensureFocusVeilGradient())
-            .style("opacity", 0)
-            .style("cursor", "pointer")
-            .on("click", () => close())
-            .transition().duration(200).style("opacity", 1);
-
-        const layer = svg.append("g").attr("class", "threads-card-layer");
-        if (!topKeeper) {
-            topKeeper = createOverlayTopKeeper("threads-card-scrim", ["threads-card-layer"], () => openPid !== null);
+        let x;
+        let y;
+        if (live && layout) {
+            x = layout.x;
+            y = Math.max(12, Math.min(viewH - h - 12, layout.y));
+        } else {
+            const from = anchor && Number.isFinite(anchor.x) ? anchor.x : 290;
+            x = Number.isFinite(anchor && anchor.clearOf) ? anchor.clearOf : from + 44;
+            if (x + cw + 16 > viewW) x = from - cw - 44;
+            if (x < 12) x = Math.max(12, viewW - cw - 16);
+            y = (anchor && anchor.y ? anchor.y : 90) - 40;
+            y = Math.max(12, Math.min(viewH - h - 12, y));
         }
-        topKeeper.start();
+        layout = { x, y, cw, h };
 
-        if (anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y)) {
-            const connY = Math.max(y + 12, Math.min(y + h - 12, anchor.y));
-            layer.append("circle")
-                .attr("class", "kcard-anchor")
-                .attr("cx", anchor.x).attr("cy", anchor.y).attr("r", 3);
-            layer.append("line")
-                .attr("class", "kcard-conn")
-                .attr("x1", anchor.x).attr("y1", anchor.y)
-                .attr("x2", anchor.x).attr("y2", anchor.y)
-                .transition().duration(220).ease(d3.easeCubicOut)
-                .attr("x2", x).attr("y2", connY);
+        let layer;
+        let panel;
+        if (live) {
+            layer = svg.select(".threads-card-layer");
+            panel = layer.select(".threads-card-panel");
+            if (layer.empty() || panel.empty()) return;
+            panel.attr("transform", `translate(${x}, ${y})`);
+            panel.select(".kcard-frame").attr("d", dossierCardPath(0, 0, cw, h, CUT));
+            if (anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y)) {
+                const connY = Math.max(y + 12, Math.min(y + h - 12, anchor.y));
+                layer.select(".kcard-conn").attr("x2", x).attr("y2", connY);
+            }
+            panel.select(".threads-card-body").remove();
+        } else {
+            ensureDossierDefs();
+            svg.append("rect")
+                .attr("class", "threads-card-scrim")
+                .attr("x", 0).attr("y", 0).attr("width", viewW).attr("height", viewH)
+                .attr("fill", ensureFocusVeilGradient())
+                .style("opacity", 0)
+                .style("cursor", "pointer")
+                .on("click", () => close())
+                .transition().duration(200).style("opacity", 1);
+
+            layer = svg.append("g").attr("class", "threads-card-layer");
+            if (!topKeeper) {
+                topKeeper = createOverlayTopKeeper("threads-card-scrim", ["threads-card-layer"], () => openPid !== null);
+            }
+            topKeeper.start();
+
+            if (anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y)) {
+                const connY = Math.max(y + 12, Math.min(y + h - 12, anchor.y));
+                layer.append("circle")
+                    .attr("class", "kcard-anchor")
+                    .attr("cx", anchor.x).attr("cy", anchor.y).attr("r", 3);
+                layer.append("line")
+                    .attr("class", "kcard-conn")
+                    .attr("x1", anchor.x).attr("y1", anchor.y)
+                    .attr("x2", anchor.x).attr("y2", anchor.y)
+                    .transition().duration(220).ease(d3.easeCubicOut)
+                    .attr("x2", x).attr("y2", connY);
+            }
+
+            panel = layer.append("g")
+                .attr("class", "threads-card-panel")
+                .attr("transform", `translate(${x}, ${y})`)
+                .on("click", (event) => event.stopPropagation());
+
+            panel.append("path")
+                .attr("class", "kcard-frame")
+                .attr("d", dossierCardPath(0, 0, cw, h, CUT))
+                .attr("filter", "url(#dossier-drop)")
+                .attr("transform", `translate(0, ${h / 2}) scale(1, 0.02)`)
+                .transition().delay(120).duration(200).ease(d3.easeCubicOut)
+                .attr("transform", "translate(0,0) scale(1,1)");
         }
 
-        const panel = layer.append("g")
-            .attr("transform", `translate(${x}, ${y})`)
-            .on("click", (event) => event.stopPropagation());
-
-        panel.append("path")
-            .attr("class", "kcard-frame")
-            .attr("d", dossierCardPath(0, 0, cw, h, CUT))
-            .attr("filter", "url(#dossier-drop)")
-            .attr("transform", `translate(0, ${h / 2}) scale(1, 0.02)`)
-            .transition().delay(120).duration(200).ease(d3.easeCubicOut)
-            .attr("transform", "translate(0,0) scale(1,1)");
-
-        const body = panel.append("g").attr("class", "threads-card-body").style("opacity", 0);
-        body.transition().delay(250).duration(180).style("opacity", 1);
+        const body = panel.append("g").attr("class", "threads-card-body");
+        if (!live) {
+            body.style("opacity", 0);
+            body.transition().delay(250).duration(180).style("opacity", 1);
+        }
 
         const text = (cls, tx, ty, value, anchorEnd) => body.append("text")
             .attr("class", cls)
@@ -331,10 +400,11 @@ const ThreadsCard = (() => {
             if (thread.parked_in && window.WaitsCard) {
                 const box = where.node().getBBox();
                 const rule = body.append("line")
-                    .attr("class", "kcard-divider")
                     .attr("x1", colWhere).attr("y1", ty + 2.5)
                     .attr("x2", colWhere + box.width).attr("y2", ty + 2.5)
-                    .attr("opacity", 0.3);
+                    .attr("stroke", "#e2a33e")
+                    .attr("stroke-width", 1)
+                    .attr("opacity", 0.35);
                 body.append("rect")
                     .attr("x", colWhere - 3).attr("y", ty - 9)
                     .attr("width", box.width + 8).attr("height", 13)
@@ -342,11 +412,11 @@ const ThreadsCard = (() => {
                     .style("cursor", "pointer")
                     .on("mouseenter", () => {
                         where.attr("fill", "#e2a33e");
-                        rule.attr("stroke", "#e2a33e").attr("opacity", 0.7);
+                        rule.attr("opacity", 1);
                     })
                     .on("mouseleave", () => {
                         where.attr("fill", null);
-                        rule.attr("stroke", null).attr("opacity", 0.3);
+                        rule.attr("opacity", 0.35);
                     })
                     .on("click", (event) => {
                         event.stopPropagation();

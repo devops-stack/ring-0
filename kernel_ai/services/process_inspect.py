@@ -79,8 +79,31 @@ def _collect_local_tcp_pairs(proc_names_by_pid):
     return sorted(pairs)
 
 
+def _is_ipc_shared_mapping(path):
+    """A shared mapping that is actually a channel, not a file two processes both mapped.
+
+    ``/proc/pid/maps`` marks GPU buffers, font caches and Chromium pack files
+    ``s`` as well. Those are not pipes. The orbit only keeps POSIX shm, memfd
+    and System V segments — the things a process creates to talk to another.
+    """
+    if not path:
+        return False
+    if path.startswith("/dev/shm/") or path.startswith("/run/shm/"):
+        return True
+    if path.startswith("/memfd:") or path.startswith("memfd:"):
+        return True
+    if path.startswith("/SYSV") or path.startswith("/dev/shm"):
+        return True
+    return False
+
+
 def get_ipc_links_summary(max_pairs=120, max_nodes=24):
-    """Collect IPC relationships by shared sockets, pipes and shared memory mappings."""
+    """Collect IPC relationships by shared sockets, pipes and real shared memory.
+
+    A pair is two processes that hold the same pipe, unix or tcp socket inode,
+    or the same POSIX/memfd/SYSV segment. Namespaces and shared file mappings
+    (fonts, GPU nodes, pack files) are not channels and do not make a pair.
+    """
     socket_inode_re = re.compile(r"^socket:\[(\d+)\]$")
     pipe_inode_re = re.compile(r"^pipe:\[(\d+)\]$")
     socket_kinds = _parse_proc_net_socket_inodes()
@@ -160,6 +183,8 @@ def get_ipc_links_summary(max_pairs=120, max_nodes=24):
                     if not map_path:
                         continue
                     if map_path.startswith("["):
+                        continue
+                    if not _is_ipc_shared_mapping(map_path):
                         continue
 
                     shm_key = f"{dev}:{inode}:{map_path}"
@@ -241,7 +266,8 @@ def get_ipc_links_summary(max_pairs=120, max_nodes=24):
     consume_inode_owners(tcp_socket_owners, "tcp")
     consume_inode_owners(pipe_owners, "pipe")
     consume_inode_owners(shm_owners, "shm")
-    consume_inode_owners(namespace_owners, "namespace")
+    # Sharing a mount or net namespace is not a channel. The orbit would
+    # otherwise pair every process on the box with every other.
     local_tcp_pairs = _collect_local_tcp_pairs(proc_names_by_pid)
     for left_name, right_name in local_tcp_pairs:
         add_pair_counts(left_name, right_name, "tcp")
@@ -588,6 +614,205 @@ def get_process_namespace_fingerprint(pid):
     }
 
 
+_TCP_STATES = {
+    "01": "ESTABLISHED",
+    "02": "SYN_SENT",
+    "03": "SYN_RECV",
+    "04": "FIN_WAIT1",
+    "05": "FIN_WAIT2",
+    "06": "TIME_WAIT",
+    "07": "CLOSE",
+    "08": "CLOSE_WAIT",
+    "09": "LAST_ACK",
+    "0A": "LISTEN",
+    "0B": "CLOSING",
+}
+
+
+def _family_label(family, conn_type):
+    fam = str(family or "").upper()
+    typ = str(conn_type or "").upper()
+    if "UNIX" in fam:
+        return "unix"
+    proto = "udp" if "DGRAM" in typ else "tcp"
+    if "INET6" in fam:
+        return f"{proto}6"
+    if "INET" in fam:
+        return proto
+    return "socket"
+
+
+def _format_addr(addr):
+    if not addr:
+        return None
+    if hasattr(addr, "ip") and hasattr(addr, "port"):
+        return f"{addr.ip}:{addr.port}"
+    if hasattr(addr, "path") and addr.path:
+        return str(addr.path)
+    if isinstance(addr, (tuple, list)) and addr:
+        if len(addr) >= 2 and addr[1] is not None:
+            return f"{addr[0]}:{addr[1]}"
+        return str(addr[0])
+    return str(addr)
+
+
+def _split_ip_port(text):
+    if not text or ":" not in str(text):
+        return None
+    host, port = str(text).rsplit(":", 1)
+    if not port.isdigit():
+        return None
+    return host, int(port)
+
+
+def _tcp_peer_index():
+    """Map a local 4-tuple to the process on the other end, when both ends are visible."""
+    try:
+        names = {}
+        for proc in psutil.process_iter(["pid", "name"]):
+            info = proc.info
+            names[int(info["pid"])] = info.get("name")
+
+        endpoints = {}
+        for conn in psutil.net_connections(kind="inet"):
+            pid = getattr(conn, "pid", None)
+            laddr = getattr(conn, "laddr", None)
+            raddr = getattr(conn, "raddr", None)
+            if not pid or not laddr or not raddr:
+                continue
+            if not hasattr(laddr, "ip") or not hasattr(raddr, "ip"):
+                continue
+            endpoints[(laddr.ip, int(laddr.port), raddr.ip, int(raddr.port))] = int(pid)
+
+        peers = {}
+        for (lip, lport, rip, rport), pid in endpoints.items():
+            other = endpoints.get((rip, rport, lip, lport))
+            if other and other != pid:
+                peers[(lip, lport, rip, rport)] = (other, names.get(other))
+        return peers
+    except (psutil.Error, OSError, AttributeError, TypeError, ValueError, IndexError):
+        return {}
+
+
+def _annotate_connection_peers(connections):
+    peers = _tcp_peer_index()
+    if not peers:
+        return connections
+    for row in connections:
+        ends = _split_ip_port(row.get("local_address"))
+        remote = _split_ip_port(row.get("remote_address"))
+        if not ends or not remote:
+            continue
+        hit = peers.get((ends[0], ends[1], remote[0], remote[1]))
+        if not hit:
+            continue
+        row["peer_pid"] = hit[0]
+        row["peer_name"] = hit[1]
+    return connections
+
+
+def _hex_ipv4(hex_ip):
+    chunks = [hex_ip[i : i + 2] for i in range(0, 8, 2)]
+    chunks.reverse()
+    return ".".join(str(int(part, 16)) for part in chunks)
+
+
+def _connections_from_procnet(pid):
+    """When ptrace is refused, pair this process's socket inodes with /proc/net."""
+    try:
+        fd_dir = f"/proc/{pid}/fd"
+        inodes = {}
+        for fd_num in os.listdir(fd_dir):
+            if not fd_num.isdigit():
+                continue
+            try:
+                target = os.readlink(f"{fd_dir}/{fd_num}")
+            except (OSError, PermissionError):
+                continue
+            if target.startswith("socket:[") and target.endswith("]"):
+                try:
+                    inodes[int(target[8:-1])] = int(fd_num)
+                except ValueError:
+                    continue
+        if not inodes:
+            return []
+
+        rows = []
+        tables = (
+            ("/proc/net/tcp", "tcp", False),
+            ("/proc/net/tcp6", "tcp6", True),
+            ("/proc/net/udp", "udp", False),
+            ("/proc/net/udp6", "udp6", True),
+        )
+        for path, family, ipv6 in tables:
+            try:
+                handle = open(path, "r", encoding="utf-8", errors="replace")
+            except (OSError, PermissionError):
+                continue
+            with handle:
+                for line in handle:
+                    parts = line.split()
+                    if len(parts) < 10 or parts[0] == "sl":
+                        continue
+                    try:
+                        inode = int(parts[9])
+                    except ValueError:
+                        continue
+                    fd = inodes.get(inode)
+                    if fd is None:
+                        continue
+                    try:
+                        local_hex, remote_hex = parts[1], parts[2]
+                        if ipv6:
+                            local_address = local_hex
+                            remote_address = None if remote_hex.endswith(":0000") else remote_hex
+                        else:
+                            lip, lport = local_hex.split(":")
+                            rip, rport = remote_hex.split(":")
+                            local_address = f"{_hex_ipv4(lip)}:{int(lport, 16)}"
+                            remote_address = None if rip == "00000000" else f"{_hex_ipv4(rip)}:{int(rport, 16)}"
+                    except (ValueError, IndexError):
+                        continue
+                    rows.append(
+                        {
+                            "fd": fd,
+                            "family": family,
+                            "type": family,
+                            "local_address": local_address,
+                            "remote_address": remote_address,
+                            "status": _TCP_STATES.get(parts[3].upper(), parts[3]),
+                            "peer_pid": None,
+                            "peer_name": None,
+                        }
+                    )
+        return rows
+    except (OSError, PermissionError, ValueError, IndexError, TypeError):
+        return []
+
+
+def _collect_process_connections(pid, proc):
+    connections = []
+    try:
+        for conn in proc.connections():
+            connections.append(
+                {
+                    "fd": conn.fd if hasattr(conn, "fd") else None,
+                    "family": _family_label(getattr(conn, "family", None), getattr(conn, "type", None)),
+                    "type": str(getattr(conn, "type", "") or ""),
+                    "local_address": _format_addr(getattr(conn, "laddr", None)),
+                    "remote_address": _format_addr(getattr(conn, "raddr", None)),
+                    "status": getattr(conn, "status", None),
+                    "peer_pid": None,
+                    "peer_name": None,
+                }
+            )
+    except (psutil.AccessDenied, psutil.NoSuchProcess, AttributeError):
+        connections = []
+    if not connections:
+        connections = _connections_from_procnet(pid)
+    return _annotate_connection_peers(connections)[:20]
+
+
 def get_process_fds_info(pid):
     try:
         proc = psutil.Process(pid)
@@ -630,21 +855,7 @@ def get_process_fds_info(pid):
             except (OSError, PermissionError):
                 pass
 
-        connections = []
-        try:
-            for conn in proc.connections():
-                connections.append(
-                    {
-                        "fd": conn.fd if hasattr(conn, "fd") else None,
-                        "family": str(conn.family),
-                        "type": str(conn.type),
-                        "local_address": f"{conn.laddr.ip}:{conn.laddr.port}" if conn.laddr else None,
-                        "remote_address": f"{conn.raddr.ip}:{conn.raddr.port}" if conn.raddr else None,
-                        "status": conn.status,
-                    }
-                )
-        except (psutil.AccessDenied, psutil.NoSuchProcess, AttributeError):
-            pass
+        connections = _collect_process_connections(pid, proc)
 
         descriptors = []
         fd_dir = f"/proc/{pid}/fd"
@@ -683,11 +894,13 @@ def get_process_fds_info(pid):
             conn = connection_by_fd.get(descriptor["fd"])
             if not conn:
                 continue
-            family = str(conn.get("family") or "").upper()
-            if "AF_UNIX" in family:
+            family = str(conn.get("family") or "").lower()
+            if family == "unix":
                 descriptor["type"] = "unix socket"
-            elif "AF_INET" in family:
+            elif family.startswith("tcp"):
                 descriptor["type"] = "tcp socket" if conn.get("remote_address") else "inet socket"
+            elif family.startswith("udp"):
+                descriptor["type"] = "udp socket"
             descriptor["local_address"] = conn.get("local_address")
             descriptor["remote_address"] = conn.get("remote_address")
             descriptor["status"] = conn.get("status")

@@ -9,6 +9,10 @@
 // every area and is refused for a few processes; status always names the
 // totals. The card draws the map when it has one and the totals either way,
 // and says which of the two it is looking at.
+//
+// While the card is open it re-reads the same payload every couple of seconds
+// and repaints the body. The frame stays put: unfolding it again would look
+// like a new card every tick.
 const MemoryCard = (() => {
     const W = 600;
     const PAD = 14;
@@ -20,6 +24,7 @@ const MemoryCard = (() => {
     const BAR_H = 8;
     const MAX_LIBS = 8;
     const MAX_STACKS = 8;
+    const POLL_MS = 2000;
 
     const KIND_TINT = {
         code: "#e2a33e",
@@ -36,6 +41,9 @@ const MemoryCard = (() => {
     let openPid = null;
     let topKeeper = null;
     let requestSeq = 0;
+    let pollTimer = null;
+    let lastAnchor = null;
+    let layout = null;
 
     function clip(text, max) {
         const value = String(text || "");
@@ -50,13 +58,46 @@ const MemoryCard = (() => {
         return `${Math.round(n)} KB`;
     }
 
+    function stopPoll() {
+        if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+        }
+    }
+
     function close() {
+        stopPoll();
         openPid = null;
+        lastAnchor = null;
+        layout = null;
         requestSeq += 1;
         svg.selectAll(".memory-card-scrim, .memory-card-layer").remove();
         if (topKeeper) topKeeper.stop();
         d3.select("body").on("keydown.memorycard", null);
         window.dispatchEvent(new CustomEvent("kcard-closed"));
+    }
+
+    function startPoll(pid) {
+        stopPoll();
+        pollTimer = setInterval(() => {
+            if (openPid !== pid) {
+                stopPoll();
+                return;
+            }
+            if (document.hidden) return;
+            const seq = requestSeq;
+            fetch(`/api/process/${pid}/memory`, { cache: "no-store" })
+                .then((r) => r.json())
+                .then((data) => {
+                    if (seq !== requestSeq || openPid !== pid) return;
+                    if (!data || data.error) {
+                        close();
+                        return;
+                    }
+                    draw(data, lastAnchor, true);
+                })
+                .catch(() => {});
+        }, POLL_MS);
     }
 
     function open(pid, anchor) {
@@ -68,6 +109,7 @@ const MemoryCard = (() => {
         }
         close();
         openPid = key;
+        lastAnchor = anchor;
         const seq = ++requestSeq;
         fetch(`/api/process/${key}/memory`, { cache: "no-store" })
             .then((r) => r.json())
@@ -77,7 +119,8 @@ const MemoryCard = (() => {
                     openPid = null;
                     return;
                 }
-                draw(data, anchor);
+                draw(data, anchor, false);
+                startPoll(key);
             })
             .catch((err) => {
                 if (seq !== requestSeq) return;
@@ -90,13 +133,119 @@ const MemoryCard = (() => {
             });
     }
 
-    function draw(data, anchor) {
+    function cardHeight(data, compact) {
+        const kinds = data.kinds || [];
+        const libraries = (data.libraries || []).slice(0, MAX_LIBS);
+        const stacks = (data.stacks || []).slice(0, MAX_STACKS);
+        const sources = data.sources || {};
+        const hasMap = !!(sources.maps && sources.maps.available);
+        const hiddenLibs = Math.max(0, Number(data.library_count || 0) - libraries.length);
+        const hiddenStacks = Math.max(0, Number(data.stack_count || 0) - stacks.length);
+        let h = HEADER + 12 + 10;
+        h += LINE + LINE;
+        if (hasMap && kinds.length) h += 16 + LINE + BAR_H + 8 + LINE;
+        if (data.executable || data.heap_kb) h += 16 + LINE + (data.executable ? LINE : 0) + (data.heap_kb ? LINE : 0);
+        if (stacks.length) h += 16 + LINE + stacks.length * ROW_STEP + (hiddenStacks ? LINE : 0);
+        if (libraries.length) h += 16 + LINE + libraries.length * ROW_STEP + (hiddenLibs ? LINE : 0);
+        if (!hasMap && !kinds.length) h += 16 + LINE + LINE;
+        if (!hasMap) h += 10 + LINE;
+        h += FOOTER;
+        return h;
+    }
+
+    function draw(data, anchor, live) {
         const svgNode = svg.node();
         const viewW = (svgNode && svgNode.clientWidth) || window.innerWidth;
         const viewH = (svgNode && svgNode.clientHeight) || window.innerHeight;
-        const cw = Math.min(W, viewW - 24);
+        const cw = (live && layout) ? layout.cw : Math.min(W, viewW - 24);
         const compact = cw < 460;
+        const h = cardHeight(data, compact);
 
+        let x;
+        let y;
+        if (live && layout) {
+            x = layout.x;
+            y = Math.max(12, Math.min(viewH - h - 12, layout.y));
+        } else {
+            const from = anchor && Number.isFinite(anchor.x) ? anchor.x : 300;
+            x = Number.isFinite(anchor && anchor.clearOf) ? anchor.clearOf : from + 40;
+            if (x + cw + 16 > viewW) x = Math.max(12, from - cw - 40);
+            if (x < 12) x = Math.max(12, viewW - cw - 16);
+            y = (anchor && Number.isFinite(anchor.y) ? anchor.y : 120) - 30;
+            y = Math.max(12, Math.min(viewH - h - 12, y));
+        }
+        layout = { x, y, cw, h };
+
+        let layer;
+        let panel;
+        if (live) {
+            layer = svg.select(".memory-card-layer");
+            panel = layer.select(".memory-card-panel");
+            if (layer.empty() || panel.empty()) return;
+            panel.attr("transform", `translate(${x}, ${y})`);
+            panel.select(".kcard-frame").attr("d", dossierCardPath(0, 0, cw, h, CUT));
+            if (anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y)) {
+                const connY = Math.max(y + 12, Math.min(y + h - 12, anchor.y));
+                layer.select(".kcard-conn").attr("x2", x).attr("y2", connY);
+            }
+            panel.select(".memory-card-body").remove();
+        } else {
+            ensureDossierDefs();
+            svg.append("rect")
+                .attr("class", "memory-card-scrim")
+                .attr("x", 0).attr("y", 0).attr("width", viewW).attr("height", viewH)
+                .attr("fill", ensureFocusVeilGradient())
+                .style("opacity", 0)
+                .style("cursor", "pointer")
+                .on("click", () => close())
+                .transition().duration(200).style("opacity", 1);
+
+            layer = svg.append("g").attr("class", "memory-card-layer");
+            if (!topKeeper) {
+                topKeeper = createOverlayTopKeeper("memory-card-scrim", ["memory-card-layer"], () => openPid !== null);
+            }
+            topKeeper.start();
+
+            if (anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y)) {
+                const connY = Math.max(y + 12, Math.min(y + h - 12, anchor.y));
+                layer.append("circle")
+                    .attr("class", "kcard-anchor")
+                    .attr("cx", anchor.x).attr("cy", anchor.y).attr("r", 3);
+                layer.append("line")
+                    .attr("class", "kcard-conn")
+                    .attr("x1", anchor.x).attr("y1", anchor.y)
+                    .attr("x2", anchor.x).attr("y2", anchor.y)
+                    .transition().duration(220).ease(d3.easeCubicOut)
+                    .attr("x2", x).attr("y2", connY);
+            }
+
+            panel = layer.append("g")
+                .attr("class", "memory-card-panel")
+                .attr("transform", `translate(${x}, ${y})`)
+                .on("click", (event) => event.stopPropagation());
+
+            panel.append("path")
+                .attr("class", "kcard-frame")
+                .attr("d", dossierCardPath(0, 0, cw, h, CUT))
+                .attr("filter", "url(#dossier-drop)")
+                .attr("transform", `translate(0, ${h / 2}) scale(1, 0.02)`)
+                .transition().delay(120).duration(200).ease(d3.easeCubicOut)
+                .attr("transform", "translate(0,0) scale(1,1)");
+        }
+
+        const body = panel.append("g").attr("class", "memory-card-body");
+        if (!live) {
+            body.style("opacity", 0);
+            body.transition().delay(250).duration(180).style("opacity", 1);
+        }
+
+        paintBody(body, data, cw, compact, h);
+        d3.select("body").on("keydown.memorycard", (event) => {
+            if (event.key === "Escape") close();
+        });
+    }
+
+    function paintBody(body, data, cw, compact, h) {
         const totals = data.totals || {};
         const kinds = data.kinds || [];
         const libraries = (data.libraries || []).slice(0, MAX_LIBS);
@@ -106,70 +255,8 @@ const MemoryCard = (() => {
         const viaCollector = !!(sources.maps && sources.maps.via === "collector");
         const hiddenLibs = Math.max(0, Number(data.library_count || 0) - libraries.length);
         const hiddenStacks = Math.max(0, Number(data.stack_count || 0) - stacks.length);
-
         const notes = [];
         if (!hasMap) notes.push("THE MAP ITSELF IS CLOSED — THESE TOTALS ARE FROM /PROC/PID/STATUS");
-
-        let h = HEADER + 12 + 10;
-        h += LINE + LINE;                    // resident / virtual
-        if (hasMap && kinds.length) h += 16 + LINE + BAR_H + 8 + LINE;
-        if (data.executable || data.heap_kb) h += 16 + LINE + (data.executable ? LINE : 0) + (data.heap_kb ? LINE : 0);
-        if (stacks.length) h += 16 + LINE + stacks.length * ROW_STEP + (hiddenStacks ? LINE : 0);
-        if (libraries.length) h += 16 + LINE + libraries.length * ROW_STEP + (hiddenLibs ? LINE : 0);
-        if (!hasMap && !kinds.length) h += 16 + LINE + LINE;
-        if (notes.length) h += 10 + notes.length * LINE;
-        h += FOOTER;
-
-        const from = anchor && Number.isFinite(anchor.x) ? anchor.x : 300;
-        let x = Number.isFinite(anchor && anchor.clearOf) ? anchor.clearOf : from + 40;
-        if (x + cw + 16 > viewW) x = Math.max(12, from - cw - 40);
-        if (x < 12) x = Math.max(12, viewW - cw - 16);
-        let y = (anchor && Number.isFinite(anchor.y) ? anchor.y : 120) - 30;
-        y = Math.max(12, Math.min(viewH - h - 12, y));
-
-        ensureDossierDefs();
-        svg.append("rect")
-            .attr("class", "memory-card-scrim")
-            .attr("x", 0).attr("y", 0).attr("width", viewW).attr("height", viewH)
-            .attr("fill", ensureFocusVeilGradient())
-            .style("opacity", 0)
-            .style("cursor", "pointer")
-            .on("click", () => close())
-            .transition().duration(200).style("opacity", 1);
-
-        const layer = svg.append("g").attr("class", "memory-card-layer");
-        if (!topKeeper) {
-            topKeeper = createOverlayTopKeeper("memory-card-scrim", ["memory-card-layer"], () => openPid !== null);
-        }
-        topKeeper.start();
-
-        if (anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y)) {
-            const connY = Math.max(y + 12, Math.min(y + h - 12, anchor.y));
-            layer.append("circle")
-                .attr("class", "kcard-anchor")
-                .attr("cx", anchor.x).attr("cy", anchor.y).attr("r", 3);
-            layer.append("line")
-                .attr("class", "kcard-conn")
-                .attr("x1", anchor.x).attr("y1", anchor.y)
-                .attr("x2", anchor.x).attr("y2", anchor.y)
-                .transition().duration(220).ease(d3.easeCubicOut)
-                .attr("x2", x).attr("y2", connY);
-        }
-
-        const panel = layer.append("g")
-            .attr("transform", `translate(${x}, ${y})`)
-            .on("click", (event) => event.stopPropagation());
-
-        panel.append("path")
-            .attr("class", "kcard-frame")
-            .attr("d", dossierCardPath(0, 0, cw, h, CUT))
-            .attr("filter", "url(#dossier-drop)")
-            .attr("transform", `translate(0, ${h / 2}) scale(1, 0.02)`)
-            .transition().delay(120).duration(200).ease(d3.easeCubicOut)
-            .attr("transform", "translate(0,0) scale(1,1)");
-
-        const body = panel.append("g").attr("class", "memory-card-body").style("opacity", 0);
-        body.transition().delay(250).duration(180).style("opacity", 1);
 
         const text = (cls, tx, ty, value, anchorEnd) => body.append("text")
             .attr("class", cls)
@@ -324,10 +411,6 @@ const MemoryCard = (() => {
             hasMap
                 ? (viaCollector ? "COLLECTOR · KINDS AND SIZES" : `/PROC/${data.pid}/MAPS`)
                 : `/PROC/${data.pid}/STATUS`, true);
-
-        d3.select("body").on("keydown.memorycard", (event) => {
-            if (event.key === "Escape") close();
-        });
     }
 
     return { open, close, isOpen: () => openPid !== null };
