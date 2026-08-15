@@ -61,8 +61,39 @@ function buildChannelArc(cx, cy, startAngle, endAngle, radius) {
     return `M ${sx} ${sy} A ${radius} ${radius} 0 ${largeArcFlag} ${sweepFlag} ${ex} ${ey}`;
 }
 
+const POLL_MS = 3000;
+const MAX_STATIONS = 14;
+let pollTimer = null;
+let pollSeq = 0;
+let lastCenter = null;
+let lastAnchors = null;
+let stationAngle = new Map();
+let vacatedAngles = [];
+
+function stopIpcOrbit() {
+    if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+    }
+    pollSeq += 1;
+}
+
 function drawIpcRelationshipRing(centerX, centerY, processAnchorsByName) {
+    stopIpcOrbit();
+    stationAngle = new Map();
+    vacatedAngles = [];
+    lastCenter = { x: centerX, y: centerY };
+    lastAnchors = processAnchorsByName;
     d3.selectAll('.ipc-ring-layer').remove();
+    const seq = ++pollSeq;
+    fetchIpcAndPaint(centerX, centerY, processAnchorsByName, false, seq);
+    pollTimer = setInterval(() => {
+        if (document.hidden || !lastCenter) return;
+        fetchIpcAndPaint(lastCenter.x, lastCenter.y, lastAnchors, true, pollSeq);
+    }, POLL_MS);
+}
+
+function fetchIpcAndPaint(centerX, centerY, processAnchorsByName, live, seq) {
     fetch('/api/ipc-links?max_nodes=18&max_pairs=120')
         .then(res => {
             if (!res.ok) {
@@ -71,41 +102,93 @@ function drawIpcRelationshipRing(centerX, centerY, processAnchorsByName) {
             return res.json();
         })
         .then(data => {
-            const ringGroup = svg.append('g')
-                .attr('class', 'ipc-ring-layer');
+            if (seq !== pollSeq) return;
+            paintIpcOrbit(data, centerX, centerY, processAnchorsByName, live);
+        })
+        .catch((error) => {
+            if (seq !== pollSeq) return;
+            console.warn('IPC ring data unavailable:', error);
+            if (live) return;
+            paintIpcFallback(centerX, centerY, processAnchorsByName);
+        });
+}
 
+function angleForStation(name, index, total) {
+    if (stationAngle.has(name)) return stationAngle.get(name);
+    const reused = vacatedAngles.shift();
+    const angle = reused != null
+        ? reused
+        : (-Math.PI / 2 + (index / Math.max(total, 1)) * Math.PI * 2);
+    stationAngle.set(name, angle);
+    return angle;
+}
+
+function forgetMissingStations(names) {
+    const seen = new Set(names);
+    stationAngle.forEach((angle, name) => {
+        if (!seen.has(name)) {
+            stationAngle.delete(name);
+            vacatedAngles.push(angle);
+        }
+    });
+}
+
+function orbitTranslate(cx, cy, radius, angle) {
+    return `translate(${cx + Math.cos(angle) * radius},${cy + Math.sin(angle) * radius})`;
+}
+
+// First paint: start as a tight cluster at 12 o'clock, then slide apart
+// along the ring to even 2π/n homes. Live polls keep the home angle.
+function clusterAngle(index, total) {
+    if (total <= 1) return -Math.PI / 2;
+    return -Math.PI / 2 + (index - (total - 1) / 2) * 0.048;
+}
+
+function paintIpcOrbit(data, centerX, centerY, processAnchorsByName, live) {
             const ringCx = centerX;
             const ringCy = centerY;
             // Place IPC ring around the process circle (outside process endpoints).
             const ringR = 355;
 
-            IPC_CHANNELS.forEach((channel, idx) => {
-                const radius = ringR + channel.radiusOffset;
-                ringGroup.append('circle')
-                    .attr('cx', ringCx)
-                    .attr('cy', ringCy)
-                    .attr('r', radius)
-                    .attr('fill', 'none')
-                    .attr('stroke', channel.color)
-                    .attr('stroke-width', idx === 2 ? 1.05 : 0.75)
-                    .attr('stroke-dasharray', channel.dash)
-                    .attr('opacity', 0.46);
+            let ringGroup = svg.select('.ipc-ring-layer');
+            const hasRails = !ringGroup.empty() && !ringGroup.select('.ipc-orbit-rail').empty();
+            if (!live || !hasRails) {
+                d3.selectAll('.ipc-ring-layer').remove();
+                ringGroup = svg.append('g').attr('class', 'ipc-ring-layer');
+                IPC_CHANNELS.forEach((channel, idx) => {
+                    const radius = ringR + channel.radiusOffset;
+                    ringGroup.append('circle')
+                        .attr('class', 'ipc-orbit-rail')
+                        .attr('cx', ringCx)
+                        .attr('cy', ringCy)
+                        .attr('r', radius)
+                        .attr('fill', 'none')
+                        .attr('stroke', channel.color)
+                        .attr('stroke-width', idx === 2 ? 1.05 : 0.75)
+                        .attr('stroke-dasharray', channel.dash)
+                        .attr('opacity', 0.46);
 
-                ringGroup.append('text')
-                    .attr('x', ringCx + radius + 8)
-                    .attr('y', ringCy - 3 + idx * 9)
-                    .style('font-family', 'Share Tech Mono, monospace')
-                    .style('font-size', '7px')
-                    .style('letter-spacing', '0.8px')
-                    .style('fill', channel.color)
-                    .text(channel.label);
-            });
+                    ringGroup.append('text')
+                        .attr('class', 'ipc-orbit-rail')
+                        .attr('x', ringCx + radius + 8)
+                        .attr('y', ringCy - 3 + idx * 9)
+                        .style('font-family', 'Share Tech Mono, monospace')
+                        .style('font-size', '7px')
+                        .style('letter-spacing', '0.8px')
+                        .style('fill', channel.color)
+                        .text(channel.label);
+                });
+            }
+
+            ringGroup.select('.ipc-orbit-live').remove();
+            d3.selectAll('.ipc-link-tooltip').remove();
+            const liveGroup = ringGroup.append('g').attr('class', 'ipc-orbit-live');
 
             if (!data || data.error) {
                 console.warn('IPC API payload error:', data && data.error);
             }
 
-            let nodes = ((data && data.process_nodes) || []).slice(0, 14);
+            let nodes = ((data && data.process_nodes) || []).slice(0, MAX_STATIONS);
             // Fallback: if IPC endpoint is empty/unavailable on host, still render ring nodes from process anchors.
             if (!nodes.length) {
                 const fallbackNames = Array.from(processAnchorsByName.keys()).slice(0, 14);
@@ -125,7 +208,7 @@ function drawIpcRelationshipRing(centerX, centerY, processAnchorsByName) {
             }
 
             const stats = (data && data.stats) || {};
-            ringGroup.append('text')
+            liveGroup.append('text')
                 .attr('x', ringCx)
                 .attr('y', ringCy - ringR - 12)
                 .attr('text-anchor', 'middle')
@@ -168,18 +251,24 @@ function drawIpcRelationshipRing(centerX, centerY, processAnchorsByName) {
                 peerMap.set(key, arr.slice(0, 3));
             });
 
-            const pairArcLayer = ringGroup.append('g')
+            const enterMotion = !live;
+            const nodeCount = nodes.length;
+            const pairArcLayer = liveGroup.append('g')
                 .attr('class', 'ipc-pair-arc-layer');
             const maxDegree = Math.max(...nodes.map(n => Number(n.degree || 0)), 1);
+            const placedNames = nodes.map((node) => normalizeProcName(node.name || '')).filter(Boolean);
+            forgetMissingStations(placedNames);
             const nodePos = [];
             nodes.forEach((node, i) => {
-                const t = i / nodes.length;
-                const angle = -Math.PI / 2 + t * (Math.PI * 2);
-                const nx = ringCx + Math.cos(angle) * ringR;
-                const ny = ringCy + Math.sin(angle) * ringR;
+                const normalizedName = normalizeProcName(node.name || '');
+                const homeAngle = angleForStation(normalizedName, i, nodeCount);
+                const fromAngle = enterMotion
+                    ? (nodeCount <= 1 ? homeAngle - 0.34 : clusterAngle(i, nodeCount))
+                    : homeAngle;
+                const nx = ringCx + Math.cos(homeAngle) * ringR;
+                const ny = ringCy + Math.sin(homeAngle) * ringR;
                 const degree = Number(node.degree || 0);
                 const radius = 2.8 + (degree / maxDegree) * 2.8;
-                const normalizedName = normalizeProcName(node.name || '');
                 nodePos.push({
                     x: nx,
                     y: ny,
@@ -203,9 +292,23 @@ function drawIpcRelationshipRing(centerX, centerY, processAnchorsByName) {
                 };
                 const nodeChannel = dominantChannel(nodeChannelRow);
 
-                ringGroup.append('circle')
-                    .attr('cx', nx)
-                    .attr('cy', ny)
+                const station = liveGroup.append('g')
+                    .attr('class', 'ipc-orbit-station')
+                    .attr('transform', orbitTranslate(ringCx, ringCy, ringR, fromAngle));
+                if (enterMotion) {
+                    station.transition()
+                        .delay(i * 42)
+                        .duration(1180)
+                        .ease(d3.easeCubicOut)
+                        .attrTween('transform', () => (t) => {
+                            const a = fromAngle + (homeAngle - fromAngle) * t;
+                            return orbitTranslate(ringCx, ringCy, ringR, a);
+                        });
+                }
+
+                station.append('circle')
+                    .attr('cx', 0)
+                    .attr('cy', 0)
                     .attr('r', radius)
                     .attr('fill', nodeChannel ? nodeChannel.color : 'rgba(90, 90, 90, 0.55)')
                     .attr('stroke', 'rgba(24, 24, 24, 0.5)')
@@ -239,15 +342,27 @@ function drawIpcRelationshipRing(centerX, centerY, processAnchorsByName) {
                     })
                     .on('mouseleave', () => {
                         d3.selectAll('.ipc-link-tooltip').remove();
+                    })
+                    .on('click', (event) => {
+                        event.stopPropagation();
+                        d3.selectAll('.ipc-link-tooltip').remove();
+                        const matches = (processAnchorsByName && processAnchorsByName.get(normalizedName)) || [];
+                        const hintPid = matches[0] && matches[0].pid;
+                        if (typeof window.openProcessDossier === "function") {
+                            window.openProcessDossier({
+                                pid: hintPid,
+                                name: node.name || normalizedName
+                            });
+                        }
                     });
 
                 IPC_CHANNELS.forEach((channel, channelIdx) => {
                     const active = Number(nodeChannelRow[channel.degreeKey] || 0) > 0;
-                    const dotAngle = angle - 0.18 + channelIdx * 0.12;
+                    const dotAngle = homeAngle - 0.18 + channelIdx * 0.12;
                     const dotRadius = radius + 8.5;
-                    ringGroup.append('circle')
-                        .attr('cx', nx + Math.cos(dotAngle) * dotRadius)
-                        .attr('cy', ny + Math.sin(dotAngle) * dotRadius)
+                    station.append('circle')
+                        .attr('cx', Math.cos(dotAngle) * dotRadius)
+                        .attr('cy', Math.sin(dotAngle) * dotRadius)
                         .attr('r', active ? 1.9 : 1.05)
                         .attr('fill', active ? channel.color : 'rgba(92, 92, 92, 0.20)')
                         .attr('stroke', active ? 'rgba(18,18,18,0.35)' : 'none')
@@ -257,13 +372,10 @@ function drawIpcRelationshipRing(centerX, centerY, processAnchorsByName) {
 
                 if (i < 10) {
                     const label = String(node.name || normalizedName);
-                    const labelAngle = angle;
-                    const lx = nx + Math.cos(labelAngle) * 11;
-                    const ly = ny + Math.sin(labelAngle) * 11;
-                    ringGroup.append('text')
-                        .attr('x', lx)
-                        .attr('y', ly)
-                        .attr('text-anchor', Math.cos(labelAngle) >= 0 ? 'start' : 'end')
+                    station.append('text')
+                        .attr('x', Math.cos(homeAngle) * 11)
+                        .attr('y', Math.sin(homeAngle) * 11)
+                        .attr('text-anchor', Math.cos(homeAngle) >= 0 ? 'start' : 'end')
                         .attr('dominant-baseline', 'middle')
                         .style('font-family', 'Share Tech Mono, monospace')
                         .style('font-size', '7px')
@@ -281,6 +393,7 @@ function drawIpcRelationshipRing(centerX, centerY, processAnchorsByName) {
                 if (!leftNode || !rightNode) return;
                 const startAngle = Math.atan2(leftNode.y - ringCy, leftNode.x - ringCx);
                 const endAngle = Math.atan2(rightNode.y - ringCy, rightNode.x - ringCx);
+                const sameStation = leftNode === rightNode;
                 const linkWeights = {
                     unixSocketWeight: Number(link.unix_socket_weight || 0),
                     pipeWeight: Number(link.pipe_weight || 0),
@@ -290,15 +403,28 @@ function drawIpcRelationshipRing(centerX, centerY, processAnchorsByName) {
                 IPC_CHANNELS.forEach((channel) => {
                     const weight = channelWeight(linkWeights, channel);
                     if (weight <= 0 || pairArcCount > 90) return;
-                    pairArcLayer.append('path')
-                        .attr('d', buildChannelArc(ringCx, ringCy, startAngle, endAngle, ringR + channel.radiusOffset))
+                    const radius = ringR + channel.radiusOffset;
+                    // Two processes of the same name share a channel: a short
+                    // bump on the ring, not an arc from a station to itself.
+                    const arc = sameStation
+                        ? buildChannelArc(ringCx, ringCy, startAngle - 0.14, startAngle + 0.14, radius)
+                        : buildChannelArc(ringCx, ringCy, startAngle, endAngle, radius);
+                    const destOpacity = channel.key === 'shm' ? 0.38 : 0.5;
+                    const arcPath = pairArcLayer.append('path')
+                        .attr('d', arc)
                         .attr('fill', 'none')
                         .attr('stroke', channel.color)
                         .attr('stroke-width', Math.min(2.1, 0.65 + weight * 0.18))
                         .attr('stroke-dasharray', channel.dash)
                         .attr('stroke-linecap', 'round')
-                        .attr('opacity', channel.key === 'shm' ? 0.38 : 0.5)
+                        .attr('opacity', enterMotion ? 0 : destOpacity)
                         .style('pointer-events', 'none');
+                    if (enterMotion) {
+                        arcPath.transition()
+                            .delay(880)
+                            .duration(420)
+                            .attr('opacity', destOpacity);
+                    }
                     pairArcCount += 1;
                 });
             });
@@ -322,21 +448,27 @@ function drawIpcRelationshipRing(centerX, centerY, processAnchorsByName) {
                         ringR,
                         laneOffset
                     );
-                    ringGroup.append('path')
+                    const spoke = liveGroup.append('path')
                         .attr('d', routedPath)
                         .attr('fill', 'none')
                         .attr('stroke', 'rgba(78, 78, 78, 0.22)')
                         .attr('stroke-width', 0.7)
                         .attr('stroke-linecap', 'round')
+                        .attr('opacity', enterMotion ? 0 : 1)
                         .style('pointer-events', 'none');
+                    if (enterMotion) {
+                        spoke.transition()
+                            .delay(880)
+                            .duration(420)
+                            .attr('opacity', 1);
+                    }
                     linkOrdinal += 1;
                 }
             });
-        })
-        .catch((error) => {
-            console.warn('IPC ring data unavailable:', error);
-            // Last-resort fallback ring from process names only.
-            const fallbackNames = Array.from(processAnchorsByName.keys()).slice(0, 14);
+}
+
+function paintIpcFallback(centerX, centerY, processAnchorsByName) {
+            const fallbackNames = Array.from(processAnchorsByName.keys()).slice(0, MAX_STATIONS);
             if (!fallbackNames.length) return;
             const ringGroup = svg.append('g')
                 .attr('class', 'ipc-ring-layer');
@@ -372,7 +504,6 @@ function drawIpcRelationshipRing(centerX, centerY, processAnchorsByName) {
                     .style('fill', 'rgba(62, 62, 62, 0.58)')
                     .text(name.length > 12 ? `${name.slice(0, 11)}~` : name);
             });
-        });
 }
 
 function buildIpcRoutedPath(cx, cy, startX, startY, targetX, targetY, outerRingRadius, laneOffset = 0) {
@@ -401,10 +532,16 @@ function buildIpcRoutedPath(cx, cy, startX, startY, targetX, targetY, outerRingR
             L ${targetX} ${targetY}`;
 }
 
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden || !lastCenter || !pollTimer) return;
+    fetchIpcAndPaint(lastCenter.x, lastCenter.y, lastAnchors, true, pollSeq);
+});
+
 window.IpcUI = {
     normalizeProcName,
     getSharedChannelType,
     drawIpcRelationshipRing,
+    stopIpcOrbit,
     buildIpcRoutedPath
 };
 })();

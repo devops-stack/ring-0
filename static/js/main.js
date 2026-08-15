@@ -1234,7 +1234,13 @@ function renderProcessDossier() {
             open: threadCount > 0 && window.ThreadsCard ? ThreadsCard.open : null
         },
         // Named for what it is: inet connections, not every socket fd.
-        { label: 'NET CONNS', value: `${io.sockets}`, unit: '', live: Number(io.sockets || 0) > 0 }
+        {
+            label: 'NET CONNS',
+            value: `${io.sockets}`,
+            unit: '',
+            live: Number(io.sockets || 0) > 0,
+            open: Number(io.sockets || 0) > 0 && window.SocketsCard ? SocketsCard.open : null
+        }
     ];
     const colW = (vitBox.w - 28) / vitals.length;
     vitals.forEach((v, i) => {
@@ -1686,6 +1692,52 @@ const processModalTopKeeper = createOverlayTopKeeper(
     ['process-dossier-layer', 'process-interaction-module'],
     () => !!pinnedProcessDossier
 );
+
+function closeOpenKernelCards() {
+    ["MemoryCard", "ThreadsCard", "WaitsCard", "WakeupsCard", "SocketsCard",
+        "SyscallCard", "IrqCard", "RunqueueCard"].forEach((name) => {
+        const card = window[name];
+        if (card && typeof card.close === "function") card.close();
+    });
+}
+
+function openProcessDossier(hint) {
+    const index = window.__processIndex || { byPid: new Map(), byName: new Map(), atPid: new Map() };
+    const pid = Number(hint && hint.pid);
+    let processData = Number.isFinite(pid) && pid > 0 ? index.byPid.get(pid) : null;
+    if (!processData && hint && hint.name) {
+        const list = index.byName.get(normalizeProcName(hint.name)) || [];
+        processData = list[0] || null;
+    }
+    if (!processData) {
+        if (!Number.isFinite(pid) || pid <= 0) return;
+        processData = {
+            pid,
+            name: (hint && hint.name) || "process",
+            memory_mb: 0,
+            status: ""
+        };
+    }
+    closeOpenKernelCards();
+    const pos = index.atPid.get(processData.pid);
+    const anchor = pos || { x: window.innerWidth * 0.42, y: window.innerHeight * 0.42 };
+    if (pinnedProcessDossier && pinnedProcessDossier.process?.pid !== processData.pid) {
+        clearPinnedProcessDossier();
+    }
+    pinProcessDossier(processData, anchor);
+    svg.selectAll(".process-node-group").classed("process-pinned", false);
+    const group = svg.select(`.process-node-group[data-pid="${processData.pid}"]`);
+    if (!group.empty()) {
+        group.classed("process-pinned", true);
+        group.select(".process-node")
+            .interrupt()
+            .attr("r", 8)
+            .attr("fill", "#111")
+            .attr("stroke", "#000")
+            .attr("stroke-width", 2);
+    }
+}
+window.openProcessDossier = openProcessDossier;
 
 function pinProcessDossier(processData, anchor) {
     const samePid = pinnedProcessDossier && pinnedProcessDossier.process?.pid === processData.pid;
@@ -2413,6 +2465,18 @@ function drawProcessKernelMap2(centerX, centerY) {
             const numProcesses = processes.length;
             const mobileLayout = isMobileLayout();
             const processAnchorsByName = new Map();
+            const processByPid = new Map();
+            const processByName = new Map();
+            const processAtPid = new Map();
+            processes.forEach((process) => {
+                if (!process || process.pid == null) return;
+                processByPid.set(process.pid, process);
+                const nm = normalizeProcName(process.name || '');
+                if (!nm) return;
+                if (!processByName.has(nm)) processByName.set(nm, []);
+                processByName.get(nm).push(process);
+            });
+            window.__processIndex = { byPid: processByPid, byName: processByName, atPid: processAtPid };
 
             // Find min and max memory usage for scaling
             const memoryValues = processes.map(p => p.memory_mb || 0);
@@ -2594,6 +2658,7 @@ function drawProcessKernelMap2(centerX, centerY) {
                     }
                     processAnchorsByName.get(normalizedName).push({ x: px, y: py, pid: process.pid, name: process.name });
                 }
+                processAtPid.set(process.pid, { x: px, y: py });
 
                 // Curve to process (same style as original)
                 const cx1 = centerX + (px - centerX) * 0.3 + (Math.random() - 0.5) * 40;
@@ -2896,6 +2961,7 @@ function drawProcessKernelMap2(centerX, centerY) {
             if (!mobileLayout) {
                 drawIpcRelationshipRing(centerX, centerY, processAnchorsByName);
             } else {
+                stopIpcOrbit();
                 d3.selectAll('.ipc-ring-layer').remove();
                 drawMobileProcessLabels(centerX, centerY, topProcessNames(processes, 4));
             }
@@ -2948,6 +3014,10 @@ function getSharedChannelType(socketWeight, pipeWeight, shmWeight, nsWeight) {
 
 function drawIpcRelationshipRing(centerX, centerY, processAnchorsByName) {
     return callModuleFunction('IpcUI', 'drawIpcRelationshipRing', [centerX, centerY, processAnchorsByName]);
+}
+
+function stopIpcOrbit() {
+    return callModuleFunction('IpcUI', 'stopIpcOrbit', []);
 }
 
 function buildIpcRoutedPath(cx, cy, startX, startY, targetX, targetY, outerRingRadius, laneOffset = 0) {

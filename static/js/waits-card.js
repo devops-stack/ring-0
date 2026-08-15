@@ -63,6 +63,41 @@ const WaitsCard = (() => {
         window.dispatchEvent(new CustomEvent("kcard-closed"));
     }
 
+    function followProcess(pid, name) {
+        if (!pid || Number(pid) === 0) return;
+        close();
+        if (typeof window.openProcessDossier === "function") {
+            window.openProcessDossier({ pid: Number(pid), name });
+        }
+    }
+
+    function door(body, label, x, y, width, pid, name) {
+        if (!pid || Number(pid) === 0) return;
+        const rule = body.append("line")
+            .attr("x1", x).attr("y1", y + 2.5)
+            .attr("x2", x + width).attr("y2", y + 2.5)
+            .attr("stroke", "#e2a33e")
+            .attr("stroke-width", 1)
+            .attr("opacity", 0.35);
+        body.append("rect")
+            .attr("x", x - 3).attr("y", y - 9)
+            .attr("width", width + 8).attr("height", 13)
+            .attr("fill", "transparent")
+            .style("cursor", "pointer")
+            .on("mouseenter", () => {
+                label.attr("fill", "#e2a33e");
+                rule.attr("opacity", 1);
+            })
+            .on("mouseleave", () => {
+                label.attr("fill", null);
+                rule.attr("opacity", 0.35);
+            })
+            .on("click", (event) => {
+                event.stopPropagation();
+                followProcess(pid, name);
+            });
+    }
+
     function open(pid, tid, anchor) {
         const key = `${pid}:${tid}`;
         if (openKey === key) {
@@ -376,9 +411,13 @@ const WaitsCard = (() => {
             farEnd.forEach((r, i) => {
                 const ty = cy + 4 + i * ROW_STEP;
                 text("kcard-waiter", PAD, ty, r.pid);
-                text("kcard-waiter-dim", COL_NAME, ty, clip(r.comm, 16));
+                const name = text("kcard-waiter-dim", COL_NAME, ty, clip(r.comm, 16));
                 text("kcard-faint", COL_NOTE, ty,
                     `fd ${r.fd} · ${on.direction === "reading" ? "writes into it" : "reads from it"}`);
+                if (r.pid && r.pid !== data.pid) {
+                    const box = name.node().getBBox();
+                    door(body, name, COL_NAME, ty, box.width, r.pid, r.comm);
+                }
             });
             if (farEnd.length) cy += farEnd.length * ROW_STEP;
             if (farEnd.length && farEnd.every((r) => r.pid === data.pid)) {
@@ -394,8 +433,12 @@ const WaitsCard = (() => {
                 nearEnd.forEach((r, i) => {
                     const ty = cy + 4 + i * ROW_STEP;
                     text("kcard-waiter-dim", PAD, ty, r.pid);
-                    text("kcard-waiter-dim", COL_NAME, ty, clip(r.comm, 16));
+                    const name = text("kcard-waiter-dim", COL_NAME, ty, clip(r.comm, 16));
                     text("kcard-faint", COL_NOTE, ty, `fd ${r.fd} · inherited copy`);
+                    if (r.pid && r.pid !== data.pid) {
+                        const box = name.node().getBBox();
+                        door(body, name, COL_NAME, ty, box.width, r.pid, r.comm);
+                    }
                 });
                 cy += nearEnd.length * ROW_STEP;
             }
@@ -435,9 +478,13 @@ const WaitsCard = (() => {
                 const where = Object.entries(w.contexts || {}).sort((a, b) => b[1] - a[1])[0];
                 const tag = w.idle ? "irq" : (where ? where[0] : "task");
                 text(w.idle ? "kcard-faint" : "kcard-waiter", PAD, ty, w.tid === 0 ? "idle" : w.tid);
-                text("kcard-waiter-dim", COL_NAME, ty, clip(w.comm, 14));
+                const name = text("kcard-waiter-dim", COL_NAME, ty, clip(w.comm, 14));
                 text("kcard-faint", COL_NOTE, ty,
                     `${w.count}× · ${tag}${w.of && w.of.length > 1 ? ` · ${w.of.length} waiters` : ""}`);
+                if (!w.idle && w.pid && w.pid !== data.pid) {
+                    const box = name.node().getBBox();
+                    door(body, name, COL_NAME, ty, box.width, w.pid, w.comm);
+                }
             });
             cy += seenWakers.length * ROW_STEP;
         }
