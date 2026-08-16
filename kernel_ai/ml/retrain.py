@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 
 from kernel_ai.ml.config import MLConfig
 from kernel_ai.ml.drift import compute_drift
@@ -78,6 +79,23 @@ def _refresh_markov(cfg: MLConfig, metrics: dict) -> None:
         logger.warning("Stage 8 Markov build failed: %s", exc)
 
 
+def _refresh_http(cfg: MLConfig, metrics: dict) -> None:
+    """Best-effort Stage 9 retrain. Guardrails live in http_train (keep previous)."""
+    if os.getenv("KERNEL_AI_ML_HTTP_RETRAIN", "true").lower() != "true":
+        return
+    try:
+        from kernel_ai.ml.http_train import train as train_http
+
+        http_metrics = train_http(cfg, min_samples=40, persist=True)
+        metrics["http_precision"] = float(http_metrics.get("holdout_precision") or 0)
+        metrics["http_flag_rate"] = float(http_metrics.get("holdout_flag_rate") or 0)
+        logger.info("HTTP attempt model refreshed: %s", http_metrics)
+    except SystemExit as exc:
+        logger.info("HTTP retrain skipped: %s", exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("HTTP retrain failed: %s", exc)
+
+
 def run(*, only_if_drift: bool, min_samples: int, stide_only: bool = False) -> int:
     cfg = MLConfig()
     metrics: dict = {}
@@ -85,6 +103,7 @@ def run(*, only_if_drift: bool, min_samples: int, stide_only: bool = False) -> i
     if stide_only:
         _refresh_stide(cfg, metrics)
         _refresh_markov(cfg, metrics)
+        _refresh_http(cfg, metrics)
         logger.info("stide-only retrain complete: %s", metrics)
         return 0
 
@@ -114,6 +133,7 @@ def run(*, only_if_drift: bool, min_samples: int, stide_only: bool = False) -> i
 
     _refresh_stide(cfg, metrics)
     _refresh_markov(cfg, metrics)
+    _refresh_http(cfg, metrics)
     logger.info("retrain complete: %s", metrics)
     return 0
 
