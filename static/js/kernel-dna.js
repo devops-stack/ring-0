@@ -435,6 +435,9 @@ class KernelDNAVisualization {
         //   ml    -> statistical baseline detector (cyan wireframe)
         // Severity drives the assessment marker colour (high = red, else yellow).
         const isML = mutationData.source === 'ml';
+        const typeStr = String(mutationData.type || 'anomaly');
+        const isHttpAttempt = typeStr.startsWith('http_attempt');
+        const isHttpSuccess = typeStr.startsWith('http_success');
         const isHigh = String(mutationData.severity || '').toLowerCase() === 'high';
         const attack = mutationData.attack || null;
         const attackColorCss = (attack && attack.color) ? String(attack.color) : null;
@@ -474,11 +477,12 @@ class KernelDNAVisualization {
         yellowMarker.position.y += 0.3; // Position above mutation
 
         const mitreTag = attack && attack.mitre ? String(attack.mitre) : '';
-        const baseLabel = (mitreTag
-            ? mitreTag
-            : String(mutationData.type || 'anomaly').replace(/_/g, ' ')
+        const httpLabel = typeStr.replace(/^http_(attempt|success):/, '').replace(/_/g, ' ');
+        const baseLabel = (isHttpAttempt || isHttpSuccess
+            ? httpLabel
+            : (mitreTag ? mitreTag : typeStr.replace(/_/g, ' '))
         ).toUpperCase().slice(0, 22);
-        const tag = isML ? (mitreTag ? 'ATT' : 'ML') : 'RULE';
+        const tag = isHttpSuccess ? 'HIT' : (isHttpAttempt ? 'HTTP' : (isML ? (mitreTag ? 'ATT' : 'ML') : 'RULE'));
         const canvas = document.createElement('canvas');
         canvas.width = 256;
         canvas.height = 48;
