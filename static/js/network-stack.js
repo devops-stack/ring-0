@@ -3629,6 +3629,19 @@ class NetworkStackVisualization {
 
     parseFlowFollowFromUrl() {
         try {
+            const handed = window.__flowFollow;
+            if (handed && handed.remote) {
+                const { ip, port } = this.parseEndpoint(handed.remote);
+                if (ip) {
+                    return {
+                        remote: handed.remote,
+                        local: handed.local || '',
+                        proto: String(handed.proto || 'TCP').toUpperCase(),
+                        ip: handed.ip || ip,
+                        port: handed.port != null ? handed.port : (port != null ? port : 443)
+                    };
+                }
+            }
             const params = new URLSearchParams(window.location.search || '');
             const remote = String(params.get('remote') || '').trim();
             if (!remote) return null;

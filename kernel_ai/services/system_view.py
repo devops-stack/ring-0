@@ -896,7 +896,47 @@ def _read_cgroup_v2_stats(cgroup_path):
     }
 
 
-def get_isolation_context():
+_ISOLATION_SNAPSHOT = os.environ.get("ISOLATION_OUT", "/run/kernel-ai/isolation.json")
+_ISOLATION_MAX_AGE = 8.0
+_ISOLATION_SAMPLE_RANK = {
+    "nginx": 0,
+    "gunicorn": 1,
+    "sshd": 2,
+    "systemd": 3,
+    "filebeat": 4,
+    "dbus-daemon": 5,
+}
+
+
+def _read_isolation_snapshot():
+    """The root collector's machine-wide namespace table, if present and fresh."""
+    try:
+        with open(_ISOLATION_SNAPSHOT, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    ts = data.get("ts")
+    try:
+        age = time.time() - float(ts)
+    except (TypeError, ValueError):
+        return None
+    if age > _ISOLATION_MAX_AGE:
+        return None
+    data["source"] = "collector"
+    data["timestamp"] = datetime.now().isoformat()
+    return data
+
+
+def _rank_isolation_samples(names):
+    unique = []
+    for name in names:
+        if name and name not in unique:
+            unique.append(name)
+    unique.sort(key=lambda name: (_ISOLATION_SAMPLE_RANK.get(name, 80), name))
+    return unique[:5]
+
+
+def _scan_isolation_context():
     namespace_keys = ["mnt", "pid", "net", "ipc", "uts", "user"]
     namespace_labels = {"mnt": "MNT", "pid": "PID", "net": "NET", "ipc": "IPC", "uts": "UTS", "user": "USER"}
     namespace_counts = {k: {} for k in namespace_keys}
@@ -904,6 +944,7 @@ def get_isolation_context():
     namespace_samples = {k: {} for k in namespace_keys}
     cgroup_aggregates = {}
     total_scanned = 0
+    host_inodes = {ns_name: read_namespace_inode(1, ns_name) for ns_name in namespace_keys}
 
     for proc in psutil.process_iter(["pid", "name", "memory_info"]):
         try:
@@ -929,7 +970,7 @@ def get_isolation_context():
                     ns_map = namespace_counts[ns_name]
                     ns_map[inode] = ns_map.get(inode, 0) + 1
                     samples = namespace_samples[ns_name].setdefault(inode, [])
-                    if len(samples) < 5 and proc_name not in samples:
+                    if proc_name not in samples:
                         samples.append(proc_name)
         except (psutil.NoSuchProcess, psutil.AccessDenied, KeyError):
             continue
@@ -938,17 +979,21 @@ def get_isolation_context():
     for ns_name in namespace_keys:
         entries = namespace_counts[ns_name]
         unique_count = len(entries)
-        dominant_inode = None
-        dominant_count = 0
-        if entries:
+        host_inode = host_inodes.get(ns_name)
+        if host_inode and host_inode in entries:
+            dominant_inode = host_inode
+            dominant_count = entries[host_inode]
+        elif entries:
             dominant_inode, dominant_count = max(entries.items(), key=lambda kv: kv[1])
+        else:
+            dominant_inode, dominant_count = None, 0
         activity = round((dominant_count / total_scanned), 3) if total_scanned > 0 else 0
         # Top isolated "worlds" for this namespace (one per inode), richest first.
         worlds = [
             {
                 "inode": inode,
                 "count": count,
-                "sample": namespace_samples[ns_name].get(inode, []),
+                "sample": _rank_isolation_samples(namespace_samples[ns_name].get(inode, [])),
             }
             for inode, count in sorted(entries.items(), key=lambda kv: kv[1], reverse=True)[:6]
         ]
@@ -971,4 +1016,22 @@ def get_isolation_context():
         item["memory_mb_sum"] = round(item["memory_mb_sum"], 1)
         item.update(stats)
 
-    return {"timestamp": datetime.now().isoformat(), "processes_scanned": total_scanned, "namespaces": namespaces, "top_cgroups": top_cgroups}
+    return {
+        "timestamp": datetime.now().isoformat(),
+        "processes_scanned": total_scanned,
+        "namespaces": namespaces,
+        "top_cgroups": top_cgroups,
+        "source": "self",
+    }
+
+
+def get_isolation_context():
+    """Namespace worlds for the ring and the NAMESPACE card.
+
+    Prefers the root collector snapshot (the whole machine). Falls back to
+    what this process can read itself — usually only its own workers.
+    """
+    snap = _read_isolation_snapshot()
+    if snap and snap.get("namespaces"):
+        return snap
+    return _scan_isolation_context()

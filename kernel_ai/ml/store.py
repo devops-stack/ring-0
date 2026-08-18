@@ -89,11 +89,52 @@ CREATE TABLE IF NOT EXISTS ml_proc_lineage (
     last_seen   timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (parent_comm, child_comm)
 );
+
+CREATE TABLE IF NOT EXISTS ml_http_labels (
+    id         bigserial PRIMARY KEY,
+    ts         timestamptz NOT NULL,
+    src_ip     text        NOT NULL,
+    window_sec integer     NOT NULL DEFAULT 60,
+    label      text        NOT NULL,
+    cls        text,
+    why        text,
+    teacher    text        NOT NULL DEFAULT 'rules',
+    features   jsonb
+);
+CREATE INDEX IF NOT EXISTS ml_http_labels_ts_idx ON ml_http_labels (ts);
+
+CREATE TABLE IF NOT EXISTS ml_http_windows (
+    ts         timestamptz NOT NULL DEFAULT now(),
+    src_ip     text        NOT NULL,
+    window_sec integer     NOT NULL DEFAULT 60,
+    features   jsonb       NOT NULL,
+    label      text,
+    cls        text
+);
+CREATE INDEX IF NOT EXISTS ml_http_windows_ts_idx ON ml_http_windows (ts);
 """
 
 
+# libpq's default client cert is ~/.postgresql/postgresql.crt. Gunicorn runs
+# with ProtectHome=yes, so opening that path returns EACCES and the whole
+# connection dies — the DNA /ml-anomalies API then looks empty even though
+# the worker is writing. A missing file is fine; an unreadable HOME is not.
+# Point the cert paths at a location that simply does not exist.
+_NO_CLIENT_CERT = "/nonexistent/kernel-ai-pg.crt"
+_NO_CLIENT_KEY = "/nonexistent/kernel-ai-pg.key"
+
+
+def connect_kwargs(*, autocommit: bool = True) -> dict:
+    """psycopg kwargs that do not touch the service user's home directory."""
+    return {
+        "autocommit": autocommit,
+        "sslcert": _NO_CLIENT_CERT,
+        "sslkey": _NO_CLIENT_KEY,
+    }
+
+
 def connect(dsn: str, *, autocommit: bool = True) -> psycopg.Connection:
-    return psycopg.connect(dsn, autocommit=autocommit)
+    return psycopg.connect(dsn, **connect_kwargs(autocommit=autocommit))
 
 
 def ensure_schema(conn: psycopg.Connection) -> None:
@@ -245,6 +286,65 @@ class PostgresStore:
                 "DELETE FROM ml_proc_snapshots WHERE ts < now() - make_interval(hours => %s)",
                 (features_hours,),
             )
+            cur.execute(
+                "DELETE FROM ml_http_labels WHERE ts < now() - make_interval(hours => %s)",
+                (anomalies_hours,),
+            )
+            cur.execute(
+                "DELETE FROM ml_http_windows WHERE ts < now() - make_interval(hours => %s)",
+                (features_hours,),
+            )
+
+    def insert_http_labels(self, rows: list[dict]) -> int:
+        if not rows:
+            return 0
+        with self.conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO ml_http_labels
+                    (ts, src_ip, window_sec, label, cls, why, teacher, features)
+                VALUES
+                    (to_timestamp(%(ts)s), %(src_ip)s, %(window_sec)s, %(label)s,
+                     %(cls)s, %(why)s, %(teacher)s, %(features)s)
+                """,
+                [
+                    {
+                        "ts": float(r["ts"]),
+                        "src_ip": r["src_ip"],
+                        "window_sec": int(r.get("window_sec") or 60),
+                        "label": r["label"],
+                        "cls": r.get("cls"),
+                        "why": r.get("why"),
+                        "teacher": r.get("teacher") or "rules",
+                        "features": Json(r.get("features") or {}),
+                    }
+                    for r in rows
+                ],
+            )
+        return len(rows)
+
+    def insert_http_windows(self, rows: list[dict]) -> None:
+        if not rows:
+            return
+        with self.conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO ml_http_windows (ts, src_ip, window_sec, features, label, cls)
+                VALUES (to_timestamp(%(ts)s), %(src_ip)s, %(window_sec)s, %(features)s,
+                        %(label)s, %(cls)s)
+                """,
+                [
+                    {
+                        "ts": float(r["ts"]),
+                        "src_ip": r["src_ip"],
+                        "window_sec": int(r.get("window_sec") or 60),
+                        "features": Json(r.get("features") or {}),
+                        "label": r.get("label"),
+                        "cls": r.get("cls"),
+                    }
+                    for r in rows
+                ],
+            )
 
     def close(self) -> None:
         try:
@@ -393,4 +493,48 @@ def fetch_recent_anomalies(dsn: str, *, since_seconds: int = 120, limit: int = 1
             return out
     except Exception as exc:  # noqa: BLE001 - API must degrade gracefully
         logger.warning("fetch_recent_anomalies failed: %s", exc)
+        return []
+
+
+def fetch_http_labels(dsn: str, *, hours: int = 24, limit: int = 20000) -> list[dict]:
+    """Labeled HTTP windows for training / gap reports. Empty on DB trouble."""
+    try:
+        with connect(dsn) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT extract(epoch from ts) AS ts, src_ip, window_sec, label, cls,
+                       why, teacher, features
+                FROM ml_http_labels
+                WHERE ts > now() - make_interval(hours => %s)
+                ORDER BY ts DESC
+                LIMIT %s
+                """,
+                (max(1, int(hours)), limit),
+            )
+            cols = [d.name for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("fetch_http_labels failed: %s", exc)
+        return []
+
+
+def fetch_anomalies_since(dsn: str, *, hours: int = 24, limit: int = 5000) -> list[dict]:
+    """Anomalies with epoch ts for offline joins. Empty on DB trouble."""
+    try:
+        with connect(dsn) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT extract(epoch from ts) AS ts, source, feature, type, severity,
+                       score, message, meta
+                FROM ml_anomalies
+                WHERE ts > now() - make_interval(hours => %s)
+                ORDER BY ts DESC
+                LIMIT %s
+                """,
+                (max(1, int(hours)), limit),
+            )
+            cols = [d.name for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("fetch_anomalies_since failed: %s", exc)
         return []

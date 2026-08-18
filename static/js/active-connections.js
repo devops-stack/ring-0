@@ -118,11 +118,20 @@ class ActiveConnectionsManager {
 
             this.attachSocketTooltipHandlers(row, connection);
 
-            // Flow follow: open Network stack focused on this remote in FIB/neigh.
+            // One flow, one card. PATH on the card is the door into the stack.
             row.on('click', (event) => {
                 if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
                 const remote = String(connection.remote || '').trim();
                 if (!remote) return;
+                const anchor = {
+                    x: 580,
+                    y: startY + 13 + i * 30,
+                    clearOf: 596
+                };
+                if (window.FlowCard && typeof window.FlowCard.open === 'function') {
+                    window.FlowCard.open(connection, anchor);
+                    return;
+                }
                 const local = String(connection.local || '').trim();
                 const type = String(connection.type || 'TCP').toUpperCase();
                 const params = new URLSearchParams();

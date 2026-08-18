@@ -1695,7 +1695,7 @@ const processModalTopKeeper = createOverlayTopKeeper(
 
 function closeOpenKernelCards() {
     ["MemoryCard", "ThreadsCard", "WaitsCard", "WakeupsCard", "SocketsCard",
-        "SyscallCard", "IrqCard", "RunqueueCard"].forEach((name) => {
+        "FlowCard", "NamespaceCard", "SyscallCard", "IrqCard", "RunqueueCard"].forEach((name) => {
         const card = window[name];
         if (card && typeof card.close === "function") card.close();
     });

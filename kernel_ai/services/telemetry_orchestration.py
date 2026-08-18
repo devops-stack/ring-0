@@ -92,7 +92,9 @@ def _ml_anomalies_to_mutations(rows):
     """Map stored ML anomalies onto the Kernel DNA mutation contract.
 
     Keeps only the most recent anomaly per feature (rows arrive newest-first)
-    and caps the total so the helix is never flooded.
+    and caps the total so the helix is never flooded. HTTP attempts use a
+    distinct feature per class (http_attempt:scanner, …) so they do not
+    collapse into one helix point.
     """
     mutations = []
     seen = set()
@@ -102,17 +104,31 @@ def _ml_anomalies_to_mutations(rows):
             continue
         seen.add(feature)
         attack = row.get("attack")
-        if not attack and isinstance(row.get("meta"), dict):
-            attack = row["meta"].get("attack")
+        meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+        if not attack:
+            attack = meta.get("attack")
+        ml_source = row.get("source") or "ml"
+        why = meta.get("why")
+        src_ip = str(meta.get("src_ip") or "")
+        ip_tail = ".".join(src_ip.split(".")[-2:]) if src_ip else ""
+        message = row.get("message", "")
+        if why and why not in message:
+            message = f"{message} · {why}" if message else str(why)
+        if ip_tail and "ip …" not in message:
+            message = f"{message} · ip …{ip_tail}"
         mut = {
             "type": feature or row.get("type") or "ml_anomaly",
             "severity": row.get("severity", "medium"),
-            "message": row.get("message", ""),
-            "description": row.get("message", ""),
+            "message": message,
+            "description": message,
             "position": row.get("position", 0.5),
             "source": "ml",
+            "ml_source": ml_source,
             "subsystem": row.get("subsystem"),
             "score": row.get("score"),
+            "cls": meta.get("cls"),
+            "why": why,
+            "src_ip": src_ip,
         }
         if attack:
             mut["attack"] = attack

@@ -379,7 +379,10 @@ def run_mimicry(*, stide_warn: float = 0.30, markov_warn: float = 2.5) -> dict:
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description="Stage 5/7/8 local polygon (dev only)")
-    parser.add_argument("mode", choices=("dry-run", "live", "list", "mimicry", "stream"))
+    parser.add_argument(
+        "mode",
+        choices=("dry-run", "live", "list", "mimicry", "stream", "http-wordlist", "http-rce"),
+    )
     parser.add_argument(
         "--scenario",
         action="append",
@@ -398,7 +401,23 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{name:16} {meta['technique']:8} [{live}] {meta['description']}")
         print(f"{'mimicry':16} {'T1106':8} [dry-only] STIDE miss / Markov hit (Stage 8)")
         print(f"{'stream':16} {'L2':8} [dry-only] Stage 6 socket e2e (demo collector)")
+        print(f"{'http-wordlist':16} {'HTTP':8} [dry-only] Stage 9 scanner window")
+        print(f"{'http-rce':16} {'HTTP':8} [dry-only] Stage 9 attempt then exec join")
         return 0
+
+    if args.mode == "http-wordlist":
+        from kernel_ai.ml.http_polygon import run_http_wordlist
+
+        result = run_http_wordlist()
+        print(result)
+        return 0 if result["pass"] else 1
+
+    if args.mode == "http-rce":
+        from kernel_ai.ml.http_polygon import run_http_rce
+
+        result = run_http_rce()
+        print(result)
+        return 0 if result["pass"] else 1
 
     if args.mode == "mimicry":
         result = run_mimicry()

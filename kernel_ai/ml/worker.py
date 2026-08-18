@@ -224,6 +224,26 @@ class MLWorker:
                 self.deep_scorer.ready,
             )
 
+        # Stage 9 — HTTP attempts (supervised) + success join. Off by default.
+        self.http_model = None
+        self._http_model_mtime: float | None = None
+        self._http_tails: list = []
+        self._http_events: list = []
+        self._http_attempts: list[dict] = []
+        self._last_http_emit: dict[str, float] = {}
+        if self.cfg.enable_stage9:
+            from kernel_ai.ml.http_tail import HttpLogTail
+
+            for path in (self.cfg.http_nginx_log, self.cfg.http_app_log):
+                if path:
+                    self._http_tails.append(HttpLogTail(path))
+            self._maybe_load_http_model()
+            logger.info(
+                "Stage 9 enabled: tails=%d model=%s",
+                len(self._http_tails),
+                bool(self.http_model),
+            )
+
     def _maybe_load_model(self) -> None:
         """Load / hot-reload the IsolationForest artifact if present and changed.
 
@@ -247,6 +267,25 @@ class MLWorker:
             logger.info("loaded Stage 2 model: %s (%s)", path, self.model.meta)
         except Exception as exc:  # noqa: BLE001 - keep running on Stage 1 only
             logger.warning("failed to load Stage 2 model: %s", exc)
+
+    def _maybe_load_http_model(self) -> None:
+        if not self.cfg.enable_stage9:
+            return
+        path = self.cfg.http_model_path
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            return
+        if self._http_model_mtime is not None and mtime <= self._http_model_mtime:
+            return
+        try:
+            from kernel_ai.ml.http_model import HttpAttemptModel
+
+            self.http_model = HttpAttemptModel.load(path)
+            self._http_model_mtime = mtime
+            logger.info("loaded Stage 9 HTTP model: %s (%s)", path, self.http_model.meta)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("failed to load Stage 9 HTTP model: %s", exc)
 
     def _maybe_load_seq_model(self) -> None:
         """Load / hot-reload the STIDE profile artifact if present and changed."""
@@ -456,6 +495,104 @@ class MLWorker:
         self._last_stage8_emit = now
         return self.deep_scorer.build_anomaly(score, self.cfg)
 
+    def _tick_http(self) -> list[dict]:
+        """Score recent IP windows; remember attempts for the success join."""
+        if not self.cfg.enable_stage9:
+            return []
+        now = time.time()
+        fresh = []
+        for tail in self._http_tails:
+            fresh.extend(tail.read_new(now=now))
+        keep_after = now - max(self.cfg.http_window_sec * 2, 120)
+        self._http_events = [e for e in self._http_events if e.ts >= keep_after]
+        self._http_events.extend(fresh)
+        self._http_attempts = [a for a in self._http_attempts if now - float(a.get("ts") or 0) <= 120]
+        if self.http_model is None or not self._http_events:
+            return []
+
+        from kernel_ai.ml.http_features import build_windows
+        from kernel_ai.ml.http_rules import named_attempt_class
+
+        positions = {
+            "scanner": 0.22,
+            "flood": 0.24,
+            "method": 0.26,
+            "lfi": 0.28,
+            "sensitive": 0.30,
+            "sqli": 0.32,
+            "xss": 0.34,
+            "cmdi": 0.36,
+            "jndi": 0.38,
+        }
+        out: list[dict] = []
+        for win in build_windows(self._http_events, window_sec=self.cfg.http_window_sec, label=True):
+            is_attempt, proba = self.http_model.predict_one(win.features)
+            if not is_attempt or proba < self.cfg.http_min_score:
+                continue
+            cls = named_attempt_class(win.label, win.cls)
+            if not cls:
+                continue
+            feature = f"http_attempt:{cls}"
+            last = self._last_http_emit.get(feature, 0.0)
+            if (now - last) < self.cfg.http_cooldown_sec:
+                continue
+            self._last_http_emit[feature] = now
+            ip_tail = ".".join(win.src_ip.split(".")[-2:]) if win.src_ip else "--"
+            rec = {
+                "source": "stage9_http",
+                "feature": feature,
+                "subsystem": "net",
+                "type": feature,
+                "severity": "high" if cls in {"sqli", "cmdi", "jndi", "lfi"} else "medium",
+                "score": round(proba, 4),
+                "value": float(win.features.get("count") or 0),
+                "baseline_mean": None,
+                "baseline_std": None,
+                "position": positions.get(cls, 0.25),
+                "message": (
+                    f"HTTP attempt {cls} (p={proba:.2f}, {int(win.features.get('count') or 0)} req, "
+                    f"ip …{ip_tail}; {win.why})"
+                ),
+                "meta": {
+                    "stage": 9,
+                    "kind": "attempt",
+                    "cls": cls,
+                    "src_ip": win.src_ip,
+                    "why": win.why,
+                    "proba": round(proba, 4),
+                },
+                "ts": win.ts,
+            }
+            out.append(rec)
+            self._http_attempts.append(rec)
+        return out
+
+    def _join_http_success(self, kernel_anomalies: list[dict]) -> list[dict]:
+        if not self.cfg.enable_stage9 or not self._http_attempts or not kernel_anomalies:
+            return []
+        from kernel_ai.ml.http_join import join_success
+
+        now = time.time()
+        enriched = []
+        for row in kernel_anomalies:
+            meta = dict(row.get("meta") or {})
+            pid = meta.get("pid")
+            if pid and not meta.get("comm"):
+                try:
+                    with open(f"/proc/{int(pid)}/comm", "r", encoding="utf-8") as fh:
+                        meta["comm"] = fh.read().strip()
+                except (OSError, ValueError):
+                    pass
+            item = dict(row)
+            item["meta"] = meta
+            item.setdefault("ts", now)
+            enriched.append(item)
+        return join_success(
+            self._http_attempts,
+            enriched,
+            slack_sec=self.cfg.http_join_sec,
+        )
+
     def _tick_process(self) -> list[dict]:
         """Stage 5: sample processes, score lineage/baselines, persist whitelist."""
         if self.proc_extractor is None or self.proc_detector is None:
@@ -514,7 +651,11 @@ class MLWorker:
                 is_anom, if_score = False, 0.0
                 logger.warning("isoforest scoring failed: %s", exc)
             now = time.time()
-            if is_anom and (now - self._last_if_emit) >= self.cfg.if_cooldown_sec:
+            if (
+                is_anom
+                and if_score >= self.cfg.if_min_score
+                and (now - self._last_if_emit) >= self.cfg.if_cooldown_sec
+            ):
                 anomalies.append(_build_isoforest_anomaly(if_score, scores, self.cfg))
                 self._last_if_emit = now
 
@@ -543,15 +684,31 @@ class MLWorker:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("stage8 scoring failed: %s", exc)
 
+        # Stage 9: HTTP attempts, then join to web-stack kernel mutations.
+        if self.cfg.enable_stage9:
+            try:
+                http_anoms = self._tick_http()
+                anomalies.extend(http_anoms)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("http scoring failed: %s", exc)
+            try:
+                anomalies.extend(self._join_http_success(anomalies))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("http success join failed: %s", exc)
+
         # Stage 7: ATT&CK / Sigma-lite labels on whatever Stages 1–5 emitted.
         if self.cfg.enable_stage7 and anomalies:
             try:
                 from kernel_ai.ml.attribution import enrich_anomalies
 
-                anomalies = enrich_anomalies(
-                    anomalies,
-                    min_confidence=self.cfg.attack_min_confidence,
-                )
+                http_rows = [a for a in anomalies if str(a.get("source") or "").startswith("stage9")]
+                core_rows = [a for a in anomalies if not str(a.get("source") or "").startswith("stage9")]
+                if core_rows:
+                    core_rows = enrich_anomalies(
+                        core_rows,
+                        min_confidence=self.cfg.attack_min_confidence,
+                    )
+                anomalies = core_rows + http_rows
             except Exception as exc:  # noqa: BLE001
                 logger.warning("attribution enrich failed: %s", exc)
 
@@ -590,6 +747,7 @@ class MLWorker:
                     # Pick up a freshly retrained model without a restart.
                     self._maybe_load_model()
                     self._maybe_load_seq_model()
+                    self._maybe_load_http_model()
                     if self.deep_scorer is not None:
                         self.deep_scorer.maybe_reload()
             except Exception as exc:  # noqa: BLE001 - keep the loop alive

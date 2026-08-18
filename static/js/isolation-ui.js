@@ -163,10 +163,7 @@ function drawNamespaceShell(centerX, centerY, namespaces) {
         const activity = Math.max(0, Math.min(1, Number(ns.activity || 0)));
         const meta = NS_META[ns.id] || {};
         const nsName = ns.label || meta.name || String(ns.id || 'NS').toUpperCase();
-        // A cell with more than one distinct inode contains real isolation
-        // (containers / sandboxes) — the most security-relevant signal.
         const isolated = !!ns.isolated || Number(ns.unique_count || 0) > 1;
-        const ACCENT = '88, 182, 216';
         const kind = NS_KIND[ns.id] || 'nsproxy';
 
         // Soft focus halo behind the segment (hidden until hover).
@@ -182,28 +179,12 @@ function drawNamespaceShell(centerX, centerY, namespaces) {
         const segment = shellGroup.append('path')
             .attr('d', dPath)
             .attr('transform', `translate(${centerX}, ${centerY})`)
-            .attr('fill', isolated
-                ? `rgba(${ACCENT}, ${0.08 + activity * 0.2})`
-                : `rgba(${INK}, ${0.06 + activity * 0.22})`)
-            .attr('stroke', isolated
-                ? `rgba(${ACCENT}, ${0.7 + activity * 0.3})`
-                : `rgba(${INK}, ${0.42 + activity * 0.4})`)
-            .attr('stroke-width', isolated ? 1.8 + activity * 1.4 : 1.1 + activity * 1.6)
+            .attr('fill', `rgba(${INK}, 0.07)`)
+            .attr('stroke', `rgba(${INK}, 0.44)`)
+            .attr('stroke-width', 1.1)
             .style('cursor', 'pointer');
 
         const mid = (startAngle + endAngle) / 2;
-
-        // Pulsing marker flags cells that actually contain isolation.
-        if (isolated) {
-            const markR = ringOuter + 6;
-            shellGroup.append('circle')
-                .attr('class', 'ns-isolated-marker')
-                .attr('cx', centerX + Math.cos(mid - Math.PI / 2) * markR)
-                .attr('cy', centerY + Math.sin(mid - Math.PI / 2) * markR)
-                .attr('r', 2.6)
-                .attr('fill', `rgb(${ACCENT})`)
-                .style('pointer-events', 'none');
-        }
 
         const idx = cells.length;
         cells.push({ segment, halo });
@@ -230,7 +211,7 @@ function drawNamespaceShell(centerX, centerY, namespaces) {
                                 <div class="ns-hud-row"><span>INODE</span><b>${ns.dominant_inode || 'n/a'}</b></div>
                                 <div class="ns-hud-row"><span>VIA</span><b>${kind}</b></div>
                                 <div class="ns-hud-meter"><i style="width:${Math.round(activity * 100)}%"></i></div>
-                                <div class="ns-hud-foot"><span>ACTIVITY ${Math.round(activity * 100)}%</span><span class="ns-hud-hint">CLICK TO UNFOLD ▸</span></div>
+                                <div class="ns-hud-foot"><span>ACTIVITY ${Math.round(activity * 100)}%</span><span class="ns-hud-hint">CLICK FOR THE CARD ▸</span></div>
                             </div>
                         </div>
                     `);
@@ -246,6 +227,13 @@ function drawNamespaceShell(centerX, centerY, namespaces) {
             .on('click', (event) => {
                 event.stopPropagation();
                 d3.selectAll('.ns-tooltip').remove();
+                const ax = centerX + Math.cos(mid - Math.PI / 2) * 202;
+                const ay = centerY + Math.sin(mid - Math.PI / 2) * 202;
+                if (window.NamespaceCard && typeof window.NamespaceCard.open === 'function') {
+                    restoreFocus();
+                    window.NamespaceCard.open(ns, { x: ax, y: ay });
+                    return;
+                }
                 if (expandedNsId === ns.id) {
                     collapseNamespaceTree();
                 } else {

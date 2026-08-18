@@ -55,9 +55,10 @@ class MLConfig:
     # settle so we don't fire on the cold-start transient).
     warmup_samples: int = _env_int("KERNEL_AI_ML_WARMUP", 30)
 
-    # Robust z-score thresholds. A feature whose current value sits this many
-    # standard deviations above its baseline becomes a mutation.
-    z_warn: float = _env_float("KERNEL_AI_ML_Z_WARN", 4.0)
+    # Robust z-score thresholds. Calibrated on live ring-0.sh traffic
+    # (2026-08-15): z=4 fired on dashboard poll bursts (ctxt/pgfault/retrans).
+    # 6σ keeps the real spikes (z 7–12) and drops the 4.3–5.5 band.
+    z_warn: float = _env_float("KERNEL_AI_ML_Z_WARN", 6.0)
     z_crit: float = _env_float("KERNEL_AI_ML_Z_CRIT", 7.0)
 
     # Persist the raw feature snapshot each tick (useful for later training /
@@ -94,8 +95,14 @@ class MLConfig:
     if_contamination: float = _env_float("KERNEL_AI_ML_IF_CONTAMINATION", 0.02)
     if_n_estimators: int = _env_int("KERNEL_AI_ML_IF_TREES", 200)
     # Min seconds between IsolationForest mutations (avoid per-tick spam during a
-    # sustained anomaly).
-    if_cooldown_sec: float = _env_float("KERNEL_AI_ML_IF_COOLDOWN_SEC", 15.0)
+    # sustained anomaly). 15s capped at 240/h and the live host sat on that
+    # ceiling; 45s caps Stage 2 at 80/h.
+    if_cooldown_sec: float = _env_float("KERNEL_AI_ML_IF_COOLDOWN_SEC", 45.0)
+    # IsolationForest predict() still flags ~2% by construction, but on this
+    # host the decision boundary is noisy (flag rate 0.20–0.53 at retrain).
+    # Require a minimum -decision_function before emit; live weak hits were
+    # 0.05–0.09, real-looking ones 0.11+.
+    if_min_score: float = _env_float("KERNEL_AI_ML_IF_MIN_SCORE", 0.10)
 
     # --- Stage 3 (drift + auto-retrain) ---
     # Window of recent snapshots used to measure drift (minutes).
@@ -202,6 +209,33 @@ class MLConfig:
     # Heartbeat of the raw window score (no anomaly attached): lets the thresholds
     # above be derived from the live distribution of a given host.
     stage8_log_every_sec: float = _env_float("KERNEL_AI_ML_STAGE8_LOG_EVERY_SEC", 60.0)
+
+    # --- Stage 9 (HTTP attempt model + success join) ---
+    # Default OFF: do not emit on PROD until offline metrics exist.
+    enable_stage9: bool = os.getenv("KERNEL_AI_ML_STAGE9", "false").lower() == "true"
+    http_nginx_log: str = os.getenv(
+        "KERNEL_AI_ML_HTTP_NGINX_LOG",
+        "/var/log/nginx/kernel-ai.json.log",
+    )
+    http_app_log: str = os.getenv("KERNEL_AI_ML_HTTP_APP_LOG", "")
+    http_model_path: str = os.getenv(
+        "KERNEL_AI_ML_HTTP_MODEL_PATH",
+        str(_DATA_DIR / "http_attempt_latest.joblib"),
+    )
+    http_model_prev_path: str = os.getenv(
+        "KERNEL_AI_ML_HTTP_MODEL_PREV",
+        str(_DATA_DIR / "http_attempt_prev.joblib"),
+    )
+    http_window_sec: int = _env_int("KERNEL_AI_ML_HTTP_WINDOW_SEC", 60)
+    http_cooldown_sec: float = _env_float("KERNEL_AI_ML_HTTP_COOLDOWN_SEC", 45.0)
+    http_min_score: float = _env_float("KERNEL_AI_ML_HTTP_MIN_SCORE", 0.55)
+    http_min_precision: float = _env_float("KERNEL_AI_ML_HTTP_MIN_PRECISION", 0.60)
+    http_max_flag_rate: float = _env_float("KERNEL_AI_ML_HTTP_MAX_FLAG", 0.45)
+    http_join_sec: float = _env_float("KERNEL_AI_ML_HTTP_JOIN_SEC", 30.0)
+    http_mlflow_experiment: str = os.getenv(
+        "KERNEL_AI_ML_HTTP_EXPERIMENT", "kernel_dna_http_attempt"
+    )
+    http_mlflow_model: str = os.getenv("KERNEL_AI_ML_HTTP_MODEL", "kernel_dna_http_attempt")
 
     @property
     def alpha(self) -> float:
