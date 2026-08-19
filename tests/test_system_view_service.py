@@ -10,10 +10,30 @@ def test_parse_cgroup_path_prefers_unified_entry(monkeypatch):
 
 
 def test_get_isolation_context_handles_empty_process_list(monkeypatch):
+    monkeypatch.setattr(svc, "_read_isolation_snapshot", lambda: None)
     monkeypatch.setattr(svc.psutil, "process_iter", lambda _fields: [])
     out = svc.get_isolation_context()
     assert "namespaces" in out
     assert out["processes_scanned"] == 0
+    assert out["source"] == "self"
+
+
+def test_get_isolation_context_prefers_fresh_collector_snapshot(monkeypatch):
+    snap = {
+        "ts": 1,
+        "source": "collector",
+        "namespaces": [{"id": "net", "worlds": [{"sample": ["nginx"]}]}],
+        "processes_scanned": 80,
+        "top_cgroups": [],
+    }
+    monkeypatch.setattr(svc, "_read_isolation_snapshot", lambda: snap)
+    out = svc.get_isolation_context()
+    assert out["source"] == "collector"
+    assert out["namespaces"][0]["worlds"][0]["sample"] == ["nginx"]
+
+
+def test_rank_isolation_samples_puts_nginx_first():
+    assert svc._rank_isolation_samples(["kthreadd", "nginx", "sshd"])[:2] == ["nginx", "sshd"]
 
 
 def test_read_namespace_inode_parses_inode(monkeypatch):
