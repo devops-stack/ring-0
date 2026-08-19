@@ -3,6 +3,15 @@
 from kernel_ai.services import process_inspect as svc
 
 
+def test_only_real_shared_memory_counts_as_an_ipc_channel():
+    assert svc._is_ipc_shared_mapping("/dev/shm/pulse-shm-1")
+    assert svc._is_ipc_shared_mapping("/memfd:wayland-cursor")
+    assert svc._is_ipc_shared_mapping("/SYSV00000000")
+    assert not svc._is_ipc_shared_mapping("/dev/dri/card0")
+    assert not svc._is_ipc_shared_mapping("/usr/share/fonts/truetype/x")
+    assert not svc._is_ipc_shared_mapping("/var/cache/fontconfig/abc")
+
+
 def test_get_ipc_links_summary_empty_proc(monkeypatch):
     monkeypatch.setattr(svc.os, "listdir", lambda path: [] if path == "/proc" else [])
     monkeypatch.setattr(svc.psutil, "net_connections", lambda kind: [])
@@ -12,6 +21,58 @@ def test_get_ipc_links_summary_empty_proc(monkeypatch):
     assert out["stats"]["pair_count"] == 0
     assert out["stats"]["shared_unix_socket_inodes"] == 0
     assert out["stats"]["shared_tcp_socket_inodes"] == 0
+
+
+def test_family_label_and_peer_split():
+    assert svc._family_label("AddressFamily.AF_UNIX", "SOCK_STREAM") == "unix"
+    assert svc._family_label("AddressFamily.AF_INET", "SocketKind.SOCK_STREAM") == "tcp"
+    assert svc._family_label("AddressFamily.AF_INET6", "SOCK_DGRAM") == "udp6"
+    assert svc._split_ip_port("127.0.0.1:8000") == ("127.0.0.1", 8000)
+    assert svc._split_ip_port("/run/foo.sock") is None
+    assert svc._hex_ipv4("0100007F") == "127.0.0.1"
+
+
+def test_annotate_connection_peers_pairs_loopback(monkeypatch):
+    class _Addr:
+        def __init__(self, ip, port):
+            self.ip = ip
+            self.port = port
+
+    class _Conn:
+        def __init__(self, pid, lip, lport, rip, rport):
+            self.pid = pid
+            self.laddr = _Addr(lip, lport)
+            self.raddr = _Addr(rip, rport)
+
+    class _Proc:
+        def __init__(self, pid, name):
+            self.info = {"pid": pid, "name": name}
+
+    monkeypatch.setattr(
+        svc.psutil,
+        "process_iter",
+        lambda attrs: [_Proc(10, "gunicorn"), _Proc(20, "sshd")],
+    )
+    monkeypatch.setattr(
+        svc.psutil,
+        "net_connections",
+        lambda kind: [
+            _Conn(10, "127.0.0.1", 8000, "127.0.0.1", 44312),
+            _Conn(20, "127.0.0.1", 44312, "127.0.0.1", 8000),
+        ],
+    )
+    rows = svc._annotate_connection_peers(
+        [
+            {
+                "local_address": "127.0.0.1:8000",
+                "remote_address": "127.0.0.1:44312",
+                "peer_pid": None,
+                "peer_name": None,
+            }
+        ]
+    )
+    assert rows[0]["peer_pid"] == 20
+    assert rows[0]["peer_name"] == "sshd"
 
 
 def test_get_process_fds_info_basic(monkeypatch):

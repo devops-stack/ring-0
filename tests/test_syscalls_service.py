@@ -3,7 +3,21 @@
 import json
 import time
 
+import pytest
+
 from kernel_ai.services import syscalls as svc
+
+
+@pytest.fixture(autouse=True)
+def _no_collector_on_this_host(monkeypatch):
+    """Keep the tests reading the machine they describe, not the one they run on.
+
+    The service answers from the root collector's snapshot whenever a fresh one
+    exists. On a host where the collector happens to be running that snapshot
+    would win over the /proc each test sets up, so the path starts out pointing
+    at nothing and the tests about the snapshot point it back at their own.
+    """
+    monkeypatch.setattr(svc, "_SYSCALLS_SNAPSHOT", "/nonexistent/kernel-ai/syscalls.json")
 
 
 def test_get_real_system_calls_non_linux_uses_fallback(monkeypatch):
