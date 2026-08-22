@@ -277,7 +277,59 @@ def _parse_snmp_section(section_name):
     return {}
 
 
-def _get_ss_tcp_metrics():
+def _endpoint_key(value):
+    return str(value or "").strip().lower()
+
+
+def _parse_ss_detail_metrics(line, details):
+    metrics = {}
+    parts = line.split()
+    peer = parts[4] if len(parts) >= 5 else ""
+    local = parts[3] if len(parts) >= 5 else ""
+    if len(parts) >= 4:
+        try:
+            metrics["tx_queue"] = int(parts[2])
+            metrics["rx_queue"] = int(parts[1])
+        except ValueError:
+            pass
+    metrics["ss_local"] = local
+    metrics["ss_remote"] = peer
+
+    rtt_match = re.search(r"rtt:(\d+(?:\.\d+)?)/", details)
+    cwnd_match = re.search(r"cwnd:(\d+)", details)
+    retrans_match = re.search(r"retrans:(\d+)(?:/\d+)?", details)
+    if rtt_match:
+        metrics["rtt_ms"] = float(rtt_match.group(1))
+    if cwnd_match:
+        metrics["cwnd"] = int(cwnd_match.group(1))
+    if retrans_match:
+        metrics["retrans_now"] = int(retrans_match.group(1))
+    mss_match = re.search(r"\bmss:(\d+)", details)
+    if mss_match:
+        metrics["mss"] = int(mss_match.group(1))
+
+    stripped = details.strip()
+    if stripped:
+        cc = stripped.split(" ", 1)[0]
+        if cc and re.match(r"^[a-z][a-z0-9_]+$", cc):
+            metrics["cc"] = cc
+    dr = re.search(r"delivery_rate\s+([\d.]+)([KMG]?)bps", details)
+    if dr:
+        metrics["delivery_rate_mbps"] = round(_rate_to_mbps(dr.group(1), dr.group(2)), 4)
+    pr = re.search(r"pacing_rate\s+([\d.]+)([KMG]?)bps", details)
+    if pr:
+        metrics["pacing_rate_mbps"] = round(_rate_to_mbps(pr.group(1), pr.group(2)), 4)
+    minrtt = re.search(r"minrtt:([\d.]+)", details)
+    if minrtt:
+        metrics["min_rtt_ms"] = float(minrtt.group(1))
+    bbr = re.search(r"bbr:\(bw:([\d.]+)([KMG]?)bps,mrtt:([\d.]+)", details)
+    if bbr:
+        metrics["bbr_bw_mbps"] = round(_rate_to_mbps(bbr.group(1), bbr.group(2)), 4)
+        metrics["bbr_mrtt_ms"] = float(bbr.group(3))
+    return metrics
+
+
+def _get_ss_tcp_metrics(local=None, remote=None):
     ss_cmd = resolve_binary("ss")
     if not ss_cmd:
         return {}
@@ -287,63 +339,28 @@ def _get_ss_tcp_metrics():
     except (subprocess.TimeoutExpired, OSError):
         return {}
 
+    want_local = _endpoint_key(local)
+    want_remote = _endpoint_key(remote)
     fallback = {}
     for idx, line in enumerate(lines):
         if not line.strip().startswith("ESTAB"):
             continue
-        metrics = {}
-        parts = line.split()
-        # Prefer a real remote peer over loopback/internal so the BBR model
-        # reflects an actual path, not the ~0.02ms/4Gbps loopback socket.
-        peer = parts[4] if len(parts) >= 5 else ""
-        is_local = peer.startswith("127.") or peer.startswith("[::1]") or peer.startswith("0.0.0.0")
-        if len(parts) >= 4:
-            try:
-                metrics["tx_queue"] = int(parts[2])
-                metrics["rx_queue"] = int(parts[1])
-            except ValueError:
-                pass
-
         details = lines[idx + 1] if (idx + 1) < len(lines) else ""
-        rtt_match = re.search(r"rtt:(\d+(?:\.\d+)?)/", details)
-        cwnd_match = re.search(r"cwnd:(\d+)", details)
-        retrans_match = re.search(r"retrans:(\d+)(?:/\d+)?", details)
-        if rtt_match:
-            metrics["rtt_ms"] = float(rtt_match.group(1))
-        if cwnd_match:
-            metrics["cwnd"] = int(cwnd_match.group(1))
-        if retrans_match:
-            metrics["retrans_now"] = int(retrans_match.group(1))
-        mss_match = re.search(r"\bmss:(\d+)", details)
-        if mss_match:
-            metrics["mss"] = int(mss_match.group(1))
-
-        # Congestion-control algorithm (first token of the info line), plus the
-        # BBR model ingredients: delivery rate (BtlBw estimate), min RTT
-        # (RTprop), pacing rate, and — when BBR is the CC — its own bw/mrtt.
-        stripped = details.strip()
-        if stripped:
-            cc = stripped.split(" ", 1)[0]
-            if cc and re.match(r"^[a-z][a-z0-9_]+$", cc):
-                metrics["cc"] = cc
-        dr = re.search(r"delivery_rate\s+([\d.]+)([KMG]?)bps", details)
-        if dr:
-            metrics["delivery_rate_mbps"] = round(_rate_to_mbps(dr.group(1), dr.group(2)), 4)
-        pr = re.search(r"pacing_rate\s+([\d.]+)([KMG]?)bps", details)
-        if pr:
-            metrics["pacing_rate_mbps"] = round(_rate_to_mbps(pr.group(1), pr.group(2)), 4)
-        minrtt = re.search(r"minrtt:([\d.]+)", details)
-        if minrtt:
-            metrics["min_rtt_ms"] = float(minrtt.group(1))
-        bbr = re.search(r"bbr:\(bw:([\d.]+)([KMG]?)bps,mrtt:([\d.]+)", details)
-        if bbr:
-            metrics["bbr_bw_mbps"] = round(_rate_to_mbps(bbr.group(1), bbr.group(2)), 4)
-            metrics["bbr_mrtt_ms"] = float(bbr.group(3))
-        if metrics:
-            if not is_local:
+        metrics = _parse_ss_detail_metrics(line, details)
+        if not metrics:
+            continue
+        peer = str(metrics.get("ss_remote") or "")
+        is_loop = peer.startswith("127.") or peer.startswith("[::1]") or peer.startswith("0.0.0.0")
+        if want_local and want_remote:
+            if _endpoint_key(metrics.get("ss_local")) == want_local and _endpoint_key(peer) == want_remote:
                 return metrics
             if not fallback:
                 fallback = metrics
+            continue
+        if not is_loop:
+            return metrics
+        if not fallback:
+            fallback = metrics
     return fallback
 
 
@@ -512,7 +529,7 @@ def get_ip_layer_map(limit_routes: int = 12, limit_neigh: int = 10) -> dict:
     }
 
 
-def get_network_stack_realtime(network_stack_prev=None):
+def get_network_stack_realtime(network_stack_prev=None, prefer_local=None, prefer_remote=None):
     network_stack_prev = _NETWORK_STACK_PREV_DEFAULT if network_stack_prev is None else network_stack_prev
     now = time.time()
     iface = _get_default_iface()
@@ -520,26 +537,47 @@ def get_network_stack_realtime(network_stack_prev=None):
     iface_stats = pernic.get(iface)
     all_connections = get_active_connections()
     interesting = [c for c in all_connections if not c["remote"].startswith("127.0.0.1") and not c["remote"].startswith("0.0.0.0")]
-    flow = interesting[0] if interesting else (all_connections[0] if all_connections else None)
+    want_local = _endpoint_key(prefer_local)
+    want_remote = _endpoint_key(prefer_remote)
+    pinned = None
+    if want_remote:
+        for conn in all_connections:
+            remote_ok = _endpoint_key(conn.get("remote")) == want_remote
+            local_ok = (not want_local) or _endpoint_key(conn.get("local")) == want_local
+            if remote_ok and local_ok:
+                pinned = conn
+                break
     socket_example = _get_socket_example(all_connections)
-    if flow:
+    # One sock: prefer the pinned 4-tuple, else the example with fd/pid, else first flow.
+    raw_flow = pinned or socket_example or (interesting[0] if interesting else (all_connections[0] if all_connections else None))
+    flow = None
+    if raw_flow:
+        same_example = (
+            socket_example
+            and _endpoint_key(socket_example.get("local")) == _endpoint_key(raw_flow.get("local"))
+            and _endpoint_key(socket_example.get("remote")) == _endpoint_key(raw_flow.get("remote"))
+        )
+        owner = socket_example if same_example else raw_flow
         flow = {
-            "local": flow.get("local"),
-            "remote": flow.get("remote"),
-            "type": str(flow.get("type", "TCP")).upper(),
-            "state_code": flow.get("state", "00"),
-            "state_name": _tcp_state_name(flow.get("state", "00")),
-            "inode": int(flow.get("inode") or 0),
-            "uid": int(flow.get("uid") or 0),
-            "fd": (socket_example or {}).get("fd"),
-            "pid": (socket_example or {}).get("pid"),
-            "process": (socket_example or {}).get("process"),
+            "local": raw_flow.get("local"),
+            "remote": raw_flow.get("remote"),
+            "type": str(raw_flow.get("type", "TCP")).upper(),
+            "state_code": raw_flow.get("state") or raw_flow.get("state_code") or "00",
+            "state_name": raw_flow.get("state_name") or _tcp_state_name(raw_flow.get("state", "00")),
+            "inode": int(raw_flow.get("inode") or 0),
+            "uid": int(raw_flow.get("uid") or 0),
+            "fd": owner.get("fd") if isinstance(owner, dict) else None,
+            "pid": owner.get("pid") if isinstance(owner, dict) else None,
+            "process": owner.get("process") if isinstance(owner, dict) else None,
         }
 
     tcpext = _parse_netstat_tcpext()
     ip_stats = _parse_snmp_section("Ip")
     tcp_stats = _parse_snmp_section("Tcp")
-    ss_metrics = _get_ss_tcp_metrics()
+    ss_metrics = _get_ss_tcp_metrics(
+        local=(flow or {}).get("local"),
+        remote=(flow or {}).get("remote"),
+    )
     conntrack = _get_conntrack_stats()
 
     retrans_total = tcpext.get("RetransSegs", 0)
@@ -624,6 +662,7 @@ def get_network_stack_realtime(network_stack_prev=None):
                 "cwnd": int(ss_metrics.get("cwnd", 0)),
                 "rtt_ms": round(float(ss_metrics.get("rtt_ms", 0.0)), 2),
                 "tx_queue": int(ss_metrics.get("tx_queue", 0)),
+                "rx_queue": int(ss_metrics.get("rx_queue", 0)),
                 "cc": ss_metrics.get("cc", "unknown"),
                 "delivery_rate_mbps": ss_metrics.get("delivery_rate_mbps", 0.0),
                 "min_rtt_ms": round(float(ss_metrics.get("min_rtt_ms", ss_metrics.get("rtt_ms", 0.0))), 3),
