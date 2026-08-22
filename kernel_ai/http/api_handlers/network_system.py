@@ -32,7 +32,9 @@ def traceroute_info():
 def network_stack_realtime():
     return api_json(
         lambda: _network_service.get_network_stack_realtime(
-            network_stack_prev=get_state_container(current_app).network_stack_prev
+            network_stack_prev=get_state_container(current_app).network_stack_prev,
+            prefer_local=request.args.get("local"),
+            prefer_remote=request.args.get("remote"),
         )
     )
 
