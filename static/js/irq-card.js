@@ -27,6 +27,8 @@ const IrqCard = (() => {
     let openIrq = null;
     let topKeeper = null;
     let requestSeq = 0;
+    let lastLayout = null;
+    let lastRow = null;
 
     const SUBSYSTEM_TINT = {
         net: "rgba(103, 190, 224, 0.92)",
@@ -48,10 +50,15 @@ const IrqCard = (() => {
 
     function close() {
         openIrq = null;
+        lastLayout = null;
+        lastRow = null;
         requestSeq += 1;
         svg.selectAll(".irq-card-scrim, .irq-card-layer").remove();
         if (topKeeper) topKeeper.stop();
         d3.select("body").on("keydown.irqcard", null);
+        if (window.IrqHistoryCard && typeof window.IrqHistoryCard.close === "function") {
+            window.IrqHistoryCard.close();
+        }
         window.dispatchEvent(new CustomEvent("irq-card-closed"));
     }
 
@@ -67,6 +74,7 @@ const IrqCard = (() => {
         }
         close();
         openIrq = irq;
+        lastRow = row;
         const seq = ++requestSeq;
 
         fetch(`/api/irq/${encodeURIComponent(irq)}`, { cache: "no-store" })
@@ -122,6 +130,7 @@ const IrqCard = (() => {
         if (x + cw + 16 > viewW) x = Math.max(12, viewW - cw - 16);
         let y = (anchor && anchor.y ? anchor.y : viewH - h - 40) - 40;
         y = Math.max(12, Math.min(viewH - h - 12, y));
+        lastLayout = { x, y, cw, h };
 
         ensureDossierDefs();
         svg.append("rect")
@@ -188,7 +197,40 @@ const IrqCard = (() => {
         const title = data.kind === "aggregate"
             ? `COUNTER · ${data.irq}`
             : `IRQ ${data.irq}${data.device ? ` · ${String(data.device).toUpperCase()}` : ""}`;
-        text("kcard-title", PAD + 12, HEADER / 2 + 3.5, clip(title, 36));
+        text("kcard-title", PAD + 12, HEADER / 2 + 3.5, clip(title, window.IrqHistoryCard ? 20 : 36));
+        if (window.IrqHistoryCard) {
+            const metaLabel = subsystem.toUpperCase();
+            const histW = 52;
+            const histX = cw - 13 - Math.max(36, metaLabel.length * 6.8) - 18 - histW;
+            const histLabel = text("kcard-signature", histX, HEADER / 2 + 3.5, "HISTORY")
+                .attr("letter-spacing", 1.2);
+            const histRule = body.append("line")
+                .attr("x1", histX).attr("x2", histX + histW)
+                .attr("y1", HEADER / 2 + 6.5).attr("y2", HEADER / 2 + 6.5)
+                .attr("stroke", "#e2a33e")
+                .attr("stroke-width", 1)
+                .attr("opacity", 0.35);
+            body.append("rect")
+                .attr("x", histX - 6).attr("y", 4)
+                .attr("width", histW + 12).attr("height", 18)
+                .attr("fill", "transparent")
+                .style("cursor", "pointer")
+                .on("mouseenter", () => {
+                    histRule.attr("opacity", 1);
+                })
+                .on("mouseleave", () => {
+                    histRule.attr("opacity", 0.35);
+                })
+                .on("click", (event) => {
+                    event.stopPropagation();
+                    const box = lastLayout || { x: 0, y: 0, cw };
+                    IrqHistoryCard.open(data.irq, {
+                        x: box.x + histX + 20,
+                        y: box.y + HEADER / 2,
+                        clearOf: box.x + box.cw + 16
+                    }, lastRow && lastRow.per_sec);
+                });
+        }
         text("kcard-meta", cw - 13, HEADER / 2 + 3.5, subsystem.toUpperCase(), true).style("fill", tint);
         body.append("line")
             .attr("class", "kcard-divider")
@@ -345,7 +387,9 @@ const IrqCard = (() => {
         text("kcard-foot", cw - PAD, h - 10, "/SYS/KERNEL/IRQ · /PROC/INTERRUPTS", true);
 
         d3.select("body").on("keydown.irqcard", (event) => {
-            if (event.key === "Escape") close();
+            if (event.key !== "Escape") return;
+            if (window.IrqHistoryCard && IrqHistoryCard.isOpen()) return;
+            close();
         });
     }
 

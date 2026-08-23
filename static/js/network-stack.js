@@ -1,7 +1,7 @@
 // Network Stack Visualization - vertical packet flow through Linux networking layers
 // Version: 11 — Netfilter morph (syntax-safe) + hooks/conntrack/verdict
 
-debugLog('🌐 network-stack.js v18: Script loading...');
+debugLog('🌐 network-stack.js v18 + socket-body hook: Script loading...');
 
 class NetworkStackVisualization {
     constructor() {
@@ -123,6 +123,7 @@ class NetworkStackVisualization {
         this.hideOsiTiles = true;
         // Keep the particle swarm and hero packet off — morph stays as panel ribbons.
         this.hideVerticalOrbs = true;
+        this.socketBodyMode = true;
         this.packetMorphEnabled = false;
         this.packetMorphPhase = -1;
         this.packetMorphCtx = null;
@@ -258,6 +259,10 @@ class NetworkStackVisualization {
         this.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
         this.camera.position.set(0, 1.2, 13.5);
         this.camera.lookAt(0, 0, 0);
+        if (this.socketBodyMode) {
+            this.camera.position.set(0.35, 0.2, 10.6);
+            this.camera.lookAt(0.2, 0, 0);
+        }
 
         this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
@@ -271,10 +276,16 @@ class NetworkStackVisualization {
         this.scene.add(ambient);
         this.scene.add(key);
 
-        this.createLayerStack();
-        this.createPacket();
-        this.createFlowParticles();
-        this.createOverlayUI();
+        if (this.socketBodyMode && typeof this.createSocketBody === 'function') {
+            this.createSocketBody();
+            this.createSocketBodyUI();
+        } else {
+            this.socketBodyMode = false;
+            this.createLayerStack();
+            this.createPacket();
+            this.createFlowParticles();
+            this.createOverlayUI();
+        }
         this.addExitButton();
 
         this.mouseMoveHandler = (event) => this.onMouseMove(event);
@@ -2729,6 +2740,10 @@ class NetworkStackVisualization {
         if (this.exitButton && this.exitButton.parentNode) {
             this.exitButton.parentNode.removeChild(this.exitButton);
         }
+        if (this.socketBodyMode && document.querySelector('nav.page-nav')) {
+            this.exitButton = null;
+            return;
+        }
         const exitBtn = document.createElement('button');
         exitBtn.textContent = 'EXIT VIEW';
         exitBtn.className = 'network-stack-exit-button';
@@ -2937,7 +2952,9 @@ class NetworkStackVisualization {
         const driverLevel = classify(driverTxQ, 120, 300);
         const nicLevel = classify(nicErrTotal, 5, 20);
 
-        if (this.flowNode) {
+        if (this.socketBodyMode && typeof this.updateSocketTitle === 'function') {
+            this.updateSocketTitle();
+        } else if (this.flowNode) {
             if (flow) {
                 const remote = flow.remote || 'remote';
                 this.flowNode.innerHTML = '';
@@ -3165,7 +3182,15 @@ class NetworkStackVisualization {
     }
 
     fetchTelemetry() {
-        return window.fetchJson('/api/network-stack-realtime', { cache: 'no-store' }, {
+        const follow = this.flowFollow || (this.parseFlowFollowFromUrl && this.parseFlowFollowFromUrl());
+        let telemetryUrl = '/api/network-stack-realtime';
+        if (follow && follow.remote) {
+            const params = new URLSearchParams();
+            params.set('remote', follow.remote);
+            if (follow.local) params.set('local', follow.local);
+            telemetryUrl += '?' + params.toString();
+        }
+        return window.fetchJson(telemetryUrl, { cache: 'no-store' }, {
             timeoutMs: 6000,
             suppressToast: true,
             context: 'network-stack-realtime'
@@ -3965,6 +3990,7 @@ class NetworkStackVisualization {
                 e.stopPropagation();
                 const index = Number(el.getAttribute('data-route-index'));
                 this.openIpKernelMorph({ kind: 'route', index });
+                this.openIpEntryCard('route', index, el);
             });
         });
         root.querySelectorAll('.ns-ip-neigh-row').forEach((el) => {
@@ -3972,6 +3998,7 @@ class NetworkStackVisualization {
                 e.stopPropagation();
                 const index = Number(el.getAttribute('data-neigh-index'));
                 this.openIpKernelMorph({ kind: 'neigh', index });
+                this.openIpEntryCard('neigh', index, el);
             });
         });
         const back = root.querySelector('.ns-ip-back-puzzle');
@@ -4018,7 +4045,7 @@ class NetworkStackVisualization {
                 </div>`).join('');
             const morph = this.ipMorphTarget ? this.buildIpKernelMorphHtml(this.ipMorphTarget) : `
                 <div style="margin:0 0 10px; font-size:10px; color:#6f8597; letter-spacing:0.4px;">
-                    tip: click a <span style="color:#e6c15a">route</span> or <span style="color:#a9d4e8">neigh</span> row to watch IP → kernel translation
+                    tip: click a <span style="color:#e6c15a">route</span> or <span style="color:#a9d4e8">neigh</span> row — the card is the object, morph is the translation
                 </div>`;
             const html = `
                 <div style="display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid rgba(230,193,90,0.35); background:linear-gradient(90deg, rgba(230,193,90,0.12), rgba(103,190,224,0.05));">
@@ -4048,6 +4075,21 @@ class NetworkStackVisualization {
                 requestAnimationFrame(() => this.flashKernelGhostForIpTarget(this.drillPanel));
             }
         }
+    }
+
+    openIpEntryCard(kind, index, el) {
+        if (!window.IpEntryCard || typeof window.IpEntryCard.open !== 'function') return;
+        const map = this.getIpMapData();
+        const rows = kind === 'route' ? (map.routes || []) : (map.neigh || []);
+        const row = rows[Number(index)];
+        if (!row) return;
+        const host = (this.container || document.body).getBoundingClientRect();
+        const box = el && el.getBoundingClientRect ? el.getBoundingClientRect() : host;
+        window.IpEntryCard.open(kind, row, {
+            x: box.left - host.left + box.width,
+            y: box.top - host.top + box.height / 2,
+            clearOf: box.left - host.left + box.width + 12
+        });
     }
 
     openIpKernelMorph(target) {
@@ -4131,7 +4173,7 @@ class NetworkStackVisualization {
         const icmpHot = n(icmp.in_errors) + n(icmp.out_errors) + n(icmp.in_dest_unreach) > 0;
         // Morph ribbon is center-overlay only — never inject into the right panel.
         const tip = compact
-            ? '<div style="font-size:8.5px;color:#556273;margin:0 0 6px;">click route/neigh → IP→kernel morph (center)</div>'
+            ? '<div style="font-size:8.5px;color:#556273;margin:0 0 6px;">click route/neigh → card + morph</div>'
             : '';
         const flowDiagram = `
             <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:8px 0 10px; font-size:9px; letter-spacing:0.4px;">
@@ -5442,15 +5484,17 @@ class NetworkStackVisualization {
         if (!this.hideVerticalOrbs) {
             this.updateFlowParticles(dt);
         }
-        this.updateLayerStrips(dt);
-        this.updatePathHopRig(dt);
-        this.updatePacketLifecycleUI();
-
-        // Gentle camera drift for cinematic depth.
-        const t = now * 0.00025;
-        this.camera.position.x = Math.sin(t) * 0.9;
-        this.camera.position.z = 13.2 + Math.cos(t) * 0.35;
-        this.camera.lookAt(0, 0, 0);
+        if (!this.socketBodyMode) {
+            this.updateLayerStrips(dt);
+            this.updatePathHopRig(dt);
+            this.updatePacketLifecycleUI();
+            const t = now * 0.00025;
+            this.camera.position.x = Math.sin(t) * 0.9;
+            this.camera.position.z = 13.2 + Math.cos(t) * 0.35;
+            this.camera.lookAt(0, 0, 0);
+        } else if (typeof this.updateSocketBody === 'function') {
+            this.updateSocketBody(dt);
+        }
 
         // Overlay updates must never block the 3D render: a bug in connector
         // projection should at worst drop the leader lines, not blank the scene.
@@ -5701,6 +5745,9 @@ class NetworkStackVisualization {
     }
 
     deactivate() {
+        if (window.IpEntryCard && typeof window.IpEntryCard.close === 'function') {
+            window.IpEntryCard.close();
+        }
         this.isActive = false;
         this.pathHopPending = null;
         this.disposePathHopRig();

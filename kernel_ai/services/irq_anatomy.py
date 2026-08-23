@@ -235,6 +235,80 @@ def _chain_for_line(device, chip, vector, symbols, thread):
     return chain
 
 
+def _uptime_s():
+    try:
+        with open("/proc/uptime", "r", encoding="utf-8", errors="ignore") as fh:
+            return float(fh.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def history(irq):
+    """Biography of one interrupt line: lifetime count versus the host's age.
+
+    The anatomy card is the path into the kernel. This is how that line has
+    lived since boot — how many times it rang, what share of every interrupt
+    that is, which CPU took most of them, and the mean rate over uptime.
+    A wall-clock of the first fire is not something the kernel keeps.
+    """
+    irq = str(irq).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,16}", irq):
+        return {"found": False, "irq": irq}
+
+    interrupts = read_interrupts()
+    if irq not in interrupts:
+        return {"found": False, "irq": irq}
+
+    counts, desc = interrupts[irq]
+    total = sum(counts)
+    host_total = sum(sum(row_counts) for row_counts, _ in interrupts.values())
+    uptime = _uptime_s()
+    online = _cpus_online()
+    per_cpu = counts[:online] if len(counts) >= online else counts
+    top_cpu = None
+    top_count = 0
+    if per_cpu:
+        top_cpu = max(range(len(per_cpu)), key=lambda i: per_cpu[i])
+        top_count = int(per_cpu[top_cpu])
+
+    payload = {
+        "found": True,
+        "irq": irq,
+        "label": desc,
+        "kind": "line" if irq.isdigit() else "aggregate",
+        "total": total,
+        "host_total": host_total,
+        "share": round(total / host_total, 5) if host_total else None,
+        "uptime_s": uptime,
+        "lifetime_per_sec": round(total / uptime, 4) if uptime and uptime > 0 else None,
+        "top_cpu": top_cpu,
+        "top_cpu_count": top_count,
+        "top_cpu_share": round(top_count / total, 4) if total else None,
+        "device": None,
+        "chip": None,
+        "softirq": None,
+        "source": "/proc/interrupts · /proc/uptime",
+    }
+
+    if irq.isdigit():
+        device = _read(f"{_SYS_IRQ}/{irq}/actions")
+        chip = _read(f"{_SYS_IRQ}/{irq}/chip_name")
+        payload["device"] = device or None
+        payload["chip"] = chip or None
+        vector = vector_for(device or desc, chip)
+        if vector:
+            softirqs = read_softirqs()
+            payload["softirq"] = {
+                "vector": vector,
+                "total": softirqs.get(vector),
+                "basis": "driver class",
+            }
+    else:
+        payload["device"] = desc.lower() if desc else None
+
+    return payload
+
+
 def describe(irq):
     """Everything the card shows about one line, or None if there is no such line."""
     irq = str(irq).strip()

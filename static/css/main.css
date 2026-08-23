@@ -514,6 +514,38 @@ svg {
     font-size: 7.5px;
     letter-spacing: 0.7px;
 }
+.flow-metro-rail {
+    fill: none;
+    stroke: rgba(226, 163, 62, 0.16);
+    stroke-width: 0.9;
+}
+.flow-metro-track {
+    fill: none;
+    stroke: #e2a33e;
+    stroke-width: 1.35;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+}
+.flow-metro-track.is-branch {
+    stroke: rgba(226, 163, 62, 0.55);
+}
+.flow-metro-station {
+    fill: rgba(9, 12, 16, 0.98);
+    stroke: #e2a33e;
+    stroke-width: 1.2;
+}
+.flow-metro-title {
+    fill: #e2a33e;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 8.5px;
+    letter-spacing: 1.1px;
+}
+.flow-metro-line {
+    fill: rgba(226, 163, 62, 0.58);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 7px;
+    letter-spacing: 0.45px;
+}
 /* The state letter of a thread. Amber is a thread the kernel has on a CPU or
    ready for one; the warm tint is an uninterruptible wait, which is the state
    worth noticing; everything else is asleep and stays quiet. */
