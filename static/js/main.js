@@ -1138,6 +1138,46 @@ function renderProcessDossier() {
     const idBox = { x: stackX, y: stackY, w: cardW, h: idH };
     const idCard = dossierCard(layer, idBox, 'PROCESS DOSSIER', `PID ${formatProcessValue(processData.pid)}`);
 
+    // HISTORY is a door on the dossier itself — biography of this pid, not
+    // another tile in RESOURCES and not a second ACTIVITY tape.
+    if (window.HistoryCard) {
+        const histX = idBox.x + 148;
+        const histW = 52;
+        const histLabel = idCard.append('text')
+            .attr('x', histX).attr('y', idBox.y + 16)
+            .attr('font-family', DOSSIER.mono)
+            .attr('font-size', '9px')
+            .attr('letter-spacing', '1.2')
+            .attr('fill', DOSSIER.accent)
+            .text('HISTORY');
+        const histRule = idCard.append('line')
+            .attr('x1', histX).attr('x2', histX + histW)
+            .attr('y1', idBox.y + 19).attr('y2', idBox.y + 19)
+            .attr('stroke', DOSSIER.accent)
+            .attr('stroke-width', 1)
+            .attr('opacity', 0.35);
+        idCard.append('rect')
+            .attr('x', histX - 6).attr('y', idBox.y + 4)
+            .attr('width', histW + 12).attr('height', 18)
+            .attr('fill', 'transparent')
+            .style('pointer-events', 'all')
+            .style('cursor', 'pointer')
+            .on('mouseenter', () => {
+                histRule.attr('opacity', 1);
+            })
+            .on('mouseleave', () => {
+                histRule.attr('opacity', 0.35);
+            })
+            .on('click', (event) => {
+                event.stopPropagation();
+                HistoryCard.open(processData.pid, {
+                    x: histX + 20,
+                    y: idBox.y + 16,
+                    clearOf: stackX + cardW + 34
+                });
+            });
+    }
+
     idCard.append('text')
         .attr('x', idBox.x + 16).attr('y', idBox.y + heroRel)
         .attr('font-family', DOSSIER.mono)
@@ -1695,7 +1735,8 @@ const processModalTopKeeper = createOverlayTopKeeper(
 
 function closeOpenKernelCards() {
     ["MemoryCard", "ThreadsCard", "WaitsCard", "WakeupsCard", "SocketsCard",
-        "FlowCard", "NamespaceCard", "SyscallCard", "IrqCard", "RunqueueCard"].forEach((name) => {
+        "FlowCard", "FlowHistoryCard", "NamespaceCard", "SyscallCard", "IrqCard",
+        "IrqHistoryCard", "RunqueueCard", "HistoryCard", "IpEntryCard"].forEach((name) => {
         const card = window[name];
         if (card && typeof card.close === "function") card.close();
     });

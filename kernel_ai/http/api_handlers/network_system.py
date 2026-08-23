@@ -14,6 +14,34 @@ def active_connections():
     return api_json(lambda: {"connections": _network_service.get_active_connections()})
 
 
+def ip_entry():
+    def _payload():
+        kind = request.args.get("kind", "").strip()
+        if kind not in {"neigh", "route"}:
+            raise ValueError("kind must be neigh or route")
+        return _network_service.get_ip_entry(
+            kind=kind,
+            ip=request.args.get("ip"),
+            destination=request.args.get("destination"),
+            gateway=request.args.get("gateway"),
+            iface=request.args.get("iface"),
+        )
+
+    return api_json(_payload, exception_statuses=[(ValueError, 400)])
+
+
+def flow_history():
+    def _payload():
+        local = request.args.get("local", "").strip()
+        remote = request.args.get("remote", "").strip()
+        proto = request.args.get("proto", "TCP").strip()
+        if not local or not remote:
+            raise ValueError("Missing 'local' or 'remote' query parameter")
+        return _network_service.get_flow_history(local=local, remote=remote, proto=proto)
+
+    return api_json(_payload, exception_statuses=[(ValueError, 400)])
+
+
 def traceroute_info():
     def _payload():
         state = get_state_container(current_app)

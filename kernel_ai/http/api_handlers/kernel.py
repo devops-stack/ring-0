@@ -98,6 +98,20 @@ def runqueue():
     return api_json(_payload)
 
 
+def irq_history(irq):
+    """Lifetime of one interrupt line versus host uptime."""
+
+    def _payload():
+        from kernel_ai.services import irq_anatomy
+
+        anatomy = irq_anatomy.history(irq)
+        if not anatomy or not anatomy.get("found"):
+            return {"timestamp": datetime.now().isoformat(), "irq": str(irq), "found": False}
+        return {"timestamp": datetime.now().isoformat(), **anatomy}
+
+    return api_json(_payload)
+
+
 def irq_detail(irq):
     """What one interrupt line is on this machine.
 

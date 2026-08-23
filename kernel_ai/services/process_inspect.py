@@ -322,9 +322,29 @@ def get_ipc_links_summary(max_pairs=120, max_nodes=24):
     }
 
 
+def _status_kb(value):
+    token = str(value or "").split()[0] if value else ""
+    if token.lstrip("-").isdigit():
+        return int(token)
+    return None
+
+
 def _read_status_counters(pid):
-    """Context-switch and thread counters from world-readable /proc status."""
-    out = {"ctx_voluntary": None, "ctx_nonvoluntary": None, "num_threads": None}
+    """Lifetime counters from world-readable /proc status.
+
+    Context switches and thread count are bare integers. Resident and virtual
+    sizes come as ``N kB`` — including the high-water marks, which are the
+    memory biography the kernel actually keeps.
+    """
+    out = {
+        "ctx_voluntary": None,
+        "ctx_nonvoluntary": None,
+        "num_threads": None,
+        "rss_kb": None,
+        "rss_peak_kb": None,
+        "virt_kb": None,
+        "virt_peak_kb": None,
+    }
     try:
         with open(f"/proc/{pid}/status", "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
@@ -332,15 +352,50 @@ def _read_status_counters(pid):
                     continue
                 key, value = line.split(":", 1)
                 value = value.strip()
-                if not value.isdigit():
-                    continue
-                if key == "voluntary_ctxt_switches":
+                if key == "voluntary_ctxt_switches" and value.isdigit():
                     out["ctx_voluntary"] = int(value)
-                elif key == "nonvoluntary_ctxt_switches":
+                elif key == "nonvoluntary_ctxt_switches" and value.isdigit():
                     out["ctx_nonvoluntary"] = int(value)
-                elif key == "Threads":
+                elif key == "Threads" and value.isdigit():
                     out["num_threads"] = int(value)
+                elif key == "VmRSS":
+                    out["rss_kb"] = _status_kb(value)
+                elif key == "VmHWM":
+                    out["rss_peak_kb"] = _status_kb(value)
+                elif key == "VmSize":
+                    out["virt_kb"] = _status_kb(value)
+                elif key == "VmPeak":
+                    out["virt_peak_kb"] = _status_kb(value)
     except (OSError, PermissionError):
+        pass
+    return out
+
+
+def _read_fault_counters(pid):
+    """Minor and major faults from world-readable /proc/<pid>/stat.
+
+    After the comm field: minflt, cminflt, majflt, cmajflt. The child
+    counters are the faults of wait()'d children — useful for a forking
+    parent, empty for everyone else.
+    """
+    out = {"minflt": None, "majflt": None, "cminflt": None, "cmajflt": None}
+    try:
+        with open(f"/proc/{pid}/stat", "r", encoding="utf-8", errors="ignore") as f:
+            raw = f.read()
+    except (OSError, PermissionError):
+        return out
+    close = raw.rfind(")")
+    if close == -1:
+        return out
+    fields = raw[close + 1:].split()
+    # 0=state 1=ppid ... 7=minflt 8=cminflt 9=majflt 10=cmajflt
+    try:
+        if len(fields) > 10:
+            out["minflt"] = int(fields[7])
+            out["cminflt"] = int(fields[8])
+            out["majflt"] = int(fields[9])
+            out["cmajflt"] = int(fields[10])
+    except ValueError:
         pass
     return out
 
@@ -390,6 +445,7 @@ def get_process_activity_counters(pid):
         "cpu_system": cpu_system,
     }
     payload.update(_read_status_counters(pid))
+    payload.update(_read_fault_counters(pid))
     payload.update(_read_io_counters(pid))
     payload["io_readable"] = payload["read_bytes"] is not None
     return payload

@@ -326,7 +326,209 @@ def _parse_ss_detail_metrics(line, details):
     if bbr:
         metrics["bbr_bw_mbps"] = round(_rate_to_mbps(bbr.group(1), bbr.group(2)), 4)
         metrics["bbr_mrtt_ms"] = float(bbr.group(3))
+    # skmem:(r<rmem>,rb<rcvbuf>,t<wmem>,tb<sndbuf>,...)
+    skmem = re.search(
+        r"skmem:\(r(\d+),rb(\d+),t(\d+),tb(\d+)",
+        details,
+    )
+    if skmem:
+        metrics["rmem"] = int(skmem.group(1))
+        metrics["rcvbuf"] = int(skmem.group(2))
+        metrics["wmem"] = int(skmem.group(3))
+        metrics["sndbuf"] = int(skmem.group(4))
     return metrics
+
+
+_CC_NAMES = {
+    "cubic", "bbr", "reno", "vegas", "illinois", "dctcp", "westwood",
+    "htcp", "yeah", "lp", "veno", "cdg", "nv", "bic", "highspeed",
+}
+
+
+def _owner_from_cgroup(path):
+    """Last systemd unit, not the whole cgroup path."""
+    raw = str(path or "").rstrip("/")
+    if not raw:
+        return None
+    last = raw.split("/")[-1]
+    last = last.replace(".scope", "").replace(".service", "")
+    if last.startswith("app-gnome-"):
+        last = last[len("app-gnome-"):]
+        last = last.split("_")[0].split("-")[0]
+    elif last.startswith("app-org."):
+        last = last.split(".")[-1].split("-")[0]
+    elif last.startswith("app-"):
+        last = last[4:].split("-")[0]
+    last = last.strip()
+    return last[:24] or None
+
+
+def _parse_ss_timer(line):
+    match = re.search(r"timer:\(([^,]+),([^,]+),(\d+)\)", line)
+    if not match:
+        return None
+    return {
+        "kind": match.group(1).strip(),
+        "left": match.group(2).strip(),
+        "retrans": int(match.group(3)),
+    }
+
+
+def _int_field(text, name):
+    match = re.search(rf"\b{name}:(\d+)", text)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _float_field(text, name):
+    match = re.search(rf"\b{name}:(\d+(?:\.\d+)?)", text)
+    if not match:
+        return None
+    return float(match.group(1))
+
+
+def _parse_ss_flow_row(header, details, proto):
+    """Biography fields from one ss -inoe row. No sock cookie, no cgroup path."""
+    parts = header.split()
+    if proto == "TCP":
+        if len(parts) < 5:
+            return None
+        state = parts[0]
+        try:
+            recv_q = int(parts[1])
+            send_q = int(parts[2])
+        except ValueError:
+            recv_q = None
+            send_q = None
+        local = parts[3]
+        remote = parts[4]
+    else:
+        if len(parts) < 4:
+            return None
+        state = "UNCONN" if parts[3] in ("0.0.0.0:*", "*:*", "[::]:*") else "ESTAB"
+        try:
+            recv_q = int(parts[0])
+            send_q = int(parts[1])
+        except ValueError:
+            recv_q = None
+            send_q = None
+        local = parts[2]
+        remote = parts[3]
+
+    blob = f"{header} {details}"
+    rtt = None
+    rtt_var = None
+    rtt_match = re.search(r"\brtt:(\d+(?:\.\d+)?)/(\d+(?:\.\d+)?)", details)
+    if rtt_match:
+        rtt = float(rtt_match.group(1))
+        rtt_var = float(rtt_match.group(2))
+    retrans_now = None
+    retrans_total = None
+    retrans_match = re.search(r"\bretrans:(\d+)/(\d+)", details)
+    if retrans_match:
+        retrans_now = int(retrans_match.group(1))
+        retrans_total = int(retrans_match.group(2))
+    cc = None
+    for token in details.split():
+        name = token.lower()
+        if name in _CC_NAMES:
+            cc = name
+            break
+    cgroup = None
+    cg = re.search(r"cgroup:(\S+)", header)
+    if cg:
+        cgroup = cg.group(1)
+    return {
+        "local": local,
+        "remote": remote,
+        "proto": proto,
+        "state": state,
+        "recv_q": recv_q,
+        "send_q": send_q,
+        "owner": _owner_from_cgroup(cgroup),
+        "bytes_sent": _int_field(details, "bytes_sent"),
+        "bytes_acked": _int_field(details, "bytes_acked"),
+        "bytes_received": _int_field(details, "bytes_received"),
+        "bytes_retrans": _int_field(details, "bytes_retrans"),
+        "segs_out": _int_field(details, "segs_out"),
+        "segs_in": _int_field(details, "segs_in"),
+        "data_segs_out": _int_field(details, "data_segs_out"),
+        "data_segs_in": _int_field(details, "data_segs_in"),
+        "retrans_now": retrans_now,
+        "retrans_total": retrans_total,
+        "last_snd_ms": _int_field(details, "lastsnd"),
+        "last_rcv_ms": _int_field(details, "lastrcv"),
+        "last_ack_ms": _int_field(details, "lastack"),
+        "busy_ms": _int_field(details, "busy"),
+        "rtt_ms": rtt,
+        "rtt_var_ms": rtt_var,
+        "min_rtt_ms": _float_field(details, "minrtt"),
+        "cwnd": _int_field(details, "cwnd"),
+        "cc": cc,
+        "timer": _parse_ss_timer(blob),
+        "source": "ss -tinoe" if proto == "TCP" else "ss -uinoe",
+    }
+
+
+def _ss_flow_dump(proto):
+    ss_cmd = resolve_binary("ss")
+    if not ss_cmd:
+        return []
+    flags = "-tinoe" if proto == "TCP" else "-uinoe"
+    try:
+        result = subprocess.run(
+            [ss_cmd, flags],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        lines = (result.stdout or "").splitlines()
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    rows = []
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        idx += 1
+        if not line.strip() or line.startswith("State") or line.startswith("Netid") or line.startswith("Recv-Q"):
+            continue
+        extra = []
+        while idx < len(lines) and lines[idx][:1].isspace():
+            extra.append(lines[idx])
+            idx += 1
+        row = _parse_ss_flow_row(line, " ".join(extra), proto)
+        if row:
+            rows.append(row)
+    return rows
+
+
+def get_flow_history(local=None, remote=None, proto="TCP"):
+    """Biography of one 4-tuple from ss: lifetime bytes, last talk, min RTT.
+
+    The kernel does not publish a wall-clock birth time for a socket the way
+    it does for a pid. What it does keep — bytes, segments, retransmits,
+    last send/recv, the lowest RTT seen — is the life of this session.
+    """
+    proto = str(proto or "TCP").upper()
+    if proto not in {"TCP", "UDP"}:
+        proto = "TCP"
+    want_local = _endpoint_key(local)
+    want_remote = _endpoint_key(remote)
+    if not want_local or not want_remote:
+        return {"found": False, "error": "local and remote are required", "proto": proto}
+    for row in _ss_flow_dump(proto):
+        if _endpoint_key(row.get("local")) == want_local and _endpoint_key(row.get("remote")) == want_remote:
+            row["found"] = True
+            return row
+    return {
+        "found": False,
+        "local": local,
+        "remote": remote,
+        "proto": proto,
+        "error": "socket not in ss",
+    }
 
 
 def _get_ss_tcp_metrics(local=None, remote=None):
@@ -334,7 +536,7 @@ def _get_ss_tcp_metrics(local=None, remote=None):
     if not ss_cmd:
         return {}
     try:
-        result = subprocess.run([ss_cmd, "-tin"], capture_output=True, text=True, timeout=2, check=False)
+        result = subprocess.run([ss_cmd, "-tmin"], capture_output=True, text=True, timeout=2, check=False)
         lines = (result.stdout or "").splitlines()
     except (subprocess.TimeoutExpired, OSError):
         return {}
@@ -345,7 +547,11 @@ def _get_ss_tcp_metrics(local=None, remote=None):
     for idx, line in enumerate(lines):
         if not line.strip().startswith("ESTAB"):
             continue
-        details = lines[idx + 1] if (idx + 1) < len(lines) else ""
+        extra = []
+        for look in (1, 2):
+            if idx + look < len(lines) and lines[idx + look][:1].isspace():
+                extra.append(lines[idx + look])
+        details = " ".join(extra)
         metrics = _parse_ss_detail_metrics(line, details)
         if not metrics:
             continue
@@ -529,6 +735,107 @@ def get_ip_layer_map(limit_routes: int = 12, limit_neigh: int = 10) -> dict:
     }
 
 
+def _ip_neigh_detail(ip, iface=None):
+    """used/probes/ref from ``ip -s neigh``, when iproute2 is there.
+
+    /proc/net/arp only has flags. The NUD clock — last confirm, probes — lives
+    in the neighbour entry itself and ``ip -s`` prints a slice of it.
+    """
+    ip_cmd = resolve_binary("ip")
+    if not ip_cmd or not ip:
+        return {}
+    cmd = [ip_cmd, "-s", "neigh", "show", "to", str(ip)]
+    if iface:
+        cmd.extend(["dev", str(iface)])
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1, check=False)
+        text = (result.stdout or "").strip()
+    except (subprocess.TimeoutExpired, OSError):
+        return {}
+    if not text:
+        return {}
+    header = text.splitlines()[0]
+    out = {}
+    state = None
+    for token in header.split():
+        if token.isupper() and token in {
+            "REACHABLE", "STALE", "DELAY", "PROBE", "FAILED",
+            "INCOMPLETE", "PERMANENT", "NOARP",
+        }:
+            state = token
+            break
+    if state:
+        out["nud"] = state
+    used = re.search(r"used\s+(\d+)/(\d+)/(\d+)", text)
+    if used:
+        out["used_s"] = int(used.group(1))
+        out["confirmed_s"] = int(used.group(2))
+        out["updated_s"] = int(used.group(3))
+    probes = re.search(r"probes\s+(\d+)", text)
+    if probes:
+        out["probes"] = int(probes.group(1))
+    ref = re.search(r"ref\s+(\d+)", text)
+    if ref:
+        out["ref"] = int(ref.group(1))
+    return out
+
+
+def get_ip_entry(kind, ip=None, destination=None, gateway=None, iface=None):
+    """One FIB row or one neighbour — the object a Network-room door opens."""
+    kind = str(kind or "").strip().lower()
+    if kind not in {"neigh", "route"}:
+        return {"found": False, "error": "kind must be neigh or route"}
+    mapping = get_ip_layer_map(limit_routes=32, limit_neigh=32)
+    if kind == "neigh":
+        want = _endpoint_key(ip)
+        if not want:
+            return {"found": False, "kind": "neigh", "error": "ip is required"}
+        for row in mapping.get("neigh") or []:
+            if _endpoint_key(row.get("ip")) != want:
+                continue
+            if iface and str(row.get("iface") or "") != str(iface):
+                continue
+            extra = _ip_neigh_detail(row.get("ip"), row.get("iface"))
+            return {
+                "found": True,
+                "kind": "neigh",
+                **row,
+                **extra,
+                "source": "/proc/net/arp",
+            }
+        return {"found": False, "kind": "neigh", "ip": ip, "iface": iface}
+
+    want_dest = str(destination or "").strip().lower()
+    want_gw = str(gateway or "").strip().lower()
+    want_if = str(iface or "").strip()
+    if not want_dest:
+        return {"found": False, "kind": "route", "error": "destination is required"}
+    for row in mapping.get("routes") or []:
+        dest = str(row.get("destination") or "").strip().lower()
+        gw = str(row.get("gateway") or "").strip().lower()
+        if dest != want_dest:
+            continue
+        if want_gw and gw != want_gw:
+            continue
+        if want_if and str(row.get("iface") or "") != want_if:
+            continue
+        hop = None
+        hop_ip = None if row.get("gateway") in (None, "*", "0.0.0.0") else row.get("gateway")
+        if hop_ip:
+            for neigh in mapping.get("neigh") or []:
+                if _endpoint_key(neigh.get("ip")) == _endpoint_key(hop_ip):
+                    hop = {**neigh, **_ip_neigh_detail(neigh.get("ip"), neigh.get("iface"))}
+                    break
+        return {
+            "found": True,
+            "kind": "route",
+            **row,
+            "nexthop": hop,
+            "source": "/proc/net/route",
+        }
+    return {"found": False, "kind": "route", "destination": destination, "gateway": gateway}
+
+
 def get_network_stack_realtime(network_stack_prev=None, prefer_local=None, prefer_remote=None):
     network_stack_prev = _NETWORK_STACK_PREV_DEFAULT if network_stack_prev is None else network_stack_prev
     now = time.time()
@@ -663,6 +970,10 @@ def get_network_stack_realtime(network_stack_prev=None, prefer_local=None, prefe
                 "rtt_ms": round(float(ss_metrics.get("rtt_ms", 0.0)), 2),
                 "tx_queue": int(ss_metrics.get("tx_queue", 0)),
                 "rx_queue": int(ss_metrics.get("rx_queue", 0)),
+                "rmem": int(ss_metrics.get("rmem", 0)),
+                "wmem": int(ss_metrics.get("wmem", 0)),
+                "rcvbuf": int(ss_metrics.get("rcvbuf", 0)),
+                "sndbuf": int(ss_metrics.get("sndbuf", 0)),
                 "cc": ss_metrics.get("cc", "unknown"),
                 "delivery_rate_mbps": ss_metrics.get("delivery_rate_mbps", 0.0),
                 "min_rtt_ms": round(float(ss_metrics.get("min_rtt_ms", ss_metrics.get("rtt_ms", 0.0))), 3),
