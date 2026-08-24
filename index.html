@@ -37,7 +37,7 @@
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     
     <!-- Styles -->
-    <link rel="stylesheet" href="/static/css/main.css?v=20">
+    <link rel="stylesheet" href="/static/css/main.css?v=21">
 </head>
 <body>
     <!-- ================= SEO CONTENT (INDEXED BY GOOGLE) ================= -->
@@ -83,6 +83,16 @@
 <div id="app">
     <svg></svg>
 </div>
+<nav class="rooms-index" aria-label="Linux kernel rooms" style="position:fixed;left:12px;bottom:8px;z-index:4;display:flex;flex-wrap:wrap;gap:10px;font:11px 'Share Tech Mono',monospace;letter-spacing:0.4px;">
+    <a href="/linux-crypto-subsystem" style="color:#555;text-decoration:none;">Crypto</a>
+    <a href="/linux-security-subsystem" style="color:#555;text-decoration:none;">Security</a>
+    <a href="/linux-processes-subsystem" style="color:#555;text-decoration:none;">Processes</a>
+    <a href="/linux-memory-subsystem" style="color:#555;text-decoration:none;">Memory</a>
+    <a href="/linux-network-subsystem" style="color:#555;text-decoration:none;">Network</a>
+    <a href="/linux-filesystem-subsystem" style="color:#555;text-decoration:none;">Files</a>
+    <a href="/linux-devices-subsystem" style="color:#555;text-decoration:none;">Devices</a>
+    <a href="/kernel-dna" style="color:#555;text-decoration:none;">Kernel DNA</a>
+</nav>
 
 <!-- ================= SCRIPTS ================= -->
     <script src="/static/js/safe-utils.js?v=2"></script>
@@ -93,12 +103,15 @@
     <script src="/static/js/wakeups-card.js?v=1"></script>
     <script src="/static/js/subsystem-focus.js?v=6"></script>
     <script src="/static/js/irq-ui.js?v=7"></script>
-    <script src="/static/js/irq-card.js?v=4"></script>
+    <script src="/static/js/irq-card.js?v=6"></script>
+    <script src="/static/js/irq-history-card.js?v=1"></script>
     <script src="/static/js/threads-card.js?v=5"></script>
     <script src="/static/js/memory-card.js?v=5"></script>
     <script src="/static/js/waits-card.js?v=3"></script>
     <script src="/static/js/sockets-card.js?v=1"></script>
-    <script src="/static/js/flow-card.js?v=4"></script>
+    <script src="/static/js/flow-card.js?v=15"></script>
+    <script src="/static/js/flow-history-card.js?v=1"></script>
+    <script src="/static/js/history-card.js?v=2"></script>
     <script src="/static/js/ipc-ui.js?v=8"></script>
     <script src="/static/js/flow-ui.js?v=8"></script>
     <script src="/static/js/namespace-card.js?v=2"></script>
@@ -107,10 +120,11 @@
     <script src="/static/js/ui-chrome.js?v=2"></script>
     <script src="/static/js/active-connections.js?v=6"></script>
     <script src="/static/js/nginx_files.js?v=6"></script>
-    <script src="/static/js/right-semicircle-menu.js?v=53"></script>
+    <script src="/static/js/right-semicircle-menu.js?v=55"></script>
     <script src="/static/js/kernel-dna.js?v=50"></script>
-    <script src="/static/js/network-stack.js?v=66"></script>
-    <script src="/static/js/network-socket-body.js?v=2"></script>
+    <script src="/static/js/ip-entry-card.js?v=1"></script>
+    <script src="/static/js/network-stack.js?v=67"></script>
+    <script src="/static/js/network-socket-body.js?v=3"></script>
     <script src="/static/js/devices-belt.js?v=25"></script>
     <script src="/static/js/aes-ref.js?v=3"></script>
     <script src="/static/js/crypto-belt.js?v=61"></script>
@@ -126,7 +140,7 @@
             console.error('❌ RightSemicircleMenuManager class NOT loaded!');
         }
     </script>
-    <script src="/static/js/main.js?v=236"></script>
+    <script src="/static/js/main.js?v=245"></script>
     <script src="/static/js/kernel-tape.js?v=13"></script>
 </body>
 </html>
