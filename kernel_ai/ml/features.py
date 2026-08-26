@@ -27,13 +27,18 @@ class FeatureSpec:
     # near-constant feature from firing on microscopic deviations.
     min_std: float
     label: str
+    # Optional per-feature z gates. 0 means "use MLConfig.z_warn / z_crit".
+    # Host chatter (minor faults, context switches) needs a higher bar than
+    # PSI / major faults — dashboard polls sat in the 6–11σ band.
+    z_warn: float = 0.0
+    z_crit: float = 0.0
 
 
 FEATURE_SPECS: dict[str, FeatureSpec] = {
     "proc_count": FeatureSpec("proc_count", "sched", 0.06, 3.0, "processes"),
     "procs_running": FeatureSpec("procs_running", "sched", 0.10, 1.0, "runnable now"),
     "procs_blocked": FeatureSpec("procs_blocked", "sched", 0.14, 1.0, "blocked (D)"),
-    "ctxt_per_sec": FeatureSpec("ctxt_per_sec", "sched", 0.18, 50.0, "context switches/s"),
+    "ctxt_per_sec": FeatureSpec("ctxt_per_sec", "sched", 0.18, 400.0, "context switches/s", 10.0, 14.0),
     "run_queue": FeatureSpec("run_queue", "sched", 0.16, 1.0, "run-queue depth"),
     "load1": FeatureSpec("load1", "sched", 0.08, 0.2, "loadavg 1m"),
     "tcp_retrans_per_sec": FeatureSpec("tcp_retrans_per_sec", "net", 0.30, 0.5, "TCP retrans/s"),
@@ -41,7 +46,7 @@ FEATURE_SPECS: dict[str, FeatureSpec] = {
     "tcp_outseg_per_sec": FeatureSpec("tcp_outseg_per_sec", "net", 0.34, 20.0, "TCP out segs/s"),
     "net_softirq_per_sec": FeatureSpec("net_softirq_per_sec", "net", 0.38, 20.0, "NET softirq/s"),
     "block_softirq_per_sec": FeatureSpec("block_softirq_per_sec", "fs", 0.46, 5.0, "BLOCK softirq/s"),
-    "pgfault_per_sec": FeatureSpec("pgfault_per_sec", "mm", 0.62, 50.0, "minor faults/s"),
+    "pgfault_per_sec": FeatureSpec("pgfault_per_sec", "mm", 0.62, 250.0, "minor faults/s", 12.0, 16.0),
     "pgmajfault_per_sec": FeatureSpec("pgmajfault_per_sec", "mm", 0.68, 1.0, "major faults/s"),
     "pgscan_direct_per_sec": FeatureSpec("pgscan_direct_per_sec", "mm", 0.72, 5.0, "direct reclaim/s"),
     "swap_io_per_sec": FeatureSpec("swap_io_per_sec", "mm", 0.76, 1.0, "swap io/s"),

@@ -124,47 +124,23 @@ def map_anomaly(anomaly: dict) -> dict | None:
             why=why,
         )
 
-    # --- Stage 1 / 2 host features ---
+    # Host-level spikes (pgfault, ctxt, TCP rates, IRQ) are traffic on this
+    # box, not ATT&CK. Only name a family when there is a process/sequence
+    # hint or an explicit miner/scanner token.
     feat = feature.lower()
-    if any(k in feat for k in ("tcp_retrans", "net_softirq", "tcp_inseg", "tcp_outseg")):
+    if "miner" in message or "xmrig" in message or any(h in feat for h in _MINER_HINTS):
         return _technique_payload(
-            TECHNIQUES["T1498"],
-            confidence=0.4,
+            TECHNIQUES["T1496"],
+            confidence=0.6,
             source="heuristic",
-            why=f"network-path pressure on {feature}",
+            why="host pressure with miner hint",
         )
-    if any(k in feat for k in ("ctxt_per_sec", "procs_running", "proc_count", "run_queue", "load1", "cpu_busy")):
-        # Resource pressure — could be DoS or miner; stay conservative.
-        if "miner" in message or "xmrig" in message:
-            tech = TECHNIQUES["T1496"]
-            conf = 0.6
-            why = "host CPU/sched pressure with miner hint"
-        else:
-            tech = TECHNIQUES["T1499"]
-            conf = 0.38
-            why = f"host sched/CPU pressure on {feature}"
-        return _technique_payload(tech, confidence=conf, source="heuristic", why=why)
-    if any(k in feat for k in ("pgfault", "pgmajfault", "pgscan", "swap_io", "psi_mem")):
+    if any(h in message or h in feat for h in _SCAN_HINTS):
         return _technique_payload(
-            TECHNIQUES["T1499"],
-            confidence=0.36,
+            TECHNIQUES["T1046"],
+            confidence=0.55,
             source="heuristic",
-            why=f"memory pressure on {feature}",
-        )
-    if "hardirq" in feat or "block_softirq" in feat:
-        return _technique_payload(
-            TECHNIQUES["T1499"],
-            confidence=0.34,
-            source="heuristic",
-            why=f"IRQ/block pressure on {feature}",
-        )
-
-    if source == "stage2_isoforest":
-        return _technique_payload(
-            TECHNIQUES["T1499"],
-            confidence=0.3,
-            source="heuristic",
-            why="IsolationForest unusual host state (family-level guess)",
+            why="host pressure with scanner hint",
         )
 
     return None

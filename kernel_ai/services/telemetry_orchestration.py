@@ -87,6 +87,43 @@ def _kernel_dna_softirq_nucleotides(limit=8):
 KERNEL_DNA_ML_SINCE_SEC = int(os.environ.get("KERNEL_DNA_ML_SINCE_SEC", "120"))
 KERNEL_DNA_ML_MAX = int(os.environ.get("KERNEL_DNA_ML_MAX", "8"))
 
+# Host-rate chatter: keep in the store, keep off the helix unless a process
+# or a named detector (sequence / HTTP / lineage) owns the row.
+_HELIX_HOLD_FEATURES = frozenset({
+    "pgfault_per_sec",
+    "ctxt_per_sec",
+    "tcp_inseg_per_sec",
+    "tcp_outseg_per_sec",
+    "net_softirq_per_sec",
+    "hardirq_per_sec",
+    "cpu_busy_pct",
+    "block_softirq_per_sec",
+    "tcp_retrans_per_sec",
+    "procs_running",
+    "proc_count",
+    "run_queue",
+    "load1",
+})
+_HELIX_ALWAYS_SOURCES = frozenset({
+    "stage4_sequence",
+    "stage5_process",
+    "stage8_sequence",
+    "stage9_http",
+    "stage9_success",
+})
+
+
+def _helix_surface(row):
+    """Whether a stored ML anomaly should become a helix mutation."""
+    source = str(row.get("source") or "")
+    if source in _HELIX_ALWAYS_SOURCES or source.startswith("stage9"):
+        return True
+    meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+    if meta.get("pid"):
+        return True
+    feature = str(row.get("feature") or "")
+    return feature not in _HELIX_HOLD_FEATURES
+
 
 def _ml_anomalies_to_mutations(rows):
     """Map stored ML anomalies onto the Kernel DNA mutation contract.
@@ -99,6 +136,8 @@ def _ml_anomalies_to_mutations(rows):
     mutations = []
     seen = set()
     for row in rows:
+        if not _helix_surface(row):
+            continue
         feature = row.get("feature")
         if feature in seen:
             continue
