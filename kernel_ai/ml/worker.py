@@ -33,10 +33,12 @@ def _build_anomalies(scores: dict[str, Score], cfg: MLConfig) -> list[dict]:
         if sc.warm:
             continue
         # Attacks present as bursts: we flag upward deviations only.
-        if sc.z < cfg.z_warn or sc.value <= sc.mean:
-            continue
         spec = FEATURE_SPECS.get(name)
-        severity = "high" if sc.z >= cfg.z_crit else "medium"
+        warn = spec.z_warn if spec and spec.z_warn > 0 else cfg.z_warn
+        crit = spec.z_crit if spec and spec.z_crit > 0 else cfg.z_crit
+        if sc.z < warn or sc.value <= sc.mean:
+            continue
+        severity = "high" if sc.z >= crit else "medium"
         out.append(
             {
                 "source": "stage1_baseline",

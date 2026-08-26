@@ -79,10 +79,34 @@ def _refresh_markov(cfg: MLConfig, metrics: dict) -> None:
         logger.warning("Stage 8 Markov build failed: %s", exc)
 
 
+def _label_http(cfg: MLConfig, metrics: dict) -> None:
+    """Walk local nginx/app logs into ml_http_labels before champion/challenger."""
+    paths = [p for p in (cfg.http_nginx_log, cfg.http_app_log) if p]
+    readable = [p for p in paths if os.path.isfile(p) and os.access(p, os.R_OK)]
+    if not readable:
+        logger.info("HTTP label skipped: no readable log in %s", paths)
+        return
+    try:
+        from kernel_ai.ml.http_label import label_paths
+        from kernel_ai.ml.store import PostgresStore
+
+        store = PostgresStore(cfg.dsn)
+        try:
+            stats = label_paths(readable, hours=24.0, store=store)
+        finally:
+            store.close()
+        metrics["http_label_windows"] = float(stats.get("windows") or 0)
+        metrics["http_label_attempts"] = float(stats.get("attempts") or 0)
+        logger.info("HTTP labels refreshed: %s", stats)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("HTTP label failed: %s", exc)
+
+
 def _refresh_http(cfg: MLConfig, metrics: dict) -> None:
     """Best-effort Stage 9 retrain. Guardrails live in http_train (keep previous)."""
     if os.getenv("KERNEL_AI_ML_HTTP_RETRAIN", "true").lower() != "true":
         return
+    _label_http(cfg, metrics)
     try:
         from kernel_ai.ml.http_train import train as train_http
 
