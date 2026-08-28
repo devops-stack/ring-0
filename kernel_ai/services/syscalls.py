@@ -269,6 +269,118 @@ def _sample_visible_processes(syscall_names, map_syscall_to_subsystem_fn, kernel
         return [] if platform.system() == "Linux" else fallback_mock_calls_fn()
 
 
+# One process can park hundreds of threads in a call; past this the list stops
+# being readable and the honest total is reported beside it.
+_MAX_TASK_CALLS = 48
+
+
+def _read_proc_io(pid):
+    """syscr/syscw of a task: how many read and write calls it has ever made.
+
+    These are counters the kernel keeps per task, so a difference between two
+    samples is a real count of calls made in between — the closest thing to
+    "what is it calling" that is readable without ptrace.
+    """
+    out = {}
+    try:
+        with open(f"/proc/{pid}/io", "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                key, _, value = line.partition(":")
+                if key in ("syscr", "syscw", "rchar", "wchar"):
+                    out[key] = int(value.strip())
+    except (OSError, ValueError):
+        return {}
+    return out
+
+
+def _read_proc_ctxt(pid):
+    """Voluntary and forced context switches — world-readable, unlike the rest."""
+    out = {}
+    try:
+        with open(f"/proc/{pid}/status", "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("voluntary_ctxt_switches"):
+                    out["voluntary"] = int(line.split(":")[1].strip())
+                elif line.startswith("nonvoluntary_ctxt_switches"):
+                    out["forced"] = int(line.split(":")[1].strip())
+    except (OSError, ValueError, IndexError):
+        return {}
+    return out
+
+
+def read_process_calls(pid, syscall_names, max_calls=_MAX_TASK_CALLS):
+    """What one process is calling, at the two levels the kernel will show us.
+
+    The name of the call a thread is parked in comes from /proc/<pid>/syscall,
+    which needs ptrace-level access and is therefore closed for most processes
+    on a box with ptrace_scope set. The *counts* of read and write calls in
+    /proc/<pid>/io are not, so a process that will not tell us what it is
+    parked in will still tell us how many calls it has made. The two are
+    reported separately: a missing name is not a quiet process.
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return {"readable": False, "reason": "bad pid"}
+
+    io = _read_proc_io(pid)
+    ctxt = _read_proc_ctxt(pid)
+    base = {"readable": bool(io or ctxt), "io": io, "ctxt": ctxt}
+    if not base["readable"]:
+        return {"readable": False, "reason": "process is gone or closed to us"}
+
+    task_dir = f"/proc/{pid}/task"
+    try:
+        tids = sorted(os.listdir(task_dir), key=int)
+    except (OSError, ValueError):
+        return dict(base, calls_readable=False, reason="task list not readable", calls=[])
+
+    calls = []
+    parked = 0
+    denied = 0
+    for tid in tids:
+        try:
+            with open(f"{task_dir}/{tid}/syscall", "r", encoding="utf-8", errors="replace") as fh:
+                line = fh.read().strip()
+        except PermissionError:
+            denied += 1
+            continue
+        except (OSError, ValueError):
+            continue
+        if not line or line in ("-1", "running"):
+            continue
+        head = line.split()
+        try:
+            nr = int(head[0])
+        except (IndexError, ValueError):
+            continue
+        parked += 1
+        if len(calls) >= max_calls:
+            continue
+        calls.append({
+            "tid": int(tid),
+            "comm": _read_comm(tid),
+            "nr": nr,
+            "name": syscall_names.get(nr, f"syscall_{nr}"),
+        })
+    if denied and not calls:
+        return dict(
+            base,
+            calls_readable=False,
+            reason="ptrace scope hides what it is parked in",
+            calls=[],
+            threads=len(tids),
+        )
+    return dict(
+        base,
+        calls_readable=True,
+        reason=None,
+        calls=calls,
+        parked=parked,
+        threads=len(tids),
+    )
+
+
 def get_softirq_nucleotides(map_interrupt_to_subsystem_fn, limit=8):
     """Per-vector softirq totals from /proc/softirqs."""
     out = []

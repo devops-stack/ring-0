@@ -514,6 +514,105 @@ svg {
     font-size: 7.5px;
     letter-spacing: 0.7px;
 }
+/* One frame of this flow, drawn to scale. The header bands are deliberately
+   thin — that sliver against the hatched cargo is the whole argument. Below,
+   the same bytes opened into the field grid of RFC 791 and 793: a cell drawn
+   solid was measured, a dashed cell is reasoned from the protocol, and a cell
+   left empty is a field we know is there and cannot see. */
+.frame-dim {
+    stroke: rgba(244, 244, 236, 0.28);
+    stroke-width: 0.8;
+}
+.frame-dim-label {
+    fill: rgba(244, 244, 236, 0.5);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 8px;
+    letter-spacing: 1.3px;
+}
+.frame-band {
+    fill: #e2a33e;
+    stroke: none;
+}
+.frame-band.is-1 { fill: rgba(226, 163, 62, 0.78); }
+.frame-band.is-2 { fill: rgba(226, 163, 62, 0.56); }
+.frame-cargo { stroke: none; }
+.frame-cargo-edge {
+    fill: none;
+    stroke: rgba(244, 244, 236, 0.22);
+    stroke-width: 0.9;
+}
+.frame-cargo-label {
+    fill: rgba(244, 244, 236, 0.72);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 1.6px;
+}
+.frame-dim-label.is-header { fill: rgba(226, 163, 62, 0.85); }
+.frame-wedge {
+    stroke: rgba(226, 163, 62, 0.7);
+    stroke-width: 0.9;
+    stroke-dasharray: 3 2;
+}
+.frame-wedge-fill { fill: rgba(226, 163, 62, 0.09); }
+.frame-zoom {
+    fill: rgba(226, 163, 62, 0.7);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 7.5px;
+    letter-spacing: 1.4px;
+}
+.frame-block-title {
+    fill: rgba(244, 244, 236, 0.5);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 8.5px;
+    letter-spacing: 1.6px;
+}
+.frame-ruler {
+    stroke: rgba(244, 244, 236, 0.2);
+    stroke-width: 0.7;
+}
+.frame-bit {
+    fill: rgba(244, 244, 236, 0.28);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 6.5px;
+    letter-spacing: 0.3px;
+}
+.frame-cell {
+    fill: none;
+    stroke: rgba(244, 244, 236, 0.16);
+    stroke-width: 0.8;
+}
+.frame-cell.is-live {
+    fill: rgba(226, 163, 62, 0.09);
+    stroke: rgba(226, 163, 62, 0.72);
+    stroke-width: 1;
+}
+.frame-cell.is-derived {
+    fill: none;
+    stroke: rgba(226, 163, 62, 0.5);
+    stroke-width: 0.9;
+    stroke-dasharray: 3 2;
+}
+.frame-cell-name {
+    fill: rgba(244, 244, 236, 0.34);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 6.5px;
+    letter-spacing: 0.5px;
+}
+.frame-cell-value {
+    fill: #e2a33e;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.2px;
+}
+.frame-cell-value.is-derived { fill: rgba(226, 163, 62, 0.72); }
+.frame-verdict {
+    fill: rgba(244, 244, 236, 0.62);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 1.1px;
+}
+
+/* Official sock graph on the FLOW card: amber metro of socket → sock → nic. */
 .flow-metro-rail {
     fill: none;
     stroke: rgba(226, 163, 62, 0.16);
@@ -545,6 +644,17 @@ svg {
     font-family: 'Share Tech Mono', monospace;
     font-size: 7px;
     letter-spacing: 0.45px;
+}
+/* The verdict word of a flow, stamped like the classification of a dossier. */
+.flow-stamp {
+    fill: #f4f4ec;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 19px;
+    letter-spacing: 2.2px;
+}
+.flow-stamp-rule {
+    stroke: rgba(226, 163, 62, 0.55);
+    stroke-width: 1;
 }
 /* The state letter of a thread. Amber is a thread the kernel has on a CPU or
    ready for one; the warm tint is an uninterruptible wait, which is the state

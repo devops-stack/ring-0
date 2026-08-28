@@ -1,7 +1,7 @@
 // Linux memory subsystem — strip map (same API payload as processes-realtime memory_visual)
-// Version: 10 — Tron/FLYNN style pass: cyan cold, white hot runs, bank grid
+// Version: 11 — noise sits on a locked grid; hot marks are horizontal runs
 
-debugLog('💾 memory-belt.js v10: Script loading...');
+debugLog('💾 memory-belt.js v11: Script loading...');
 
 class MemorySubsystemVisualization {
     constructor() {
@@ -848,35 +848,33 @@ class MemorySubsystemVisualization {
         this.ctx.fillStyle = '#02080c';
         this.ctx.fillRect(viewX, viewY, viewW, viewH);
 
-        // Far grid layer (slow parallax)
-        const gOffX = this.parallaxX * 0.25;
-        const gOffY = this.parallaxY * 0.25;
+        // Locked lattice — noise is allowed only on this grid, not as free grain.
         this.ctx.save();
         this.ctx.beginPath();
         this.ctx.rect(viewX, viewY, viewW, viewH);
         this.ctx.clip();
-        this.ctx.strokeStyle = 'rgba(0, 120, 135, 0.28)';
-        this.ctx.lineWidth = 1;
         const gStep = 10;
-        for (let gx = viewX - gStep * 2; gx <= viewX + viewW + gStep * 2; gx += gStep) {
-            const xx = gx + gOffX;
+        this.ctx.strokeStyle = 'rgba(0, 120, 135, 0.12)';
+        this.ctx.lineWidth = 1;
+        for (let gx = viewX; gx <= viewX + viewW; gx += gStep) {
             this.ctx.beginPath();
-            this.ctx.moveTo(xx + 0.5, viewY);
-            this.ctx.lineTo(xx + 0.5, viewY + viewH);
+            this.ctx.moveTo(gx + 0.5, viewY);
+            this.ctx.lineTo(gx + 0.5, viewY + viewH);
             this.ctx.stroke();
         }
-        for (let gy = viewY - gStep * 2; gy <= viewY + viewH + gStep * 2; gy += gStep) {
-            const yy = gy + gOffY;
+        this.ctx.strokeStyle = 'rgba(180, 220, 230, 0.07)';
+        for (let gy = viewY; gy <= viewY + viewH; gy += 2) {
             this.ctx.beginPath();
-            this.ctx.moveTo(viewX, yy + 0.5);
-            this.ctx.lineTo(viewX + viewW, yy + 0.5);
+            this.ctx.moveTo(viewX, gy + 0.5);
+            this.ctx.lineTo(viewX + viewW, gy + 0.5);
             this.ctx.stroke();
         }
-        this.ctx.fillStyle = 'rgba(0, 140, 150, 0.16)';
-        for (let gy = viewY; gy <= viewY + viewH; gy += gStep * 2) {
-            for (let gx = viewX; gx <= viewX + viewW; gx += gStep * 2) {
-                this.ctx.fillRect(gx + gOffX, gy + gOffY, 1.2, 1.2);
-            }
+        this.ctx.strokeStyle = 'rgba(0, 140, 155, 0.22)';
+        for (let gy = viewY; gy <= viewY + viewH; gy += gStep) {
+            this.ctx.beginPath();
+            this.ctx.moveTo(viewX, gy + 0.5);
+            this.ctx.lineTo(viewX + viewW, gy + 0.5);
+            this.ctx.stroke();
         }
         this.ctx.restore();
 
@@ -951,7 +949,7 @@ class MemorySubsystemVisualization {
         const hotspotPoints = [];
         const hotMask = new Uint8Array(rows * cols);
         const cellState = new Array(rows * cols);
-        const bandSigma = rows * 0.22;
+        const bandSigma = rows * 0.16;
         const bandCenter = rows * 0.5;
         let hotCount = 0;
         const focusKind = this.fabricFocus?.kind || null;
@@ -967,7 +965,7 @@ class MemorySubsystemVisualization {
                 const n2 = Math.cos(cx * 0.11 - ry * 0.29 + this.tick * 0.002);
                 const n3 = Math.sin((cx + ry * 3) * 0.19 + this.tick * 0.0012);
                 const noise = (n1 + n2 + n3 + 3) / 6;
-                const heat = Math.max(0, Math.min(1, src.heat * 0.5 + noise * 0.5));
+                const heat = Math.max(0, Math.min(1, src.heat * 0.78 + noise * 0.22));
                 // Slow discrete drift of lit pattern (~every ~40 frames)
                 const seed = ((cx + 13) * 73856093) ^ ((ry + 29) * 19349663) ^ (Math.floor(this.tick * 0.05) * 83492791);
                 const rnd = ((seed >>> 0) % 10000) / 10000;
@@ -975,7 +973,7 @@ class MemorySubsystemVisualization {
                 const aboveHot = ry > 0 && hotMask[(ry - 1) * cols + cx];
                 const clump = (leftHot ? 0.16 : 0) + (aboveHot ? 0.08 : 0);
                 // Cream = pressure now (PSI / reclaim / local heat), not byte occupancy.
-                const lit = rnd < (bandGate * (0.28 + heat * 0.4) + clump * 0.85 + usedLevel * 0.03 + pressureBoost);
+                const lit = rnd < (bandGate * (0.18 + heat * 0.36) + clump * 1.05 + usedLevel * 0.02 + pressureBoost);
                 hotMask[ry * cols + cx] = lit ? 1 : 0;
                 // depth layer: 0 far mass, 1 mid mass, 2 pressure hotspots
                 let layer = 0;
@@ -988,107 +986,125 @@ class MemorySubsystemVisualization {
             }
         }
 
-        const layers = [
-            { id: 0, parallax: 0.35, scale: 0.92 },
-            { id: 1, parallax: 0.65, scale: 0.97 },
-            { id: 2, parallax: 1.0, scale: 1.0 }
-        ];
-
         this.ctx.save();
         this.ctx.beginPath();
         this.ctx.rect(viewX, viewY, viewW, viewH);
         this.ctx.clip();
 
-        layers.forEach((L) => {
-            const ox = this.parallaxX * L.parallax;
-            const oy = this.parallaxY * L.parallax;
-            for (let ry = 0; ry < rows; ry++) {
-                for (let cx = 0; cx < cols; cx++) {
-                    const st = cellState[ry * cols + cx];
-                    if (!st || st.layer !== L.id) continue;
-                    const px0 = viewX + cx * cellW;
-                    const py0 = viewY + ry * cellH;
-                    const gapX = 1.4 + (2 - L.id) * 0.4;
-                    const gapY = 1.8 + (2 - L.id) * 0.5;
-                    let rw = Math.max(2, (cellW - gapX) * L.scale);
-                    let rh = Math.max(2, Math.min(cellH - gapY, cellW * 0.55) * L.scale);
-                    const px = px0 + ox + (cellW - rw) * 0.5;
-                    const py = py0 + oy + (cellH - rh) * 0.5;
-                    const related = focusKind
-                        && (st.src.kind === focusKind || st.src.rowId === focusRow);
-                    const dimUnrelated = focusKind && !related;
+        const rh = Math.max(2, Math.min(cellH - 2.2, cellW * 0.42));
+        const ox = this.parallaxX * 0.12;
+        const oy = this.parallaxY * 0.08;
 
-                    if (L.id === 2) {
-                        // Pressure hotspot — pale yellow-white (FLYNN active)
-                        const thr = thrashAtm * 0.25;
-                        const r = Math.floor(235 + 20 * st.heat);
-                        const g = Math.floor(240 + 12 * st.heat - thr * 30);
-                        const b = Math.floor(200 + 30 * st.heat + thr * 25);
-                        const bright = (0.7 + st.heat * 0.3) * (dimUnrelated ? 0.25 : 1);
-                        // variable-length run bricks (1–4 cells feel)
-                        const runBoost = (st.rnd > 0.55) ? 1.0 : (st.rnd > 0.3 ? 0.65 : 0.35);
-                        const drawW = Math.max(2, rw * (0.85 + runBoost * 0.9));
-                        this.ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${bright.toFixed(3)})`;
-                        this.ctx.fillRect(px, py, Math.min(drawW, cellW * 3.2), rh);
-                        // soft glow edge
-                        this.ctx.fillStyle = `rgba(255, 255, 230, ${(0.12 * bright).toFixed(3)})`;
-                        this.ctx.fillRect(px - 0.5, py - 0.5, Math.min(drawW, cellW * 3.2) + 1, rh + 1);
-                        const usedW = Math.min(drawW, cellW * 3.2);
-                        if (related) {
-                            this.ctx.strokeStyle = 'rgba(255, 252, 220, 0.95)';
-                            this.ctx.lineWidth = 1;
-                            this.ctx.strokeRect(px + 0.5, py + 0.5, usedW - 1, rh - 1);
-                        }
-                        if (st.heat > 0.5 || st.rnd > 0.65) {
-                            hotspotPoints.push({ x: px + usedW * 0.5, y: py + rh * 0.5, heat: st.heat });
-                        }
-                        const procOwner = weightedProcPool.length
-                            ? weightedProcPool[(Math.abs(cx * 97 + ry * 53 + (st.seed >>> 4)) % weightedProcPool.length)]
-                            : null;
-                        if (this.memoryFabricHits.length < 1200) {
-                            this.memoryFabricHits.push({
-                                x: px, y: py, w: usedW, h: rh,
-                                heat: st.heat,
-                                kind: st.src.kind,
-                                rowId: st.src.rowId,
-                                label: st.src.label,
-                                pid: procOwner ? Number(procOwner.pid || 0) : null,
-                                name: procOwner ? String(procOwner.name || 'proc') : null,
-                                role: procOwner ? String(procOwner.role || 'userspace') : null,
-                                pressure_score: procOwner ? Number(procOwner.pressure_score || 0) : 0,
-                                rss_mb: procOwner ? Number(procOwner.rss_mb || 0) : 0,
-                                swap_mb: procOwner ? Number(procOwner.swap_mb || 0) : 0,
-                                anon_mb: procOwner ? Number(procOwner.anon_mb || 0) : 0,
-                                file_mb: procOwner ? Number(procOwner.file_mb || 0) : 0,
-                                majflt: procOwner ? Number(procOwner.majflt || 0) : 0
-                            });
-                        }
-                    } else if (L.id === 1) {
-                        // Cold cyan mass — more visible like FLYNN field
-                        const a = (0.22 + st.heat * 0.28) * (dimUnrelated ? 0.3 : 1) * (related ? 1.3 : 1);
-                        this.ctx.fillStyle = this.fabricKindTint(st.src.kind, st.heat, a);
-                        this.ctx.fillRect(px, py, rw, rh);
-                    } else {
-                        const a = (0.1 + st.heat * 0.14) * (dimUnrelated ? 0.35 : 1);
-                        this.ctx.fillStyle = this.fabricKindTint(st.src.kind, st.heat * 0.7, a);
-                        this.ctx.fillRect(px, py, rw, rh);
+        // Cold mass: short dashes snapped to the lattice. Not a third layer of grain.
+        for (let ry = 0; ry < rows; ry++) {
+            let cx = 0;
+            while (cx < cols) {
+                const st = cellState[ry * cols + cx];
+                if (!st || st.layer !== 1 || st.lit) {
+                    cx += 1;
+                    continue;
+                }
+                const start = cx;
+                let heat = st.heat;
+                let run = 1;
+                const want = 1 + ((st.seed >>> 8) % 3);
+                while (run < want && cx + 1 < cols) {
+                    const nxt = cellState[ry * cols + cx + 1];
+                    if (!nxt || nxt.layer !== 1 || nxt.lit) break;
+                    cx += 1;
+                    run += 1;
+                    heat = Math.max(heat, nxt.heat);
+                }
+                const related = focusKind
+                    && (st.src.kind === focusKind || st.src.rowId === focusRow);
+                const dimUnrelated = focusKind && !related;
+                const px = viewX + start * cellW + 0.7;
+                const py = viewY + ry * cellH + (cellH - rh) * 0.5;
+                const a = (0.14 + heat * 0.2) * (dimUnrelated ? 0.28 : 1) * (related ? 1.25 : 1);
+                this.ctx.fillStyle = this.fabricKindTint(st.src.kind, heat, a);
+                this.ctx.fillRect(px, py, Math.max(2, run * cellW - 1.6), rh);
+                cx += 1 + ((st.seed >>> 12) % 2);
+            }
+        }
+
+        // Hot noise: merge neighbours into horizontal runs. Flynn clusters / cclabs streaks.
+        for (let ry = 0; ry < rows; ry++) {
+            let cx = 0;
+            while (cx < cols) {
+                const st = cellState[ry * cols + cx];
+                if (!st || !st.lit) {
+                    cx += 1;
+                    continue;
+                }
+                const start = cx;
+                let heat = st.heat;
+                while (cx + 1 < cols && cellState[ry * cols + cx + 1] && cellState[ry * cols + cx + 1].lit) {
+                    cx += 1;
+                    heat = Math.max(heat, cellState[ry * cols + cx].heat);
+                }
+                const run = cx - start + 1;
+                const related = focusKind
+                    && (st.src.kind === focusKind || st.src.rowId === focusRow);
+                const dimUnrelated = focusKind && !related;
+                const px = viewX + start * cellW + ox + 0.6;
+                const py = viewY + ry * cellH + oy + (cellH - rh) * 0.5;
+                const usedW = Math.max(2, run * cellW - 1.2);
+                const thr = thrashAtm * 0.25;
+                const r = Math.floor(235 + 20 * heat);
+                const g = Math.floor(240 + 12 * heat - thr * 30);
+                const b = Math.floor(200 + 30 * heat + thr * 25);
+                const bright = (0.72 + heat * 0.28) * (dimUnrelated ? 0.25 : 1);
+                this.ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${bright.toFixed(3)})`;
+                this.ctx.fillRect(px, py, usedW, rh);
+                this.ctx.fillStyle = `rgba(255, 255, 230, ${(0.1 * bright).toFixed(3)})`;
+                this.ctx.fillRect(px - 0.4, py - 0.4, usedW + 0.8, rh + 0.8);
+                if (related) {
+                    this.ctx.strokeStyle = 'rgba(255, 252, 220, 0.95)';
+                    this.ctx.lineWidth = 1;
+                    this.ctx.strokeRect(px + 0.5, py + 0.5, usedW - 1, rh - 1);
+                }
+                if (heat > 0.55 || run >= 3) {
+                    hotspotPoints.push({ x: px + usedW * 0.5, y: py + rh * 0.5, heat });
+                }
+                for (let k = start; k <= cx; k += 1) {
+                    const cell = cellState[ry * cols + k];
+                    const procOwner = weightedProcPool.length
+                        ? weightedProcPool[(Math.abs(k * 97 + ry * 53 + (cell.seed >>> 4)) % weightedProcPool.length)]
+                        : null;
+                    if (this.memoryFabricHits.length < 1200) {
+                        this.memoryFabricHits.push({
+                            x: viewX + k * cellW + ox, y: py, w: cellW, h: rh,
+                            heat: cell.heat,
+                            kind: cell.src.kind,
+                            rowId: cell.src.rowId,
+                            label: cell.src.label,
+                            pid: procOwner ? Number(procOwner.pid || 0) : null,
+                            name: procOwner ? String(procOwner.name || 'proc') : null,
+                            role: procOwner ? String(procOwner.role || 'userspace') : null,
+                            pressure_score: procOwner ? Number(procOwner.pressure_score || 0) : 0,
+                            rss_mb: procOwner ? Number(procOwner.rss_mb || 0) : 0,
+                            swap_mb: procOwner ? Number(procOwner.swap_mb || 0) : 0,
+                            anon_mb: procOwner ? Number(procOwner.anon_mb || 0) : 0,
+                            file_mb: procOwner ? Number(procOwner.file_mb || 0) : 0,
+                            majflt: procOwner ? Number(procOwner.majflt || 0) : 0
+                        });
                     }
                 }
+                cx += 1;
             }
-        });
+        }
         this.ctx.restore();
 
-        // Stall smear — horizontal pressure band when MM is busy (atmosphere only)
-        if (stallAtm > 0.08) {
+        if (stallAtm > 0.18) {
             this.ctx.save();
             this.ctx.beginPath();
             this.ctx.rect(viewX, viewY, viewW, viewH);
             this.ctx.clip();
-            const smearY = viewY + viewH * (0.42 + 0.04 * Math.sin(this.tick * 0.01));
-            const smearH = viewH * (0.1 + stallAtm * 0.12);
+            const smearY = viewY + viewH * (0.44 + 0.02 * Math.sin(this.tick * 0.01));
+            const smearH = viewH * (0.06 + stallAtm * 0.06);
             const smear = this.ctx.createLinearGradient(viewX, smearY, viewX, smearY + smearH);
             smear.addColorStop(0, 'rgba(230, 240, 180, 0)');
-            smear.addColorStop(0.5, `rgba(230, 240, 180, ${(0.04 + stallAtm * 0.1).toFixed(3)})`);
+            smear.addColorStop(0.5, `rgba(230, 240, 180, ${(0.02 + stallAtm * 0.05).toFixed(3)})`);
             smear.addColorStop(1, 'rgba(230, 240, 180, 0)');
             this.ctx.fillStyle = smear;
             this.ctx.fillRect(viewX, smearY, viewW, smearH);
@@ -1101,13 +1117,11 @@ class MemorySubsystemVisualization {
             this.ctx.rect(viewX, viewY, viewW, viewH);
             this.ctx.clip();
             this.ctx.globalCompositeOperation = 'lighter';
-            const bloomOx = this.parallaxX;
-            const bloomOy = this.parallaxY;
             hotspotPoints.forEach((p, i) => {
-                if (i % 4 !== 0) return;
-                const rr = 5 + p.heat * 12;
+                if (i % 7 !== 0) return;
+                const rr = 3 + p.heat * 6;
                 const glow = this.ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, rr);
-                glow.addColorStop(0, `rgba(255, 255, 230, ${(0.16 + p.heat * 0.26).toFixed(3)})`);
+                glow.addColorStop(0, `rgba(255, 255, 230, ${(0.06 + p.heat * 0.1).toFixed(3)})`);
                 glow.addColorStop(1, 'rgba(40, 120, 100, 0)');
                 this.ctx.fillStyle = glow;
                 this.ctx.beginPath();
@@ -1116,6 +1130,39 @@ class MemorySubsystemVisualization {
             });
             this.ctx.restore();
         }
+
+        // Numeric dust — real meminfo / PSI / reclaim, locked to the mid-band.
+        this.ctx.save();
+        this.ctx.beginPath();
+        this.ctx.rect(viewX, viewY, viewW, viewH);
+        this.ctx.clip();
+        const dustVals = [
+            Number(summary.cached_mb || 0).toFixed(0),
+            Number(summary.anon_mb || 0).toFixed(0),
+            Number(summary.available_mb || 0).toFixed(0),
+            Number(summary.slab_mb || 0).toFixed(0),
+            psiSome.toFixed(1),
+            psiFull.toFixed(1),
+            Number(summary.used_percent || 0).toFixed(1),
+            Number(summary.swap_percent || 0).toFixed(1),
+            reclaimDelta > 0 ? String(Math.round(reclaimDelta)) : null,
+            Number(summary.active_mb || 0).toFixed(0),
+            Number(summary.inactive_mb || 0).toFixed(0)
+        ].filter((v) => v !== null && v !== '0' && v !== '0.0');
+        this.ctx.font = '7px "Share Tech Mono", monospace';
+        this.ctx.textAlign = 'left';
+        const dustN = Math.min(16, dustVals.length * 3);
+        for (let i = 0; i < dustN; i++) {
+            const seed = ((i + 7) * 1103515245 + Math.floor(this.tick * 0.02) * 12345) >>> 0;
+            const nx = ((seed & 0xffff) / 0xffff) - 0.5;
+            const ny = (((seed >>> 16) & 0xffff) / 0xffff) - 0.5;
+            const dx = viewX + viewW * (0.5 + nx * 0.62);
+            const dy = viewY + viewH * (0.5 + ny * 0.28);
+            const a = 0.18 + ((seed >>> 8) % 20) / 100;
+            this.ctx.fillStyle = `rgba(190, 220, 230, ${a.toFixed(3)})`;
+            this.ctx.fillText(dustVals[i % dustVals.length], dx, dy);
+        }
+        this.ctx.restore();
 
         const vignette = this.ctx.createRadialGradient(centerX, centerY, Math.min(viewW, viewH) * 0.2, centerX, centerY, Math.max(viewW, viewH) * 0.75);
         vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
@@ -1179,6 +1226,21 @@ class MemorySubsystemVisualization {
             viewX + 58,
             viewY + 14
         );
+
+        if (reclaimDelta > 0) {
+            this.ctx.save();
+            this.ctx.textAlign = 'center';
+            this.ctx.textBaseline = 'middle';
+            this.ctx.font = '11px "Share Tech Mono", monospace';
+            const capY = viewY + viewH - (hero ? 118 : 36);
+            this.ctx.fillStyle = 'rgba(160, 230, 235, 0.88)';
+            this.ctx.fillText('reclaiming pages', centerX - 62, capY);
+            this.ctx.fillStyle = 'rgba(236, 244, 200, 0.82)';
+            this.ctx.fillText('in the background.', centerX + 78, capY);
+            this.ctx.restore();
+            this.ctx.textAlign = 'start';
+            this.ctx.textBaseline = 'alphabetic';
+        }
 
         // Field legend — what this plane means
         const legY = viewY + viewH - (hero ? 96 : 18);

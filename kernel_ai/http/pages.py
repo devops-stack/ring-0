@@ -108,6 +108,16 @@ def linux_devices_subsystem_html():
     return redirect("/linux-devices-subsystem", code=301)
 
 
+def io_elevator_prototype_page():
+    """Local design prototype: vintage floor-selector as block I/O elevator."""
+    return render_template("io-elevator-prototype.html")
+
+
+def syscall_selector_prototype_page():
+    """Local design prototype: selector arms as sys_call_table dispatch."""
+    return render_template("syscall-selector-prototype.html")
+
+
 def health_check():
     return jsonify(
         {

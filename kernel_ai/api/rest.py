@@ -18,6 +18,7 @@ _API_ROUTES = [
     ("/active-connections", "active_connections", h.active_connections, None),
     ("/traceroute", "traceroute_info", h.traceroute_info, None),
     ("/flow-history", "flow_history", h.flow_history, None),
+    ("/socket-activity", "socket_activity", h.socket_activity, None),
     ("/ip-entry", "ip_entry", h.ip_entry, None),
     ("/network-stack-realtime", "network_stack_realtime", h.network_stack_realtime, None),
     ("/devices-realtime", "devices_realtime", h.devices_realtime, None),

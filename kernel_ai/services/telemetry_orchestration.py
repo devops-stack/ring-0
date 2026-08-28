@@ -7,6 +7,7 @@ import os
 from kernel_ai.services import core_observability as _core_observability_service
 from kernel_ai.services import execution as _execution_service
 from kernel_ai.services import kernel_maps as _kernel_maps_service
+from kernel_ai.services import network as _network_service
 from kernel_ai.services import syscalls as _syscalls_service
 
 try:
@@ -52,6 +53,58 @@ def get_syscall_sample():
         kernel_dna_max_procs=KERNEL_DNA_MAX_PROCS,
         fallback_mock_calls_fn=get_mock_system_calls,
     )
+
+
+def get_socket_activity(local, remote, proto="TCP"):
+    """One socket, its owner, and what that owner is calling right now.
+
+    The activity tape is machine-wide, so watching it beside a hovered socket
+    invites a connection that is not there. This is that connection made real:
+    the owning task is resolved through the socket's own fd, and the calls
+    reported are its threads' — not the box's. When the owner is closed to us
+    the answer says so instead of falling back to the machine feed.
+    """
+    owner = _network_service.get_socket_owner(local=local, remote=remote, proto=proto)
+    flow = _network_service.get_flow_history(local=local, remote=remote, proto=proto)
+    payload = {
+        "local": local,
+        "remote": remote,
+        "proto": str(proto or "TCP").upper(),
+        "found": bool(flow.get("found")),
+        "owner": owner or None,
+        "readable": False,
+        "calls_readable": False,
+        "reason": None,
+        "calls": [],
+        "socket": {
+            key: flow.get(key)
+            for key in (
+                "state", "bytes_sent", "bytes_received", "segs_out", "segs_in",
+                "retrans_total", "rtt_ms", "cwnd", "recv_q", "send_q",
+                "last_snd_ms", "last_rcv_ms",
+            )
+        },
+    }
+    if not owner:
+        payload["reason"] = "socket not found" if not payload["found"] else "owner unknown"
+        return payload
+    if not owner.get("visible"):
+        payload["reason"] = owner.get("reason") or "owner not visible from here"
+        return payload
+
+    tasks = _syscalls_service.read_process_calls(owner.get("pid"), get_syscall_names())
+    payload["readable"] = bool(tasks.get("readable"))
+    payload["calls_readable"] = bool(tasks.get("calls_readable"))
+    payload["reason"] = tasks.get("reason")
+    payload["calls"] = [
+        dict(call, subsystem=map_syscall_to_subsystem(call.get("name", "")))
+        for call in tasks.get("calls", [])
+    ]
+    payload["parked"] = tasks.get("parked")
+    payload["threads"] = tasks.get("threads")
+    payload["io"] = tasks.get("io") or {}
+    payload["ctxt"] = tasks.get("ctxt") or {}
+    return payload
 
 
 def get_kernel_subsystem_status():
