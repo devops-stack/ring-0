@@ -4,7 +4,7 @@ class RightSemicircleMenuManager {
     constructor() {
         debugLog('RightSemicircleMenuManager constructor called');
         this.menuItems = [
-            { id: 'scheduler', icon: '/static/images/scheduler.svg', label: 'Crypto' },
+            { id: 'scheduler', icon: '/static/images/crypto-api.svg?v=2', label: 'Crypto' },
             { id: 'processes', icon: '/static/images/process-manager.svg', label: 'Processes' },
             { id: 'memory', icon: '/static/images/memory-manager.svg', label: 'Memory' },
             { id: 'files', icon: '/static/images/file-system.svg', label: 'Files' },

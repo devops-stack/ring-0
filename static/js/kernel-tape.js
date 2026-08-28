@@ -80,8 +80,25 @@
         eventsSinceCore: 0,
         eventsThisSecond: 0,
         epsWindowStart: Date.now(),
-        eps: 0
+        eps: 0,
+        // While a socket is hovered the tape narrows to that socket: its owner's
+        // calls and its own counters, instead of the machine-wide feeds.
+        focus: null,
+        focusPrev: null,
+        focusSeq: 0,
+        // The pill is fixed HTML, so an SVG scrim cannot cover it: while a card
+        // is berthed against the right edge the pill would float on top of it.
+        pillHidden: false
     };
+
+    // The pill is only offered when there is nothing in its way: the tape itself
+    // is shut, no card holds the edge, and this is not the phone layout, where
+    // the tape is always on and has no toggle at all.
+    function applyPill() {
+        if (!el.toggle) return;
+        const show = !onMobile() && !state.open && !state.pillHidden;
+        el.toggle.style.display = show ? 'inline-flex' : 'none';
+    }
 
     const el = {};
 
@@ -167,6 +184,7 @@
         const title = document.createElement('span');
         title.textContent = 'KERNEL ACTIVITY';
         Object.assign(title.style, { font: `9px/1 ${D.mono}`, letterSpacing: '1.7px', color: D.text });
+        el.title = title;
         const spacer = document.createElement('span');
         spacer.style.flex = '1';
         const eps = document.createElement('span');
@@ -619,6 +637,113 @@
             .on('end', () => ring.remove());
     }
 
+    function setTitle() {
+        if (!el.title) return;
+        const f = state.focus;
+        if (!f) {
+            el.title.textContent = 'KERNEL ACTIVITY';
+            el.title.style.color = D.text;
+            return;
+        }
+        el.title.textContent = f.owner
+            ? `SOCKET · ${String(f.owner).toUpperCase()}${f.pid ? ` ${f.pid}` : ''}`
+            : 'SOCKET · RESOLVING';
+        el.title.style.color = D.accent;
+    }
+
+    // One socket's own feed. The parked-call names need ptrace-level access and
+    // are often closed to us; the read/write counters in /proc/<pid>/io and the
+    // socket's byte and segment counters are not. When the names are missing the
+    // tape says so once, rather than going quiet and looking idle.
+    async function tickSocket() {
+        const focus = state.focus;
+        if (!focus) return;
+        const seq = state.focusSeq;
+        const params = new URLSearchParams({
+            local: focus.local, remote: focus.remote, proto: focus.proto || 'TCP'
+        });
+        let data;
+        try {
+            data = await getJson(`/api/socket-activity?${params.toString()}`);
+        } catch (e) {
+            return;
+        }
+        if (seq !== state.focusSeq || !state.focus) return;
+
+        const owner = data && data.owner;
+        if (owner && owner.comm) {
+            focus.owner = owner.comm;
+            focus.pid = owner.pid;
+            setTitle();
+        }
+        if (!data || !data.found) {
+            pushRow({ ts: timeStamp(), sym: '·', name: 'socket gone', tagText: 'SOCK', detail: '', level: 'dim' });
+            return;
+        }
+
+        const prev = state.focusPrev;
+        const io = data.io || {};
+        const sock = data.socket || {};
+        state.focusPrev = { io, sock, reason: data.reason };
+
+        if (!prev) {
+            const who = owner && owner.comm ? `${owner.comm} pid ${owner.pid} fd ${owner.fd}` : (data.reason || 'owner not visible');
+            pushRow({ ts: timeStamp(), sym: '⌖', symColor: D.accent, name: 'FOCUS', tagText: 'SOCK', detail: who, live: true });
+            if (data.readable && !data.calls_readable && data.reason) {
+                pushRow({ ts: timeStamp(), sym: '·', name: data.reason, tagText: 'SOCK', detail: 'counts only', level: 'dim' });
+            }
+            return;
+        }
+
+        const step = (now, before) => {
+            const a = Number(now);
+            const b = Number(before);
+            if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
+            return a - b;
+        };
+
+        const reads = step(io.syscr, prev.io && prev.io.syscr);
+        const writes = step(io.syscw, prev.io && prev.io.syscw);
+        if (reads > 0) {
+            pushRow({ ts: timeStamp(), sym: '▲', symColor: D.accent, name: 'read()', tagText: 'FS', detail: `+${reads} calls`, live: true });
+        }
+        if (writes > 0) {
+            pushRow({ ts: timeStamp(), sym: '▲', symColor: D.accent, name: 'write()', tagText: 'FS', detail: `+${writes} calls`, live: true });
+        }
+
+        const segsOut = step(sock.segs_out, prev.sock && prev.sock.segs_out);
+        const segsIn = step(sock.segs_in, prev.sock && prev.sock.segs_in);
+        const sent = step(sock.bytes_sent, prev.sock && prev.sock.bytes_sent);
+        const recv = step(sock.bytes_received, prev.sock && prev.sock.bytes_received);
+        if (segsOut > 0 || sent > 0) {
+            pushRow({ ts: timeStamp(), sym: '↑', symColor: D.accent, name: 'segments out', tagText: 'NET', detail: `+${segsOut} · ${sent} B`, live: true });
+        }
+        if (segsIn > 0 || recv > 0) {
+            pushRow({ ts: timeStamp(), sym: '↓', symColor: D.accent, name: 'segments in', tagText: 'NET', detail: `+${segsIn} · ${recv} B`, live: true });
+        }
+        const retrans = step(sock.retrans_total, prev.sock && prev.sock.retrans_total);
+        if (retrans > 0) {
+            pushRow({ ts: timeStamp(), sym: '!', symColor: ERR_COLOR, name: 'RETRANSMIT', tagText: 'NET', detail: `+${retrans} segs`, level: 'err' });
+        }
+
+        (data.calls || []).slice(0, MAX_NEW_PER_TICK).forEach((call) => {
+            pushRow({
+                ts: timeStamp(),
+                sym: '·',
+                name: String(call.name || '').toUpperCase(),
+                tagText: tagForSyscall(call.name).text,
+                detail: `tid ${call.tid} parked`,
+                level: 'normal'
+            });
+        });
+
+        const idle = !reads && !writes && !segsOut && !segsIn && !(data.calls || []).length;
+        if (idle) {
+            const rtt = Number.isFinite(Number(sock.rtt_ms)) ? `rtt ${Number(sock.rtt_ms).toFixed(1)} ms` : 'quiet';
+            pushRow({ ts: timeStamp(), sym: '·', name: 'no calls this tick', tagText: 'SOCK', detail: rtt, level: 'dim' });
+        }
+    }
+
     function tick() {
         if (state.paused || !state.open) return;
         if (onMobile()) placeCard();
@@ -626,6 +751,13 @@
         // Core "breath" reflects activity accumulated since the previous tick.
         pulseCore(state.eventsSinceCore);
         state.eventsSinceCore = 0;
+        // A hovered socket owns the tape: mixing the machine-wide feeds back in
+        // is exactly the false connection this feature exists to remove.
+        if (state.focus) {
+            tickSocket();
+            updateEps();
+            return;
+        }
         tickSyscalls();
         if (i % 2 === 0) { tickNetwork(); tickIoPulse(); }
         else { tickConnections(); }
@@ -661,8 +793,13 @@
                 el.root.style.transform = state.open ? 'translateX(0)' : 'translateX(100%)';
                 el.root.style.pointerEvents = state.open ? 'auto' : 'none';
             }
-            if (el.toggle) el.toggle.style.display = (!mobile && !state.open) ? 'inline-flex' : 'none';
+            applyPill();
             if (el.closeBtn) el.closeBtn.style.display = mobile ? 'none' : 'inline-block';
+            if (!state.open) {
+                state.focus = null;
+                state.focusPrev = null;
+                setTitle();
+            }
             if (state.open && !wasOpen) primeAndFill();
         },
         setPaused(paused) {
@@ -671,6 +808,48 @@
                 el.pauseBtn.textContent = paused ? 'RESUME' : 'PAUSE';
                 el.pauseBtn.style.color = paused ? D.accent : D.dim;
             }
+        },
+        // Stand the pill down while something else owns the right edge.
+        setPillHidden(hidden) {
+            state.pillHidden = !!hidden;
+            applyPill();
+        },
+        // How much of the right edge the open tape owns, so cards can berth
+        // beside it instead of underneath it.
+        reservedWidth() {
+            if (!state.open || onMobile() || !el.root) return 0;
+            return el.root.offsetWidth || 0;
+        },
+        setFocus(socket) {
+            if (!state.open || !socket || !socket.local || !socket.remote) return;
+            const key = `${socket.local}|${socket.remote}`;
+            if (state.focus && state.focus.key === key) return;
+            state.focusSeq += 1;
+            state.focus = {
+                key,
+                local: String(socket.local),
+                remote: String(socket.remote),
+                proto: String(socket.proto || 'TCP').toUpperCase(),
+                owner: null,
+                pid: null
+            };
+            state.focusPrev = null;
+            setTitle();
+            // Sweeping the pointer down the list would otherwise fire a pair of
+            // ss runs per row; only a hover that settles is worth a request.
+            const seq = state.focusSeq;
+            window.setTimeout(() => {
+                if (seq !== state.focusSeq || state.paused) return;
+                tickSocket();
+            }, 250);
+        },
+        clearFocus() {
+            if (!state.focus) return;
+            state.focusSeq += 1;
+            state.focus = null;
+            state.focusPrev = null;
+            setTitle();
+            state.firstSyscallSample = true;
         }
     };
     window.KernelTape = api;

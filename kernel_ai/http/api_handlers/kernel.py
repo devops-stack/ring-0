@@ -37,6 +37,18 @@ def syscalls_realtime():
     return api_json(_payload)
 
 
+def socket_activity():
+    def _payload():
+        local = request.args.get("local", "").strip()
+        remote = request.args.get("remote", "").strip()
+        proto = request.args.get("proto", "TCP").strip()
+        if not local or not remote:
+            raise ValueError("Missing 'local' or 'remote' query parameter")
+        return _telemetry.get_socket_activity(local=local, remote=remote, proto=proto)
+
+    return api_json(_payload, exception_statuses=[(ValueError, 400)])
+
+
 def syscall_detail(name):
     """What one syscall is inside this kernel, plus who is parked in it.
 

@@ -386,6 +386,9 @@ function draw() {
     if (window.rightSemicircleMenuManager) {
         window.rightSemicircleMenuManager.renderRightSemicircleMenu();
     }
+
+    // Rooms index in the same dossier language as a process card: a cascading
+    // stack of doors, sitting next to the arc rather than as a second HTML nav.
 }
 
 function drawMobileFormula(centerX, centerY) {
@@ -1690,6 +1693,17 @@ function buryLiveLayersUnderScrim(scrimClass, overlayClasses) {
 // nowhere to start.
 const openOverlays = [];
 
+// The veil is drawn inside the svg, so it dims the map but has no reach over
+// fixed HTML chrome: the ACTIVITY pill kept floating on top of any card berthed
+// against the right edge. Every overlay passes through the keeper below, so one
+// call here stands the pill down for all of them and brings it back when the
+// last one closes.
+function syncOverlayChrome() {
+    if (window.KernelTape && typeof window.KernelTape.setPillHidden === 'function') {
+        window.KernelTape.setPillHidden(openOverlays.length > 0);
+    }
+}
+
 // Один сторож на накладку: пока она открыта, живые слои остаются под вуалью.
 function createOverlayTopKeeper(scrimClass, overlayClasses, isOpen) {
     let observer = null;
@@ -1706,6 +1720,7 @@ function createOverlayTopKeeper(scrimClass, overlayClasses, isOpen) {
             const svgNode = svg.node();
             if (!svgNode || typeof MutationObserver === 'undefined') return;
             if (!openOverlays.includes(entry)) openOverlays.push(entry);
+            syncOverlayChrome();
             bury();
             if (observer) return;
             observer = new MutationObserver(() => {
@@ -1719,6 +1734,7 @@ function createOverlayTopKeeper(scrimClass, overlayClasses, isOpen) {
         stop() {
             const mine = openOverlays.indexOf(entry);
             if (mine !== -1) openOverlays.splice(mine, 1);
+            syncOverlayChrome();
             if (observer) {
                 observer.disconnect();
                 observer = null;

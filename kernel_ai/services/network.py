@@ -389,7 +389,12 @@ def _float_field(text, name):
 
 
 def _parse_ss_flow_row(header, details, proto):
-    """Biography fields from one ss -inoe row. No sock cookie, no cgroup path."""
+    """Biography fields from one ss -inoe row. No sock cookie, no cgroup path.
+
+    Also the shape of a full segment on this path — mss, pmtu, the negotiated
+    window scale. That is what lets a reader draw the frame to true scale
+    instead of a nominal one.
+    """
     parts = header.split()
     if proto == "TCP":
         if len(parts) < 5:
@@ -435,6 +440,16 @@ def _parse_ss_flow_row(header, details, proto):
         if name in _CC_NAMES:
             cc = name
             break
+    # ss prints the negotiated options as bare words before the cc name. They
+    # decide how many bytes of every segment are option header rather than data.
+    opt_ts = bool(re.search(r"(?<![\w:])ts(?![\w:])", details))
+    opt_sack = bool(re.search(r"(?<![\w:])sack(?![\w:])", details))
+    wscale_snd = None
+    wscale_rcv = None
+    wscale_match = re.search(r"\bwscale:(\d+),(\d+)", details)
+    if wscale_match:
+        wscale_snd = int(wscale_match.group(1))
+        wscale_rcv = int(wscale_match.group(2))
     cgroup = None
     cg = re.search(r"cgroup:(\S+)", header)
     if cg:
@@ -465,6 +480,16 @@ def _parse_ss_flow_row(header, details, proto):
         "rtt_var_ms": rtt_var,
         "min_rtt_ms": _float_field(details, "minrtt"),
         "cwnd": _int_field(details, "cwnd"),
+        "mss": _int_field(details, "mss"),
+        "advmss": _int_field(details, "advmss"),
+        "pmtu": _int_field(details, "pmtu"),
+        "snd_wnd": _int_field(details, "snd_wnd"),
+        "rcv_space": _int_field(details, "rcv_space"),
+        "rto_ms": _int_field(details, "rto"),
+        "wscale_snd": wscale_snd,
+        "wscale_rcv": wscale_rcv,
+        "opt_ts": opt_ts,
+        "opt_sack": opt_sack,
         "cc": cc,
         "timer": _parse_ss_timer(blob),
         "source": "ss -tinoe" if proto == "TCP" else "ss -uinoe",
@@ -502,6 +527,51 @@ def _ss_flow_dump(proto):
         if row:
             rows.append(row)
     return rows
+
+
+_SS_USER_RE = re.compile(r'users:\(\("([^"]+)",pid=(\d+),fd=(\d+)\)')
+
+
+def get_socket_owner(local=None, remote=None, proto="TCP"):
+    """Which process holds this 4-tuple, when the kernel will admit it.
+
+    ``ss -p`` walks /proc/*/fd looking for the socket inode, so it only names
+    processes the caller is allowed to look inside. A socket belonging to
+    another user comes back unowned rather than guessed at, and costs about
+    four times a plain dump — which is why this is a separate call from the
+    flow-history path rather than a flag on it.
+    """
+    proto = str(proto or "TCP").upper()
+    want_local = _endpoint_key(local)
+    want_remote = _endpoint_key(remote)
+    if not want_local or not want_remote:
+        return {}
+    ss_cmd = resolve_binary("ss")
+    if not ss_cmd:
+        return {}
+    flags = "-tnp" if proto == "TCP" else "-unp"
+    try:
+        result = subprocess.run(
+            [ss_cmd, flags], capture_output=True, text=True, timeout=3, check=False
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return {}
+    for line in (result.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        if _endpoint_key(parts[3]) != want_local or _endpoint_key(parts[4]) != want_remote:
+            continue
+        match = _SS_USER_RE.search(line)
+        if not match:
+            return {"visible": False, "reason": "socket belongs to another user"}
+        return {
+            "visible": True,
+            "comm": match.group(1),
+            "pid": int(match.group(2)),
+            "fd": int(match.group(3)),
+        }
+    return {}
 
 
 def get_flow_history(local=None, remote=None, proto="TCP"):

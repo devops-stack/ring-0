@@ -29,6 +29,8 @@ _PAGE_ROUTES = [
     ("/linux-devices-subsystem", "linux_devices_subsystem_page", h.linux_devices_subsystem_page),
     ("/devices", "devices_page_legacy", h.devices_page_legacy),
     ("/linux-devices-subsystem.html", "linux_devices_subsystem_html", h.linux_devices_subsystem_html),
+    ("/io-elevator", "io_elevator_prototype_page", h.io_elevator_prototype_page),
+    ("/syscall-selector", "syscall_selector_prototype_page", h.syscall_selector_prototype_page),
     ("/health", "health_check", h.health_check),
 ]
 
