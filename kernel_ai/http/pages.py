@@ -118,6 +118,21 @@ def syscall_selector_prototype_page():
     return render_template("syscall-selector-prototype.html")
 
 
+def network_path_prototype_page():
+    """Local design prototype: layers on the left, TX/RX columns, mechanism rail."""
+    return render_template("network-path-prototype.html")
+
+
+def network_hud_prototype_page():
+    """Local design prototype: HUD treatment of the packet path."""
+    return render_template("network-hud-prototype.html")
+
+
+def kernel_cutaway_probe_page():
+    """Local design probe: isometric cutaway rendering technique, no live data."""
+    return render_template("kernel-cutaway-probe.html")
+
+
 def health_check():
     return jsonify(
         {

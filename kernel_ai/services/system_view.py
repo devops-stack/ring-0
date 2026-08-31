@@ -942,6 +942,12 @@ def _scan_isolation_context():
     namespace_counts = {k: {} for k in namespace_keys}
     # Per-namespace, per-inode sample process names (each inode = one isolated "world").
     namespace_samples = {k: {} for k in namespace_keys}
+    namespace_pids = {k: {} for k in namespace_keys}
+    # Reading /proc/<pid>/ns/* of a foreign task needs ptrace-level access, so an
+    # unprivileged scan resolves only a fraction of the process table. Count that
+    # fraction per namespace: it is the only honest denominator for a ratio here,
+    # and it is what tells the frontend how much of the machine is missing.
+    namespace_readable = {k: 0 for k in namespace_keys}
     cgroup_aggregates = {}
     total_scanned = 0
     host_inodes = {ns_name: read_namespace_inode(1, ns_name) for ns_name in namespace_keys}
@@ -967,11 +973,13 @@ def _scan_isolation_context():
             for ns_name in namespace_keys:
                 inode = read_namespace_inode(pid, ns_name)
                 if inode:
+                    namespace_readable[ns_name] += 1
                     ns_map = namespace_counts[ns_name]
                     ns_map[inode] = ns_map.get(inode, 0) + 1
                     samples = namespace_samples[ns_name].setdefault(inode, [])
                     if proc_name not in samples:
                         samples.append(proc_name)
+                    namespace_pids[ns_name].setdefault(inode, []).append(pid)
         except (psutil.NoSuchProcess, psutil.AccessDenied, KeyError):
             continue
 
@@ -987,13 +995,15 @@ def _scan_isolation_context():
             dominant_inode, dominant_count = max(entries.items(), key=lambda kv: kv[1])
         else:
             dominant_inode, dominant_count = None, 0
-        activity = round((dominant_count / total_scanned), 3) if total_scanned > 0 else 0
+        readable = namespace_readable[ns_name]
+        activity = round((dominant_count / readable), 3) if readable > 0 else 0
         # Top isolated "worlds" for this namespace (one per inode), richest first.
         worlds = [
             {
                 "inode": inode,
                 "count": count,
                 "sample": _rank_isolation_samples(namespace_samples[ns_name].get(inode, [])),
+                "pids": namespace_pids[ns_name].get(inode, []),
             }
             for inode, count in sorted(entries.items(), key=lambda kv: kv[1], reverse=True)[:6]
         ]
@@ -1007,6 +1017,7 @@ def _scan_isolation_context():
                 "activity": activity,
                 "isolated": unique_count > 1,
                 "worlds": worlds,
+                "resolved": readable,
             }
         )
 
@@ -1019,6 +1030,7 @@ def _scan_isolation_context():
     return {
         "timestamp": datetime.now().isoformat(),
         "processes_scanned": total_scanned,
+        "processes_resolved": max(namespace_readable.values()) if namespace_readable else 0,
         "namespaces": namespaces,
         "top_cgroups": top_cgroups,
         "source": "self",
