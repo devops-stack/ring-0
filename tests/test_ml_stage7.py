@@ -26,7 +26,7 @@ def test_sigma_reverse_shell_rule():
     assert hit["source"] == "sigma"
 
 
-def test_heuristic_pgfault_maps_to_impact():
+def test_heuristic_host_chatter_stays_unattributed():
     attack = map_anomaly(
         {
             "source": "stage1_baseline",
@@ -35,8 +35,36 @@ def test_heuristic_pgfault_maps_to_impact():
             "message": "minor faults spike",
         }
     )
+    assert attack is None
+    assert map_anomaly(
+        {
+            "source": "stage1_baseline",
+            "feature": "ctxt_per_sec",
+            "type": "baseline_spike:ctxt_per_sec",
+            "message": "context switches/s spike",
+        }
+    ) is None
+    assert map_anomaly(
+        {
+            "source": "stage2_isoforest",
+            "feature": "tcp_outseg_per_sec",
+            "type": "isoforest:tcp_outseg_per_sec",
+            "message": "IsolationForest flagged an unusual system state",
+        }
+    ) is None
+
+
+def test_heuristic_miner_hint_still_maps():
+    attack = map_anomaly(
+        {
+            "source": "stage1_baseline",
+            "feature": "cpu_busy_pct",
+            "type": "baseline_spike:cpu_busy_pct",
+            "message": "cpu busy with xmrig",
+        }
+    )
     assert attack is not None
-    assert attack["mitre"] == "T1499"
+    assert attack["mitre"] == "T1496"
 
 
 def test_enrich_writes_meta_and_message_prefix():

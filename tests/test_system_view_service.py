@@ -39,3 +39,29 @@ def test_rank_isolation_samples_puts_nginx_first():
 def test_read_namespace_inode_parses_inode(monkeypatch):
     monkeypatch.setattr(svc.os, "readlink", lambda _path: "net:[4026531993]")
     assert svc.read_namespace_inode(123, "net") == "4026531993"
+
+
+def test_isolation_worlds_include_exact_member_pids(monkeypatch):
+    class Proc:
+        def __init__(self, pid, name):
+            self.info = {"pid": pid, "name": name, "memory_info": None}
+
+    procs = [Proc(10, "alpha"), Proc(20, "beta"), Proc(30, "gamma")]
+    net_inodes = {1: "host", 10: "host", 20: "isolated", 30: "host"}
+
+    monkeypatch.setattr(svc, "_read_isolation_snapshot", lambda: None)
+    monkeypatch.setattr(svc.psutil, "process_iter", lambda _fields: procs)
+    monkeypatch.setattr(svc, "_parse_cgroup_path", lambda _pid: "/")
+    monkeypatch.setattr(svc, "_read_cgroup_v2_stats", lambda _path: {})
+    monkeypatch.setattr(
+        svc,
+        "read_namespace_inode",
+        lambda pid, kind: net_inodes.get(pid) if kind == "net" else f"{kind}-host",
+    )
+
+    out = svc.get_isolation_context()
+    net = next(ns for ns in out["namespaces"] if ns["id"] == "net")
+    worlds = {world["inode"]: world for world in net["worlds"]}
+
+    assert worlds["host"]["pids"] == [10, 30]
+    assert worlds["isolated"]["pids"] == [20]
