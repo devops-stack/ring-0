@@ -29,7 +29,13 @@ def test_stage1_drops_poll_band_keeps_real_spikes():
     }
     out = _build_anomalies(scores, cfg)
     features = {row["feature"] for row in out}
-    assert features == {"pgfault_per_sec", "cpu_busy_pct"}
+    assert features == {"cpu_busy_pct"}
+    assert out[0]["severity"] == "medium"
+
+    scores["pgfault_per_sec"] = _score("pgfault_per_sec", 16.4)
+    scores["ctxt_per_sec"] = _score("ctxt_per_sec", 11.2)
+    out = _build_anomalies(scores, cfg)
     by_feat = {row["feature"]: row for row in out}
+    assert set(by_feat) >= {"cpu_busy_pct", "pgfault_per_sec", "ctxt_per_sec"}
     assert by_feat["pgfault_per_sec"]["severity"] == "high"
-    assert by_feat["cpu_busy_pct"]["severity"] == "medium"
+    assert by_feat["ctxt_per_sec"]["severity"] == "medium"

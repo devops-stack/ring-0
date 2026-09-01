@@ -134,12 +134,15 @@ def test_dna_mapper_keeps_http_classes_separate():
          "message": "older scanner", "position": 0.22, "score": 0.7, "meta": {}},
         {"feature": "ctxt_per_sec", "source": "stage2_isoforest", "severity": "medium",
          "message": "forest", "position": 0.18, "score": 0.2, "meta": {}},
+        {"feature": "pgmajfault_per_sec", "source": "stage1_baseline", "severity": "high",
+         "message": "major faults/s spike", "position": 0.68, "score": 12.0, "meta": {}},
     ]
     muts = _ml_anomalies_to_mutations(rows)
     types = [m["type"] for m in muts]
     assert types.count("http_attempt:scanner") == 1
     assert "http_attempt:sqli" in types
-    assert "ctxt_per_sec" in types
+    assert "ctxt_per_sec" not in types
+    assert "pgmajfault_per_sec" in types
     scanner = next(m for m in muts if m["type"] == "http_attempt:scanner")
     assert scanner["source"] == "ml"
     assert scanner["ml_source"] == "stage9_http"
