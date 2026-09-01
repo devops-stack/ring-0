@@ -6,6 +6,7 @@ from kernel_ai.collectors import proc_fs as _proc_fs
 from kernel_ai.http.common import api_json
 from kernel_ai.services import devices as _devices_service
 from kernel_ai.services import network as _network_service
+from kernel_ai.services import network_mechanisms as _network_mechanisms_service
 from kernel_ai.services import system_view as _system_view_service
 from kernel_ai.state import get_state_container
 
@@ -64,6 +65,12 @@ def network_stack_realtime():
             prefer_local=request.args.get("local"),
             prefer_remote=request.args.get("remote"),
         )
+    )
+
+
+def network_mechanisms():
+    return api_json(
+        lambda: _network_mechanisms_service.get_network_mechanisms(iface=request.args.get("iface"))
     )
 
 

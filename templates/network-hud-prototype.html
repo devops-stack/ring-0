@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>network path — HUD</title>
+    <meta name="robots" content="noindex, nofollow">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --red: #c8362b;
+            --red-dim: rgba(200, 54, 43, 0.45);
+        }
+        * { box-sizing: border-box; }
+        html, body { height: 100%; }
+        body {
+            margin: 0;
+            background: #000;
+            color: var(--red);
+            font-family: "Share Tech Mono", monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        .frame {
+            width: 100%;
+            max-width: 1600px;
+            position: relative;
+            background:
+                radial-gradient(ellipse at 48% 46%, rgba(200, 54, 43, 0.05), transparent 62%),
+                #030303;
+        }
+        .network-hud-svg {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        .blk { cursor: default; }
+        .blk:hover .blk-bg {
+            fill: rgba(233, 161, 60, 0.12);
+            stroke: rgba(233, 161, 60, 0.7);
+        }
+        .bar {
+            width: 100%;
+            max-width: 1600px;
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            padding: 10px 4px 0;
+            font-size: 10px;
+            letter-spacing: 0.1em;
+            color: var(--red-dim);
+        }
+        .bar a { color: var(--red-dim); text-decoration: none; margin-left: 18px; }
+        .bar a:hover { color: #e2503f; }
+        .note {
+            max-width: 1600px;
+            padding: 10px 6px 26px;
+            color: var(--red-dim);
+            font-size: 10.5px;
+            line-height: 1.7;
+        }
+        .note b { color: rgba(233, 161, 60, 0.75); font-weight: normal; }
+    </style>
+</head>
+<body>
+    <div class="bar">
+        <span>LOCAL PROTOTYPE · HUD TREATMENT</span>
+        <span>
+            <a href="/network-path">flat version</a>
+            <a href="/syscall-selector">syscall draft</a>
+            <a href="/">← map</a>
+        </span>
+    </div>
+
+    <div class="frame">
+        <div id="network-hud" aria-label="kernel network path HUD"></div>
+    </div>
+
+    <p class="note">
+        The stack runs bottom to top: <b>USERSPACE</b> at the base, <b>NIC</b> at the wire. TX climbs
+        into the hardware, RX descends toward the process. Every layer is drawn the same width and the
+        same distance apart, so no layer is visually privileged. On the receive lane a packet is drawn
+        hollow above <b>SK_BUFF ALLOCATED</b>: up there no socket buffer exists yet, which is why an
+        XDP drop is the cheapest drop in the system. Each light on the plane is one established socket.
+        Dashed rings mark the busiest layer. Left: instruments. Right: every mechanism detected on
+        this host, grouped by the layer it hooks into — hollow marker means detected-absent, blue
+        means the backend is not permitted to look.
+    </p>
+
+    <script src="/static/js/network-hud.js?v=3"></script>
+</body>
+</html>

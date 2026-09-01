@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>network packet path — layers, TX/RX, mechanisms</title>
+    <meta name="robots" content="noindex, nofollow">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --amber: #e2a33e;
+            --amber-dim: rgba(226, 163, 62, 0.38);
+            --bg: #050505;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: var(--bg);
+            color: var(--amber);
+            font-family: "Share Tech Mono", monospace;
+        }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            padding: 20px 28px 0;
+            gap: 16px;
+        }
+        header .tag {
+            color: var(--amber-dim);
+            font-size: 10px;
+            letter-spacing: 0.22em;
+        }
+        header a {
+            color: var(--amber-dim);
+            text-decoration: none;
+            font-size: 11px;
+            letter-spacing: 0.08em;
+        }
+        header a:hover { color: var(--amber); }
+        #np-summary {
+            margin-top: 6px;
+            font-size: 12px;
+            opacity: 0.72;
+        }
+        .stage {
+            display: flex;
+            justify-content: center;
+            padding: 18px 16px 12px;
+        }
+        #network-path {
+            width: min(1460px, 100%);
+            border: 1px solid rgba(226, 163, 62, 0.16);
+            background:
+                radial-gradient(ellipse at 25% 12%, rgba(226, 163, 62, 0.045), transparent 58%),
+                #000;
+        }
+        .network-path-svg {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        .note {
+            max-width: 1080px;
+            margin: 8px auto 48px;
+            padding: 0 20px;
+            color: var(--amber-dim);
+            font-size: 11px;
+            line-height: 1.65;
+            letter-spacing: 0.02em;
+        }
+        .note b { color: rgba(226, 163, 62, 0.75); font-weight: normal; }
+    </style>
+</head>
+<body>
+    <header>
+        <div>
+            <div class="tag">LOCAL PROTOTYPE · PACKET PATH</div>
+            <div id="np-summary">scanning host…</div>
+        </div>
+        <div style="display:flex;gap:18px;">
+            <a href="/syscall-selector">syscall draft</a>
+            <a href="/io-elevator">disk draft</a>
+            <a href="/">← map</a>
+        </div>
+    </header>
+
+    <div class="stage">
+        <div id="network-path" aria-label="kernel network packet path"></div>
+    </div>
+
+    <p class="note">
+        <b>Left</b> — kernel layers on one vertical axis. A band is taller when more machinery
+        actually hooks into it, so the silhouette already says where the complexity lives.
+        The thin bar at the bottom of each band is that layer's current activity.
+        <b>Centre</b> — two columns: TX descends, RX climbs. On the receive side a frame is drawn
+        hollow until it crosses the <b>sk_buff born</b> line inside the driver band: before that point
+        no socket buffer has been allocated yet, which is exactly why an XDP drop is the cheapest
+        drop in the system. A red ring at NETFILTER is a drop.
+        <b>Right</b> — mechanisms anchored at the height of the layer they attach to, split into
+        <b>path</b> (the packet goes through it), <b>hook</b> (attached, and often simply not there)
+        and <b>table</b> (the kernel looks into it, the packet does not flow through it).
+        Grey dashed means detected-absent; blue dotted means the backend is not allowed to look —
+        those two are deliberately not the same statement. Hover a chip for its source.
+    </p>
+
+    <script src="/static/js/network-path.js?v=1"></script>
+</body>
+</html>

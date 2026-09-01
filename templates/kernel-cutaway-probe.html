@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>kernel cutaway — rendering probe</title>
+    <meta name="robots" content="noindex, nofollow">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <style>
+        /* Paper plate: the kernel taken out of the running system and put on
+           a bench under a lamp. Dark theme keeps the same drawing, relit. */
+        :root {
+            --bg:        #efece6;
+            --ink:       #2b2926;
+            --dim:       rgba(43, 41, 38, 0.5);
+            --hair:      rgba(43, 41, 38, 0.32);
+            --hairdot:   rgba(43, 41, 38, 0.16);
+            --panel:     rgba(43, 41, 38, 0.02);
+            --plate:     #e4e0d8;
+            --sector:    #dcd7cd;
+            --floor:     #cdc7bb;
+            --wall:      #b3aca0;
+            --face-top:  #d7d1c6;
+            --face-left: #b4ada1;
+            --face-right:#918a7e;
+            --node:      #cac3b6;
+            --hub:       #e9e5de;
+            --accent:    #b0791f;
+            --hatch:     rgba(43, 41, 38, 0.5);
+            --cut:       #ddd8cf;
+        }
+        body.dark {
+            --bg:        #050505;
+            --ink:       #e2a33e;
+            --dim:       rgba(226, 163, 62, 0.45);
+            --hair:      rgba(226, 163, 62, 0.3);
+            --hairdot:   rgba(226, 163, 62, 0.13);
+            --panel:     rgba(226, 163, 62, 0.02);
+            --plate:     rgba(226, 163, 62, 0.06);
+            --sector:    rgba(226, 163, 62, 0.1);
+            --floor:     rgba(226, 163, 62, 0.05);
+            --wall:      rgba(226, 163, 62, 0.14);
+            --face-top:  rgba(226, 163, 62, 0.34);
+            --face-left: rgba(226, 163, 62, 0.2);
+            --face-right:rgba(226, 163, 62, 0.1);
+            --node:      rgba(226, 163, 62, 0.16);
+            --hub:       rgba(226, 163, 62, 0.08);
+            --accent:    #f5c46a;
+            --hatch:     rgba(226, 163, 62, 0.45);
+            --cut:       rgba(226, 163, 62, 0.07);
+        }
+
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: var(--bg);
+            color: var(--ink);
+            font-family: "Share Tech Mono", monospace;
+            transition: background 220ms ease;
+        }
+        .bar {
+            max-width: 1420px;
+            margin: 0 auto;
+            padding: 14px 6px 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 10px;
+            letter-spacing: 0.12em;
+            color: var(--dim);
+        }
+        .bar a { color: var(--dim); text-decoration: none; margin-left: 16px; }
+        .bar a:hover { color: var(--ink); }
+        button {
+            font-family: inherit;
+            font-size: 10px;
+            letter-spacing: 0.14em;
+            color: var(--ink);
+            background: transparent;
+            border: 1px solid var(--hair);
+            padding: 5px 12px;
+            margin-left: 8px;
+            cursor: pointer;
+        }
+        button:hover { border-color: var(--ink); }
+        .stage { max-width: 1420px; margin: 0 auto; padding: 8px 6px 0; }
+        .cutaway-svg { width: 100%; height: auto; display: block; }
+
+        /* SVG classes are styled here so the theme swap needs no redraw. */
+        .paper     { fill: var(--bg); }
+        .ink       { fill: var(--ink); }
+        .dim       { fill: var(--dim); }
+        .accent    { fill: var(--accent); }
+        .hair      { fill: none; stroke: var(--hair); stroke-width: 1; }
+        .hairdot   { fill: none; stroke: var(--hairdot); stroke-width: 1; stroke-dasharray: 2 6; }
+        .panel     { fill: var(--panel); stroke: var(--hair); stroke-width: 1; }
+        .tag       { fill: var(--ink); }
+        .tagtext   { fill: var(--bg); }
+        .plate     { fill: var(--plate); stroke: var(--hair); stroke-width: 1; }
+        .sector    { fill: var(--sector); stroke: var(--hair); stroke-width: 0.8; }
+        .floor     { fill: var(--floor); }
+        .wall      { fill: none; stroke: var(--wall); }
+        .node      { fill: var(--node); stroke: var(--hair); stroke-width: 0.8; }
+        .hub       { fill: var(--hub); stroke: var(--hair); stroke-width: 1.2; }
+        .pip       { fill: var(--ink); }
+        .leader    { fill: none; stroke: var(--accent); stroke-width: 1; }
+        .cutedge   { stroke: var(--ink); stroke-width: 1.4; }
+        .cut       { fill: url(#hatch); stroke: var(--ink); stroke-width: 1; }
+        .hatchline { stroke: var(--hatch); stroke-width: 1.1; }
+
+        .ft { fill: var(--face-top);   stroke: var(--hair); stroke-width: 0.55; }
+        .fl { fill: var(--face-left);  stroke: var(--hair); stroke-width: 0.55; }
+        .fr { fill: var(--face-right); stroke: var(--hair); stroke-width: 0.55; }
+
+        .note {
+            max-width: 1420px;
+            margin: 0 auto;
+            padding: 12px 6px 40px;
+            color: var(--dim);
+            font-size: 10.5px;
+            line-height: 1.75;
+        }
+        .note b { color: var(--ink); font-weight: normal; }
+    </style>
+</head>
+<body>
+    <div class="bar">
+        <span>LOCAL PROBE · KERNEL CUTAWAY · NO LIVE DATA</span>
+        <span>
+            <button id="btn-reveal">REVEAL</button>
+            <button id="btn-theme">THEME · PAPER</button>
+            <a href="/network-hud">network hud</a>
+            <a href="/">← map</a>
+        </span>
+    </div>
+
+    <div class="stage">
+        <div id="kernel-cutaway" aria-label="kernel cutaway rendering probe"></div>
+    </div>
+
+    <p class="note">
+        This validates the drawing technique, not the data. <b>01</b> shows volume built from three
+        flat faces against a fixed light — cheaper than real 3D and just as solid at this scale.
+        <b>02</b> shows the section convention: 45° hatching on an exposed internal wall is the
+        universal engineering signal for <b>this is where the body was opened</b>, and it carries the
+        idea further than any amount of drawn machinery. <b>03</b> puts both to work. The half that
+        stays sealed is the load-bearing part of the illusion: without it there is nothing to tell the
+        viewer what was removed, and the image falls apart into two unrelated drawings. The machinery
+        inside is procedural filler with a fixed seed and means nothing yet — the intent is to drive it
+        from real structures, so that density reads as actual complexity rather than decoration.
+    </p>
+
+    <script src="/static/js/kernel-cutaway.js?v=1"></script>
+</body>
+</html>
