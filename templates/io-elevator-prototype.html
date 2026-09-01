@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Block I/O Floor Selector — prototype</title>
+    <meta name="robots" content="noindex, nofollow">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #cfc9bc;
+            --ink: #1a1a1a;
+            --muted: #5a564c;
+            --brass: #c49a3c;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background:
+                radial-gradient(ellipse at 30% 10%, rgba(226, 163, 62, 0.12), transparent 50%),
+                linear-gradient(165deg, #d8d2c6 0%, #bdb6a8 48%, #cfc9bc 100%);
+            color: var(--ink);
+            font-family: "Share Tech Mono", monospace;
+        }
+        header {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 18px 28px 0;
+        }
+        header a {
+            color: var(--muted);
+            text-decoration: none;
+            font-size: 12px;
+            letter-spacing: 0.06em;
+        }
+        header a:hover { color: var(--brass); }
+        header .tag {
+            color: var(--brass);
+            font-size: 11px;
+            letter-spacing: 0.14em;
+        }
+        #io-elevator {
+            width: min(960px, 100%);
+            margin: 8px auto 24px;
+            padding: 0 12px;
+        }
+        .io-elevator-svg {
+            width: 100%;
+            height: auto;
+            display: block;
+            filter: drop-shadow(0 18px 40px rgba(40, 32, 18, 0.18));
+        }
+        footer {
+            max-width: 920px;
+            margin: 0 auto 32px;
+            padding: 0 28px;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.55;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div>
+            <div class="tag">LOCAL PROTOTYPE</div>
+            <div style="margin-top:4px;font-size:13px;color:var(--muted);">
+                Linux block elevator · pre-computer lift selector
+            </div>
+        </div>
+        <a href="/">← ring-0 map</a>
+    </header>
+
+    <div id="io-elevator" aria-label="Block I/O elevator floor selector"></div>
+
+    <footer>
+        Click R/W latches on the call bank to queue seeks. The car keeps direction
+        until the shaft ahead is empty, then reverses — the same idea as the classic
+        disk elevator. Live MB/s and IOPS come from <code>/api/io-pulse</code> when busy.
+    </footer>
+
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="/static/js/io-elevator.js?v=1"></script>
+</body>
+</html>

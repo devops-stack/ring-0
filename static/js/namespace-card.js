@@ -29,13 +29,50 @@ const NamespaceCard = (() => {
     let lastAnchor = null;
     let lastNs = null;
     let layout = null;
+    let pinnedWorld = null;
 
     function clip(text, max) {
         const value = String(text || "");
         return value.length > max ? `${value.slice(0, max - 1)}…` : value;
     }
 
+    function clearWorldProcessFocus() {
+        if (window.IsolationUI && typeof window.IsolationUI.clearNamespaceProcessFocus === "function") {
+            window.IsolationUI.clearNamespaceProcessFocus();
+        }
+    }
+
+    function focusWorldProcesses(world) {
+        if (window.IsolationUI && typeof window.IsolationUI.focusNamespaceProcesses === "function") {
+            window.IsolationUI.focusNamespaceProcesses(world && world.pids);
+        }
+    }
+
+    function leaveWorldPreview() {
+        if (pinnedWorld) {
+            focusWorldProcesses(pinnedWorld);
+        } else {
+            clearWorldProcessFocus();
+        }
+    }
+
+    function togglePinnedWorld(row, world) {
+        const key = `${lastNs && lastNs.id}:${world && world.inode}`;
+        const same = pinnedWorld && pinnedWorld.key === key;
+        d3.selectAll(".namespace-card-world-row").classed("is-pinned", false);
+        if (same) {
+            pinnedWorld = null;
+            clearWorldProcessFocus();
+            return;
+        }
+        pinnedWorld = { ...world, key };
+        row.classed("is-pinned", true);
+        focusWorldProcesses(world);
+    }
+
     function close() {
+        clearWorldProcessFocus();
+        pinnedWorld = null;
         openKey = null;
         lastAnchor = null;
         lastNs = null;
@@ -90,6 +127,8 @@ const NamespaceCard = (() => {
         } else {
             close();
         }
+        clearWorldProcessFocus();
+        pinnedWorld = null;
         openKey = key;
         lastAnchor = anchor;
         lastNs = ns;
@@ -104,6 +143,7 @@ const NamespaceCard = (() => {
         const worlds = worldsOf(ns);
         let h = HEADER + 12 + 10;
         h += LINE + LINE;
+        if (ns.id === "net") h += 34;
         h += 16 + LINE;
         if (!worlds.length) h += LINE;
         else h += worlds.length * ROW_STEP;
@@ -224,6 +264,33 @@ const NamespaceCard = (() => {
             : "every process shares this world with the host");
         cy += LINE;
 
+        if (ns.id === "net") {
+            cy += 9;
+            text("kcard-section", PAD, cy, "KERNEL ACCESS PATH");
+            cy += 7;
+            const stages = ["task_struct", "nsproxy", "struct net"];
+            const gap = compact ? 12 : 24;
+            const chipW = Math.max(64, Math.min(92, (cw - PAD * 2 - gap * 2) / 3));
+            stages.forEach((stage, index) => {
+                const sx = PAD + index * (chipW + gap);
+                if (index) {
+                    body.append("line")
+                        .attr("class", "namespace-card-arch-link")
+                        .attr("x1", sx - gap).attr("y1", cy + 9)
+                        .attr("x2", sx).attr("y2", cy + 9);
+                }
+                body.append("rect")
+                    .attr("class", index === stages.length - 1
+                        ? "namespace-card-arch-chip is-hot"
+                        : "namespace-card-arch-chip")
+                    .attr("x", sx).attr("y", cy)
+                    .attr("width", chipW).attr("height", 18);
+                text(index === stages.length - 1 ? "kcard-waiter" : "kcard-waiter-dim",
+                    sx + 8, cy + 12, stage);
+            });
+            cy += 25;
+        }
+
         cy += 16;
         text("kcard-section", PAD, cy,
             `WORLDS ON THIS HOST · ${ns.unique_count || worlds.length}`);
@@ -238,20 +305,44 @@ const NamespaceCard = (() => {
             const ty = cy + 4;
             const names = (Array.isArray(world.sample) ? world.sample : []).filter(Boolean).slice(0, 3);
             const isHost = hostInode != null && String(world.inode) === String(hostInode);
-            text(isHost ? "kcard-faint" : "kcard-waiter", PAD, ty, isHost ? "HOST" : "LEFT");
-            const countText = text("kcard-waiter-dim", PAD + 52, ty, `${world.count}p · `);
-            let x = PAD + 52 + countText.node().getBBox().width;
+            const row = body.append("g")
+                .attr("class", isHost
+                    ? "namespace-card-world-row is-host"
+                    : "namespace-card-world-row");
+            if (!isHost) {
+                row.style("cursor", "pointer")
+                    .on("mouseenter", () => focusWorldProcesses(world))
+                    .on("mouseleave", leaveWorldPreview)
+                    .on("click", (event) => {
+                        event.stopPropagation();
+                        togglePinnedWorld(row, world);
+                    });
+            }
+            row.append("rect")
+                .attr("class", "namespace-card-world-hit")
+                .attr("x", PAD - 5).attr("y", cy - 8)
+                .attr("width", cw - PAD * 2 + 10).attr("height", ROW_STEP);
+            const rowText = (cls, tx, value) => row.append("text")
+                .attr("class", cls).attr("x", tx).attr("y", ty).text(value);
+
+            rowText(isHost ? "kcard-faint" : "kcard-waiter", PAD, isHost ? "HOST" : "LEFT");
+            let x = PAD + 50;
+            const inode = rowText("namespace-card-world-inode", x,
+                `${String(ns.id || "ns")}:[${world.inode || "?"}]`);
+            x += inode.node().getBBox().width + 13;
+            const countText = rowText("kcard-waiter-dim", x, `${world.count}p`);
+            x += countText.node().getBBox().width + 13;
             if (!names.length) {
-                text("kcard-waiter-dim", x, ty, "—");
+                rowText("kcard-waiter-dim", x, "—");
             }
             names.forEach((name, idx) => {
                 if (idx) {
-                    const sep = text("kcard-faint", x, ty, " · ");
+                    const sep = rowText("kcard-faint", x, " · ");
                     x += sep.node().getBBox().width;
                 }
-                const who = text("kcard-waiter-dim", x, ty, clip(name, compact ? 10 : 16));
+                const who = rowText("kcard-waiter-dim", x, clip(name, compact ? 8 : 13));
                 const box = who.node().getBBox();
-                door(body, who, box.x, ty, box.width, () => followProcess(name));
+                door(row, who, box.x, ty, box.width, () => followProcess(name));
                 x += box.width;
             });
             cy += ROW_STEP;
@@ -263,7 +354,7 @@ const NamespaceCard = (() => {
         body.append("line")
             .attr("class", "kcard-divider")
             .attr("x1", 0).attr("y1", h - FOOTER + 8).attr("x2", cw).attr("y2", h - FOOTER + 8);
-        text("kcard-foot", PAD, h - 10, "ESC OR CLICK OUTSIDE TO CLOSE");
+        text("kcard-foot", PAD, h - 10, "HOVER WORLD · CLICK TO PIN · ESC CLOSE");
         text("kcard-foot", cw - PAD, h - 10, `/PROC/*/NS/${String(ns.id || "").toUpperCase()}`, true);
     }
 

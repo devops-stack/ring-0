@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>sys_call_table selector — amber schematic</title>
+    <meta name="robots" content="noindex, nofollow">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --amber: #e2a33e;
+            --amber-dim: rgba(226, 163, 62, 0.35);
+            --bg: #050505;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: var(--bg);
+            color: var(--amber);
+            font-family: "Share Tech Mono", monospace;
+        }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            padding: 20px 28px 0;
+            gap: 16px;
+        }
+        header .tag {
+            color: var(--amber-dim);
+            font-size: 10px;
+            letter-spacing: 0.2em;
+        }
+        header a {
+            color: var(--amber-dim);
+            text-decoration: none;
+            font-size: 11px;
+            letter-spacing: 0.08em;
+        }
+        header a:hover { color: var(--amber); }
+        .stage {
+            display: flex;
+            justify-content: center;
+            padding: 24px 16px 12px;
+        }
+        #syscall-selector {
+            width: min(640px, 100%);
+            border: 1px solid rgba(226, 163, 62, 0.18);
+            background:
+                radial-gradient(ellipse at 30% 20%, rgba(226, 163, 62, 0.05), transparent 55%),
+                #000;
+        }
+        .syscall-selector-svg {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        .note {
+            max-width: 560px;
+            margin: 8px auto 40px;
+            padding: 0 20px;
+            color: var(--amber-dim);
+            font-size: 11px;
+            line-height: 1.55;
+            letter-spacing: 0.02em;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div>
+            <div class="tag">LOCAL PROTOTYPE · AMBER SCHEMATIC</div>
+            <div style="margin-top:6px;font-size:12px;opacity:0.7;">
+                robot wireframe decode · beside menu
+            </div>
+        </div>
+        <div style="display:flex;gap:18px;">
+            <a href="/io-elevator">disk draft</a>
+            <a href="/">← map</a>
+        </div>
+    </header>
+
+    <div class="stage">
+        <div id="syscall-selector" aria-label="sys_call_table amber schematic"></div>
+    </div>
+
+    <p class="note">
+        Left: volumetric selector — horizontal shaft, CAD rocker arms with hubs and rollers
+        (like the real floor-selector). Arms hang idle, rise into the handler bus when live.
+        Right: dispatch menu. Hard-refresh if you still see the thin-line version.
+    </p>
+
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="/static/js/syscall-selector.js?v=3"></script>
+</body>
+</html>

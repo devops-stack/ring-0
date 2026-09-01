@@ -20,19 +20,29 @@ linux swap,
 linux kernel visualization
 ">
     <meta name="robots" content="index, follow">
-    <link rel="canonical" href="/linux-memory-subsystem">
+    <link rel="canonical" href="https://ring-0.sh/linux-memory-subsystem">
 
     <meta property="og:type" content="website">
-    <meta property="og:url" content="/linux-memory-subsystem">
+    <meta property="og:url" content="https://ring-0.sh/linux-memory-subsystem">
     <meta property="og:title" content="Linux Memory Kernel Subsystem Visualization">
     <meta property="og:description" content="Visualized Linux memory accounting: meminfo buckets, strip topology, and sampled process RSS.">
-    <meta property="og:image" content="/static/images/009.png">
+    <meta property="og:image" content="https://ring-0.sh/static/images/009.png">
 
     <meta property="twitter:card" content="summary_large_image">
-    <meta property="twitter:url" content="/linux-memory-subsystem">
+    <meta property="twitter:url" content="https://ring-0.sh/linux-memory-subsystem">
     <meta property="twitter:title" content="Linux Memory Kernel Subsystem Visualization">
     <meta property="twitter:description" content="How Linux kernel reports memory usage and sampled task RSS in the visualization.">
-    <meta property="twitter:image" content="/static/images/009.png">
+    <meta property="twitter:image" content="https://ring-0.sh/static/images/009.png">
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebPage",
+      "name": "Linux Memory Kernel Subsystem",
+      "url": "https://ring-0.sh/linux-memory-subsystem",
+      "isPartOf": { "@type": "WebSite", "name": "ring-0.sh", "url": "https://ring-0.sh/" },
+      "description": "Live view of Linux kernel memory accounting from /proc/meminfo and sampled task RSS: page cache, anonymous pages, slab, swap, and per-process resident size."
+    }
+    </script>
 
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
@@ -44,12 +54,38 @@ linux kernel visualization
             color: #d4dbe8;
             font-family: "Share Tech Mono", monospace;
         }
-        .seo-memory {
-            position: absolute;
-            left: -10000px;
-            width: 1px;
-            height: 1px;
-            overflow: hidden;
+        /* Visible to people and to Google. Off-screen "SEO" copy is ignored. */
+        .memory-primer {
+            position: fixed;
+            left: 18px;
+            bottom: 18px;
+            z-index: 10020;
+            max-width: 420px;
+            max-height: 38vh;
+            overflow: auto;
+            padding: 12px 14px;
+            background: rgba(2, 6, 10, 0.88);
+            border: 1px solid rgba(180, 200, 210, 0.28);
+            color: #d4dbe8;
+        }
+        .memory-primer h1 {
+            margin: 0 0 8px;
+            font-size: 13px;
+            letter-spacing: 0.6px;
+            font-weight: normal;
+        }
+        .memory-primer h2 {
+            margin: 10px 0 4px;
+            font-size: 11px;
+            letter-spacing: 0.4px;
+            color: #b8c4d0;
+            font-weight: normal;
+        }
+        .memory-primer p {
+            margin: 0 0 8px;
+            font-size: 11px;
+            line-height: 1.45;
+            color: #c5ced8;
         }
         .page-nav {
             position: fixed;
@@ -75,15 +111,32 @@ linux kernel visualization
     </style>
 </head>
 <body>
-    <h1 class="seo-memory">Linux Memory Kernel Subsystem</h1>
-
-    <section class="seo-memory">
-        <h2>Linux kernel memory management</h2>
+    <article class="memory-primer">
+        <h1>Linux Memory Kernel Subsystem</h1>
+        <h2>What this page reads</h2>
         <p>
-            This page visualizes memory accounting from Linux kernel sources such as /proc/meminfo
-            and sampled process RSS, shown as horizontal strips and block topology.
+            The kernel publishes a machine-wide account in <code>/proc/meminfo</code>:
+            MemTotal, Cached, AnonPages, Slab, SwapTotal/SwapFree. This room draws
+            those buckets as strips. It is not a profiler and not a second process list.
         </p>
-    </section>
+        <h2>Page cache, anonymous memory, slab</h2>
+        <p>
+            File-backed pages sit in the page cache (Cached). Process heaps and stacks
+            are anonymous (AnonPages). Kernel objects live in slab. The picture is the
+            same split the kernel uses in mm/, not a guessed pie chart.
+        </p>
+        <h2>Task RSS</h2>
+        <p>
+            Beside the host account, sampled processes show resident set size from
+            <code>/proc/&lt;pid&gt;/status</code> (VmRSS). That is how much RAM the
+            task occupies now, not virtual size and not a lifetime sparkline.
+        </p>
+        <p>
+            <a href="/">Kernel map</a>
+            · <a href="/linux-processes-subsystem">Processes</a>
+            · <a href="/linux-filesystem-subsystem">Files</a>
+        </p>
+    </article>
 
     <nav class="page-nav">
         <a href="/">BACK TO MAIN</a>
@@ -91,7 +144,7 @@ linux kernel visualization
 
     <script src="/static/js/safe-utils.js?v=2"></script>
     <script src="/static/js/frontend-logger.js?v=2"></script>
-    <script src="/static/js/memory-belt.js?v=10"></script>
+    <script src="/static/js/memory-belt.js?v=11"></script>
     <script>
         (function startMemoryPage() {
             if (typeof window.MemorySubsystemVisualization !== 'function') {

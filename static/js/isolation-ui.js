@@ -5,6 +5,33 @@ let isolationContextCache = null;
 let isolationContextCacheTs = 0;
 let isolationRenderToken = 0;
 
+// Reading /proc/<pid>/ns/* of a foreign task needs ptrace-level access, so
+// without the root collector the backend resolves only part of the process
+// table. Every number on this ring is then a sample, and the ring has to say so
+// rather than presenting it as the state of the machine.
+let isolationCoverage = { source: null, scanned: 0, resolved: 0, partial: false };
+
+// Say what was actually read, and why it is short when it is.
+function coverageText() {
+    const c = isolationCoverage;
+    if (!c.scanned) return 'coverage unknown';
+    if (!c.partial) return `${c.resolved} / ${c.scanned} procs`;
+    return `${c.resolved} / ${c.scanned} procs · no collector`;
+}
+
+function readCoverage(data) {
+    const scanned = Number(data && data.processes_scanned) || 0;
+    const resolved = Number(data && data.processes_resolved) || 0;
+    return {
+        source: (data && data.source) || null,
+        scanned,
+        resolved,
+        // Treat an older backend that reports no coverage at all as partial:
+        // claiming full coverage we cannot prove is the failure mode to avoid.
+        partial: !resolved || resolved < scanned,
+    };
+}
+
 function fetchIsolationContext(forceRefresh = false) {
     const now = Date.now();
     if (!forceRefresh && isolationContextCache && (now - isolationContextCacheTs < 8000)) {
@@ -18,6 +45,7 @@ function fetchIsolationContext(forceRefresh = false) {
             }
             isolationContextCache = data;
             isolationContextCacheTs = now;
+            isolationCoverage = readCoverage(data);
             return data;
         })
         .catch(err => {
@@ -31,10 +59,12 @@ function drawIsolationConceptLayer(centerX, centerY, width, height) {
     // Skip overlay in Matrix/DNA modes to keep views clean.
     if (window.kernelContextMenu && ['matrix', 'dna', 'dna-timeline'].includes(window.kernelContextMenu.currentView)) {
         collapseNamespaceTree(false);
+        clearNamespaceProcessFocus();
         return;
     }
 
     const renderToken = ++isolationRenderToken;
+    clearNamespaceProcessFocus();
     d3.selectAll('.namespace-shell-layer, .cgroup-card-layer').remove();
     fetchIsolationContext().then((data) => {
         if (renderToken !== isolationRenderToken) return;
@@ -81,6 +111,50 @@ const NS_KIND = {
 
 let expandedNsId = null;
 
+function clearNamespaceProcessFocus() {
+    svg.classed('ns-world-process-focus', false);
+    svg.selectAll('.process-line').classed('ns-world-member', false);
+    svg.selectAll('.process-node-group').classed('ns-world-member', false);
+    svg.selectAll('.ns-world-process-overlay').remove();
+}
+
+function focusNamespaceProcesses(pids) {
+    const members = new Set((Array.isArray(pids) ? pids : []).map(pid => String(pid)));
+    clearNamespaceProcessFocus();
+    if (!members.size) return;
+    svg.classed('ns-world-process-focus', true);
+    svg.selectAll('.process-line').classed('ns-world-member', function () {
+        return members.has(String(this.getAttribute('data-pid')));
+    });
+    svg.selectAll('.process-node-group').classed('ns-world-member', function () {
+        return members.has(String(this.getAttribute('data-pid')));
+    });
+
+    // A namespace card sits above a focus veil. Mirror only the selected paths
+    // between the veil and the card, otherwise the accurate highlight exists
+    // but is visually buried under the modal layer.
+    if (!svg.select('.namespace-card-scrim').empty()) {
+        const overlay = svg.insert('g', '.namespace-card-layer')
+            .attr('class', 'ns-world-process-overlay')
+            .attr('pointer-events', 'none');
+        svg.selectAll('.process-line.ns-world-member').each(function () {
+            const source = d3.select(this);
+            overlay.append('path')
+                .attr('d', source.attr('d'))
+                .attr('class', 'ns-world-overlay-line');
+        });
+        svg.selectAll('.process-node-group.ns-world-member').each(function () {
+            const source = d3.select(this).select('circle.process-node');
+            if (source.empty()) return;
+            overlay.append('circle')
+                .attr('cx', source.attr('cx'))
+                .attr('cy', source.attr('cy'))
+                .attr('r', 4)
+                .attr('class', 'ns-world-overlay-node');
+        });
+    }
+}
+
 // Cells on the outer edge of the ring would push the chip off screen, so it
 // flips to the other side of the cursor instead of being clipped.
 function placeNamespaceTooltip(tip, event) {
@@ -95,6 +169,163 @@ function placeNamespaceTooltip(tip, event) {
     const top = Math.min(event.pageY - 10, window.innerHeight - node.offsetHeight - margin);
     tip.style('left', `${Math.max(margin, left)}px`)
         .style('top', `${Math.max(margin, top)}px`);
+}
+
+// ---------------------------------------------------------------------------
+// Kernel cutaway. The namespace cell is a cover plate; on hover it breaks open
+// and an instrument sector extends out of the ring behind it.
+//
+// Everything here is flat, orthographic hairline work, because that is the only
+// language on this page. An isometric solid would drag in a light source and a
+// horizon that exist nowhere else and would read as a foreign object.
+//
+// The opening cannot happen inside the ring: the process chips sit at r=150 and
+// are 49px across, so they occupy r=125..175 of a ring that spans 110..190 and
+// leave two 15px slivers. So the cover breaks, and the mechanism extends
+// outward into the clear annulus past r=190 — a drawer, not a lid. Removed
+// material is marked the drafting way, with a dashed phantom outline of the
+// cover plus a hatched band at the break.
+const CUT_COVER_T = 5;       // thickness shown at the break
+const CUT_COVER_BACK = 8;    // how far the cover edge retracts
+const CUT_APERTURE = 56;     // depth of the extended sector (190 -> 246)
+const CUT_AMBER = '176, 108, 22';
+
+function ensureCutawayDefs(ink) {
+    let defs = svg.select('defs.kernel-cutaway-defs');
+    if (!defs.empty()) return;
+    defs = svg.append('defs').attr('class', 'kernel-cutaway-defs');
+    const pattern = defs.append('pattern')
+        .attr('id', 'kernel-cut-hatch')
+        .attr('width', 5)
+        .attr('height', 5)
+        .attr('patternUnits', 'userSpaceOnUse')
+        .attr('patternTransform', 'rotate(45)');
+    pattern.append('line')
+        .attr('x1', 0).attr('y1', 0).attr('x2', 0).attr('y2', 5)
+        .attr('stroke', `rgba(${ink}, 0.55)`)
+        .attr('stroke-width', 1);
+}
+
+// Math.min/max propagate NaN, which reaches the SVG as a broken coordinate.
+const cutRatio = (v) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(1, Number(v))) : 0);
+
+// Pointy-top hex, the same silhouette as the process chips already on the ring,
+// so the exposed mechanism belongs to this drawing rather than visiting it.
+function cutHex(g, cx, cy, r) {
+    const pts = [];
+    for (let k = 0; k < 6; k++) {
+        const a = -Math.PI / 2 + k * Math.PI / 3;
+        pts.push(`${(cx + Math.cos(a) * r).toFixed(1)},${(cy + Math.sin(a) * r).toFixed(1)}`);
+    }
+    return g.append('polygon').attr('points', pts.join(' '));
+}
+
+// The instrument sector that extends past the ring once the cover breaks.
+//
+// The fan is a density plot, not texture: each world contributes a lobe at its
+// own angle weighted by its process count, and the whole envelope scales with
+// activity. So a namespace with one big world shows a single tall spike and one
+// with six shows a ragged comb, and neither shape is invented.
+function buildSectorAperture(g, ns, cx, cy, startAngle, endAngle, rIn, rOut, ink) {
+    const worldRows = Array.isArray(ns.worlds) ? ns.worlds : [];
+    const nWorlds = Math.max(1, Math.min(6, Number(ns.unique_count) || 1));
+    const activity = cutRatio(ns.activity);
+    const procs = Number.isFinite(Number(ns.dominant_count)) ? Number(ns.dominant_count) : 0;
+    const span = endAngle - startAngle;
+
+    // d3 arcs measure from 12 o'clock, screen angles from 3 o'clock.
+    const at = (f, r) => {
+        const a = startAngle + span * f - Math.PI / 2;
+        return [cx + Math.cos(a) * r, cy + Math.sin(a) * r];
+    };
+    const arcAt = (r, f0, f1) => {
+        const [x0, y0] = at(f0, r);
+        const [x1, y1] = at(f1, r);
+        return `M ${x0.toFixed(1)} ${y0.toFixed(1)} A ${r} ${r} 0 0 1 ${x1.toFixed(1)} ${y1.toFixed(1)}`;
+    };
+    // Reveal sweeps around the sector, the way the reference resolves detail.
+    const staged = (sel, f) => sel.attr('data-cut-delay', Math.round(90 + f * 220));
+
+    const inset = 0.14;
+    const fOf = (k) => (nWorlds === 1 ? 0.5 : inset + (k / (nWorlds - 1)) * (1 - inset * 2));
+    const counts = [];
+    for (let k = 0; k < nWorlds; k++) {
+        counts.push(Number((worldRows[k] || {}).count) || (k === 0 ? procs : 1));
+    }
+    const maxCount = Math.max(1, ...counts);
+    const domIdx = counts.indexOf(maxCount);
+    const sigma = 0.42 / nWorlds;
+
+    const rFan = rIn + 4;
+    const fanMax = 24 * (0.35 + 0.65 * activity);
+    const density = (f) => {
+        let s = 0;
+        for (let k = 0; k < nWorlds; k++) {
+            const d = (f - fOf(k)) / sigma;
+            s += (counts[k] / maxCount) * Math.exp(-0.5 * d * d);
+        }
+        return Math.min(1, s);
+    };
+
+    const TICKS = 26;
+    for (let i = 0; i < TICKS; i++) {
+        const f = inset * 0.5 + (i / (TICKS - 1)) * (1 - inset);
+        const len = 3 + fanMax * density(f);
+        const [x0, y0] = at(f, rFan);
+        const [x1, y1] = at(f, rFan + len);
+        const hot = Math.abs(f - fOf(domIdx)) < sigma * 0.9;
+        staged(g.append('line')
+            .attr('x1', x0.toFixed(1)).attr('y1', y0.toFixed(1))
+            .attr('x2', x1.toFixed(1)).attr('y2', y1.toFixed(1))
+            .attr('stroke', hot ? `rgba(${CUT_AMBER}, 0.85)` : `rgba(${ink}, 0.5)`)
+            .attr('stroke-width', hot ? 1 : 0.6), f);
+    }
+
+    // Datum arc the fan is measured against, plus a block per world on it.
+    const rLane = rIn + 33;
+    g.append('path')
+        .attr('d', arcAt(rLane, inset * 0.5, 1 - inset * 0.5))
+        .attr('fill', 'none')
+        .attr('stroke', `rgba(${ink}, 0.38)`)
+        .attr('stroke-width', 0.6)
+        .attr('data-cut-delay', 90);
+
+    for (let k = 0; k < nWorlds; k++) {
+        const f = fOf(k);
+        const w = 1.6 + 2.4 * (counts[k] / maxCount);
+        const [ax, ay] = at(f - w / 200, rLane - 3);
+        const [bx, by] = at(f + w / 200, rLane - 3);
+        const [dxp, dyp] = at(f + w / 200, rLane + 3);
+        const [exp_, eyp] = at(f - w / 200, rLane + 3);
+        staged(g.append('polygon')
+            .attr('points', [[ax, ay], [bx, by], [dxp, dyp], [exp_, eyp]]
+                .map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' '))
+            .attr('fill', k === domIdx ? `rgba(${CUT_AMBER}, 0.9)` : `rgba(${ink}, 0.62)`)
+            .attr('stroke', 'none'), f);
+    }
+
+    // One chip per isolated world — the mechanism's moving parts.
+    const rChip = rIn + 44;
+    for (let k = 0; k < nWorlds; k++) {
+        const f = fOf(k);
+        const [px, py] = at(f, rChip);
+        const isDom = k === domIdx;
+        staged(cutHex(g, px, py, 3.2 + 2.2 * (counts[k] / maxCount))
+            .attr('fill', isDom ? `rgba(${CUT_AMBER}, 0.16)` : 'none')
+            .attr('stroke', isDom ? `rgba(${CUT_AMBER}, 0.9)` : `rgba(${ink}, 0.55)`)
+            .attr('stroke-width', 0.8), f);
+    }
+
+    // Outer rim closes the sector so it reads as one instrument. It goes dotted
+    // when the numbers behind the sector came from a partial scan — same
+    // distinction the rest of the page draws between observed and unobserved.
+    const rim = g.append('path')
+        .attr('d', arcAt(rOut - 2, 0.02, 0.98))
+        .attr('fill', 'none')
+        .attr('stroke', `rgba(${ink}, 0.45)`)
+        .attr('stroke-width', 0.8)
+        .attr('data-cut-delay', 120);
+    if (isolationCoverage.partial) rim.attr('stroke-dasharray', '1.5 3');
 }
 
 function drawNamespaceShell(centerX, centerY, namespaces) {
@@ -120,18 +351,57 @@ function drawNamespaceShell(centerX, centerY, namespaces) {
     const INK = '58, 61, 68';
     const cells = [];
 
+    // The shell layer is rebuilt on every refresh but defs survive, so last
+    // pass's clip paths have to go or they accumulate forever.
+    ensureCutawayDefs(INK);
+    svg.selectAll('clipPath.ns-cut-clip').remove();
+
+    // Break the cover open and run the sector out. The cover edge retracts, the
+    // hatched break follows it, the phantom outline marks where material was,
+    // and the instrument resolves with an angular sweep.
+    const setCover = (cell, open) => {
+        if (cell.open === open) return;
+        cell.open = open;
+        const from = open ? ringOuter : ringOuter - CUT_COVER_BACK;
+        const to = open ? ringOuter - CUT_COVER_BACK : ringOuter;
+        const dur = open ? 180 : 160;
+
+        cell.segment.transition('cutaway').duration(dur).ease(d3.easeCubicOut)
+            .attrTween('d', () => (t) => cell.arcFor(from + (to - from) * t))
+            .attr('fill', open ? `rgba(${INK}, 0.02)` : `rgba(${INK}, 0.07)`);
+        cell.edge.transition('cutaway').duration(dur).ease(d3.easeCubicOut)
+            .attrTween('d', () => (t) => cell.edgeFor(from + (to - from) * t))
+            .style('opacity', open ? 1 : 0);
+        cell.phantom.transition('cutaway').duration(dur)
+            .style('opacity', open ? 1 : 0);
+
+        // Elements carry their own sweep delay; closing drops straight out so
+        // the sector never lingers once the pointer has gone.
+        cell.mach.selectAll('[data-cut-delay]')
+            .transition('cutaway')
+            .delay(function () { return open ? +this.getAttribute('data-cut-delay') : 0; })
+            .duration(open ? 200 : 120)
+            .style('opacity', open ? 1 : 0);
+        cell.mach.style('pointer-events', 'none');
+    };
+
     const restoreFocus = () => {
         cells.forEach(c => {
             c.segment.attr('opacity', 1);
             c.halo.attr('opacity', 0);
+            setCover(c, false);
         });
+        clearNamespaceProcessFocus();
     };
 
+    // The reference never blanks the inactive parts, it just lets them drop
+    // back a step in contrast, so the ring stays whole while one cell is open.
     const setFocus = (idx) => {
         cells.forEach((c, j) => {
             const focused = j === idx;
-            c.segment.attr('opacity', focused ? 1 : 0.22);
+            c.segment.attr('opacity', focused ? 1 : 0.55);
             c.halo.attr('opacity', focused ? 1 : 0);
+            setCover(c, focused);
         });
     };
 
@@ -176,6 +446,35 @@ function drawNamespaceShell(centerX, centerY, namespaces) {
             .attr('opacity', 0)
             .style('pointer-events', 'none');
 
+        const mid = (startAngle + endAngle) / 2;
+        const idx = cells.length;
+
+        // --- the mechanism, extended past the ring --------------------------
+        // Drawn now at full extent and held at zero opacity; the sweep on hover
+        // resolves it in place. Nothing is clipped, because the sector is meant
+        // to reach into the clear annulus beyond r=190.
+        const mach = shellGroup.append('g')
+            .attr('class', 'ns-cut-aperture')
+            .style('pointer-events', 'none');
+        buildSectorAperture(
+            mach, ns, centerX, centerY, startAngle, endAngle,
+            ringOuter, ringOuter + CUT_APERTURE, INK,
+        );
+        mach.selectAll('[data-cut-delay]').style('opacity', 0);
+
+        // Phantom outline: drafting shorthand for material that has been taken
+        // away. It sits under the cover and shows once the cover breaks.
+        const phantom = shellGroup.append('path')
+            .attr('d', dPath)
+            .attr('transform', `translate(${centerX}, ${centerY})`)
+            .attr('fill', 'none')
+            .attr('stroke', `rgba(${INK}, 0.5)`)
+            .attr('stroke-width', 0.7)
+            .attr('stroke-dasharray', '6 3 1.5 3')
+            .style('opacity', 0)
+            .style('pointer-events', 'none');
+
+        // --- the cover ----------------------------------------------------
         const segment = shellGroup.append('path')
             .attr('d', dPath)
             .attr('transform', `translate(${centerX}, ${centerY})`)
@@ -184,10 +483,40 @@ function drawNamespaceShell(centerX, centerY, namespaces) {
             .attr('stroke-width', 1.1)
             .style('cursor', 'pointer');
 
-        const mid = (startAngle + endAngle) / 2;
+        const arcFor = (outer) => d3.arc()
+            .innerRadius(ringInner)
+            .outerRadius(outer)
+            .startAngle(startAngle)
+            .endAngle(endAngle)
+            .cornerRadius(6)();
+        // Hatched band on the cover's retreating edge: the break face.
+        const edgeFor = (outer) => d3.arc()
+            .innerRadius(Math.max(ringInner, outer - CUT_COVER_T))
+            .outerRadius(outer)
+            .startAngle(startAngle)
+            .endAngle(endAngle)();
 
-        const idx = cells.length;
-        cells.push({ segment, halo });
+        const edge = shellGroup.append('path')
+            .attr('d', edgeFor(ringOuter))
+            .attr('transform', `translate(${centerX}, ${centerY})`)
+            .attr('fill', 'url(#kernel-cut-hatch)')
+            .attr('stroke', `rgba(${INK}, 0.6)`)
+            .attr('stroke-width', 0.8)
+            .style('opacity', 0)
+            .style('pointer-events', 'none');
+
+        const cell = {
+            segment,
+            halo,
+            mach,
+            phantom,
+            edge,
+            arcFor,
+            edgeFor,
+            open: false,
+            nsId: ns.id,
+        };
+        cells.push(cell);
 
         segment
             .on('mouseenter', (event) => {
@@ -210,6 +539,7 @@ function drawNamespaceShell(centerX, centerY, namespaces) {
                                 <div class="ns-hud-row"><span>DOMINANT</span><b>${ns.dominant_count || 0} procs</b></div>
                                 <div class="ns-hud-row"><span>INODE</span><b>${ns.dominant_inode || 'n/a'}</b></div>
                                 <div class="ns-hud-row"><span>VIA</span><b>${kind}</b></div>
+                                <div class="ns-hud-row"><span>SEEN</span><b class="${isolationCoverage.partial ? 'is-partial' : ''}">${coverageText()}</b></div>
                                 <div class="ns-hud-meter"><i style="width:${Math.round(activity * 100)}%"></i></div>
                                 <div class="ns-hud-foot"><span>ACTIVITY ${Math.round(activity * 100)}%</span><span class="ns-hud-hint">CLICK FOR THE CARD ▸</span></div>
                             </div>
@@ -227,8 +557,9 @@ function drawNamespaceShell(centerX, centerY, namespaces) {
             .on('click', (event) => {
                 event.stopPropagation();
                 d3.selectAll('.ns-tooltip').remove();
-                const ax = centerX + Math.cos(mid - Math.PI / 2) * 202;
-                const ay = centerY + Math.sin(mid - Math.PI / 2) * 202;
+                const anchorR = 202;
+                const ax = centerX + Math.cos(mid - Math.PI / 2) * anchorR;
+                const ay = centerY + Math.sin(mid - Math.PI / 2) * anchorR;
                 if (window.NamespaceCard && typeof window.NamespaceCard.open === 'function') {
                     restoreFocus();
                     window.NamespaceCard.open(ns, { x: ax, y: ay });
@@ -592,6 +923,8 @@ window.IsolationUI = {
     fetchIsolationContext,
     drawIsolationConceptLayer,
     drawNamespaceShell,
-    drawCgroupConceptCard
+    drawCgroupConceptCard,
+    focusNamespaceProcesses,
+    clearNamespaceProcessFocus,
 };
 })();
