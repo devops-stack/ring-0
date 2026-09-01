@@ -1,0 +1,36 @@
+[Unit]
+Description=kernel-ai unprivileged KernelEvent broker
+Documentation=https://ring-0.sh
+After=kernel-ai-sensor.service
+Requires=kernel-ai-sensor.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+Environment=KERNEL_SENSOR_SOCKET=/run/kernel-ai/sensor.sock
+Environment=KERNEL_SENSOR_EVENTS_OUT=/run/kernel-ai/kernel-events-v1.json
+Environment=KERNEL_SENSOR_MAX_EVENTS=800
+Environment=KERNEL_SENSOR_MAX_EPS=300
+Environment=KERNEL_SENSOR_MIN_DURATION_US=100000
+RuntimeDirectory=kernel-ai
+RuntimeDirectoryMode=0775
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/bin/python3 /opt/ring0/kernel-ai/deploy/ebpf/sensor_broker.py
+Restart=always
+RestartSec=3
+Nice=10
+CPUQuota=10%
+MemoryMax=96M
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+ReadWritePaths=/run/kernel-ai
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target
