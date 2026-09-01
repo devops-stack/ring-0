@@ -1,0 +1,32 @@
+[Unit]
+Description=kernel-ai unified eBPF kernel sensor
+Documentation=https://ring-0.sh
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=www-data
+RuntimeDirectory=kernel-ai
+RuntimeDirectoryMode=0775
+RuntimeDirectoryPreserve=yes
+ExecStart=/opt/ring0/kernel-ai/bin/kernel-ai-sensor --socket /run/kernel-ai/sensor.sock --min-duration 100ms
+Restart=always
+RestartSec=3
+Nice=10
+CPUQuota=20%
+MemoryMax=192M
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_RESOURCE CAP_DAC_READ_SEARCH CAP_SYS_PTRACE
+AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_SYS_RESOURCE CAP_DAC_READ_SEARCH CAP_SYS_PTRACE
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+ReadWritePaths=/run/kernel-ai
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target
