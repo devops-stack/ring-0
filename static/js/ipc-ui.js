@@ -324,7 +324,7 @@ function paintIpcOrbit(data, centerX, centerY, processAnchorsByName, live) {
                                 return `${p.peer}: ${p.weight} [${channelType}] (unix:${p.unixSocketWeight} pipe:${p.pipeWeight} tcp:${p.tcpWeight} shm:${p.shmWeight})`;
                             }).join('<br>')
                             : 'No peer details';
-                        d3.select('body')
+                        const tooltip = d3.select('body')
                             .append('div')
                             .attr('class', 'tooltip ipc-link-tooltip')
                             .style('position', 'absolute')
@@ -339,6 +339,9 @@ function paintIpcOrbit(data, centerX, centerY, processAnchorsByName, live) {
                             .style('left', `${nx + 10}px`)
                             .style('top', `${ny - 14}px`)
                             .html(`<strong>${node.name || normalizedName}</strong><br>Links: ${degree}<br>UNIX: ${Number(node.unix_socket_degree || 0)} | PIPE: ${Number(node.pipe_degree || 0)} | TCP: ${Number(node.tcp_degree || 0)} | SHM: ${Number(node.shm_degree || 0)}<br><hr style="border-color:#555;margin:4px 0;">${peerText}`);
+                        if (typeof window.placeHoverPopup === 'function') {
+                            window.placeHoverPopup(tooltip, nx, ny, { gap: 10, maxWidth: 420 });
+                        }
                     })
                     .on('mouseleave', () => {
                         d3.selectAll('.ipc-link-tooltip').remove();
