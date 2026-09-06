@@ -6,6 +6,7 @@ bp = Blueprint("api", __name__, url_prefix="/api")
 
 _API_ROUTES = [
     ("/syscalls-realtime", "syscalls_realtime", h.syscalls_realtime, None),
+    ("/kernel-events", "kernel_events", h.kernel_events, None),
     ("/syscall/<name>", "syscall_detail", h.syscall_detail, None),
     ("/irq/<irq>", "irq_detail", h.irq_detail, None),
     ("/irq/<irq>/history", "irq_history", h.irq_history, None),

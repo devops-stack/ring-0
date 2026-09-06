@@ -2,6 +2,7 @@
 
 import pytest
 
+from kernel_ai.http.api_handlers import kernel as kernel_handlers
 from kernel_ai.state import get_state_container
 from kernel_ai.webapp import create_app
 
@@ -74,6 +75,7 @@ def test_runtime_state_is_isolated_between_apps():
         ("/api/nginx-files", 200),
         ("/api/active-connections", 200),
         ("/api/network-stack-realtime", 200),
+        ("/api/kernel-events?limit=2", 200),
         ("/api/devices-realtime", 200),
         ("/api/filesystem-blocks", 200),
     ],
@@ -81,6 +83,53 @@ def test_runtime_state_is_isolated_between_apps():
 def test_api_smoke_routes(client, path, expected):
     resp = client.get(path)
     assert resp.status_code == expected
+
+
+def test_kernel_events_rejects_invalid_pid_filter(client):
+    resp = client.get("/api/kernel-events?pids=1,not-a-pid")
+
+    assert resp.status_code == 400
+
+
+def test_syscalls_snapshot_is_nonblocking_and_cached(monkeypatch):
+    calls = {"sample": 0, "cpu_intervals": []}
+
+    def sample():
+        calls["sample"] += 1
+        return {
+            "syscalls": [{"name": "read", "count": 1}],
+            "source": "test",
+            "scope": "machine",
+            "tasks_total": 1,
+            "blocked_total": 1,
+            "age": 0.1,
+        }
+
+    def cpu_percent(interval=None):
+        calls["cpu_intervals"].append(interval)
+        return 12.5
+
+    monkeypatch.setattr(kernel_handlers, "_syscall_payload_cache", None)
+    monkeypatch.setattr(kernel_handlers, "_syscall_payload_expires_at", 0.0)
+    monkeypatch.setattr(kernel_handlers._telemetry, "get_syscall_sample", sample)
+    monkeypatch.setattr(kernel_handlers.psutil, "cpu_percent", cpu_percent)
+    monkeypatch.setattr(
+        kernel_handlers.psutil,
+        "virtual_memory",
+        lambda: type("Memory", (), {"percent": 34.0})(),
+    )
+    monkeypatch.setattr(
+        kernel_handlers._core_observability_service,
+        "get_system_info",
+        lambda: {"system": "test"},
+    )
+
+    first = kernel_handlers._syscalls_realtime_payload()
+    second = kernel_handlers._syscalls_realtime_payload()
+
+    assert first is second
+    assert calls == {"sample": 1, "cpu_intervals": [None]}
+    assert first["sample"]["scope"] == "machine"
 
 
 def test_metrics_endpoint_available(client):

@@ -1520,7 +1520,7 @@ function showNamespaceCellTooltip(event, ns) {
     const statusLine = isolated
         ? '<span style="color:#7fd6b0;">OWN namespace — isolated from host</span>'
         : '<span style="color:#cfcfc8;">shares the host namespace</span>';
-    d3.select('body')
+    const tooltip = d3.select('body')
         .append('div')
         .attr('class', 'tooltip ns-fp-tooltip')
         .style('position', 'absolute')
@@ -1542,6 +1542,9 @@ function showNamespaceCellTooltip(event, ns) {
             `<strong>inode:</strong> ${inode}<br>` +
             `<strong>host inode:</strong> ${hostInode}`
         );
+    if (typeof window.placeHoverPopup === 'function') {
+        window.placeHoverPopup(tooltip, event.pageX, event.pageY, { gap: 12, maxWidth: 320 });
+    }
 }
 
 // Containment halo: ring the selected process and its container/sandbox mates
@@ -2943,10 +2946,17 @@ function drawProcessKernelMap2(centerX, centerY) {
                     });
                     
                     // Update tooltip position on mouse move
-                    d3.select("svg").on("mousemove", function() {
-                        tooltip
-                            .style("left", (event.pageX + 10) + "px")
-                            .style("top", (event.pageY - 10) + "px");
+                    d3.select("svg").on("mousemove", function(moveEvent) {
+                        if (typeof window.placeHoverPopup === "function") {
+                            window.placeHoverPopup(tooltip, moveEvent.pageX, moveEvent.pageY, {
+                                gap: 10,
+                                maxWidth: 300
+                            });
+                        } else {
+                            tooltip
+                                .style("left", (moveEvent.pageX + 10) + "px")
+                                .style("top", (moveEvent.pageY - 10) + "px");
+                        }
                     });
                 })
                     .on("click", function(event, d) {

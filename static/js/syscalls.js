@@ -8,6 +8,7 @@ class SyscallsManager {
         this.sampledAt = "";
         this.pinnedSubsystemKey = null;
         this.hoveredSubsystemKey = null;
+        this.updateInFlight = false;
         // "loading" until the first answer arrives, then "ok" or "unavailable".
         this.feedState = "loading";
         // "machine" when the root collector answered, "self" when the backend
@@ -139,6 +140,10 @@ class SyscallsManager {
 
     // Update system calls data
     async updateSyscallsTable() {
+        // A slow host must not turn this interval into an unbounded request
+        // queue. The next timer tick will collect the newest snapshot.
+        if (this.updateInFlight) return;
+        this.updateInFlight = true;
         try {
             const response = await fetch("/api/syscalls-realtime");
             const data = await response.json();
@@ -159,6 +164,8 @@ class SyscallsManager {
         } catch (error) {
             console.error('❌ Error getting system calls:', error);
             this.markFeedUnavailable();
+        } finally {
+            this.updateInFlight = false;
         }
     }
 

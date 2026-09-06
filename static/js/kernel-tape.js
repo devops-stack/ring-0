@@ -76,6 +76,7 @@
         firstProcSample: true,
         tickIndex: 0,
         timer: null,
+        tickInFlight: false,
         rowCount: 0,
         eventsSinceCore: 0,
         eventsThisSecond: 0,
@@ -86,6 +87,13 @@
         focus: null,
         focusPrev: null,
         focusSeq: 0,
+        // Generic PID-scoped trace focus used by kernel-map objects such as a
+        // namespace sector. This is separate from socket focus because a
+        // socket has its own counters, while a namespace is resolved through
+        // exact process membership and the system-wide syscall snapshot.
+        pidFocus: null,
+        pidFocusSeq: 0,
+        pidSummaries: new Map(),
         // The pill is fixed HTML, so an SVG scrim cannot cover it: while a card
         // is berthed against the right edge the pill would float on top of it.
         pillHidden: false
@@ -116,8 +124,44 @@
 #kernel-tape ::-webkit-scrollbar-track { background: transparent; }
 .ktape-row { animation: ktape-rowin 180ms ease-out; }
 .ktape-row.err { animation: ktape-rowin 180ms ease-out, ktape-flash 900ms ease-out; }
+.ktape-row.is-inspectable { cursor: pointer; }
+.ktape-row.is-inspectable:hover { background: rgba(226,163,62,0.07); }
 .ktape-glyph-dot { animation: ktape-blink 1.6s infinite; }
 .ktape-btn:hover { color: ${D.text}; }
+#kernel-event-inspector { font-family: ${D.mono}; }
+.kei-section { margin-top: 14px; }
+.kei-label { color: ${D.faint}; font-size: 8px; letter-spacing: 1.4px; }
+.kei-value { color: ${D.text}; font-size: 10px; line-height: 15px; overflow-wrap: anywhere; }
+.kei-chip { border: 1px solid ${D.edge}; color: ${D.dim}; padding: 2px 5px; font-size: 8px; letter-spacing: .7px; }
+.kei-chain { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; margin-top: 6px; }
+.kei-node { min-width: 0; border: 1px solid ${D.edge}; padding: 6px; }
+.kei-node b { display: block; color: ${D.faint}; font-size: 7px; letter-spacing: 1px; font-weight: 400; }
+.kei-node span { display: block; color: ${D.text}; font-size: 9px; margin-top: 4px; overflow-wrap: anywhere; }
+.kei-node.is-known { border-color: rgba(226,163,62,.42); }
+.kei-node.is-unknown span { color: rgba(244,244,236,.25); }
+.kei-mechanism { position: relative; margin-top: 12px; border: 1px solid ${D.edge}; overflow: hidden; background: #080b0f; }
+.kei-mechanism::before { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .12; background-image: linear-gradient(rgba(244,244,236,.07) 1px, transparent 1px), linear-gradient(90deg, rgba(244,244,236,.07) 1px, transparent 1px); background-size: 16px 16px; }
+.kei-mechanism svg { position: relative; display: block; width: 100%; height: auto; }
+.kei-mech-rule { fill: none; stroke: rgba(244,244,236,.16); stroke-width: .8; vector-effect: non-scaling-stroke; }
+.kei-mech-live { fill: none; stroke: ${D.accent}; stroke-width: 1.1; vector-effect: non-scaling-stroke; }
+.kei-mech-faint { fill: rgba(9,12,16,.9); stroke: rgba(244,244,236,.25); stroke-width: .8; vector-effect: non-scaling-stroke; }
+.kei-mech-amber { fill: rgba(226,163,62,.11); stroke: rgba(226,163,62,.78); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.kei-mech-kernel { fill: rgba(244,244,236,.018); stroke: rgba(244,244,236,.22); stroke-width: .8; vector-effect: non-scaling-stroke; }
+.kei-mech-user { fill: rgba(244,244,236,.035); stroke: rgba(244,244,236,.22); stroke-width: .8; vector-effect: non-scaling-stroke; }
+.kei-mech-boundary { fill: none; stroke: rgba(226,163,62,.34); stroke-width: .8; stroke-dasharray: 4 4; vector-effect: non-scaling-stroke; }
+.kei-mech-port { fill: #080b0f; stroke: rgba(226,163,62,.8); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.kei-mech-block { fill: rgba(9,12,16,.94); stroke: rgba(244,244,236,.28); stroke-width: .8; vector-effect: non-scaling-stroke; }
+.kei-mech-copy { fill: ${D.faint}; font: 6px ${D.mono}; letter-spacing: 1px; }
+.kei-mech-value { fill: ${D.text}; font: 8px ${D.mono}; letter-spacing: .4px; }
+.kei-mech-hot { fill: ${D.accent}; font: 8px ${D.mono}; letter-spacing: .5px; }
+.kei-mech-rotor { transform-box: fill-box; transform-origin: center; animation: kei-rotor-seat 720ms cubic-bezier(.2,.8,.2,1) both; }
+.kei-mech-wake { transform-box: fill-box; transform-origin: center; animation: kei-wake-turn 1.8s cubic-bezier(.2,.8,.2,1) both; }
+.kei-mech-return.is-error { fill: ${ERR_COLOR}; }
+@keyframes kei-rotor-seat { from { transform: rotate(-38deg); opacity: .25; } to { transform: rotate(0); opacity: 1; } }
+@keyframes kei-wake-turn { from { transform: rotate(-90deg); } to { transform: rotate(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .kei-mech-rotor, .kei-mech-wake { animation: none; }
+}
 `;
         document.head.appendChild(style);
     }
@@ -145,6 +189,47 @@
 </svg>`;
     }
 
+    function buildInspectorDom() {
+        const root = document.createElement('aside');
+        root.id = 'kernel-event-inspector';
+        Object.assign(root.style, {
+            position: 'fixed', zIndex: '8999', display: 'none',
+            width: '420px', maxWidth: 'calc(100vw - 24px)', maxHeight: 'calc(100vh - 24px)',
+            overflow: 'auto', padding: '0 14px 16px',
+            color: D.text, background: 'rgba(9,12,16,0.975)',
+            border: `1px solid ${D.edge}`,
+            clipPath: 'polygon(0 0, calc(100% - 15px) 0, 100% 15px, 100% 100%, 0 100%)',
+            filter: 'drop-shadow(-8px 8px 14px rgba(7,9,12,0.35))'
+        });
+        const header = document.createElement('div');
+        Object.assign(header.style, {
+            height: `${CARD.header}px`, display: 'flex', alignItems: 'center',
+            borderBottom: `1px solid ${D.edge}`
+        });
+        const title = document.createElement('span');
+        title.textContent = 'KERNEL EVENT INSPECTOR';
+        Object.assign(title.style, { fontSize: '9px', letterSpacing: '1.5px', flex: '1' });
+        const close = document.createElement('button');
+        close.className = 'ktape-btn';
+        close.textContent = '×';
+        Object.assign(close.style, {
+            cursor: 'pointer', background: 'transparent', border: 'none',
+            color: D.dim, font: `12px/1 ${D.mono}`
+        });
+        close.addEventListener('click', closeInspector);
+        const body = document.createElement('div');
+        header.append(title, close);
+        root.append(header, body);
+        document.body.append(root);
+        el.inspector = root;
+        el.inspectorBody = body;
+        window.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && el.inspector.style.display !== 'none') {
+                closeInspector();
+            }
+        });
+    }
+
     function buildDom() {
         // Toggle pill (visible when the card is closed).
         const toggle = document.createElement('button');
@@ -158,7 +243,7 @@
             font: '600 10px/1 monospace', letterSpacing: '1.5px', textTransform: 'uppercase',
             backdropFilter: 'blur(4px)'
         });
-        toggle.innerHTML = '<span style="width:7px;height:7px;border-radius:50%;background:#67c8e0;display:inline-block;animation:ktape-blink 1.4s infinite"></span> ACTIVITY';
+        toggle.innerHTML = '<span style="width:7px;height:7px;border-radius:50%;background:#67c8e0;display:inline-block;animation:ktape-blink 1.4s infinite"></span> KERNEL';
         toggle.addEventListener('click', () => api.setOpen(true));
 
         // Card.
@@ -220,6 +305,7 @@
 
         root.append(skin, header, body);
         document.body.append(toggle, root);
+        buildInspectorDom();
 
         el.toggle = toggle;
         el.root = root;
@@ -287,6 +373,7 @@
         if (!el.root) return;
         if (onMobile()) {
             placeMobileCard();
+            placeInspector();
             return;
         }
         const w = Math.round(Math.min(CARD.width, window.innerWidth * 0.34));
@@ -297,10 +384,269 @@
             filter: 'drop-shadow(-8px 0 12px rgba(7,9,12,0.42))'
         });
         el.skin.innerHTML = buildSkin(w, h);
+        placeInspector();
     }
 
-    function pushRow(ev) {
+    function placeInspector() {
+        if (!el.inspector) return;
+        const margin = 12;
+        if (onMobile()) {
+            Object.assign(el.inspector.style, {
+                top: `${margin}px`, right: `${margin}px`, left: `${margin}px`,
+                width: 'auto'
+            });
+            return;
+        }
+        const tapeWidth = state.open && el.root ? (el.root.offsetWidth || CARD.width) : 0;
+        Object.assign(el.inspector.style, {
+            top: `${margin}px`, right: `${tapeWidth + margin}px`, left: 'auto',
+            width: '420px'
+        });
+    }
+
+    function closeInspector() {
+        if (!el.inspector) return;
+        el.inspector.style.display = 'none';
+        if (el.inspectorBody) el.inspectorBody.textContent = '';
+    }
+
+    function inspectorText(parent, className, value) {
+        const node = document.createElement('div');
+        node.className = className;
+        node.textContent = value === undefined || value === null || value === '' ? 'UNKNOWN' : String(value);
+        parent.appendChild(node);
+        return node;
+    }
+
+    function inspectorSection(parent, label, value) {
+        const section = document.createElement('section');
+        section.className = 'kei-section';
+        inspectorText(section, 'kei-label', label);
+        inspectorText(section, 'kei-value', value);
+        parent.appendChild(section);
+    }
+
+    function buildEventMechanism(model) {
+        const section = document.createElement('section');
+        section.className = 'kei-mechanism';
+        section.setAttribute('aria-label', 'Observed Linux kernel syscall path');
+        const ns = 'http://www.w3.org/2000/svg';
+        const svg = document.createElementNS(ns, 'svg');
+        svg.setAttribute('viewBox', '0 0 390 190');
+        svg.setAttribute('role', 'img');
+        svg.setAttribute('aria-label', 'A task crosses from userspace into the Linux kernel, is dispatched through the syscall table, touches a subsystem and returns');
+
+        const add = (tag, attrs, parent, text) => {
+            const node = document.createElementNS(ns, tag);
+            Object.entries(attrs || {}).forEach(([key, value]) => node.setAttribute(key, value));
+            if (text !== undefined) node.textContent = text;
+            (parent || svg).appendChild(node);
+            return node;
+        };
+        const clip = (value, length) => {
+            const text = String(value === undefined || value === null || value === '' ? 'UNKNOWN' : value);
+            return text.length > length ? `${text.slice(0, length - 1)}…` : text;
+        };
+
+        const task = model.task || {};
+        const call = model.syscall || {};
+        const resource = model.resource || {};
+        const kernel = model.kernel || {};
+        const duration = Number.isFinite(Number(model.durationUs))
+            ? `${Number(model.durationUs) >= 1000 ? (Number(model.durationUs) / 1000).toFixed(1) + 'ms' : Number(model.durationUs) + 'µs'}`
+            : '—';
+        const hasWakeup = Boolean(model.wakeup)
+            && !['UNKNOWN', 'NOT OBSERVED', 'NOT COLLECTED', 'N/A'].includes(String(model.wakeup));
+        const returnValue = call.ret === undefined || call.ret === null ? '—' : String(call.ret);
+        const isError = Number(call.ret) < 0;
+        const resourceValue = resource.target
+            || (resource.fd !== undefined ? `FD ${resource.fd}` : 'NOT RESOLVED');
+        const tracepoint = kernel.wchan || 'raw_syscalls:sys_exit';
+        const args = Array.isArray(call.args) ? call.args : [];
+        const block = (x, y, width, height, label, value, hot) => {
+            const cut = 6;
+            add('path', {
+                d: `M${x} ${y} H${x + width - cut} L${x + width} ${y + cut} V${y + height} H${x} Z`,
+                class: hot ? 'kei-mech-amber' : 'kei-mech-block'
+            });
+            add('text', { x: x + 7, y: y + 12, class: 'kei-mech-copy' }, svg, label);
+            add('text', { x: x + 7, y: y + 25, class: hot ? 'kei-mech-hot' : 'kei-mech-value' }, svg, clip(value, Math.max(6, Math.floor(width / 5.3))));
+        };
+
+        add('text', { x: 12, y: 15, class: 'kei-mech-copy' }, svg, 'LINUX KERNEL SLICE · OBSERVED EVENT');
+        add('text', { x: 378, y: 15, class: 'kei-mech-hot', 'text-anchor': 'end' }, svg, duration);
+        add('path', { d: 'M12 23 H378', class: 'kei-mech-rule' });
+
+        add('rect', { x: 12, y: 29, width: 366, height: 27, class: 'kei-mech-user' });
+        add('text', { x: 19, y: 39, class: 'kei-mech-copy' }, svg, 'USERSPACE · RING 3');
+        add('text', { x: 19, y: 50, class: 'kei-mech-value' }, svg, `${clip(task.comm, 17)} · PID ${task.pid || '—'}`);
+        add('text', { x: 371, y: 45, class: 'kei-mech-copy', 'text-anchor': 'end' }, svg, 'SYSCALL INSTRUCTION');
+        add('path', { d: 'M69 56 V70 M65 66 L69 70 L73 66', class: 'kei-mech-live' });
+        add('path', { d: 'M12 62 H378', class: 'kei-mech-boundary' });
+
+        add('path', {
+            d: 'M12 70 H370 L378 78 V178 H20 L12 170 Z',
+            class: 'kei-mech-kernel'
+        });
+        add('text', { x: 20, y: 83, class: 'kei-mech-hot' }, svg, 'KERNEL SPACE · RING 0');
+        add('text', { x: 370, y: 83, class: 'kei-mech-copy', 'text-anchor': 'end' }, svg, 'SYSCALL CORE');
+
+        block(22, 91, 78, 36, '01 · ENTRY', 'arch syscall gate', false);
+        block(210, 91, 98, 36, `03 · ${String(model.subsystem || 'KERNEL').toUpperCase()}`, `${call.name || 'unknown'}()`, true);
+        block(326, 91, 43, 36, '04 · EXIT', returnValue, false);
+
+        const rotor = add('g', { class: 'kei-mech-rotor' });
+        add('circle', { cx: 157, cy: 109, r: 24, class: 'kei-mech-faint' }, rotor);
+        for (let index = 0; index < 12; index += 1) {
+            const angle = index * Math.PI / 6;
+            add('line', {
+                x1: 157 + Math.cos(angle) * 18,
+                y1: 109 + Math.sin(angle) * 18,
+                x2: 157 + Math.cos(angle) * 22,
+                y2: 109 + Math.sin(angle) * 22,
+                class: index === Number(call.nr || 0) % 12 ? 'kei-mech-live' : 'kei-mech-rule'
+            }, rotor);
+        }
+        add('circle', { cx: 157, cy: 109, r: 14, class: 'kei-mech-amber' }, rotor);
+        add('text', { x: 157, y: 112, class: 'kei-mech-hot', 'text-anchor': 'middle' }, rotor, call.nr !== undefined ? call.nr : '—');
+        add('text', { x: 157, y: 140, class: 'kei-mech-copy', 'text-anchor': 'middle' }, svg, '02 · SYS_CALL_TABLE');
+
+        add('path', { d: 'M100 109 H133 M181 109 H210 M308 109 H326', class: 'kei-mech-live' });
+        [100, 133, 181, 210, 308, 326].forEach((x) => {
+            add('circle', { cx: x, cy: 109, r: 2, class: 'kei-mech-port' });
+        });
+
+        add('text', { x: 109, y: 91, class: 'kei-mech-copy' }, svg, 'ARGUMENTS');
+        args.slice(0, 6).forEach((value, index) => {
+            add('rect', {
+                x: 110 + index * 7, y: 94, width: 4, height: 7,
+                class: Number(value) === 0 ? 'kei-mech-faint' : 'kei-mech-amber'
+            });
+        });
+
+        block(210, 142, 98, 28, 'RESOURCE / WAIT QUEUE', resourceValue, false);
+        block(70, 142, 120, 28, 'SCHEDULER EDGE', hasWakeup ? model.wakeup : 'not observed', hasWakeup);
+        add('path', { d: 'M259 127 V142', class: 'kei-mech-rule' });
+        add('circle', { cx: 259, cy: 142, r: 2, class: 'kei-mech-port' });
+        add('path', {
+            d: 'M190 156 H200 Q210 156 210 146',
+            class: hasWakeup ? 'kei-mech-live' : 'kei-mech-rule',
+            'stroke-dasharray': hasWakeup ? 'none' : '3 4'
+        });
+        add('circle', {
+            cx: 347, cy: 109, r: 3,
+            class: `kei-mech-return kei-mech-amber${isError ? ' is-error' : ''}`
+        });
+
+        add('text', { x: 20, y: 185, class: 'kei-mech-copy' }, svg, `OBSERVED @ ${clip(tracepoint, 25)}`);
+        add('text', { x: 370, y: 185, class: 'kei-mech-copy', 'text-anchor': 'end' }, svg, model.source || 'KERNEL TRACE');
+
+        section.appendChild(svg);
+        return section;
+    }
+
+    function defaultInspect(ev) {
+        return {
+            kind: 'DERIVED',
+            source: 'KERNEL SNAPSHOT / COUNTER',
+            scope: 'MACHINE',
+            observedAt: ev.ts,
+            name: ev.name,
+            subsystem: ev.tagText,
+            detail: ev.detail,
+            task: null,
+            syscall: null,
+            resource: null,
+            kernel: null
+        };
+    }
+
+    function explainInspect(model) {
+        const task = model.task || {};
+        const call = model.syscall || {};
+        const kernel = model.kernel || {};
+        const resource = model.resource || {};
+        if (model.kind === 'EVENT' && task.comm && call.name) {
+            const duration = Number.isFinite(Number(model.durationUs))
+                ? ` in ${(Number(model.durationUs) / 1000).toFixed(2)} ms`
+                : '';
+            const result = call.ret !== undefined ? ` and returned ${call.ret}` : '';
+            const wakeup = model.wakeup && model.wakeup !== 'NOT OBSERVED'
+                ? ` Wakeup correlation: ${model.wakeup}.`
+                : ' No matching sched_wakeup was observed for this span.';
+            return `${task.comm} (PID ${task.pid}, TID ${task.tid || task.pid}) completed ${call.name}()${duration}${result}.${wakeup}`;
+        }
+        if (task.comm && call.name) {
+            const target = resource.target ? ` on ${resource.target}` : '';
+            const wait = kernel.wchan ? `; the sampled thread is waiting in ${kernel.wchan}` : '';
+            return `${task.comm} (PID ${task.pid}${task.tid ? `, TID ${task.tid}` : ''}) was observed in ${call.name}()${target}${wait}.`;
+        }
+        return model.detail || 'No finer relationship is present in this sample.';
+    }
+
+    function openInspector(input) {
+        if (!el.inspector || !el.inspectorBody) return;
+        const model = input || {};
+        const body = el.inspectorBody;
+        body.textContent = '';
+
+        const heading = document.createElement('div');
+        Object.assign(heading.style, { paddingTop: '12px', fontSize: '16px', letterSpacing: '.6px' });
+        heading.textContent = String(model.name || 'KERNEL SIGNAL').toUpperCase();
+        body.appendChild(heading);
+
+        const chips = document.createElement('div');
+        Object.assign(chips.style, { display: 'flex', flexWrap: 'wrap', gap: '5px', marginTop: '8px' });
+        [model.kind, model.source, model.scope, model.age !== undefined ? `AGE ${model.age}s` : null]
+            .filter(Boolean)
+            .forEach(value => inspectorText(chips, 'kei-chip', value));
+        body.appendChild(chips);
+
+        body.appendChild(buildEventMechanism(model));
+        inspectorSection(body, 'WHAT THIS MEANS', explainInspect(model));
+
+        const chainSection = document.createElement('section');
+        chainSection.className = 'kei-section';
+        inspectorText(chainSection, 'kei-label', 'KERNEL PATH');
+        const chain = document.createElement('div');
+        chain.className = 'kei-chain';
+        const task = model.task || {};
+        const call = model.syscall || {};
+        const kernel = model.kernel || {};
+        const resource = model.resource || {};
+        [
+            ['01 · TASK', task.comm ? `${task.comm} · ${task.pid}` : null],
+            ['02 · SYSCALL', call.name ? `${call.name}()` : null],
+            ['03 · KERNEL', kernel.wchan],
+            ['04 · RESOURCE', resource.target || (resource.fd !== undefined ? `FD ${resource.fd}` : null)],
+            ['05 · STATE', task.state],
+            ['06 · WAKEUP', model.wakeup]
+        ].forEach((nodeData) => {
+            const node = document.createElement('div');
+            const unavailable = !nodeData[1]
+                || ['UNKNOWN', 'NOT OBSERVED', 'NOT COLLECTED', 'N/A'].includes(String(nodeData[1]));
+            node.className = `kei-node ${unavailable ? 'is-unknown' : 'is-known'}`;
+            const key = document.createElement('b');
+            key.textContent = nodeData[0];
+            const value = document.createElement('span');
+            value.textContent = nodeData[1] || 'UNKNOWN';
+            node.append(key, value);
+            chain.appendChild(node);
+        });
+        chainSection.appendChild(chain);
+        body.appendChild(chainSection);
+
+        const args = Array.isArray(call.args) && call.args.length ? call.args.join(' · ') : 'UNKNOWN';
+        inspectorSection(body, 'SYSCALL ARGUMENTS', args);
+        inspectorSection(body, 'OBSERVED', `${model.observedAt || 'UNKNOWN'} · ${model.subsystem || 'UNKNOWN'} · ${model.detail || ''}`);
+
+        placeInspector();
+        el.inspector.style.display = 'block';
+    }
+
+    function pushRow(ev, options) {
         if (!el.body) return;
+        const opts = options || {};
         const row = document.createElement('div');
         row.className = 'ktape-row' + (ev.level === 'err' ? ' err' : '');
         const idle = ev.level === 'dim';
@@ -340,7 +686,12 @@
         });
 
         row.append(t, sym, name, tag, detail);
-        el.body.prepend(row);
+        row._ktapeParts = { t, sym, name, tag, detail };
+        row._ktapeInspect = ev.inspect || defaultInspect(ev);
+        row.classList.add('is-inspectable');
+        row.addEventListener('click', () => openInspector(row._ktapeInspect));
+        (opts.container || el.body).prepend(row);
+        if (opts.transient) return row;
         state.rowCount += 1;
         state.eventsThisSecond += 1;
         state.eventsSinceCore += 1;
@@ -349,6 +700,7 @@
             el.body.removeChild(el.body.lastChild);
             state.rowCount -= 1;
         }
+        return row;
     }
 
     function updateEps() {
@@ -640,15 +992,21 @@
     function setTitle() {
         if (!el.title) return;
         const f = state.focus;
-        if (!f) {
-            el.title.textContent = 'KERNEL ACTIVITY';
-            el.title.style.color = D.text;
+        if (f) {
+            el.title.textContent = f.owner
+                ? `SOCKET · ${String(f.owner).toUpperCase()}${f.pid ? ` ${f.pid}` : ''}`
+                : 'SOCKET · RESOLVING';
+            el.title.style.color = D.accent;
             return;
         }
-        el.title.textContent = f.owner
-            ? `SOCKET · ${String(f.owner).toUpperCase()}${f.pid ? ` ${f.pid}` : ''}`
-            : 'SOCKET · RESOLVING';
-        el.title.style.color = D.accent;
+        if (state.pidFocus) {
+            const scope = state.pidFocus.scope ? ` · ${state.pidFocus.scope}` : '';
+            el.title.textContent = `${state.pidFocus.eventSource || 'PROC'} TRACE${scope} · ${state.pidFocus.label}`;
+            el.title.style.color = D.accent;
+            return;
+        }
+        el.title.textContent = 'KERNEL ACTIVITY';
+        el.title.style.color = D.text;
     }
 
     // One socket's own feed. The parked-call names need ptrace-level access and
@@ -744,41 +1102,408 @@
         }
     }
 
-    function tick() {
-        if (state.paused || !state.open) return;
-        if (onMobile()) placeCard();
-        const i = state.tickIndex++;
-        // Core "breath" reflects activity accumulated since the previous tick.
-        pulseCore(state.eventsSinceCore);
-        state.eventsSinceCore = 0;
-        // A hovered socket owns the tape: mixing the machine-wide feeds back in
-        // is exactly the false connection this feature exists to remove.
-        if (state.focus) {
-            tickSocket();
-            updateEps();
+    function clearPidFocusBlock(focus) {
+        if (focus && focus.block && focus.block.parentNode) focus.block.remove();
+        if (focus) {
+            focus.block = null;
+            focus.rows = new Map();
+        }
+    }
+
+    function retainPidFocusSummary(focus) {
+        if (!focus || focus.retainSummary === false || !Array.isArray(focus.lastRows)) return;
+        const duration = Math.max(1, Math.round((Date.now() - focus.startedAt) / 1000));
+        const calls = [];
+        focus.lastRows.forEach((row) => {
+            const call = `${String(row.name || 'UNKNOWN').toUpperCase()}${row.wchan ? `→${row.wchan}` : ''}`;
+            if (!calls.includes(call)) calls.push(call);
+        });
+        const trace = calls.length ? calls.slice(0, 2).join(' · ') : 'NO PARKED CALLS';
+        const signature = `${focus.key}|${trace}`;
+        const observedAt = timeStamp();
+        const detail = `${focus.pids.size} PID · ${trace} · ${duration}s · ${focus.scope || 'UNKNOWN'}`;
+        const first = focus.lastModels && focus.lastModels[0];
+        const inspect = first
+            ? { ...first, kind: 'TRACE SUMMARY', observedAt, detail }
+            : {
+                kind: 'TRACE SUMMARY',
+                source: '/PROC',
+                scope: focus.scope || 'UNKNOWN',
+                observedAt,
+                name: focus.label,
+                subsystem: 'NS',
+                detail
+            };
+        const ev = {
+            ts: observedAt,
+            sym: '◇',
+            symColor: D.accent,
+            name: focus.label,
+            tagText: 'NS',
+            detail,
+            live: false,
+            level: 'normal',
+            inspect
+        };
+        const previous = state.pidSummaries.get(signature);
+        if (previous && previous.row && previous.row.isConnected) {
+            const parts = previous.row._ktapeParts;
+            parts.t.textContent = ev.ts;
+            parts.detail.textContent = ev.detail;
+            previous.row._ktapeInspect = inspect;
+            el.body.prepend(previous.row);
             return;
         }
-        tickSyscalls();
-        if (i % 2 === 0) { tickNetwork(); tickIoPulse(); }
-        else { tickConnections(); }
-        if (i % 3 === 2) tickProcesses();
-        updateEps();
+        const row = pushRow(ev);
+        state.pidSummaries.set(signature, { row });
+    }
+
+    function renderPidFocusCurrent(focus, rows, scope, sample) {
+        if (!el.body || !focus) return;
+        if (!focus.block) {
+            focus.block = document.createElement('div');
+            focus.block.className = 'ktape-focus-current';
+            Object.assign(focus.block.style, {
+                borderBottom: `1px solid ${D.edge}`,
+                background: 'rgba(226,163,62,0.035)',
+                padding: '3px 0'
+            });
+            el.body.prepend(focus.block);
+        }
+
+        const visible = rows.slice(0, MAX_NEW_PER_TICK);
+        const items = visible.length ? visible : [{
+            key: 'idle',
+            name: 'NO PARKED CALLS',
+            tagText: 'NS',
+            detail: `${focus.pids.size} PID · ${scope}`,
+            level: 'dim'
+        }];
+        const nextKeys = new Set();
+        const models = [];
+        items.forEach((item) => {
+            const key = item.key || `${item.pid}:${item.tid || ''}:${item.name}`;
+            nextKeys.add(key);
+            const world = item.world ? ` · ${focus.nsId.toUpperCase()}-NS ${item.world}` : '';
+            const wait = item.wchan ? ` · WAIT ${item.wchan}` : '';
+            const observedAt = timeStamp();
+            const ev = {
+                ts: observedAt,
+                sym: item.key === 'idle' ? '·' : '●',
+                symColor: item.key === 'idle' ? D.faint : D.accent,
+                name: String(item.name || '').toUpperCase(),
+                tagText: item.tagText || tagForSyscall(item.name).text,
+                detail: item.detail || `${item.comm} · PID ${item.pid}${world}${wait}`,
+                live: item.key !== 'idle',
+                level: item.level || 'normal',
+                inspect: {
+                    kind: 'SNAPSHOT',
+                    source: '/PROC',
+                    scope,
+                    age: sample && sample.age,
+                    observedAt,
+                    name: item.name,
+                    subsystem: item.tagText || tagForSyscall(item.name).text,
+                    detail: item.detail || `${item.comm} · PID ${item.pid}${world}${wait}`,
+                    task: item.key === 'idle' ? null : {
+                        comm: item.comm,
+                        pid: item.pid,
+                        tid: item.tid,
+                        state: item.state
+                    },
+                    syscall: item.key === 'idle' ? null : {
+                        name: item.name,
+                        nr: item.nr,
+                        args: item.args
+                    },
+                    resource: item.key === 'idle' ? null : {
+                        fd: item.fd,
+                        target: item.fdTarget
+                    },
+                    kernel: item.key === 'idle' ? null : {
+                        wchan: item.wchan
+                    },
+                    wakeup: 'NOT COLLECTED'
+                }
+            };
+            models.push(ev.inspect);
+            let row = focus.rows.get(key);
+            if (!row) {
+                row = pushRow(ev, { container: focus.block, transient: true });
+                focus.rows.set(key, row);
+                return;
+            }
+            const parts = row._ktapeParts;
+            parts.t.textContent = ev.ts;
+            parts.sym.textContent = ev.sym;
+            parts.name.textContent = ev.name;
+            parts.tag.textContent = ev.tagText;
+            parts.detail.textContent = ev.detail;
+            row._ktapeInspect = ev.inspect;
+        });
+        focus.rows.forEach((row, key) => {
+            if (nextKeys.has(key)) return;
+            row.remove();
+            focus.rows.delete(key);
+        });
+        focus.lastRows = rows.slice(0, MAX_NEW_PER_TICK);
+        focus.lastModels = models;
+    }
+
+    // A namespace is not itself an event source: every task belongs to one
+    // world of every namespace type. The honest association is therefore made
+    // through its exact PID membership and the collector's current parked-call
+    // snapshot. Rows say what is observed now; they do not pretend that a
+    // snapshot proves syscall entry or exit.
+    function eventTimeStamp(epoch) {
+        const value = Number(epoch);
+        if (!Number.isFinite(value)) return timeStamp();
+        const d = new Date(value * 1000);
+        const p = (n, w = 2) => String(n).padStart(w, '0');
+        return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+    }
+
+    function eventResource(event) {
+        if (event.fd_target) return { fd: event.fd, target: event.fd_target };
+        if (event.fd !== undefined) return { fd: event.fd, target: `FD ${event.fd}` };
+        const args = Array.isArray(event.args) ? event.args : [];
+        if (event.syscall === 'futex' && args.length) {
+            return { fd: undefined, target: `uaddr 0x${Number(args[0]).toString(16)}` };
+        }
+        if (event.syscall === 'nanosleep' || event.syscall === 'clock_nanosleep') {
+            return { fd: undefined, target: 'timer' };
+        }
+        return { fd: undefined, target: 'N/A' };
+    }
+
+    function updateEventStatus(focus, payload, eventCount) {
+        if (!focus.block) return;
+        const threshold = Number(payload.source && payload.source.min_duration_us) || 0;
+        const thresholdText = threshold >= 1000
+            ? `${Math.round(threshold / 1000)} ms`
+            : `${threshold} µs`;
+        const observedAt = timeStamp();
+        const detail = focus.eventCursor === null
+            ? `ARMED · COMPLETED CALL ≥ ${thresholdText} · CURSOR ${payload.seq || 0}`
+            : (eventCount
+                ? `LIVE · ${eventCount} NEW EVENT${eventCount === 1 ? '' : 'S'} · CURSOR ${payload.seq || 0}`
+                : `WAITING · NO MATCHING COMPLETION · ≥ ${thresholdText}`);
+        const ev = {
+            ts: observedAt,
+            sym: eventCount ? '↯' : '◎',
+            symColor: eventCount ? D.accent : D.dim,
+            name: 'eBPF TRACE',
+            tagText: 'EVENT',
+            detail,
+            live: eventCount > 0,
+            level: eventCount ? 'normal' : 'dim',
+            inspect: {
+                kind: 'TRACE STATUS',
+                source: 'eBPF · raw_syscalls + sched_wakeup',
+                scope: 'MACHINE',
+                age: payload.source && payload.source.age,
+                observedAt,
+                name: 'eBPF TRACE',
+                subsystem: 'KERNEL',
+                detail
+            }
+        };
+        if (!focus.eventStatusRow) {
+            focus.eventStatusRow = pushRow(ev, { container: focus.block, transient: true });
+            return;
+        }
+        const parts = focus.eventStatusRow._ktapeParts;
+        parts.t.textContent = ev.ts;
+        parts.sym.textContent = ev.sym;
+        parts.name.textContent = ev.name;
+        parts.tag.textContent = ev.tagText;
+        parts.detail.textContent = ev.detail;
+        focus.eventStatusRow._ktapeInspect = ev.inspect;
+    }
+
+    function emitKernelEvents(focus, payload) {
+        if (!payload || !payload.available) return;
+        const latest = Number(payload.seq || 0);
+        focus.eventSource = 'EBPF';
+        if (focus.scope !== 'MACHINE') focus.scope = 'MACHINE';
+        setTitle();
+        // The first response establishes "now"; events completed before the
+        // pointer arrived must not be presented as consequences of this hover.
+        if (focus.eventCursor === null) {
+            updateEventStatus(focus, payload, 0);
+            focus.eventCursor = latest;
+            return;
+        }
+        if (payload.cursor_lost && !focus.eventGapNoted) {
+            pushRow({
+                ts: timeStamp(), sym: '!', symColor: WARN_COLOR,
+                name: 'TRACE GAP', tagText: 'eBPF',
+                detail: 'client cursor fell outside bounded kernel ring',
+                level: 'normal'
+            });
+            focus.eventGapNoted = true;
+        }
+        const events = Array.isArray(payload.events) ? payload.events.slice(-MAX_NEW_PER_TICK) : [];
+        updateEventStatus(focus, payload, events.length);
+        events.forEach((event) => {
+            const pid = String(event.pid);
+            if (!focus.pids.has(pid)) return;
+            const durationUs = Number(event.duration_us || 0);
+            const duration = durationUs >= 1000
+                ? `${(durationUs / 1000).toFixed(durationUs >= 100000 ? 0 : 2)} ms`
+                : `${durationUs} µs`;
+            const result = Number(event.ret);
+            const world = focus.worldByPid.get(pid);
+            const ns = world ? ` · ${focus.nsId.toUpperCase()}-NS ${world}` : '';
+            const wake = event.wakeup;
+            const wakeText = wake
+                ? `${wake.waker_comm || 'task'} · PID ${wake.waker_pid || '?'}`
+                : 'NOT OBSERVED';
+            const resource = eventResource(event);
+            const name = String(event.syscall || `syscall_${event.nr}`);
+            const observedAt = eventTimeStamp(event.exit_ts);
+            const detail = `${event.comm || 'process'} · PID ${pid}${ns} · ${duration} · RET ${result}`;
+            pushRow({
+                ts: observedAt,
+                sym: '↯',
+                symColor: D.accent,
+                name: name.toUpperCase(),
+                tagText: tagForSyscall(name).text,
+                detail,
+                live: true,
+                level: result < 0 ? 'err' : 'normal',
+                inspect: {
+                    kind: 'EVENT',
+                    source: 'eBPF · raw_syscalls + sched_wakeup',
+                    scope: 'MACHINE',
+                    age: payload.source && payload.source.age,
+                    observedAt,
+                    name,
+                    subsystem: event.subsystem || tagForSyscall(name).text,
+                    detail,
+                    durationUs,
+                    task: {
+                        comm: event.comm,
+                        pid: event.pid,
+                        tid: event.tid,
+                        state: 'RETURNED'
+                    },
+                    syscall: {
+                        name,
+                        nr: event.nr,
+                        args: event.args,
+                        ret: event.ret
+                    },
+                    resource,
+                    kernel: { wchan: 'raw_syscalls:sys_exit' },
+                    wakeup: wakeText
+                }
+            });
+            pulseNode(event.pid, D.accent);
+        });
+        focus.eventCursor = latest;
+    }
+
+    async function tickPidFocus() {
+        const focus = state.pidFocus;
+        if (!focus) return;
+        const seq = state.pidFocusSeq;
+        const pidQuery = encodeURIComponent([...focus.pids].join(','));
+        const since = focus.eventCursor === null ? 0 : focus.eventCursor;
+        const [data, eventData] = await Promise.all([
+            getJson('/api/syscalls-realtime').catch(() => null),
+            getJson(`/api/kernel-events?pids=${pidQuery}&since_seq=${since}&limit=80`).catch(() => null)
+        ]);
+        if (seq !== state.pidFocusSeq || state.pidFocus !== focus) return;
+        if (data) {
+            const list = Array.isArray(data.syscalls) ? data.syscalls : [];
+            const rows = [];
+            list.forEach((entry) => {
+                const name = entry && entry.name ? String(entry.name) : '';
+                if (!name || !Array.isArray(entry.waiters)) return;
+                entry.waiters.forEach((waiter) => {
+                    const pid = String(waiter && waiter.pid !== undefined ? waiter.pid : '');
+                    if (!focus.pids.has(pid)) return;
+                    rows.push({
+                        name,
+                        nr: entry.nr,
+                        pid,
+                        tid: waiter.tid,
+                        comm: waiter.comm || 'process',
+                        state: waiter.state,
+                        wchan: waiter.wchan,
+                        args: waiter.args,
+                        fd: waiter.fd,
+                        fdTarget: waiter.fd_target,
+                        world: focus.worldByPid.get(pid) || ''
+                    });
+                });
+            });
+            rows.sort((a, b) => a.name.localeCompare(b.name) || Number(a.pid) - Number(b.pid));
+            const sample = data.sample || {};
+            const scope = sample.scope === 'machine' ? 'MACHINE' : 'SELF ONLY';
+            if (focus.scope !== scope) {
+                focus.scope = scope;
+                setTitle();
+            }
+            renderPidFocusCurrent(focus, rows, scope, sample);
+        }
+        emitKernelEvents(focus, eventData);
+    }
+
+    async function tick() {
+        if (state.paused || !state.open || state.tickInFlight) return;
+        state.tickInFlight = true;
+        try {
+            if (onMobile()) placeCard();
+            const i = state.tickIndex++;
+            // Core "breath" reflects activity accumulated since the previous tick.
+            pulseCore(state.eventsSinceCore);
+            state.eventsSinceCore = 0;
+            // A hovered socket owns the tape: mixing the machine-wide feeds back in
+            // is exactly the false connection this feature exists to remove.
+            if (state.focus) {
+                await tickSocket();
+                updateEps();
+                return;
+            }
+            if (state.pidFocus) {
+                await tickPidFocus();
+                updateEps();
+                return;
+            }
+            const polls = [tickSyscalls()];
+            if (i % 2 === 0) polls.push(tickNetwork(), tickIoPulse());
+            else polls.push(tickConnections());
+            if (i % 3 === 2) polls.push(tickProcesses());
+            await Promise.allSettled(polls);
+            updateEps();
+        } finally {
+            state.tickInFlight = false;
+        }
     }
 
     // Delta-based feeds need a baseline sample before they can say anything, so
     // opening primes them silently and the rate-based feeds fill the card at once.
-    function primeAndFill() {
+    async function primeAndFill() {
+        if (state.tickInFlight) return;
+        state.tickInFlight = true;
         state.firstSyscallSample = true;
         state.firstConnSample = true;
         state.firstProcSample = true;
-        tickSyscalls();
-        tickConnections();
-        tickProcesses();
-        tickNetwork();
-        tickIoPulse();
-        window.setTimeout(() => {
-            if (state.open && !state.paused) tickSyscalls();
-        }, 700);
+        try {
+            await Promise.allSettled([
+                tickSyscalls(),
+                tickConnections(),
+                tickProcesses(),
+                tickNetwork(),
+                tickIoPulse()
+            ]);
+            await new Promise(resolve => window.setTimeout(resolve, 700));
+            if (state.open && !state.paused) await tickSyscalls();
+        } finally {
+            state.tickInFlight = false;
+        }
     }
 
     const api = {
@@ -798,6 +1523,10 @@
             if (!state.open) {
                 state.focus = null;
                 state.focusPrev = null;
+                state.pidFocusSeq += 1;
+                clearPidFocusBlock(state.pidFocus);
+                state.pidFocus = null;
+                closeInspector();
                 setTitle();
             }
             if (state.open && !wasOpen) primeAndFill();
@@ -820,6 +1549,17 @@
             if (!state.open || onMobile() || !el.root) return 0;
             return el.root.offsetWidth || 0;
         },
+        // Right boundary available to cursor tooltips. A pinned Inspector owns
+        // the strip immediately left of the tape as well.
+        hoverRightEdge() {
+            if (onMobile()) return window.innerWidth;
+            if (el.inspector && el.inspector.style.display !== 'none') {
+                return Math.max(0, el.inspector.offsetLeft);
+            }
+            return state.open && el.root
+                ? Math.max(0, window.innerWidth - (el.root.offsetWidth || 0))
+                : window.innerWidth;
+        },
         setFocus(socket) {
             if (!state.open || !socket || !socket.local || !socket.remote) return;
             const key = `${socket.local}|${socket.remote}`;
@@ -840,7 +1580,7 @@
             const seq = state.focusSeq;
             window.setTimeout(() => {
                 if (seq !== state.focusSeq || state.paused) return;
-                tickSocket();
+                tick();
             }, 250);
         },
         clearFocus() {
@@ -850,6 +1590,56 @@
             state.focusPrev = null;
             setTitle();
             state.firstSyscallSample = true;
+        },
+        setPidFocus(spec) {
+            if (!state.open || !spec || !Array.isArray(spec.pids)) return;
+            const pids = new Set(spec.pids.map(pid => String(pid)).filter(Boolean));
+            if (!pids.size) return;
+            const key = String(spec.key || spec.label || 'pid-focus');
+            if (state.pidFocus && state.pidFocus.key === key) return;
+            const worldByPid = new Map();
+            Object.entries(spec.worldByPid || {}).forEach(([pid, inode]) => {
+                worldByPid.set(String(pid), String(inode));
+            });
+            state.pidFocusSeq += 1;
+            clearPidFocusBlock(state.pidFocus);
+            state.pidFocus = {
+                key,
+                label: String(spec.label || 'PROCESS SET').toUpperCase(),
+                nsId: String(spec.nsId || 'ns'),
+                pids,
+                worldByPid,
+                scope: null,
+                block: null,
+                rows: new Map(),
+                retainSummary: spec.retainSummary !== false,
+                startedAt: Date.now(),
+                lastRows: null,
+                lastModels: null,
+                eventCursor: null,
+                eventSource: null,
+                eventGapNoted: false,
+                eventStatusRow: null
+            };
+            setTitle();
+            const seq = state.pidFocusSeq;
+            window.setTimeout(() => {
+                if (seq !== state.pidFocusSeq || state.paused) return;
+                tick();
+            }, 180);
+        },
+        clearPidFocus(key) {
+            if (!state.pidFocus) return;
+            if (key && state.pidFocus.key !== String(key)) return;
+            state.pidFocusSeq += 1;
+            retainPidFocusSummary(state.pidFocus);
+            clearPidFocusBlock(state.pidFocus);
+            state.pidFocus = null;
+            setTitle();
+            state.firstSyscallSample = true;
+        },
+        isOpen() {
+            return state.open;
         }
     };
     window.KernelTape = api;

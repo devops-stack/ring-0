@@ -530,10 +530,14 @@ class NginxFilesManager {
 
         tooltip.transition().duration(200).style("opacity", 1);
 
-        const tooltipRect = tooltip.node().getBoundingClientRect();
-        const left = Math.min(x + 14, window.innerWidth - tooltipRect.width - 10);
-        const top = Math.max(y - tooltipRect.height - 12, 10);
-        tooltip.style("left", left + "px").style("top", top + "px");
+        if (typeof window.placeHoverPopup === "function") {
+            window.placeHoverPopup(tooltip, x, y, { gap: 14, preferAbove: true, maxWidth: 320 });
+        } else {
+            const tooltipRect = tooltip.node().getBoundingClientRect();
+            const left = Math.min(x + 14, window.innerWidth - tooltipRect.width - 10);
+            const top = Math.max(y - tooltipRect.height - 12, 10);
+            tooltip.style("left", left + "px").style("top", top + "px");
+        }
     }
 
     // Hide tooltip

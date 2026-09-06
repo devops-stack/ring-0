@@ -943,6 +943,7 @@ def _scan_isolation_context():
     # Per-namespace, per-inode sample process names (each inode = one isolated "world").
     namespace_samples = {k: {} for k in namespace_keys}
     namespace_pids = {k: {} for k in namespace_keys}
+    namespace_cgroups = {k: {} for k in namespace_keys}
     # Reading /proc/<pid>/ns/* of a foreign task needs ptrace-level access, so an
     # unprivileged scan resolves only a fraction of the process table. Count that
     # fraction per namespace: it is the only honest denominator for a ratio here,
@@ -980,6 +981,8 @@ def _scan_isolation_context():
                     if proc_name not in samples:
                         samples.append(proc_name)
                     namespace_pids[ns_name].setdefault(inode, []).append(pid)
+                    cgroups = namespace_cgroups[ns_name].setdefault(inode, {})
+                    cgroups[cgroup_path] = cgroups.get(cgroup_path, 0) + 1
         except (psutil.NoSuchProcess, psutil.AccessDenied, KeyError):
             continue
 
@@ -1004,6 +1007,13 @@ def _scan_isolation_context():
                 "count": count,
                 "sample": _rank_isolation_samples(namespace_samples[ns_name].get(inode, [])),
                 "pids": namespace_pids[ns_name].get(inode, []),
+                "cgroups": [
+                    {"path": path, "count": members}
+                    for path, members in sorted(
+                        namespace_cgroups[ns_name].get(inode, {}).items(),
+                        key=lambda item: (-item[1], item[0]),
+                    )[:4]
+                ],
             }
             for inode, count in sorted(entries.items(), key=lambda kv: kv[1], reverse=True)[:6]
         ]

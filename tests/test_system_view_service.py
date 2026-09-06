@@ -51,7 +51,8 @@ def test_isolation_worlds_include_exact_member_pids(monkeypatch):
 
     monkeypatch.setattr(svc, "_read_isolation_snapshot", lambda: None)
     monkeypatch.setattr(svc.psutil, "process_iter", lambda _fields: procs)
-    monkeypatch.setattr(svc, "_parse_cgroup_path", lambda _pid: "/")
+    cgroups = {10: "/system.slice/a.service", 20: "/user.slice", 30: "/system.slice/a.service"}
+    monkeypatch.setattr(svc, "_parse_cgroup_path", lambda pid: cgroups[pid])
     monkeypatch.setattr(svc, "_read_cgroup_v2_stats", lambda _path: {})
     monkeypatch.setattr(
         svc,
@@ -65,3 +66,5 @@ def test_isolation_worlds_include_exact_member_pids(monkeypatch):
 
     assert worlds["host"]["pids"] == [10, 30]
     assert worlds["isolated"]["pids"] == [20]
+    assert worlds["host"]["cgroups"] == [{"path": "/system.slice/a.service", "count": 2}]
+    assert worlds["isolated"]["cgroups"] == [{"path": "/user.slice", "count": 1}]
