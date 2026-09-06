@@ -131,6 +131,37 @@
         }, ttl);
     };
 
+    // Keep cursor-driven body popups inside the part of the viewport not owned
+    // by the fixed KERNEL tape (and its pinned event inspector). Callers may
+    // pass either a DOM node or a d3 selection.
+    window.placeHoverPopup = function placeHoverPopup(target, x, y, options = {}) {
+        const node = target && typeof target.node === 'function' ? target.node() : target;
+        if (!node) return { left: 0, top: 0 };
+        const margin = Math.max(4, Number(options.margin || 10));
+        const gap = Math.max(0, Number(options.gap || 12));
+        const rightEdge = window.KernelTape && typeof window.KernelTape.hoverRightEdge === 'function'
+            ? window.KernelTape.hoverRightEdge()
+            : window.innerWidth;
+        const available = Math.max(80, rightEdge - margin * 2);
+        node.style.maxWidth = `${Math.min(available, Number(options.maxWidth || available))}px`;
+
+        const width = node.offsetWidth;
+        const height = node.offsetHeight;
+        const anchorX = Number.isFinite(Number(x)) ? Number(x) : margin;
+        const anchorY = Number.isFinite(Number(y)) ? Number(y) : margin;
+        let left = anchorX + Number(options.offsetX === undefined ? gap : options.offsetX);
+        if (left + width > rightEdge - margin) left = anchorX - gap - width;
+        left = Math.max(margin, Math.min(rightEdge - margin - width, left));
+
+        let top = options.preferAbove
+            ? anchorY - height - gap
+            : anchorY + Number(options.offsetY === undefined ? -10 : options.offsetY);
+        top = Math.max(margin, Math.min(window.innerHeight - margin - height, top));
+        node.style.left = `${left}px`;
+        node.style.top = `${top}px`;
+        return { left, top };
+    };
+
     window.fetchJson = async function fetchJson(url, fetchOptions = {}, requestOptions = {}) {
         const timeoutMs = Math.max(500, Number(requestOptions.timeoutMs || UX_DEFAULT_TIMEOUT_MS));
         const retries = Math.max(0, Number(requestOptions.retries || 0));

@@ -585,15 +585,18 @@ function showTooltip(text, x, y) {
         .style('opacity', 0)
         .text(text);
     
-    const tooltipWidth = tooltip.node().offsetWidth;
     const tooltipHeight = tooltip.node().offsetHeight;
     const offsetX = 10;
     const offsetY = -tooltipHeight - 10;
-    
-    tooltip
-        .style('left', (x + offsetX) + 'px')
-        .style('top', (y + offsetY) + 'px')
-        .transition()
+
+    if (typeof window.placeHoverPopup === 'function') {
+        window.placeHoverPopup(tooltip, x, y, { gap: 10, preferAbove: true, maxWidth: 320 });
+    } else {
+        tooltip
+            .style('left', (x + offsetX) + 'px')
+            .style('top', (y + offsetY) + 'px');
+    }
+    tooltip.transition()
         .duration(200)
         .style('opacity', 1);
 }

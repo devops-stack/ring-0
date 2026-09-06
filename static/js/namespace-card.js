@@ -12,6 +12,7 @@ const NamespaceCard = (() => {
     const ROW_STEP = 16;
     const FOOTER = 34;
     const MAX_WORLDS = 6;
+    const MAX_CGROUPS = 3;
 
     const MEANING = {
         mnt: "the filesystem tree this process is allowed to see",
@@ -40,11 +41,26 @@ const NamespaceCard = (() => {
         if (window.IsolationUI && typeof window.IsolationUI.clearNamespaceProcessFocus === "function") {
             window.IsolationUI.clearNamespaceProcessFocus();
         }
+        if (window.KernelTape && typeof window.KernelTape.clearPidFocus === "function") {
+            window.KernelTape.clearPidFocus();
+        }
     }
 
     function focusWorldProcesses(world) {
         if (window.IsolationUI && typeof window.IsolationUI.focusNamespaceProcesses === "function") {
             window.IsolationUI.focusNamespaceProcesses(world && world.pids);
+        }
+        if (window.KernelTape && typeof window.KernelTape.setPidFocus === "function"
+            && lastNs && world && Array.isArray(world.pids)) {
+            const worldByPid = {};
+            world.pids.forEach(pid => { worldByPid[String(pid)] = world.inode; });
+            window.KernelTape.setPidFocus({
+                key: `namespace:${lastNs.id}:${world.inode}`,
+                label: `${String(lastNs.id).toUpperCase()}:[${world.inode}]`,
+                nsId: lastNs.id,
+                pids: world.pids,
+                worldByPid,
+            });
         }
     }
 
@@ -149,6 +165,7 @@ const NamespaceCard = (() => {
         else h += worlds.length * ROW_STEP;
         const hidden = Math.max(0, Number(ns.unique_count || 0) - worlds.length);
         if (hidden) h += LINE;
+        h += 18 + LINE + MAX_CGROUPS * ROW_STEP;
         h += FOOTER;
         return h;
     }
@@ -157,14 +174,17 @@ const NamespaceCard = (() => {
         const svgNode = svg.node();
         const viewW = (svgNode && svgNode.clientWidth) || window.innerWidth;
         const viewH = (svgNode && svgNode.clientHeight) || window.innerHeight;
-        const cw = Math.min(W, viewW - 24);
+        const rightEdge = window.KernelTape && typeof window.KernelTape.hoverRightEdge === "function"
+            ? window.KernelTape.hoverRightEdge()
+            : viewW;
+        const cw = Math.min(W, Math.max(280, rightEdge - 24));
         const compact = cw < 420;
         const h = cardHeight(ns);
 
         const from = anchor && Number.isFinite(anchor.x) ? anchor.x : viewW * 0.5;
         let x = Number.isFinite(anchor && anchor.clearOf) ? anchor.clearOf : from + 28;
-        if (x + cw + 16 > viewW) x = Math.max(12, from - cw - 28);
-        if (x < 12) x = Math.max(12, viewW - cw - 16);
+        if (x + cw + 16 > rightEdge) x = Math.max(12, from - cw - 28);
+        if (x < 12) x = Math.max(12, rightEdge - cw - 16);
         let y = (anchor && Number.isFinite(anchor.y) ? anchor.y : 120) - 24;
         y = Math.max(12, Math.min(viewH - h - 12, y));
         layout = { x, y, cw, h };
@@ -232,6 +252,10 @@ const NamespaceCard = (() => {
         const worlds = worldsOf(ns);
         const hostInode = ns.dominant_inode;
         const hidden = Math.max(0, Number(ns.unique_count || 0) - worlds.length);
+        const defaultWorld = worlds.find(world => String(world.inode) !== String(hostInode))
+            || worlds[0]
+            || null;
+        let renderWorldCgroups = () => {};
 
         const text = (cls, tx, ty, value, anchorEnd) => body.append("text")
             .attr("class", cls)
@@ -309,13 +333,16 @@ const NamespaceCard = (() => {
                 .attr("class", isHost
                     ? "namespace-card-world-row is-host"
                     : "namespace-card-world-row");
+            row.on("mouseenter.cgroup", () => renderWorldCgroups(world))
+                .on("mouseleave.cgroup", () => renderWorldCgroups(pinnedWorld || defaultWorld));
             if (!isHost) {
                 row.style("cursor", "pointer")
-                    .on("mouseenter", () => focusWorldProcesses(world))
-                    .on("mouseleave", leaveWorldPreview)
+                    .on("mouseenter.process", () => focusWorldProcesses(world))
+                    .on("mouseleave.process", leaveWorldPreview)
                     .on("click", (event) => {
                         event.stopPropagation();
                         togglePinnedWorld(row, world);
+                        renderWorldCgroups(pinnedWorld || defaultWorld);
                     });
             }
             row.append("rect")
@@ -349,7 +376,45 @@ const NamespaceCard = (() => {
         });
         if (hidden) {
             text("kcard-faint", PAD, cy, `AND ${hidden} SMALLER ${hidden === 1 ? "WORLD" : "WORLDS"}`);
+            cy += LINE;
         }
+
+        cy += 18;
+        text("kcard-section", PAD, cy, "CGROUPS IN SELECTED WORLD");
+        cy += LINE;
+        const cgroupTop = cy;
+        const cgroupBody = body.append("g").attr("class", "namespace-card-cgroups");
+        renderWorldCgroups = (world) => {
+            cgroupBody.selectAll("*").remove();
+            const groups = (world && Array.isArray(world.cgroups) ? world.cgroups : [])
+                .slice(0, MAX_CGROUPS);
+            if (!groups.length) {
+                cgroupBody.append("text")
+                    .attr("class", "kcard-faint")
+                    .attr("x", PAD).attr("y", cgroupTop + 4)
+                    .text("NO CGROUP MEMBERSHIP DATA");
+                return;
+            }
+            const maxCount = Math.max(1, ...groups.map(group => Number(group.count) || 0));
+            groups.forEach((group, index) => {
+                const y = cgroupTop + index * ROW_STEP;
+                const ratio = (Number(group.count) || 0) / maxCount;
+                cgroupBody.append("line")
+                    .attr("class", "namespace-card-cgroup-track")
+                    .attr("x1", PAD).attr("y1", y + 7)
+                    .attr("x2", PAD + Math.max(4, 74 * ratio)).attr("y2", y + 7);
+                cgroupBody.append("text")
+                    .attr("class", "namespace-card-cgroup-path")
+                    .attr("x", PAD + 84).attr("y", y + 4)
+                    .text(clip(group.path || "/", compact ? 28 : 52));
+                cgroupBody.append("text")
+                    .attr("class", "namespace-card-cgroup-count")
+                    .attr("x", cw - PAD).attr("y", y + 4)
+                    .attr("text-anchor", "end")
+                    .text(`${group.count || 0}p`);
+            });
+        };
+        renderWorldCgroups(defaultWorld);
 
         body.append("line")
             .attr("class", "kcard-divider")

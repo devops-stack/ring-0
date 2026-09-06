@@ -1,5 +1,7 @@
 """Kernel/observability API handlers."""
 
+import threading
+import time
 from datetime import datetime
 
 import psutil
@@ -13,10 +15,23 @@ from kernel_ai.services import telemetry_orchestration as _telemetry
 from kernel_ai.state import get_state_container
 
 
-def syscalls_realtime():
-    def _payload():
+_SYSCALL_PAYLOAD_TTL_S = 1.0
+_syscall_payload_lock = threading.Lock()
+_syscall_payload_cache = None
+_syscall_payload_expires_at = 0.0
+
+
+def _syscalls_realtime_payload():
+    """Return one short-lived machine snapshot without parking a request thread."""
+    global _syscall_payload_cache, _syscall_payload_expires_at
+
+    now = time.monotonic()
+    with _syscall_payload_lock:
+        if _syscall_payload_cache is not None and now < _syscall_payload_expires_at:
+            return _syscall_payload_cache
+
         sample = _telemetry.get_syscall_sample()
-        return {
+        payload = {
             "timestamp": datetime.now().isoformat(),
             "syscalls": sample.get("syscalls", []),
             # How the sample was taken. "self" means the root collector is not
@@ -29,12 +44,50 @@ def syscalls_realtime():
                 "blocked_total": sample.get("blocked_total"),
                 "age": sample.get("age"),
             },
-            "cpu_usage": psutil.cpu_percent(interval=1),
+            # interval=None returns the percentage since this worker's previous
+            # sample. interval=1 used to sleep a Gunicorn thread for every poll.
+            "cpu_usage": psutil.cpu_percent(interval=None),
             "memory_usage": psutil.virtual_memory().percent,
             "system_info": _core_observability_service.get_system_info(),
         }
+        _syscall_payload_cache = payload
+        _syscall_payload_expires_at = time.monotonic() + _SYSCALL_PAYLOAD_TTL_S
+        return payload
 
-    return api_json(_payload)
+
+def syscalls_realtime():
+    return api_json(_syscalls_realtime_payload)
+
+
+def kernel_events():
+    """Completed eBPF syscall spans and their observed wakeup edge."""
+
+    def _payload():
+        from kernel_ai.services import kernel_events as kernel_events_service
+
+        raw_pids = request.args.get("pids", "").strip()
+        pids = []
+        if raw_pids:
+            try:
+                pids = [int(value) for value in raw_pids.split(",") if value.strip()]
+            except ValueError as error:
+                raise ValueError("pids must be comma-separated integers") from error
+        if len(pids) > 512:
+            raise ValueError("at most 512 pids may be requested")
+        since_seq = request.args.get("since_seq", default=0, type=int)
+        limit = request.args.get("limit", default=80, type=int)
+        if since_seq is None or limit is None:
+            raise ValueError("since_seq and limit must be integers")
+        return {
+            "timestamp": datetime.now().isoformat(),
+            **kernel_events_service.get_kernel_events(
+                pids=pids,
+                since_seq=since_seq,
+                limit=limit,
+            ),
+        }
+
+    return api_json(_payload, exception_statuses=[(ValueError, 400)])
 
 
 def socket_activity():

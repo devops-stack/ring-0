@@ -362,6 +362,22 @@ svg.ns-world-process-focus .process-node-group.ns-world-member .process-node {
 .namespace-card-world-row.is-pinned .namespace-card-world-inode {
     fill: #e2a33e;
 }
+.namespace-card-cgroup-track {
+    stroke: rgba(226, 163, 62, 0.62);
+    stroke-width: 2;
+}
+.namespace-card-cgroup-path,
+.namespace-card-cgroup-count {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 8.5px;
+}
+.namespace-card-cgroup-path {
+    fill: rgba(244, 244, 236, 0.58);
+    letter-spacing: 0.15px;
+}
+.namespace-card-cgroup-count {
+    fill: rgba(244, 244, 236, 0.34);
+}
 .namespace-card-arch-chip {
     fill: rgba(244, 244, 236, 0.035);
     stroke: rgba(244, 244, 236, 0.16);

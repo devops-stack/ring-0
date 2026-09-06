@@ -155,11 +155,40 @@ function focusNamespaceProcesses(pids) {
     }
 }
 
+function focusNamespaceTrace(ns, nsName) {
+    if (!window.KernelTape || typeof window.KernelTape.setPidFocus !== 'function') return;
+    const pids = [];
+    const worldByPid = {};
+    (Array.isArray(ns.worlds) ? ns.worlds : []).forEach((world) => {
+        (Array.isArray(world.pids) ? world.pids : []).forEach((pid) => {
+            pids.push(pid);
+            worldByPid[String(pid)] = world.inode;
+        });
+    });
+    window.KernelTape.setPidFocus({
+        key: `namespace:${ns.id}`,
+        label: `${String(nsName || ns.id).toUpperCase()} NAMESPACE`,
+        nsId: ns.id,
+        pids,
+        worldByPid,
+    });
+}
+
+function clearNamespaceTrace() {
+    if (window.KernelTape && typeof window.KernelTape.clearPidFocus === 'function') {
+        window.KernelTape.clearPidFocus();
+    }
+}
+
 // Cells on the outer edge of the ring would push the chip off screen, so it
 // flips to the other side of the cursor instead of being clipped.
 function placeNamespaceTooltip(tip, event) {
     const node = tip.node();
     if (!node) return;
+    if (typeof window.placeHoverPopup === 'function') {
+        window.placeHoverPopup(tip, event.pageX, event.pageY, { gap: 14, maxWidth: 300 });
+        return;
+    }
     const gap = 14;
     const margin = 10;
     let left = event.pageX + gap;
@@ -392,6 +421,7 @@ function drawNamespaceShell(centerX, centerY, namespaces) {
             setCover(c, false);
         });
         clearNamespaceProcessFocus();
+        clearNamespaceTrace();
     };
 
     // The reference never blanks the inactive parts, it just lets them drop
@@ -481,7 +511,7 @@ function drawNamespaceShell(centerX, centerY, namespaces) {
             .attr('fill', `rgba(${INK}, 0.07)`)
             .attr('stroke', `rgba(${INK}, 0.44)`)
             .attr('stroke-width', 1.1)
-            .style('cursor', 'pointer');
+            .style('pointer-events', 'none');
 
         const arcFor = (outer) => d3.arc()
             .innerRadius(ringInner)
@@ -505,6 +535,19 @@ function drawNamespaceShell(centerX, centerY, namespaces) {
             .style('opacity', 0)
             .style('pointer-events', 'none');
 
+        // Hover must stay tied to the original sector footprint. The visible
+        // cover retracts on focus; binding events to it makes the pointer leave
+        // the path, close it, and immediately reopen it in a loop.
+        const hitArea = shellGroup.append('path')
+            .attr('class', 'namespace-sector-hit')
+            .attr('data-namespace', ns.id)
+            .attr('d', dPath)
+            .attr('transform', `translate(${centerX}, ${centerY})`)
+            .attr('fill', 'transparent')
+            .attr('stroke', 'none')
+            .style('cursor', 'pointer')
+            .style('pointer-events', 'all');
+
         const cell = {
             segment,
             halo,
@@ -518,9 +561,10 @@ function drawNamespaceShell(centerX, centerY, namespaces) {
         };
         cells.push(cell);
 
-        segment
+        hitArea
             .on('mouseenter', (event) => {
                 setFocus(idx);
+                focusNamespaceTrace(ns, nsName);
                 d3.selectAll('.ns-tooltip').remove();
                 const tip = d3.select('body')
                     .append('div')

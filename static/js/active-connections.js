@@ -246,10 +246,15 @@ class ActiveConnectionsManager {
                     .attr("data-remote-ip", this.parseEndpoint(connection.remote).host)
                     .style("opacity", 0);
 
-                tooltip.html(this.buildSocketTooltipHtml(connection))
-                    .style("left", `${event.pageX + 10}px`)
-                    .style("top", `${event.pageY - 10}px`)
-                    .transition()
+                tooltip.html(this.buildSocketTooltipHtml(connection));
+                if (typeof window.placeHoverPopup === "function") {
+                    window.placeHoverPopup(tooltip, event.pageX, event.pageY, { gap: 10, maxWidth: 360 });
+                } else {
+                    tooltip
+                        .style("left", `${event.pageX + 10}px`)
+                        .style("top", `${event.pageY - 10}px`);
+                }
+                tooltip.transition()
                     .duration(120)
                     .style("opacity", 1);
 
@@ -273,9 +278,14 @@ class ActiveConnectionsManager {
                 });
             })
             .on("mousemove", (event) => {
-                d3.select(".socket-tooltip")
-                    .style("left", `${event.pageX + 10}px`)
-                    .style("top", `${event.pageY - 10}px`);
+                const tooltip = d3.select(".socket-tooltip");
+                if (typeof window.placeHoverPopup === "function") {
+                    window.placeHoverPopup(tooltip, event.pageX, event.pageY, { gap: 10, maxWidth: 360 });
+                } else {
+                    tooltip
+                        .style("left", `${event.pageX + 10}px`)
+                        .style("top", `${event.pageY - 10}px`);
+                }
             })
             .on("mouseout", () => {
                 d3.selectAll(".socket-tooltip")
