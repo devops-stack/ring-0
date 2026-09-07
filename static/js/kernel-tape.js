@@ -94,10 +94,34 @@
         pidFocus: null,
         pidFocusSeq: 0,
         pidSummaries: new Map(),
+        sharedTelemetry: {
+            syscalls: null,
+            connections: null,
+            io: null
+        },
         // The pill is fixed HTML, so an SVG scrim cannot cover it: while a card
         // is berthed against the right edge the pill would float on top of it.
         pillHidden: false
     };
+
+    window.addEventListener('kernel-telemetry', (event) => {
+        const detail = event && event.detail;
+        const kind = detail && String(detail.kind || '');
+        if (!Object.prototype.hasOwnProperty.call(state.sharedTelemetry, kind) || !detail.data) return;
+        state.sharedTelemetry[kind] = {
+            data: detail.data,
+            observedAt: Number(detail.observedAt) || Date.now(),
+            consumed: false
+        };
+    });
+
+    function sharedTelemetry(kind, maxAgeMs, consume) {
+        const entry = state.sharedTelemetry[kind];
+        if (!entry || Date.now() - entry.observedAt > maxAgeMs) return undefined;
+        if (consume && entry.consumed) return null;
+        if (consume) entry.consumed = true;
+        return entry.data;
+    }
 
     // The pill is only offered when there is nothing in its way: the tape itself
     // is shut, no card holds the edge, and this is not the phone layout, where
@@ -697,7 +721,11 @@
         state.eventsSinceCore += 1;
 
         while (state.rowCount > MAX_ROWS && el.body.lastChild) {
-            el.body.removeChild(el.body.lastChild);
+            const removed = el.body.lastChild;
+            el.body.removeChild(removed);
+            state.pidSummaries.forEach((value, key) => {
+                if (value && value.row === removed) state.pidSummaries.delete(key);
+            });
             state.rowCount -= 1;
         }
         return row;
@@ -716,10 +744,16 @@
 
     async function tickSyscalls() {
         let data;
-        try {
-            data = await getJson('/api/syscalls-realtime');
-        } catch (e) {
-            return;
+        const shared = sharedTelemetry('syscalls', 4500, true);
+        if (shared === null) return;
+        if (shared !== undefined) {
+            data = shared;
+        } else {
+            try {
+                data = await getJson('/api/syscalls-realtime');
+            } catch (e) {
+                return;
+            }
         }
         const list = Array.isArray(data) ? data : (data && Array.isArray(data.syscalls) ? data.syscalls : []);
         if (!list.length) return;
@@ -809,10 +843,16 @@
 
     async function tickConnections() {
         let data;
-        try {
-            data = await getJson('/api/active-connections');
-        } catch (e) {
-            return;
+        const shared = sharedTelemetry('connections', 4500, true);
+        if (shared === null) return;
+        if (shared !== undefined) {
+            data = shared;
+        } else {
+            try {
+                data = await getJson('/api/active-connections');
+            } catch (e) {
+                return;
+            }
         }
         const list = data && Array.isArray(data.connections) ? data.connections : [];
         const current = new Set();
@@ -862,7 +902,7 @@
     async function tickProcesses() {
         let data;
         try {
-            data = await getJson('/api/processes-detailed');
+            data = await getJson('/api/processes?view=identity');
         } catch (e) {
             return;
         }
@@ -918,10 +958,16 @@
 
     async function tickIoPulse() {
         let d;
-        try {
-            d = await getJson('/api/io-pulse');
-        } catch (e) {
-            return;
+        const shared = sharedTelemetry('io', 4500, true);
+        if (shared === null) return;
+        if (shared !== undefined) {
+            d = shared;
+        } else {
+            try {
+                d = await getJson('/api/io-pulse');
+            } catch (e) {
+                return;
+            }
         }
         if (!d) return;
 
@@ -1410,8 +1456,11 @@
         const seq = state.pidFocusSeq;
         const pidQuery = encodeURIComponent([...focus.pids].join(','));
         const since = focus.eventCursor === null ? 0 : focus.eventCursor;
+        const sharedSyscalls = sharedTelemetry('syscalls', 4500, false);
         const [data, eventData] = await Promise.all([
-            getJson('/api/syscalls-realtime').catch(() => null),
+            sharedSyscalls !== undefined
+                ? Promise.resolve(sharedSyscalls)
+                : getJson('/api/syscalls-realtime').catch(() => null),
             getJson(`/api/kernel-events?pids=${pidQuery}&since_seq=${since}&limit=80`).catch(() => null)
         ]);
         if (seq !== state.pidFocusSeq || state.pidFocus !== focus) return;

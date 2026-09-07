@@ -50,6 +50,19 @@
         node.innerHTML = window.sanitizeHtml(html);
     };
 
+    // Realtime panels often need the same machine snapshot. Publish it once so
+    // secondary views such as KERNEL can subscribe instead of polling again.
+    window.publishKernelTelemetry = function publishKernelTelemetry(kind, data) {
+        if (!kind || !data) return;
+        window.dispatchEvent(new CustomEvent('kernel-telemetry', {
+            detail: {
+                kind: String(kind),
+                data,
+                observedAt: Date.now()
+            }
+        }));
+    };
+
     const UX_TOAST_CONTAINER_ID = 'ux-toast-container';
     const UX_DEFAULT_TIMEOUT_MS = 8000;
     const uxToastCooldown = new Map();

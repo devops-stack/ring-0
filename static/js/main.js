@@ -1957,6 +1957,7 @@ function drawCentralPulseGridForeground(centerX, centerY) {
 
 // Ring-1 update interval (global to prevent multiple intervals)
 let ring1UpdateInterval = null;
+let ring1UpdateInFlight = false;
 
 // Draw Ring-1 Execution Context
 function drawRing1(centerX, centerY) {
@@ -1999,6 +2000,8 @@ function drawRing1(centerX, centerY) {
 
 // Update Ring-1 with execution context data
 function updateRing1(centerX, centerY, baseRadius) {
+    if (ring1UpdateInFlight || document.hidden) return;
+    ring1UpdateInFlight = true;
     // Use relative path like other API calls
     window.fetchJson('/api/execution-context', { cache: 'no-store' }, {
         timeoutMs: 4500,
@@ -2176,6 +2179,9 @@ function updateRing1(centerX, centerY, baseRadius) {
         })
         .catch(error => {
             debugLog('Error fetching execution context:', error && error.message ? error.message : error);
+        })
+        .finally(() => {
+            ring1UpdateInFlight = false;
         });
 }
 
