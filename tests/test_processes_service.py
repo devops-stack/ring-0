@@ -8,6 +8,29 @@ class _FakeProc:
         self.info = info
 
 
+def test_process_identities_only_reads_pid_and_name(monkeypatch):
+    requested = []
+
+    def fake_iter(fields):
+        requested.append(fields)
+        return [
+            _FakeProc({"pid": 10, "name": "worker"}),
+            _FakeProc({"pid": 20, "name": None}),
+        ]
+
+    monkeypatch.setattr(svc, "_identity_cache", None)
+    monkeypatch.setattr(svc, "_identity_cache_expires_at", 0.0)
+    monkeypatch.setattr(svc.psutil, "process_iter", fake_iter)
+
+    expected = [
+        {"pid": 10, "name": "worker"},
+        {"pid": 20, "name": "process"},
+    ]
+    assert svc.get_process_identities() == expected
+    assert svc.get_process_identities() == expected
+    assert requested == [["pid", "name"]]
+
+
 def test_get_proc_matrix_data_sorts_by_cpu(monkeypatch):
     def fake_iter(_fields):
         return [
