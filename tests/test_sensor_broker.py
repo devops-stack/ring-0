@@ -1,6 +1,8 @@
 """Tests for the KernelEvent v1 unprivileged broker."""
 
+from collections import deque
 import importlib.util
+import json
 from pathlib import Path
 
 
@@ -56,3 +58,21 @@ def test_adapt_event_rejects_unknown_contract_or_kind():
     assert broker.adapt_event(
         {"schema": "kernel.event/v1", "kind": "network_packet"}
     ) is None
+
+
+def test_write_snapshot_skips_fsync_by_default(tmp_path, monkeypatch):
+    output = tmp_path / "kernel-events.json"
+    monkeypatch.setattr(broker, "OUT_PATH", str(output))
+    monkeypatch.setattr(broker, "FSYNC_SNAPSHOT", False)
+
+    def unexpected_fsync(_fd):
+        raise AssertionError("volatile snapshots must not fsync by default")
+
+    monkeypatch.setattr(broker.os, "fsync", unexpected_fsync)
+
+    broker.write_snapshot(deque(), seq=4, dropped=2, started_at=1.0)
+
+    payload = json.loads(output.read_text())
+    assert payload["seq"] == 4
+    assert payload["dropped"] == 2
+    assert payload["events"] == []

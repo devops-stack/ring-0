@@ -3,6 +3,7 @@
 import pytest
 
 from kernel_ai.http.api_handlers import kernel as kernel_handlers
+from kernel_ai.http.api_handlers import processes as process_handlers
 from kernel_ai.state import get_state_container
 from kernel_ai.webapp import create_app
 
@@ -89,6 +90,24 @@ def test_kernel_events_rejects_invalid_pid_filter(client):
     resp = client.get("/api/kernel-events?pids=1,not-a-pid")
 
     assert resp.status_code == 400
+
+
+def test_process_identity_view_uses_lightweight_snapshot(client, monkeypatch):
+    monkeypatch.setattr(
+        process_handlers._processes_service,
+        "get_process_identities",
+        lambda: [{"pid": 7, "name": "worker"}],
+    )
+    monkeypatch.setattr(
+        process_handlers._processes_service,
+        "get_processes_basic_data",
+        lambda: pytest.fail("detailed basic process scan should not run"),
+    )
+
+    resp = client.get("/api/processes?view=identity")
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {"processes": [{"pid": 7, "name": "worker"}]}
 
 
 def test_syscalls_snapshot_is_nonblocking_and_cached(monkeypatch):
