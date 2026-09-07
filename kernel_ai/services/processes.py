@@ -9,10 +9,17 @@ from __future__ import annotations
 from datetime import datetime
 import math
 import os
+import threading
+import time
 
 import psutil
 
 from kernel_ai.services import processes_runtime as _runtime
+
+_IDENTITY_CACHE_TTL_S = 1.0
+_identity_cache_lock = threading.Lock()
+_identity_cache = None
+_identity_cache_expires_at = 0.0
 
 
 def get_processes_basic_data() -> list[dict]:
@@ -33,6 +40,30 @@ def get_processes_basic_data() -> list[dict]:
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
     return processes
+
+
+def get_process_identities() -> list[dict]:
+    """Return only the stable fields needed to detect process spawn and exit."""
+    global _identity_cache, _identity_cache_expires_at
+
+    now = time.monotonic()
+    with _identity_cache_lock:
+        if _identity_cache is not None and now < _identity_cache_expires_at:
+            return _identity_cache
+        processes = []
+        for proc in psutil.process_iter(["pid", "name"]):
+            try:
+                processes.append(
+                    {
+                        "pid": proc.info["pid"],
+                        "name": proc.info.get("name") or "process",
+                    }
+                )
+            except (psutil.NoSuchProcess, psutil.AccessDenied, KeyError):
+                continue
+        _identity_cache = processes
+        _identity_cache_expires_at = time.monotonic() + _IDENTITY_CACHE_TTL_S
+        return processes
 
 
 def get_proc_matrix_data() -> list[dict]:

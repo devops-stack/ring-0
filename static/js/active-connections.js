@@ -7,10 +7,13 @@ class ActiveConnectionsManager {
         this.updateCallback = null;
         this.tracerouteCache = new Map();
         this.pendingTraceroutes = new Map();
+        this.updateInFlight = false;
     }
 
     // Update active connections data
     async updateConnectionsTable() {
+        if (this.updateInFlight) return;
+        this.updateInFlight = true;
         try {
             debugLog("ActiveConnectionsManager: updateConnectionsTable called");
             const response = await fetch('/api/active-connections');
@@ -31,6 +34,9 @@ class ActiveConnectionsManager {
                 });
                 
                 this.currentConnections = filteredConnections;
+                if (typeof window.publishKernelTelemetry === "function") {
+                    window.publishKernelTelemetry("connections", data);
+                }
                 
                 debugLog("Filtered connections:", this.currentConnections.length);
                 debugLog("Filtered out:", data.connections.length - this.currentConnections.length, "local connections");
@@ -46,6 +52,8 @@ class ActiveConnectionsManager {
             console.error('Error getting active connections:', error);
             debugLog('Using fallback data...');
             this.useFallbackData();
+        } finally {
+            this.updateInFlight = false;
         }
     }
 

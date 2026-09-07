@@ -14,7 +14,16 @@ from kernel_ai.services import waits as _waits_service
 
 
 def get_processes():
-    return api_json(lambda: {"processes": _processes_service.get_processes_basic_data()})
+    identity_only = request.args.get("view", "").strip().lower() == "identity"
+    return api_json(
+        lambda: {
+            "processes": (
+                _processes_service.get_process_identities()
+                if identity_only
+                else _processes_service.get_processes_basic_data()
+            )
+        }
+    )
 
 
 def get_process_threads(pid):

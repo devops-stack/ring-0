@@ -132,12 +132,18 @@ function drawBezierDecor(width, height, yBase) {
         return { st, x, stem, halo, dot, value, label };
     });
 
+    let ioTrackInFlight = false;
     const refreshIoTrack = () => {
+        if (ioTrackInFlight || document.hidden) return;
+        ioTrackInFlight = true;
         const p = window.fetchJson
             ? window.fetchJson("/api/io-pulse", { cache: "no-store" }, { timeoutMs: 5000, retries: 0, context: "io-track" })
             : fetch("/api/io-pulse", { cache: "no-store" }).then((r) => r.json());
         Promise.resolve(p).then((metrics) => {
             if (!metrics) return;
+            if (typeof window.publishKernelTelemetry === "function") {
+                window.publishKernelTelemetry("io", metrics);
+            }
             const rows = trackNodes.map((n) => {
                 const raw = Math.max(0, Number(n.st.value(metrics)) || 0);
                 return { n, raw, intensity: Math.min(1, raw / n.st.scaleMax) };
@@ -153,7 +159,9 @@ function drawBezierDecor(width, height, yBase) {
                     .style("fill", hot ? `rgba(${AMBER}, 0.95)` : "rgba(60, 60, 60, 0.5)")
                     .text(fmtRate(r.raw, r.n.st.unit));
             });
-        }).catch(() => {});
+        }).catch(() => {}).finally(() => {
+            ioTrackInFlight = false;
+        });
     };
 
     if (window.__ioTrackTimer) clearInterval(window.__ioTrackTimer);

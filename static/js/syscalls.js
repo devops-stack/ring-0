@@ -156,6 +156,9 @@ class SyscallsManager {
             this.sampleScope = (data.sample && data.sample.scope) || null;
             this.sampledAt = this.formatSampleTime(data.timestamp);
             this.renderSyscallsTable();
+            if (typeof window.publishKernelTelemetry === "function") {
+                window.publishKernelTelemetry("syscalls", data);
+            }
             debugLog(`✅ System calls rendered: ${this.currentSyscalls.length} parked`);
 
             if (this.updateCallback) {
