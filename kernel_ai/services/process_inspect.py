@@ -869,6 +869,87 @@ def _collect_process_connections(pid, proc):
     return _annotate_connection_peers(connections)[:20]
 
 
+_EPOLL_TFD_RE = re.compile(
+    r"^tfd:\s*(?P<fd>\d+)\s+events:\s*(?P<events>[0-9a-fA-F]+)"
+    r"\s+data:\s*(?P<data>[0-9a-fA-F]+)"
+)
+
+
+def _read_fdinfo(pid, fd):
+    info = {"readable": False, "registrations": []}
+    try:
+        with open(f"/proc/{pid}/fdinfo/{fd}", "r", encoding="utf-8") as handle:
+            info["readable"] = True
+            for raw_line in handle:
+                line = raw_line.strip()
+                if line.startswith("mnt_id:"):
+                    try:
+                        info["mount_id"] = int(line.split(":", 1)[1].strip())
+                    except ValueError:
+                        pass
+                    continue
+                match = _EPOLL_TFD_RE.match(line)
+                if match:
+                    info["registrations"].append(
+                        {
+                            "fd": int(match.group("fd")),
+                            "events": match.group("events").lower(),
+                            "data": match.group("data").lower(),
+                        }
+                    )
+    except (OSError, PermissionError):
+        pass
+    return info
+
+
+def _enrich_descriptor_metadata(pid, descriptors):
+    by_fd = {item["fd"]: item for item in descriptors}
+    epoll_sets = []
+    for descriptor in descriptors:
+        fd = descriptor["fd"]
+        fdinfo = _read_fdinfo(pid, fd)
+        target = str(descriptor.get("target") or "")
+        if target.startswith("/"):
+            vfs = {}
+            if fdinfo.get("mount_id") is not None:
+                vfs["mount_id"] = fdinfo["mount_id"]
+            try:
+                stat_result = os.stat(f"/proc/{pid}/fd/{fd}")
+                vfs.update(
+                    {
+                        "inode": int(stat_result.st_ino),
+                        "device": f"{os.major(stat_result.st_dev)}:{os.minor(stat_result.st_dev)}",
+                    }
+                )
+            except (OSError, PermissionError):
+                pass
+            if vfs:
+                descriptor["vfs"] = vfs
+        if target != "anon_inode:[eventpoll]":
+            continue
+        registrations = []
+        for registration in fdinfo["registrations"]:
+            watched = by_fd.get(registration["fd"]) or {}
+            registrations.append(
+                {
+                    **registration,
+                    "type": watched.get("type"),
+                    "target": watched.get("target"),
+                    "local_address": watched.get("local_address"),
+                    "remote_address": watched.get("remote_address"),
+                }
+            )
+        epoll_sets.append(
+            {
+                "epfd": fd,
+                "target": target,
+                "registrations": registrations,
+                "observable": fdinfo["readable"],
+            }
+        )
+    return epoll_sets
+
+
 def get_process_fds_info(pid):
     try:
         proc = psutil.Process(pid)
@@ -961,12 +1042,15 @@ def get_process_fds_info(pid):
             descriptor["remote_address"] = conn.get("remote_address")
             descriptor["status"] = conn.get("status")
 
+        epoll_sets = _enrich_descriptor_metadata(pid, descriptors)
+
         return {
             "pid": pid,
             "num_fds": num_fds,
             "open_files": open_files[:20],
             "connections": connections[:20],
             "descriptors": descriptors[:40],
+            "epoll_sets": epoll_sets,
             "namespace_fingerprint": get_process_namespace_fingerprint(pid),
         }
     except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
