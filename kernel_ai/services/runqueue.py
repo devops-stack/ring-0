@@ -213,12 +213,23 @@ def describe(max_rows=MAX_ROWS):
             "hidden": max(0, len(queue) - max_rows),
         })
 
+    decision_fields = any(
+        row.get("eligible") is not None
+        and isinstance(row.get("due_ms"), (int, float))
+        for row in rows
+    )
+
     return {
         "load": load,
         "cpu_count": os.cpu_count() or 1,
-        # Rows only parse on a kernel that prints eligibility and a deadline,
-        # so a snapshot with tasks in it is the evidence of EEVDF itself.
-        "scheduler": {"name": "EEVDF" if tasks else None, "slice_ms": slice_ms},
+        # Linux 6.8 may run EEVDF while retaining the older sched_debug table.
+        # Name the algorithm, but only claim an exact decision when the kernel
+        # actually printed eligibility and virtual deadlines.
+        "scheduler": {
+            "name": "EEVDF" if tasks else None,
+            "slice_ms": slice_ms,
+            "decision_fields": decision_fields,
+        },
         "queued": len(rows),
         "uninterruptible": blocked,
         "observer_tid": int(observer) if str(observer or "").isdigit() else None,

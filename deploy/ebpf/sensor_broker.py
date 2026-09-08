@@ -13,17 +13,25 @@ import tempfile
 import time
 
 
-SOCKET_PATH = os.environ.get("KERNEL_SENSOR_SOCKET", "/run/kernel-ai/sensor.sock")
+SOCKET_PATH = os.environ.get(
+    "KERNEL_SENSOR_SOCKET", "/run/kernel-ai-sensor/sensor.sock"
+)
 OUT_PATH = os.environ.get(
-    "KERNEL_SENSOR_EVENTS_OUT", "/run/kernel-ai/kernel-events-v1.json"
+    "KERNEL_SENSOR_EVENTS_OUT", "/run/kernel-ai-sensor/kernel-events.json"
 )
 MAX_EVENTS = max(50, int(os.environ.get("KERNEL_SENSOR_MAX_EVENTS", "800")))
 MAX_EPS = max(10, int(os.environ.get("KERNEL_SENSOR_MAX_EPS", "300")))
 MIN_DURATION_US = max(
     1, int(os.environ.get("KERNEL_SENSOR_MIN_DURATION_US", "100000"))
 )
-FLUSH_S = max(0.1, float(os.environ.get("KERNEL_SENSOR_FLUSH_S", "0.5")))
+FLUSH_S = max(0.1, float(os.environ.get("KERNEL_SENSOR_FLUSH_S", "1.0")))
 RECONNECT_S = max(0.1, float(os.environ.get("KERNEL_SENSOR_RECONNECT_S", "1")))
+FSYNC_SNAPSHOT = os.environ.get("KERNEL_SENSOR_FSYNC", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 def _wall_seconds(value):
@@ -106,7 +114,11 @@ def write_snapshot(events, *, seq, dropped, started_at):
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, separators=(",", ":"))
             handle.flush()
-            os.fsync(handle.fileno())
+            # The snapshot lives in volatile /run and is replaced atomically.
+            # Durability across a power loss has no value here; fsync twice per
+            # second only consumed scarce CPU and I/O budget on burstable hosts.
+            if FSYNC_SNAPSHOT:
+                os.fsync(handle.fileno())
         os.chmod(temporary, 0o644)
         os.replace(temporary, OUT_PATH)
     finally:
