@@ -292,6 +292,7 @@ function draw() {
         const target = event.target;
         if (target && target.closest && target.closest('.process-node-group')) return;
         clearPinnedProcessDossier();
+        if (window.KernelTraceLens) window.KernelTraceLens.clearPin();
     });
 
     // Define gradients for depth
@@ -648,6 +649,29 @@ function descriptorTargetLabel(descriptor) {
     if (descriptor.remote_address) return descriptor.remote_address;
     if (descriptor.local_address) return descriptor.local_address;
     return String(descriptor.target || '');
+}
+
+function descriptorMechanismKind(descriptor) {
+    const target = String(descriptor && descriptor.target || '');
+    if (target === 'anon_inode:[eventpoll]') return 'epoll';
+    if (target.startsWith('/')) return 'vfs';
+    return null;
+}
+
+function openDescriptorMechanism(processData, fdsData, descriptor) {
+    const kind = descriptorMechanismKind(descriptor);
+    if (!kind || !window.KernelTape) return;
+    if (kind === 'epoll' && typeof window.KernelTape.openEpollInspector === 'function') {
+        const sets = Array.isArray(fdsData && fdsData.epoll_sets) ? fdsData.epoll_sets : [];
+        window.KernelTape.openEpollInspector({
+            process: processData,
+            fdsData,
+            epollSet: sets.find(item => Number(item.epfd) === Number(descriptor.fd)) || null
+        });
+    }
+    if (kind === 'vfs' && typeof window.KernelTape.openVfsInspector === 'function') {
+        window.KernelTape.openVfsInspector({ process: processData, fdsData, descriptor });
+    }
 }
 
 // ── Process dossier ─────────────────────────────────────────────────────────
@@ -1085,11 +1109,24 @@ function renderProcessDossier() {
     const vitH = 84;
 
     const descriptors = fdsData && Array.isArray(fdsData.descriptors) ? fdsData.descriptors : [];
-    const fdRows = descriptors.slice(0, 6);
+    const descriptorPriority = (descriptor) => {
+        const kind = descriptorMechanismKind(descriptor);
+        if (kind === 'epoll') return 0;
+        if (kind === 'vfs' && descriptor.type === 'file') return 1;
+        if (kind === 'vfs') return 2;
+        return 3;
+    };
+    const fdRows = descriptors
+        .map((descriptor, index) => ({ descriptor, index }))
+        .sort((a, b) => descriptorPriority(a.descriptor) - descriptorPriority(b.descriptor)
+            || a.index - b.index)
+        .slice(0, 6)
+        .map(item => item.descriptor);
     const bodyRows = fdRows.length
         ? fdRows.map((d) => ({
             key: `fd ${d.fd}`,
             mid: String(d.type || 'fd').toLowerCase().slice(0, 10),
+            descriptor: d,
             // Drop the prefixes the type column already states.
             value: elideDescriptorTarget(
                 descriptorTargetLabel(d)
@@ -1259,7 +1296,17 @@ function renderProcessDossier() {
 
     // Amber marks a live value, grey a zero — the row reads at a glance.
     const vitals = [
-        { label: 'CPU', value: `${Math.round(cpuPercent)}`, unit: '%', live: cpuPercent > 0 },
+        {
+            label: 'CPU',
+            value: `${Math.round(cpuPercent)}`,
+            unit: '%',
+            live: cpuPercent > 0,
+            // CPU usage says how much time this process received. The runqueue
+            // door answers the complementary question: who it competed with.
+            open: window.RunqueueCard && typeof RunqueueCard.openForProcess === 'function'
+                ? RunqueueCard.openForProcess
+                : null
+        },
         {
             label: 'MEMORY',
             value: memoryMb >= 100 ? `${Math.round(memoryMb)}` : memoryMb.toFixed(1),
@@ -1359,28 +1406,52 @@ function renderProcessDossier() {
 
     bodyRows.forEach((row, idx) => {
         const y = fdBox.y + 42 + idx * 16;
-        fdCard.append('text')
+        const rowLayer = fdCard.append('g');
+        const mechanismKind = descriptorMechanismKind(row.descriptor);
+        if (mechanismKind) {
+            rowLayer.append('rect')
+                .attr('x', fdBox.x + 8).attr('y', y - 12)
+                .attr('width', fdBox.w - 16).attr('height', 16)
+                .attr('fill', 'transparent');
+            rowLayer.style('cursor', 'pointer')
+                .on('click', (event) => {
+                    event.stopPropagation();
+                    openDescriptorMechanism(processData, fdsData, row.descriptor);
+                })
+                .on('mouseenter', () => {
+                    rowLayer.selectAll('text').attr('fill', DOSSIER.accent);
+                })
+                .on('mouseleave', () => {
+                    rowLayer.selectAll('text').each(function () {
+                        d3.select(this).attr('fill', d3.select(this).attr('data-base-fill'));
+                    });
+                });
+        }
+        rowLayer.append('text')
             .attr('x', fdBox.x + 16).attr('y', y)
             .attr('font-family', DOSSIER.mono)
             .attr('font-size', '11px')
             .attr('fill', DOSSIER.dim)
+            .attr('data-base-fill', DOSSIER.dim)
             .text(row.key);
 
         if (row.mid) {
-            fdCard.append('text')
+            rowLayer.append('text')
                 .attr('x', fdBox.x + 74).attr('y', y)
                 .attr('font-family', DOSSIER.mono)
                 .attr('font-size', '11px')
                 .attr('fill', DOSSIER.text)
+                .attr('data-base-fill', DOSSIER.text)
                 .text(row.mid);
         }
 
-        fdCard.append('text')
+        rowLayer.append('text')
             .attr('x', fdBox.x + fdBox.w - 14).attr('y', y)
             .attr('text-anchor', 'end')
             .attr('font-family', DOSSIER.mono)
             .attr('font-size', '11px')
             .attr('fill', row.mid ? DOSSIER.faint : DOSSIER.text)
+            .attr('data-base-fill', row.mid ? DOSSIER.faint : DOSSIER.text)
             .text(row.value);
     });
 
@@ -1753,7 +1824,7 @@ const processModalTopKeeper = createOverlayTopKeeper(
 );
 
 function closeOpenKernelCards() {
-    ["MemoryCard", "ThreadsCard", "WaitsCard", "WakeupsCard", "SocketsCard",
+    ["MemoryCard", "SlubCard", "ThreadsCard", "WaitsCard", "WakeupsCard", "SocketsCard",
         "FlowCard", "FlowHistoryCard", "NamespaceCard", "SyscallCard", "IrqCard",
         "IrqHistoryCard", "RunqueueCard", "HistoryCard", "IpEntryCard"].forEach((name) => {
         const card = window[name];
@@ -1848,6 +1919,8 @@ function drawCentralCircle(centerX, centerY) {
         .attr("y", centerY - 30)
         .attr("width", 60)
         .attr("height", 60);
+
+    callModuleFunction('ExecutionContextDial', 'mount', [centerX, centerY]);
 }
 
 function drawCentralPulseGrid(centerX, centerY) {
@@ -2015,6 +2088,9 @@ function updateRing1(centerX, centerY, baseRadius) {
             return data;
         })
         .then(data => {
+            if (typeof window.publishKernelTelemetry === 'function') {
+                window.publishKernelTelemetry('execution', data);
+            }
             // Debug logging
             debugLog('🔄 Ring-1 Update:', {
                 mode: data.mode,
@@ -2129,8 +2205,8 @@ function updateRing1(centerX, centerY, baseRadius) {
                     .attr("font-family", "Share Tech Mono, monospace")
                     .style("opacity", 0);
             }
-            // Always show "KERNEL MODE" label
-            const modeText = 'KERNEL MODE';
+            // This is a sampled machine-wide mode, not a hard-coded caption.
+            const modeText = data.mode === 'user' ? 'USER MODE' : 'KERNEL MODE';
             modeLabel
                 .text(modeText)
                 .attr("fill", ringColor)
@@ -2866,6 +2942,7 @@ function drawProcessKernelMap2(centerX, centerY) {
                                 });
                         };
                         processGroup.classed("hovered", true);
+                        if (window.KernelTraceLens) window.KernelTraceLens.show(processData);
                         pulse();
                         
                         // Show process files at bottom of Bezier curves
@@ -2986,6 +3063,7 @@ function drawProcessKernelMap2(centerX, centerY) {
                     .on("mouseout", function(event, d) {
                         // Get the actual process data from the datum
                         const processData = d || process;
+                        if (window.KernelTraceLens) window.KernelTraceLens.scheduleHide();
                         // Stop pulsing animation
                         processGroup.classed("hovered", false);
                         circle.interrupt(); // Stop any ongoing transitions
@@ -3039,6 +3117,7 @@ function drawProcessKernelMap2(centerX, centerY) {
                 drawMobileProcessLabels(centerX, centerY, topProcessNames(processes, 4));
             }
             renderProcessDossier();
+            if (window.KernelTraceLens) window.KernelTraceLens.refresh();
 
             // Process lines radiate from the center and wash out the pulse grid;
             // lift it back above them so the central lattice stays visible.

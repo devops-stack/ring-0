@@ -31,6 +31,7 @@ const RunqueueCard = (() => {
     let isOpen = false;
     let topKeeper = null;
     let requestSeq = 0;
+    let focusPid = null;
 
     function clip(text, max) {
         const value = String(text || "");
@@ -46,6 +47,7 @@ const RunqueueCard = (() => {
     function close() {
         if (!isOpen) return;
         isOpen = false;
+        focusPid = null;
         requestSeq += 1;
         svg.selectAll(".runqueue-card-scrim, .runqueue-card-layer").remove();
         if (topKeeper) topKeeper.stop();
@@ -53,11 +55,13 @@ const RunqueueCard = (() => {
         window.dispatchEvent(new CustomEvent("kcard-closed"));
     }
 
-    function open(anchor) {
+    function open(anchor, options) {
         if (isOpen) {
             close();
             return;
         }
+        const requestedPid = Number(options && options.focusPid);
+        focusPid = Number.isFinite(requestedPid) && requestedPid > 0 ? requestedPid : null;
         isOpen = true;
         const seq = ++requestSeq;
 
@@ -75,6 +79,10 @@ const RunqueueCard = (() => {
                 if (seq !== requestSeq) return;
                 isOpen = false;
             });
+    }
+
+    function openForProcess(pid, anchor) {
+        open(anchor, { focusPid: pid });
     }
 
     // Why this task is in the queue at all: it holds the CPU, or it is waiting
@@ -112,6 +120,93 @@ const RunqueueCard = (() => {
         return `NEXT IN ITS OWN QUEUE: ${who} · ${nxt.reason.toUpperCase()}`;
     }
 
+    // A compact mechanism view of the actual choice on one CPU. On kernels
+    // that hide EEVDF eligibility/deadline fields, the gate remains visibly
+    // unresolved instead of arranging runnable tasks into an invented order.
+    function drawSelector(body, cpu, cw, cy, hasVerdict) {
+        const left = PAD;
+        const current = cpu.queue.find((row) => row.current) || null;
+        const waiting = cpu.queue.filter((row) => !row.current).slice(0, 4);
+        const exactTid = cpu.next && cpu.next.exact ? Number(cpu.next.tid) : null;
+        const stationW = 96;
+        const gateX = left + 126;
+        const railStart = gateX + 34;
+        const railEnd = cw - PAD;
+        const railY = cy + 39;
+        const stationGap = waiting.length > 1
+            ? Math.max(62, (railEnd - railStart - stationW) / (waiting.length - 1))
+            : 0;
+
+        body.append("text")
+            .attr("class", "kcard-section")
+            .attr("x", left).attr("y", cy + 10)
+            .text(`SCHEDULER SELECTOR · CPU ${cpu.cpu}`);
+        body.append("text")
+            .attr("class", hasVerdict ? "kcard-faint" : "kcard-inferred")
+            .attr("x", railEnd).attr("y", cy + 10)
+            .attr("text-anchor", "end")
+            .text(hasVerdict ? "ELIGIBILITY + VIRTUAL DEADLINE" : "DECISION FIELDS NOT EXPOSED");
+
+        body.append("path")
+            .attr("d", `M${left + 104} ${railY} H${gateX - 10} M${gateX + 10} ${railY} H${railEnd}`)
+            .attr("fill", "none")
+            .attr("stroke", hasVerdict ? "rgba(226,163,62,0.7)" : "rgba(142,166,181,0.38)")
+            .attr("stroke-width", 0.8)
+            .attr("stroke-dasharray", hasVerdict ? null : "3 3");
+
+        body.append("path")
+            .attr("d", `M${gateX} ${railY - 11} L${gateX + 10} ${railY} L${gateX} ${railY + 11} L${gateX - 10} ${railY} Z`)
+            .attr("fill", hasVerdict ? "rgba(226,163,62,0.12)" : "rgba(142,166,181,0.06)")
+            .attr("stroke", hasVerdict ? "rgba(226,163,62,0.82)" : "rgba(142,166,181,0.48)")
+            .attr("stroke-width", 0.8);
+        body.append("text")
+            .attr("class", hasVerdict ? "kcard-symbol is-sleep" : "kcard-faint")
+            .attr("x", gateX).attr("y", railY + 3)
+            .attr("text-anchor", "middle")
+            .text(hasVerdict ? "E" : "?");
+
+        body.append("path")
+            .attr("d", `M${left} ${railY - 14} H${left + 92} L${left + 102} ${railY - 4} V${railY + 14} H${left} Z`)
+            .attr("class", current ? "kcard-strip" : "kcard-frame");
+        body.append("text")
+            .attr("class", "kcard-stage")
+            .attr("x", left + 7).attr("y", railY - 3)
+            .text("ON CPU");
+        body.append("text")
+            .attr("class", current && focusPid === Number(current.pid) ? "kcard-section" : "kcard-waiter")
+            .attr("x", left + 7).attr("y", railY + 10)
+            .text(current ? `${current.tid} ${clip(current.comm, 10)}` : "NOT IN FRAME");
+
+        if (!waiting.length) {
+            body.append("text")
+                .attr("class", "kcard-faint")
+                .attr("x", railStart + 8).attr("y", railY - 7)
+                .text("NO WAITING TASK IN THIS FRAME");
+        }
+
+        waiting.forEach((row, index) => {
+            const x = Math.min(railEnd - stationW, railStart + index * stationGap);
+            const exact = Number(row.tid) === exactTid;
+            const focused = focusPid === Number(row.pid);
+            body.append("line")
+                .attr("x1", x + stationW / 2).attr("x2", x + stationW / 2)
+                .attr("y1", railY - 4).attr("y2", railY + 4)
+                .attr("stroke", exact ? "#e2a33e" : "rgba(142,166,181,0.65)")
+                .attr("stroke-width", exact ? 1.8 : 0.8);
+            body.append("rect")
+                .attr("x", x).attr("y", railY + 7)
+                .attr("width", stationW).attr("height", 18)
+                .attr("fill", exact || focused ? "rgba(226,163,62,0.12)" : "rgba(142,166,181,0.05)")
+                .attr("stroke", exact || focused ? "rgba(226,163,62,0.85)" : "rgba(142,166,181,0.35)")
+                .attr("stroke-width", exact || focused ? 0.9 : 0.6);
+            body.append("text")
+                .attr("class", exact || focused ? "kcard-section" : "kcard-waiter-dim")
+                .attr("x", x + 6).attr("y", railY + 19)
+                .text(`${row.tid} ${clip(row.comm, 9)}`);
+        });
+        return cy + 72;
+    }
+
     function draw(data, anchor) {
         const svgNode = svg.node();
         const viewW = (svgNode && svgNode.clientWidth) || window.innerWidth;
@@ -127,7 +222,15 @@ const RunqueueCard = (() => {
         const scheduler = data.scheduler || {};
         const source = data.source || {};
         const cpus = Array.isArray(data.cpus) ? data.cpus : [];
-        const hasVerdict = !!source.available && scheduler.name === "EEVDF";
+        const hasVerdict = !!source.available
+            && scheduler.name === "EEVDF"
+            && scheduler.decision_fields !== false
+            && cpus.some((cpu) => cpu.queue.some((row) =>
+                row.eligible !== undefined && row.eligible !== null
+                && Number.isFinite(Number(row.due_ms))));
+        const selectorCpu = cpus.slice().sort((a, b) => b.queue.length - a.queue.length)[0] || null;
+        const focusPresent = focusPid !== null && cpus.some((cpu) =>
+            cpu.queue.some((row) => Number(row.pid) === focusPid));
 
         const notes = [];
         if (!source.available) {
@@ -139,6 +242,9 @@ const RunqueueCard = (() => {
         } else {
             notes.push("E = ELIGIBLE NOW · LAG IS VIRTUAL MS OWED · EEVDF TAKES THE NEAREST DEADLINE");
             notes.push("ONE FRAME OF A QUEUE THAT IS REBUILT THOUSANDS OF TIMES A SECOND");
+        }
+        if (focusPid !== null && !focusPresent) {
+            notes.push(`PID ${focusPid} IS NOT RUNNABLE IN THIS FRAME`);
         }
 
         const named = cpus.reduce((all, c) => all + c.queue.length, 0);
@@ -152,6 +258,7 @@ const RunqueueCard = (() => {
         h += LINE;                                   // what a load average is
         if (data.uninterruptible) h += LINE;
         if (drifted) h += LINE;
+        if (selectorCpu) h += 72;
         cpus.forEach((cpu) => {
             h += 16 + LINE + LINE;                   // section + legend
             h += Math.max(1, cpu.queue.length) * ROW_STEP;
@@ -272,6 +379,10 @@ const RunqueueCard = (() => {
             cy += LINE;
         }
 
+        if (selectorCpu) {
+            cy = drawSelector(body, selectorCpu, cw, cy, hasVerdict);
+        }
+
         // ── one section per runqueue ───────────────────────────────────────
         cpus.forEach((cpu) => {
             cy += 16;
@@ -298,13 +409,14 @@ const RunqueueCard = (() => {
 
             cpu.queue.forEach((row, i) => {
                 const ty = cy + 4 + i * ROW_STEP;
+                const focused = focusPid !== null && Number(row.pid) === focusPid;
                 if (row.current) {
                     body.append("circle")
                         .attr("class", "kcard-glyph-dot")
                         .attr("cx", PAD - 6).attr("cy", ty - 3).attr("r", 1.5);
                 }
-                text(row.current ? "kcard-waiter" : "kcard-waiter-dim", PAD, ty, row.tid);
-                text(row.current ? "kcard-waiter" : "kcard-waiter-dim",
+                text(row.current || focused ? "kcard-waiter" : "kcard-waiter-dim", PAD, ty, row.tid);
+                text(row.current || focused ? "kcard-waiter" : "kcard-waiter-dim",
                     COL_TASK, ty, clip(row.comm, TASK_CHARS));
                 if (!compact) {
                     text("kcard-faint", colUnit, ty, clip(row.unit || "—", UNIT_CHARS));
@@ -367,6 +479,7 @@ const RunqueueCard = (() => {
 
     return {
         open,
+        openForProcess,
         close,
         isOpen: () => isOpen
     };

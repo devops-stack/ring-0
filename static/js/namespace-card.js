@@ -128,6 +128,38 @@ const NamespaceCard = (() => {
         }
     }
 
+    async function openWorldVfs(world) {
+        const pid = Number(world && Array.isArray(world.pids) && world.pids[0]);
+        if (!Number.isFinite(pid) || pid <= 0 || !window.KernelTape
+            || typeof window.KernelTape.openVfsInspector !== "function") return;
+        let fdsData = null;
+        try {
+            const response = await fetch(`/api/process/${pid}/fds`, { cache: "no-store" });
+            fdsData = await response.json();
+        } catch (_error) {
+            fdsData = { error: "NOT OBSERVED" };
+        }
+        const descriptors = Array.isArray(fdsData && fdsData.descriptors)
+            ? fdsData.descriptors
+            : [];
+        const descriptor = descriptors.find(item => {
+            const target = String(item && item.target || "");
+            return item && item.type === "file"
+                && target.startsWith("/")
+                && !target.startsWith("/dev/")
+                && !target.startsWith("/proc/")
+                && !target.startsWith("/sys/");
+        }) || descriptors.find(item => {
+            const target = String(item && item.target || "");
+            return item && item.type === "file" && target.startsWith("/");
+        }) || null;
+        const processIndex = window.__processIndex && window.__processIndex.byPid;
+        const process = processIndex && typeof processIndex.get === "function"
+            ? (processIndex.get(pid) || { pid, name: "process" })
+            : { pid, name: "process" };
+        window.KernelTape.openVfsInspector({ process, fdsData, descriptor });
+    }
+
     function open(ns, anchor) {
         if (!ns || !ns.id) return;
         const key = String(ns.id);
@@ -159,7 +191,7 @@ const NamespaceCard = (() => {
         const worlds = worldsOf(ns);
         let h = HEADER + 12 + 10;
         h += LINE + LINE;
-        if (ns.id === "net") h += 34;
+        if (ns.id === "net" || ns.id === "mnt") h += 34;
         h += 16 + LINE;
         if (!worlds.length) h += LINE;
         else h += worlds.length * ROW_STEP;
@@ -311,6 +343,41 @@ const NamespaceCard = (() => {
                     .attr("width", chipW).attr("height", 18);
                 text(index === stages.length - 1 ? "kcard-waiter" : "kcard-waiter-dim",
                     sx + 8, cy + 12, stage);
+            });
+            cy += 25;
+        } else if (ns.id === "mnt") {
+            cy += 9;
+            text("kcard-section", PAD, cy, "VFS PATH RESOLUTION · CLICK TO INSPECT");
+            cy += 7;
+            const stages = ["mnt namespace", "vfsmount", "dentry · inode"];
+            const gap = compact ? 12 : 24;
+            const chipW = Math.max(64, Math.min(104, (cw - PAD * 2 - gap * 2) / 3));
+            const mechanism = body.append("g")
+                .style("cursor", "pointer")
+                .on("click", (event) => {
+                    event.stopPropagation();
+                    openWorldVfs(pinnedWorld || defaultWorld);
+                });
+            stages.forEach((stage, index) => {
+                const sx = PAD + index * (chipW + gap);
+                if (index) {
+                    mechanism.append("line")
+                        .attr("class", "namespace-card-arch-link")
+                        .attr("x1", sx - gap).attr("y1", cy + 9)
+                        .attr("x2", sx).attr("y2", cy + 9);
+                }
+                mechanism.append("rect")
+                    .attr("class", index === stages.length - 1
+                        ? "namespace-card-arch-chip is-hot"
+                        : "namespace-card-arch-chip")
+                    .attr("x", sx).attr("y", cy)
+                    .attr("width", chipW).attr("height", 18);
+                mechanism.append("text")
+                    .attr("class", index === stages.length - 1
+                        ? "kcard-waiter"
+                        : "kcard-waiter-dim")
+                    .attr("x", sx + 8).attr("y", cy + 12)
+                    .text(stage);
             });
             cy += 25;
         }

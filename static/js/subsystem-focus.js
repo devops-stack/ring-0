@@ -48,10 +48,11 @@
             const key = row.attr('data-subsystem-key');
             const isActive = hasFocus && key === focusedKey;
             const isDim = hasFocus && !isActive;
+            const isAction = key === 'memory_management' || key === 'process_scheduler';
 
             row.select('.subsystem-indicator-bg')
                 .attr('fill', isActive ? 'rgba(210, 220, 230, 0.28)' : 'rgba(200, 200, 200, 0.2)')
-                .attr('stroke', isActive ? '#c7d8e8' : '#aaa')
+                .attr('stroke', isAction ? '#e2a33e' : (isActive ? '#c7d8e8' : '#aaa'))
                 .attr('opacity', isDim ? 0.45 : 1);
 
             row.select('.subsystem-indicator-fill')
@@ -59,7 +60,7 @@
                 .attr('fill', isActive ? '#9fb3c8' : '#888');
 
             row.selectAll('.subsystem-indicator-label')
-                .attr('fill', isActive ? '#101316' : '#222')
+                .attr('fill', isAction ? '#a6650b' : (isActive ? '#101316' : '#222'))
                 .attr('opacity', isDim ? 0.52 : 1);
 
             row.selectAll('.subsystem-indicator-detail')
@@ -196,6 +197,27 @@
             // it asks the other half of that question — what keeps making work
             // for it. The bars are click-through by default (the map lives
             // underneath), so this one rect has to ask for its events back.
+            if (name === 'memory_management' && window.SlubCard) {
+                const outline = rowGroup.append('rect')
+                    .attr('x', x - 1.5).attr('y', y - 1.5)
+                    .attr('width', barWidth + 3).attr('height', barHeight + 3)
+                    .attr('fill', 'none')
+                    .attr('stroke', '#e2a33e')
+                    .attr('stroke-width', 0.9)
+                    .attr('opacity', 0.42)
+                    .attr('class', 'subsystem-indicator');
+                hitArea('slub', { x: x, y: y, width: barWidth, height: barHeight })
+                    .on('mouseenter', () => outline.attr('opacity', 1))
+                    .on('mouseleave', () => outline.attr('opacity', 0.42))
+                    .on('click', (event) => {
+                        event.stopPropagation();
+                        window.SlubCard.open({
+                            x: x + barWidth + 6,
+                            y: y + barHeight / 2,
+                            clearOf: x + barWidth + 40
+                        });
+                    });
+            }
             if (name === 'process_scheduler' && window.WakeupsCard) {
                 const outline = rowGroup.append('rect')
                     .attr('x', x - 1.5).attr('y', y - 1.5)
@@ -203,11 +225,11 @@
                     .attr('fill', 'none')
                     .attr('stroke', '#e2a33e')
                     .attr('stroke-width', 0.9)
-                    .attr('opacity', 0)
+                    .attr('opacity', 0.42)
                     .attr('class', 'subsystem-indicator');
                 hitArea('wakeups', { x: x, y: y, width: barWidth, height: barHeight })
-                    .on('mouseenter', () => outline.attr('opacity', 0.9))
-                    .on('mouseleave', () => outline.attr('opacity', 0))
+                    .on('mouseenter', () => outline.attr('opacity', 1))
+                    .on('mouseleave', () => outline.attr('opacity', 0.42))
                     .on('click', (event) => {
                         event.stopPropagation();
                         window.WakeupsCard.open({

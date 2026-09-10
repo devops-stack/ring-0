@@ -53,6 +53,7 @@ _API_ROUTES = [
     ("/processes-realtime", "processes_realtime", h.processes_realtime, None),
     ("/scheduler-pelt", "scheduler_pelt", h.scheduler_pelt, None),
     ("/runqueue", "runqueue", h.runqueue, None),
+    ("/slabinfo", "slabinfo", h.slabinfo, None),
     ("/wakeups", "wakeups", h.wakeups, None),
     ("/frontend-logs", "ingest_frontend_logs", h.ingest_frontend_logs, ["POST", "OPTIONS"]),
     ("/proc-graph", "proc_graph", h.get_proc_graph, None),

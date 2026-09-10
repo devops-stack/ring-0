@@ -48,7 +48,7 @@ class FilesystemMapVisualization {
         this.fxOpenTime = 0;
         this.fxHitAreas = [];
         this.fxHoverKey = null;
-        this.stageOverlayMap = { vfs: 'ext4', pagecache: 'writeback', writeback: 'writeback', block: 'jbd2' };
+        this.stageOverlayMap = { vfs: 'pathwalk', pagecache: 'writeback', writeback: 'writeback', block: 'jbd2' };
     }
 
     _rr(ctx, x, y, w, h, r) {

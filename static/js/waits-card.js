@@ -312,12 +312,26 @@ const WaitsCard = (() => {
         // ── the futex ──────────────────────────────────────────────────────
         if (isFutex) {
             cy += 16;
-            text("kcard-section", PAD, cy, "THE WORD IT WAITS ON");
+            const sectionY = cy;
+            const futexTitle = text("kcard-section", PAD, cy, "THE FUTEX WORD · CLICK TO INSPECT");
             cy += LINE;
             const bits = [on.word || "address unknown"];
             if (on.expected !== null && on.expected !== undefined) bits.push(`expected ${on.expected}`);
             bits.push(on.scope);
             text("kcard-waiter", PAD, cy, clip(bits.join("  ·  "), compact ? 44 : 66));
+            if (window.KernelTape && typeof window.KernelTape.openFutexInspector === "function") {
+                body.append("rect")
+                    .attr("x", PAD - 7).attr("y", sectionY - 11)
+                    .attr("width", cw - PAD * 2 + 14).attr("height", LINE * 2 + 6)
+                    .attr("fill", "transparent")
+                    .style("cursor", "pointer")
+                    .on("mouseenter", () => futexTitle.attr("fill", "#e2a33e"))
+                    .on("mouseleave", () => futexTitle.attr("fill", null))
+                    .on("click", (event) => {
+                        event.stopPropagation();
+                        window.KernelTape.openFutexInspector({ waitData: data });
+                    });
+            }
             cy += LINE;
 
             cy += 16;

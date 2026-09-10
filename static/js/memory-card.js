@@ -44,6 +44,7 @@ const MemoryCard = (() => {
     let pollTimer = null;
     let lastAnchor = null;
     let layout = null;
+    let previousFaultSample = null;
 
     function clip(text, max) {
         const value = String(text || "");
@@ -58,6 +59,57 @@ const MemoryCard = (() => {
         return `${Math.round(n)} KB`;
     }
 
+    function faultRate(value) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return "RATE ARMING";
+        if (n >= 1000) return `${(n / 1000).toFixed(1)}k/s`;
+        return `${n >= 10 ? Math.round(n) : n.toFixed(1)}/s`;
+    }
+
+    function prepareFaultFrame(data) {
+        const faults = data && data.faults;
+        if (!faults) return data;
+        const current = {
+            pid: Number(data.pid),
+            ts: Number(faults.ts),
+            minflt: Number(faults.minflt),
+            majflt: Number(faults.majflt)
+        };
+        const prev = previousFaultSample;
+        if (prev && prev.pid === current.pid && Number.isFinite(current.ts) && current.ts > prev.ts) {
+            const elapsed = current.ts - prev.ts;
+            if (Number.isFinite(current.minflt) && Number.isFinite(prev.minflt)) {
+                faults.minflt_per_sec = Math.max(0, current.minflt - prev.minflt) / elapsed;
+            }
+            if (Number.isFinite(current.majflt) && Number.isFinite(prev.majflt)) {
+                faults.majflt_per_sec = Math.max(0, current.majflt - prev.majflt) / elapsed;
+            }
+            faults.interval_s = elapsed;
+        }
+        previousFaultSample = current;
+        return data;
+    }
+
+    function fetchFrame(pid) {
+        return Promise.all([
+            fetch(`/api/process/${pid}/memory`, { cache: "no-store" }).then((r) => r.json()),
+            fetch(`/api/process/${pid}/activity`, { cache: "no-store" })
+                .then((r) => r.json())
+                .catch(() => null)
+        ]).then(([data, activity]) => {
+            if (data && activity && !activity.error) {
+                data.faults = {
+                    ts: activity.ts,
+                    minflt: activity.minflt,
+                    cminflt: activity.cminflt,
+                    majflt: activity.majflt,
+                    cmajflt: activity.cmajflt
+                };
+            }
+            return prepareFaultFrame(data);
+        });
+    }
+
     function stopPoll() {
         if (pollTimer) {
             clearInterval(pollTimer);
@@ -70,6 +122,7 @@ const MemoryCard = (() => {
         openPid = null;
         lastAnchor = null;
         layout = null;
+        previousFaultSample = null;
         requestSeq += 1;
         svg.selectAll(".memory-card-scrim, .memory-card-layer").remove();
         if (topKeeper) topKeeper.stop();
@@ -86,8 +139,7 @@ const MemoryCard = (() => {
             }
             if (document.hidden) return;
             const seq = requestSeq;
-            fetch(`/api/process/${pid}/memory`, { cache: "no-store" })
-                .then((r) => r.json())
+            fetchFrame(pid)
                 .then((data) => {
                     if (seq !== requestSeq || openPid !== pid) return;
                     if (!data || data.error) {
@@ -111,8 +163,7 @@ const MemoryCard = (() => {
         openPid = key;
         lastAnchor = anchor;
         const seq = ++requestSeq;
-        fetch(`/api/process/${key}/memory`, { cache: "no-store" })
-            .then((r) => r.json())
+        fetchFrame(key)
             .then((data) => {
                 if (seq !== requestSeq) return;
                 if (!data || data.error) {
@@ -139,10 +190,12 @@ const MemoryCard = (() => {
         const stacks = (data.stacks || []).slice(0, MAX_STACKS);
         const sources = data.sources || {};
         const hasMap = !!(sources.maps && sources.maps.available);
+        const hasFaults = data.faults && data.faults.minflt != null;
         const hiddenLibs = Math.max(0, Number(data.library_count || 0) - libraries.length);
         const hiddenStacks = Math.max(0, Number(data.stack_count || 0) - stacks.length);
         let h = HEADER + 12 + 10;
         h += LINE + LINE;
+        if (hasFaults) h += 16 + LINE + LINE;
         if (hasMap && kinds.length) h += 16 + LINE + BAR_H + 8 + LINE;
         if (data.executable || data.heap_kb) h += 16 + LINE + (data.executable ? LINE : 0) + (data.heap_kb ? LINE : 0);
         if (stacks.length) h += 16 + LINE + stacks.length * ROW_STEP + (hiddenStacks ? LINE : 0);
@@ -252,6 +305,8 @@ const MemoryCard = (() => {
         const stacks = (data.stacks || []).slice(0, MAX_STACKS);
         const sources = data.sources || {};
         const hasMap = !!(sources.maps && sources.maps.available);
+        const faults = data.faults || {};
+        const hasFaults = faults.minflt != null;
         const viaCollector = !!(sources.maps && sources.maps.via === "collector");
         const hiddenLibs = Math.max(0, Number(data.library_count || 0) - libraries.length);
         const hiddenStacks = Math.max(0, Number(data.stack_count || 0) - stacks.length);
@@ -303,6 +358,44 @@ const MemoryCard = (() => {
                 ? `exe ${kb(totals.exe_kb)}  ·  libraries ${kb(totals.lib_kb)}  ·  data ${kb(totals.data_kb)}`
                 : "resident size is all /proc will say"));
         cy += LINE;
+
+        if (hasFaults) {
+            cy += 16;
+            const mechanism = body.append("g")
+                .style("cursor", window.KernelTape ? "pointer" : "default");
+            const title = mechanism.append("text")
+                .attr("class", "kcard-section")
+                .attr("x", PAD).attr("y", cy)
+                .text("PAGE FAULT · CLICK TO INSPECT");
+            cy += LINE;
+            mechanism.append("text")
+                .attr("class", "kcard-waiter-dim")
+                .attr("x", PAD).attr("y", cy)
+                .text(`MINOR ${Number(faults.minflt).toLocaleString()} · ${faultRate(faults.minflt_per_sec)}`);
+            mechanism.append("text")
+                .attr("class", Number(faults.majflt) > 0 ? "kcard-waiter" : "kcard-faint")
+                .attr("x", cw - PAD).attr("y", cy)
+                .attr("text-anchor", "end")
+                .text(`MAJOR ${Number(faults.majflt || 0).toLocaleString()} · ${faultRate(faults.majflt_per_sec)}`);
+            mechanism.insert("rect", ":first-child")
+                .attr("x", PAD - 7).attr("y", cy - LINE - 11)
+                .attr("width", cw - PAD * 2 + 14).attr("height", LINE + 17)
+                .attr("fill", "transparent");
+            if (window.KernelTape && typeof window.KernelTape.openPageFaultInspector === "function") {
+                mechanism
+                    .on("mouseenter", () => title.attr("fill", "#e2a33e"))
+                    .on("mouseleave", () => title.attr("fill", null))
+                    .on("click", (event) => {
+                        event.stopPropagation();
+                        window.KernelTape.openPageFaultInspector({
+                            process: { pid: data.pid, name: data.comm },
+                            memoryData: data,
+                            faults
+                        });
+                    });
+            }
+            cy += LINE;
+        }
 
         if (hasMap && kinds.length) {
             cy += 16;
