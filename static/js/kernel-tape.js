@@ -33,14 +33,16 @@
         network_stack: { text: 'NET' },
         file_system: { text: 'FS' },
         process_scheduler: { text: 'SCHED' },
-        memory_management: { text: 'MEM' }
+        memory_management: { text: 'MEM' },
+        event_wait: { text: 'WAIT' }
     };
     const ERR_COLOR = 'rgba(226, 96, 88, 0.95)';
     const WARN_COLOR = D.accent;
 
     function tagForSyscall(name) {
         const n = String(name || '').toLowerCase();
-        if (/(socket|connect|accept|recv|send|poll|epoll|select)/.test(n)) return TAGS.network_stack;
+        if (/(poll|epoll|select)/.test(n)) return TAGS.event_wait;
+        if (/(socket|connect|accept|recv|send)/.test(n)) return TAGS.network_stack;
         if (/(open|close|read|write|stat|lseek|fsync|rename|unlink|mkdir|rmdir|getdents|chmod|chown|mount)/.test(n)) return TAGS.file_system;
         if (/(mmap|munmap|mprotect|brk|madvise|mlock|shm)/.test(n)) return TAGS.memory_management;
         return TAGS.process_scheduler;
@@ -99,6 +101,8 @@
             connections: null,
             io: null
         },
+        lastRcuRowAt: 0,
+        lastRcuTotal: null,
         // The pill is fixed HTML, so an SVG scrim cannot cover it: while a card
         // is berthed against the right edge the pill would float on top of it.
         pillHidden: false
@@ -107,6 +111,10 @@
     window.addEventListener('kernel-telemetry', (event) => {
         const detail = event && event.detail;
         const kind = detail && String(detail.kind || '');
+        if (kind === 'execution' && detail.data) {
+            observeRcuTelemetry(detail.data, Number(detail.observedAt) || Date.now());
+            return;
+        }
         if (!Object.prototype.hasOwnProperty.call(state.sharedTelemetry, kind) || !detail.data) return;
         state.sharedTelemetry[kind] = {
             data: detail.data,
@@ -121,6 +129,69 @@
         if (consume && entry.consumed) return null;
         if (consume) entry.consumed = true;
         return entry.data;
+    }
+
+    function rcuInspectorModel(data, rcu) {
+        const row = rcu || {};
+        const total = Number(row.total);
+        const rate = Number(row.per_sec || 0);
+        return {
+            kind: 'PROCESSOR COUNTER',
+            source: '/proc/softirqs',
+            scope: 'MACHINE',
+            observedAt: timeStamp(),
+            name: 'RCU GRACE PERIOD',
+            subsystem: 'RCU',
+            mechanism: 'rcu',
+            detail: `rcu_core executed ${Number.isFinite(total) ? total.toLocaleString() : 'an unknown number of'} times since boot and is currently sampled at ${rate.toFixed(1)}/s. This measures RCU softirq work, not individual grace-period completion.`,
+            task: null,
+            syscall: null,
+            resource: null,
+            kernel: { wchan: row.symbol || 'rcu_core' },
+            wakeup: 'N/A',
+            rcu: row,
+            cpuCount: data && data.cpu_count,
+            path: [
+                ['01 · UPDATE', 'NEW POINTER PUBLISHED'],
+                ['02 · READERS', data && data.cpu_count ? `${data.cpu_count} CPU CONTEXTS` : null],
+                ['03 · QUIESCENCE', 'CURRENT CPU MASK UNKNOWN'],
+                ['04 · GP', 'CURRENT STATE NOT EXPORTED'],
+                ['05 · CALLBACK', 'QUEUE DEPTH UNKNOWN'],
+                ['06 · ACTIVITY', `${rate.toFixed(1)} RCU SOFTIRQ/S`]
+            ]
+        };
+    }
+
+    function openRcuInspector(spec) {
+        const input = spec || {};
+        openInspector(rcuInspectorModel(input.executionData || {}, input.rcu || {}));
+    }
+
+    function observeRcuTelemetry(data, observedAt) {
+        if (!state.open || state.paused || state.focus || state.pidFocus) return;
+        const soft = data && data.irq_stack && Array.isArray(data.irq_stack.soft)
+            ? data.irq_stack.soft
+            : [];
+        const rcu = soft.find(row => String(row.name || '').toUpperCase() === 'RCU');
+        if (!rcu) return;
+        const now = Number(observedAt) || Date.now();
+        const total = Number(rcu.total);
+        if (now - state.lastRcuRowAt < 12000) return;
+        if (state.lastRcuTotal !== null && total === state.lastRcuTotal && Number(rcu.per_sec || 0) <= 0) return;
+        state.lastRcuRowAt = now;
+        state.lastRcuTotal = total;
+        const rate = Number(rcu.per_sec || 0);
+        pushRow({
+            ts: timeStamp(),
+            sym: '◌',
+            symColor: rate > 0 ? D.accent : D.dim,
+            name: 'RCU core',
+            tagText: 'RCU',
+            detail: `${rate >= 10 ? Math.round(rate) : rate.toFixed(1)}/s · ${Number.isFinite(total) ? total.toLocaleString() : '—'} total`,
+            live: rate > 0,
+            level: 'normal',
+            inspect: rcuInspectorModel(data, rcu)
+        });
     }
 
     // The pill is only offered when there is nothing in its way: the tape itself
@@ -175,9 +246,12 @@
 .kei-mech-boundary { fill: none; stroke: rgba(226,163,62,.34); stroke-width: .8; stroke-dasharray: 4 4; vector-effect: non-scaling-stroke; }
 .kei-mech-port { fill: #080b0f; stroke: rgba(226,163,62,.8); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .kei-mech-block { fill: rgba(9,12,16,.94); stroke: rgba(244,244,236,.28); stroke-width: .8; vector-effect: non-scaling-stroke; }
+.kei-mech-unknown { fill: rgba(103,200,224,.025); stroke: rgba(103,200,224,.58); stroke-width: .8; stroke-dasharray: 2 3; vector-effect: non-scaling-stroke; }
+.kei-mech-absent { fill: rgba(244,244,236,.015); stroke: rgba(244,244,236,.24); stroke-width: .8; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
 .kei-mech-copy { fill: ${D.faint}; font: 6px ${D.mono}; letter-spacing: 1px; }
 .kei-mech-value { fill: ${D.text}; font: 8px ${D.mono}; letter-spacing: .4px; }
 .kei-mech-hot { fill: ${D.accent}; font: 8px ${D.mono}; letter-spacing: .5px; }
+.kei-mech-unknown-copy { fill: rgba(103,200,224,.78); font: 7px ${D.mono}; letter-spacing: .45px; }
 .kei-mech-rotor { transform-box: fill-box; transform-origin: center; animation: kei-rotor-seat 720ms cubic-bezier(.2,.8,.2,1) both; }
 .kei-mech-wake { transform-box: fill-box; transform-origin: center; animation: kei-wake-turn 1.8s cubic-bezier(.2,.8,.2,1) both; }
 .kei-mech-return.is-error { fill: ${ERR_COLOR}; }
@@ -431,6 +505,7 @@
     function closeInspector() {
         if (!el.inspector) return;
         el.inspector.style.display = 'none';
+        el.inspector._model = null;
         if (el.inspectorBody) el.inspectorBody.textContent = '';
     }
 
@@ -590,6 +665,9 @@
         const call = model.syscall || {};
         const kernel = model.kernel || {};
         const resource = model.resource || {};
+        if (model.mechanism === 'futex' && model.waitingOn) {
+            return model.detail || 'This thread is parked on an observed futex word.';
+        }
         if (model.kind === 'EVENT' && task.comm && call.name) {
             const duration = Number.isFinite(Number(model.durationUs))
                 ? ` in ${(Number(model.durationUs) / 1000).toFixed(2)} ms`
@@ -608,9 +686,58 @@
         return model.detail || 'No finer relationship is present in this sample.';
     }
 
+    function enrichInspectorModel(model) {
+        if (!model) return;
+        const mechanisms = window.KernelMechanisms;
+        const kind = mechanisms && typeof mechanisms.kindFor === 'function'
+            ? mechanisms.kindFor(model)
+            : null;
+        const pid = Number(model.task && model.task.pid);
+        const tid = Number(model.task && (model.task.tid || model.task.pid));
+        if (kind === 'futex') {
+            if (model.waitData || model._waitLoaded || model._waitLoading
+                || !Number.isFinite(pid) || pid <= 0
+                || !Number.isFinite(tid) || tid <= 0) return;
+            model._waitLoading = true;
+            getJson(`/api/process/${pid}/thread/${tid}/wait`)
+                .then(data => {
+                    model._waitLoaded = true;
+                    model._waitLoading = false;
+                    model.waitData = data || { error: 'NOT OBSERVED' };
+                    if (data && data.waiting_on && data.waiting_on.kind === 'futex') {
+                        model.waitingOn = data.waiting_on;
+                        model.seenWaking = data.seen_waking || {};
+                    }
+                    if (el.inspector && el.inspector._model === model) openInspector(model);
+                })
+                .catch(() => {
+                    model._waitLoaded = true;
+                    model._waitLoading = false;
+                    model.waitData = { error: 'NOT OBSERVED' };
+                    if (el.inspector && el.inspector._model === model) openInspector(model);
+                });
+            return;
+        }
+        if (model.fdsData || model._fdsLoading) return;
+        if (!['epoll', 'vfs'].includes(kind) || !Number.isFinite(pid) || pid <= 0) return;
+        model._fdsLoading = true;
+        getJson(`/api/process/${pid}/fds`)
+            .then(data => {
+                model.fdsData = data || { error: 'NOT OBSERVED' };
+                model._fdsLoading = false;
+                if (el.inspector && el.inspector._model === model) openInspector(model);
+            })
+            .catch(() => {
+                model.fdsData = { error: 'NOT OBSERVED' };
+                model._fdsLoading = false;
+                if (el.inspector && el.inspector._model === model) openInspector(model);
+            });
+    }
+
     function openInspector(input) {
         if (!el.inspector || !el.inspectorBody) return;
         const model = input || {};
+        el.inspector._model = model;
         const body = el.inspectorBody;
         body.textContent = '';
 
@@ -626,7 +753,11 @@
             .forEach(value => inspectorText(chips, 'kei-chip', value));
         body.appendChild(chips);
 
-        body.appendChild(buildEventMechanism(model));
+        const mechanism = window.KernelMechanisms
+            && typeof window.KernelMechanisms.build === 'function'
+            ? window.KernelMechanisms.build(model)
+            : null;
+        body.appendChild(mechanism || buildEventMechanism(model));
         inspectorSection(body, 'WHAT THIS MEANS', explainInspect(model));
 
         const chainSection = document.createElement('section');
@@ -638,14 +769,17 @@
         const call = model.syscall || {};
         const kernel = model.kernel || {};
         const resource = model.resource || {};
-        [
+        const pathNodes = Array.isArray(model.path) && model.path.length
+            ? model.path
+            : [
             ['01 · TASK', task.comm ? `${task.comm} · ${task.pid}` : null],
             ['02 · SYSCALL', call.name ? `${call.name}()` : null],
             ['03 · KERNEL', kernel.wchan],
             ['04 · RESOURCE', resource.target || (resource.fd !== undefined ? `FD ${resource.fd}` : null)],
             ['05 · STATE', task.state],
             ['06 · WAKEUP', model.wakeup]
-        ].forEach((nodeData) => {
+            ];
+        pathNodes.forEach((nodeData) => {
             const node = document.createElement('div');
             const unavailable = !nodeData[1]
                 || ['UNKNOWN', 'NOT OBSERVED', 'NOT COLLECTED', 'N/A'].includes(String(nodeData[1]));
@@ -660,12 +794,216 @@
         chainSection.appendChild(chain);
         body.appendChild(chainSection);
 
-        const args = Array.isArray(call.args) && call.args.length ? call.args.join(' · ') : 'UNKNOWN';
-        inspectorSection(body, 'SYSCALL ARGUMENTS', args);
+        if (call.name || (Array.isArray(call.args) && call.args.length)) {
+            const args = Array.isArray(call.args) && call.args.length ? call.args.join(' · ') : 'UNKNOWN';
+            inspectorSection(body, 'SYSCALL ARGUMENTS', args);
+        }
         inspectorSection(body, 'OBSERVED', `${model.observedAt || 'UNKNOWN'} · ${model.subsystem || 'UNKNOWN'} · ${model.detail || ''}`);
 
         placeInspector();
         el.inspector.style.display = 'block';
+        enrichInspectorModel(model);
+    }
+
+    function openEpollInspector(spec) {
+        const input = spec || {};
+        const process = input.process || {};
+        const fdsData = input.fdsData || null;
+        const sets = fdsData && Array.isArray(fdsData.epoll_sets) ? fdsData.epoll_sets : [];
+        const set = input.epollSet || sets[0] || null;
+        openInspector({
+            kind: 'PROCESS SNAPSHOT',
+            source: '/proc/PID/fdinfo',
+            scope: 'PROCESS',
+            observedAt: timeStamp(),
+            name: 'EPOLL WAIT SET',
+            subsystem: 'KERNEL',
+            mechanism: 'epoll',
+            detail: set
+                ? `PID ${process.pid} owns epfd ${set.epfd}; registered targets are read from fdinfo.`
+                : `PID ${process.pid || '—'} has no readable eventpoll registration table in this snapshot.`,
+            task: {
+                comm: process.name || process.comm,
+                pid: process.pid,
+                state: 'OBSERVED'
+            },
+            syscall: {
+                name: 'epoll_wait',
+                args: set ? [set.epfd] : [],
+                ret: null
+            },
+            epfd: set && set.epfd,
+            resource: {
+                fd: set && set.epfd,
+                target: set && set.target
+            },
+            kernel: { wchan: 'eventpoll fdinfo' },
+            wakeup: 'NOT OBSERVED',
+            fdsData
+        });
+    }
+
+    function openVfsInspector(spec) {
+        const input = spec || {};
+        const process = input.process || {};
+        const descriptor = input.descriptor || null;
+        const target = descriptorTargetLabelForInspector(descriptor);
+        openInspector({
+            kind: 'PROCESS SNAPSHOT',
+            source: '/proc/PID/fd + fdinfo',
+            scope: 'PROCESS',
+            observedAt: timeStamp(),
+            name: 'VFS PATH',
+            subsystem: 'FS',
+            mechanism: 'vfs',
+            detail: target
+                ? `${target} is an observed open descriptor; cache-hit and block-I/O attribution are not collected.`
+                : `No readable regular-file descriptor was observed for PID ${process.pid || '—'}.`,
+            task: {
+                comm: process.name || process.comm,
+                pid: process.pid,
+                state: 'OBSERVED'
+            },
+            syscall: { name: input.syscall || 'read', args: [], ret: null },
+            resource: {
+                fd: descriptor && descriptor.fd,
+                target
+            },
+            vfsDescriptor: descriptor,
+            kernel: { wchan: 'VFS descriptor snapshot' },
+            wakeup: 'N/A',
+            fdsData: input.fdsData || null
+        });
+    }
+
+    function openPageFaultInspector(spec) {
+        const input = spec || {};
+        const process = input.process || {};
+        const faults = input.faults || {};
+        const minorRate = Number(faults.minflt_per_sec);
+        const majorRate = Number(faults.majflt_per_sec);
+        const rateText = Number.isFinite(minorRate) && Number.isFinite(majorRate)
+            ? `${minorRate.toFixed(1)} minor/s · ${majorRate.toFixed(1)} major/s`
+            : 'rate needs a second sample';
+        openInspector({
+            kind: 'PROCESS COUNTERS',
+            source: '/proc/PID/stat',
+            scope: 'PROCESS',
+            observedAt: timeStamp(),
+            name: 'PAGE FAULT',
+            subsystem: 'MM',
+            mechanism: 'page-fault',
+            detail: `PID ${process.pid || '—'} has ${Number(faults.minflt || 0).toLocaleString()} minor and ${Number(faults.majflt || 0).toLocaleString()} major faults since start; ${rateText}. No individual fault address was captured.`,
+            task: {
+                comm: process.name || process.comm,
+                pid: process.pid,
+                state: 'COUNTERS OBSERVED'
+            },
+            syscall: {},
+            resource: { target: 'VIRTUAL ADDRESS NOT CAPTURED' },
+            kernel: { wchan: 'handle_mm_fault() · ARCHITECTURE' },
+            wakeup: 'N/A',
+            faults,
+            memoryData: input.memoryData || null,
+            path: [
+                ['01 · TASK', process.pid ? `${process.name || process.comm || 'task'} · ${process.pid}` : null],
+                ['02 · ACCESS', 'VIRTUAL ADDRESS NOT CAPTURED'],
+                ['03 · MMU', 'TLB RESULT NOT OBSERVED'],
+                ['04 · PAGE TABLE', 'PTE WALK NOT OBSERVED'],
+                ['05 · FAULT', `${Number(faults.minflt || 0)} MINOR · ${Number(faults.majflt || 0)} MAJOR`],
+                ['06 · RESUME', 'AGGREGATE COUNTER ONLY']
+            ]
+        });
+    }
+
+    function openSlubInspector(spec) {
+        const input = spec || {};
+        const cache = input.cache || {};
+        const active = Number(cache.active_objs);
+        const total = Number(cache.num_objs);
+        const ratio = total > 0 ? active / total : 0;
+        openInspector({
+            kind: 'MACHINE SNAPSHOT',
+            source: '/proc/slabinfo',
+            scope: 'MACHINE',
+            observedAt: timeStamp(),
+            name: `SLUB · ${cache.name || 'CACHE'}`,
+            subsystem: 'MM',
+            mechanism: 'slub',
+            detail: `${cache.name || 'This cache'} holds ${Number.isFinite(active) ? active.toLocaleString() : 'an unknown number of'} active fixed-size objects out of ${Number.isFinite(total) ? total.toLocaleString() : 'an unknown capacity'} (${Math.round(ratio * 100)}% aggregate occupancy). Object ownership and individual slab layout are not exported.`,
+            task: null,
+            syscall: null,
+            resource: { target: cache.name || 'KERNEL OBJECT CACHE' },
+            kernel: { wchan: 'kmem_cache_alloc() · ARCHITECTURE' },
+            wakeup: 'N/A',
+            cache,
+            slabinfoData: input.slabinfoData || null,
+            path: [
+                ['01 · REQUEST', 'KERNEL OBJECT ALLOCATION'],
+                ['02 · CACHE', cache.name || null],
+                ['03 · SLAB', cache.objs_per_slab ? `${cache.objs_per_slab} OBJECTS PER SLAB` : null],
+                ['04 · PAGES', cache.pages_per_slab ? `${cache.pages_per_slab} PAGE(S) PER SLAB` : null],
+                ['05 · OBJECT', cache.object_size ? `${cache.object_size} BYTES` : null],
+                ['06 · OCCUPANCY', total > 0 ? `${Math.round(ratio * 100)}% AGGREGATE` : null]
+            ]
+        });
+    }
+
+    function openFutexInspector(spec) {
+        const input = spec || {};
+        const data = input.waitData || {};
+        const waiting = data.waiting_on || {};
+        const op = waiting.op || {};
+        const seen = data.seen_waking || {};
+        const wakers = Array.isArray(seen.wakers) ? seen.wakers : [];
+        const first = wakers[0] && wakers[0].waker;
+        const wakeup = first
+            ? `${first.comm || 'task'} · TID ${first.tid || first.pid || '—'}`
+            : 'NOT OBSERVED IN WINDOW';
+        openInspector({
+            kind: 'THREAD WAIT SNAPSHOT',
+            source: 'parked-task + sched_wakeup collectors',
+            scope: 'THREAD',
+            observedAt: timeStamp(),
+            name: 'FUTEX WAIT',
+            subsystem: 'SCHED',
+            mechanism: 'futex',
+            detail: `${data.comm || 'Thread'} (TID ${data.tid || '—'}) waits on ${waiting.word || 'an unobserved word'}; ${waiting.waiter_count || 0} waiter(s) are grouped by the same observed key. Ordinary futex ownership is not recorded by the kernel.`,
+            task: {
+                comm: data.comm || data.process,
+                pid: data.pid,
+                tid: data.tid,
+                state: data.state_label || data.state
+            },
+            syscall: {
+                name: 'futex',
+                args: [waiting.word, op.raw, waiting.expected]
+                    .filter(value => value !== undefined && value !== null),
+                ret: null
+            },
+            resource: { target: waiting.word || 'FUTEX WORD UNKNOWN' },
+            kernel: { wchan: data.wchan || 'futex_wait_queue' },
+            wakeup,
+            waitingOn: waiting,
+            seenWaking: seen,
+            waitData: data,
+            path: [
+                ['01 · THREAD', data.tid ? `${data.comm || 'thread'} · ${data.tid}` : null],
+                ['02 · WORD', waiting.word],
+                ['03 · OPERATION', op.name],
+                ['04 · WAIT QUEUE', waiting.kind === 'futex' ? `${waiting.waiter_count || 0} OBSERVED` : null],
+                ['05 · OWNER', 'NOT RECORDED FOR ORDINARY FUTEX'],
+                ['06 · WAKER', wakeup]
+            ]
+        });
+    }
+
+    function descriptorTargetLabelForInspector(descriptor) {
+        if (!descriptor) return null;
+        return descriptor.remote_address
+            || descriptor.local_address
+            || descriptor.target
+            || null;
     }
 
     function pushRow(ev, options) {
@@ -1689,7 +2027,14 @@
         },
         isOpen() {
             return state.open;
-        }
+        },
+        openInspector,
+        openEpollInspector,
+        openVfsInspector,
+        openPageFaultInspector,
+        openSlubInspector,
+        openFutexInspector,
+        openRcuInspector
     };
     window.KernelTape = api;
 

@@ -163,6 +163,17 @@ def runqueue():
     return api_json(_payload)
 
 
+def slabinfo():
+    """Observed occupancy of the machine's kernel object caches."""
+
+    def _payload():
+        from kernel_ai.services import slabinfo as slabinfo_service
+
+        return {"timestamp": datetime.now().isoformat(), **slabinfo_service.describe()}
+
+    return api_json(_payload)
+
+
 def irq_history(irq):
     """Lifetime of one interrupt line versus host uptime."""
 

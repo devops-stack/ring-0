@@ -171,7 +171,8 @@ function renderIrqStackPanel(executionData) {
         const line = Math.floor(index / 2);
         const sx = box.x + 12 + col * 108;
         const sy = y + line * SOFT_ROW;
-        group.append('text')
+        const softGroup = group.append('g');
+        const label = softGroup.append('text')
             .attr('x', sx)
             .attr('y', sy)
             .style('font-family', MONO)
@@ -179,7 +180,7 @@ function renderIrqStackPanel(executionData) {
             .style('letter-spacing', '0.4px')
             .style('fill', '#8b929c')
             .text(clip(row.name, 8));
-        group.append('text')
+        const rate = softGroup.append('text')
             .attr('x', sx + 96)
             .attr('y', sy)
             .attr('text-anchor', 'end')
@@ -187,6 +188,31 @@ function renderIrqStackPanel(executionData) {
             .style('font-size', '8.5px')
             .style('fill', '#b6c7d8')
             .text(`${Number(row.per_sec || 0).toFixed(1)}/s`);
+        if (String(row.name || '').toUpperCase() === 'RCU'
+            && window.KernelTape
+            && typeof window.KernelTape.openRcuInspector === 'function') {
+            softGroup.insert('rect', ':first-child')
+                .attr('x', sx - 4).attr('y', sy - 10)
+                .attr('width', 104).attr('height', 14)
+                .attr('fill', 'transparent')
+                .style('pointer-events', 'all')
+                .style('cursor', 'pointer')
+                .on('mouseenter', () => {
+                    label.style('fill', '#e2a33e');
+                    rate.style('fill', '#e2a33e');
+                })
+                .on('mouseleave', () => {
+                    label.style('fill', '#8b929c');
+                    rate.style('fill', '#b6c7d8');
+                })
+                .on('click', (event) => {
+                    event.stopPropagation();
+                    window.KernelTape.openRcuInspector({
+                        rcu: row,
+                        executionData
+                    });
+                });
+        }
     });
 }
 
