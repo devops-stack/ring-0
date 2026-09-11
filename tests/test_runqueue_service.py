@@ -101,6 +101,28 @@ def test_an_ineligible_task_is_not_named_next(tmp_path, monkeypatch):
     assert svc.describe()["cpus"][0]["next"]["tid"] == 12
 
 
+def test_old_sched_debug_columns_do_not_claim_an_exact_eevdf_pick(tmp_path, monkeypatch):
+    current = _task(comm="running", current=True)
+    waiting = _task(comm="waiting")
+    for row in (current, waiting):
+        row.pop("eligible")
+        row.pop("deadline_v")
+        row.pop("avg_vruntime")
+        row.pop("vlag_ms")
+        row.pop("slice_ms")
+    _snapshot(tmp_path, monkeypatch, {"10": current, "11": waiting})
+
+    out = svc.describe()
+
+    assert out["scheduler"]["name"] == "EEVDF"
+    assert out["scheduler"]["decision_fields"] is False
+    assert out["cpus"][0]["next"] == {
+        "tid": None,
+        "exact": False,
+        "reason": "nothing eligible in the snapshot",
+    }
+
+
 def test_across_cgroups_the_pick_is_offered_but_not_claimed_as_exact(tmp_path, monkeypatch):
     """Each cgroup's cfs_rq keeps its own virtual clock.
 

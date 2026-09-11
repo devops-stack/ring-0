@@ -122,8 +122,19 @@ def test_the_table_header_is_not_read_as_a_task():
     assert len(tasks) == 5
 
 
-def test_a_row_from_a_kernel_without_eevdf_is_refused():
-    """Pre-6.6 rows have no eligibility column, so there is nothing to report."""
-    old = " S        systemd     1     53191.075522     314688   120         0.000000 /"
+def test_a_row_without_visible_eevdf_columns_keeps_only_observed_fields():
+    """Some 6.8 builds run EEVDF but retain the older sched_debug columns."""
+    old = (
+        f" R {'systemd':>15}     1      2942.847196     14075   120"
+        "         0.000000      5477.567733         0.000000 0 0 /init.scope"
+    )
 
-    assert collector.parse_row(old) is None
+    row = collector.parse_row(old)
+
+    assert row["tid"] == "1"
+    assert row["state"] == "R"
+    assert row["vruntime_v"] == 2942.847
+    assert row["switches"] == 14075
+    assert row["sum_exec_ms"] == 5477.568
+    assert "eligible" not in row
+    assert "deadline_v" not in row

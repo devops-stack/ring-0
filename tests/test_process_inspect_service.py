@@ -125,6 +125,59 @@ def test_get_process_fds_info_descriptors(monkeypatch):
     assert [item["type"] for item in descriptors] == ["stdin", "stdout", "stderr", "socket", "pipe"]
 
 
+def test_enrich_descriptor_metadata_reads_epoll_members_and_vfs(monkeypatch):
+    descriptors = [
+        {"fd": 4, "type": "anon_inode", "target": "anon_inode:[eventpoll]"},
+        {"fd": 7, "type": "pipe", "target": "pipe:[12]"},
+        {"fd": 9, "type": "file", "target": "/srv/data.log"},
+    ]
+
+    monkeypatch.setattr(
+        svc,
+        "_read_fdinfo",
+        lambda _pid, fd: {
+            "readable": True,
+            "mount_id": 31 if fd == 9 else None,
+            "registrations": (
+                [{"fd": 7, "events": "19", "data": "7"}] if fd == 4 else []
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        svc.os,
+        "stat",
+        lambda _path: type("Stat", (), {"st_ino": 812, "st_dev": 2049})(),
+    )
+    monkeypatch.setattr(svc.os, "major", lambda _device: 8)
+    monkeypatch.setattr(svc.os, "minor", lambda _device: 1)
+
+    epoll_sets = svc._enrich_descriptor_metadata(123, descriptors)
+
+    assert epoll_sets == [
+        {
+            "epfd": 4,
+            "target": "anon_inode:[eventpoll]",
+            "observable": True,
+            "registrations": [
+                {
+                    "fd": 7,
+                    "events": "19",
+                    "data": "7",
+                    "type": "pipe",
+                    "target": "pipe:[12]",
+                    "local_address": None,
+                    "remote_address": None,
+                }
+            ],
+        }
+    ]
+    assert descriptors[2]["vfs"] == {
+        "mount_id": 31,
+        "inode": 812,
+        "device": "8:1",
+    }
+
+
 class _FakeAncestor:
     """Minimal psutil.Process stand-in for lineage walking."""
 
@@ -201,6 +254,10 @@ def test_activity_counters_expose_deltas_source(monkeypatch, tmp_path):
     )
     io_file = tmp_path / "io"
     io_file.write_text("read_bytes: 4096\nwrite_bytes: 8192\n")
+    stat_file = tmp_path / "stat"
+    stat_file.write_text(
+        "77 (nginx worker) S 1 2 3 4 5 6 1200 8 3 1 0 0 0\n"
+    )
 
     real_open = open
 
@@ -209,6 +266,8 @@ def test_activity_counters_expose_deltas_source(monkeypatch, tmp_path):
             return real_open(status, *args, **kwargs)
         if path == "/proc/77/io":
             return real_open(io_file, *args, **kwargs)
+        if path == "/proc/77/stat":
+            return real_open(stat_file, *args, **kwargs)
         return real_open(path, *args, **kwargs)
 
     monkeypatch.setattr(svc.psutil, "Process", lambda _pid: _FakeProc())
@@ -219,6 +278,10 @@ def test_activity_counters_expose_deltas_source(monkeypatch, tmp_path):
     assert out["ctx_nonvoluntary"] == 7
     assert out["num_threads"] == 4
     assert out["cpu_user"] == 1.25
+    assert out["minflt"] == 1200
+    assert out["cminflt"] == 8
+    assert out["majflt"] == 3
+    assert out["cmajflt"] == 1
     assert out["read_bytes"] == 4096
     assert out["io_readable"] is True
     assert out["ts"] > 0

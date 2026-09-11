@@ -79,6 +79,7 @@ def test_runtime_state_is_isolated_between_apps():
         ("/api/kernel-events?limit=2", 200),
         ("/api/devices-realtime", 200),
         ("/api/filesystem-blocks", 200),
+        ("/api/slabinfo", 200),
     ],
 )
 def test_api_smoke_routes(client, path, expected):
