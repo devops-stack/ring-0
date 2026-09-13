@@ -292,7 +292,9 @@
                 state.pinnedPid = resolved.process.pid;
                 state.activePid = resolved.process.pid;
                 draw(resolved.process.pid, true);
-                if (window.KernelTape && typeof window.KernelTape.openInspector === "function") {
+                if (window.TraceContextWorkbench && typeof window.TraceContextWorkbench.open === "function") {
+                    window.TraceContextWorkbench.open(resolved);
+                } else if (window.KernelTape && typeof window.KernelTape.openInspector === "function") {
                     window.KernelTape.openInspector(resolved.model);
                 }
             });

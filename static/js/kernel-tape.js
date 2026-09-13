@@ -2029,6 +2029,7 @@
             return state.open;
         },
         openInspector,
+        closeInspector,
         openEpollInspector,
         openVfsInspector,
         openPageFaultInspector,

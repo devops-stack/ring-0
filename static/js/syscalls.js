@@ -188,6 +188,10 @@ class SyscallsManager {
 
     // Render system calls table
     renderSyscallsTable() {
+        if (window.KernelAtlasPoc && window.KernelAtlasPoc.isEnabled()) {
+            d3.selectAll(".syscall-box, .syscall-text, .syscall-panel-group, .syscall-frame, .syscall-foot").remove();
+            return;
+        }
         // Don't render if Matrix View is active
         if (window.kernelContextMenu && window.kernelContextMenu.currentView === 'matrix') {
             debugLog('⏸️ Skipping syscalls render - Matrix View is active');
