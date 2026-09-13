@@ -73,6 +73,10 @@ class ActiveConnectionsManager {
 
     // Render active connections table below system calls
     renderConnectionsTable() {
+        if (window.KernelAtlasPoc && window.KernelAtlasPoc.isEnabled()) {
+            d3.selectAll('.connection-row, .connection-box, .connection-text, .connection-details, .connection-header').remove();
+            return;
+        }
         // Do not render connections if Kernel Matrix View is active
         if (window.kernelContextMenu && window.kernelContextMenu.currentView === 'matrix') {
             debugLog('⏸️ Skipping active connections render - Matrix View is active');

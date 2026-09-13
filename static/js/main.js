@@ -42,8 +42,12 @@ function isMobileLayout() {
     return false;
 }
 
+function isKernelAtlasMode() {
+    return Boolean(window.KernelAtlasPoc && window.KernelAtlasPoc.isEnabled());
+}
+
 function syncRealtimeFeedsForViewport() {
-    const mobile = isMobileLayout();
+    const mobile = isMobileLayout() && !isKernelAtlasMode();
     if (connectionsManager) {
         if (mobile) {
             connectionsManager.stopAutoUpdate();
@@ -103,10 +107,10 @@ function initApp() {
     
     // Then render semicircle AFTER draw() completes
     setTimeout(() => {
-        if (window.rightSemicircleMenuManager && !isMobileLayout()) {
+        if (window.rightSemicircleMenuManager && !isMobileLayout() && !isKernelAtlasMode()) {
             debugLog('🎯 Force rendering semicircle after draw()...');
             window.rightSemicircleMenuManager.renderRightSemicircleMenu();
-        } else if (window.rightSemicircleMenuManager && isMobileLayout()) {
+        } else if (window.rightSemicircleMenuManager) {
             window.rightSemicircleMenuManager.hide();
         }
     }, 100);
@@ -157,10 +161,10 @@ function setupEventListeners() {
             draw();
             // Render semicircle after draw() completes
             setTimeout(() => {
-                if (window.rightSemicircleMenuManager && !isMobileLayout()) {
+                if (window.rightSemicircleMenuManager && !isMobileLayout() && !isKernelAtlasMode()) {
                     debugLog('🎯 Force rendering semicircle after resize...');
                     window.rightSemicircleMenuManager.renderRightSemicircleMenu();
-                } else if (window.rightSemicircleMenuManager && isMobileLayout()) {
+                } else if (window.rightSemicircleMenuManager) {
                     window.rightSemicircleMenuManager.hide();
                 }
             }, 50);
@@ -174,6 +178,10 @@ function setupEventListeners() {
         }
         if (connectionsManager) {
             connectionsManager.stopAutoUpdate();
+        }
+        if (ring1UpdateInterval) {
+            clearInterval(ring1UpdateInterval);
+            ring1UpdateInterval = null;
         }
     });
 }
@@ -217,6 +225,17 @@ function draw() {
             node.style.pointerEvents = 'none';
         }
     });
+
+    if (isKernelAtlasMode()) {
+        svg.attr('viewBox', null).attr('preserveAspectRatio', null);
+        svg.selectAll('*').remove();
+        hideMobileHud();
+        hideMobileNotice();
+        if (window.rightSemicircleMenuManager) window.rightSemicircleMenuManager.hide();
+        callModuleFunction('KernelAtlasPoc', 'mount', [width, height]);
+        startExecutionTelemetry(centerX, centerY, 85);
+        return;
+    }
 
     if (mobileLayout) {
         // Hard reset for mobile to avoid residual desktop layers.
@@ -337,6 +356,7 @@ function draw() {
     // Draw Ring-1 Execution Context
     drawRing1(centerX, centerY);
     drawCentralPulseGridForeground(centerX, centerY);
+    callModuleFunction('SystemCallGate', 'mount', [centerX, centerY]);
 
     // Mobile mode: keep only the central process composition.
     if (mobileLayout) {
@@ -348,6 +368,7 @@ function draw() {
         drawProcessKernelMap2(centerX, centerY);
         // Restore namespace shell segments in mobile mode.
         drawIsolationConceptLayer(centerX, centerY, width, height);
+        callModuleFunction('TraceContextWorkbench', 'refresh', []);
         return;
     }
 
@@ -387,6 +408,7 @@ function draw() {
     if (window.rightSemicircleMenuManager) {
         window.rightSemicircleMenuManager.renderRightSemicircleMenu();
     }
+    callModuleFunction('TraceContextWorkbench', 'refresh', []);
 
     // Rooms index in the same dossier language as a process card: a cascading
     // stack of doors, sitting next to the arc rather than as a second HTML nav.
@@ -1826,7 +1848,7 @@ const processModalTopKeeper = createOverlayTopKeeper(
 function closeOpenKernelCards() {
     ["MemoryCard", "SlubCard", "ThreadsCard", "WaitsCard", "WakeupsCard", "SocketsCard",
         "FlowCard", "FlowHistoryCard", "NamespaceCard", "SyscallCard", "IrqCard",
-        "IrqHistoryCard", "RunqueueCard", "HistoryCard", "IpEntryCard"].forEach((name) => {
+        "IrqHistoryCard", "RunqueueCard", "HistoryCard", "IpEntryCard", "TraceContextWorkbench"].forEach((name) => {
         const card = window[name];
         if (card && typeof card.close === "function") card.close();
     });
@@ -2037,12 +2059,6 @@ function drawRing1(centerX, centerY) {
     const ring1Radius = 85; // Between Ring-0 (55px) and tag icons (160px)
     const ring1StrokeWidth = 6; // Increased width for better visibility
     
-    // Clear existing interval if any
-    if (ring1UpdateInterval) {
-        clearInterval(ring1UpdateInterval);
-        ring1UpdateInterval = null;
-    }
-    
     // Create Ring-1 group
     const ring1Group = svg.append("g")
         .attr("class", "ring1-execution-context")
@@ -2060,15 +2076,15 @@ function drawRing1(centerX, centerY) {
         .attr("opacity", 0.9)
         .style("filter", "drop-shadow(0 0 3px rgba(0,0,0,0.3))");
     
-    // Start updating Ring-1 with real data immediately
-    updateRing1(centerX, centerY, ring1Radius);
-    
-    // Update every 1000ms for debugging (was 150ms) - can be reduced later
-    if (!ring1UpdateInterval) {
-        ring1UpdateInterval = setInterval(() => {
-            updateRing1(centerX, centerY, ring1Radius);
-        }, 1000); // 1 second for debugging
-    }
+    startExecutionTelemetry(centerX, centerY, ring1Radius);
+}
+
+function startExecutionTelemetry(centerX, centerY, ringRadius) {
+    if (ring1UpdateInterval) clearInterval(ring1UpdateInterval);
+    updateRing1(centerX, centerY, ringRadius);
+    ring1UpdateInterval = setInterval(() => {
+        updateRing1(centerX, centerY, ringRadius);
+    }, 1000);
 }
 
 // Update Ring-1 with execution context data
@@ -2105,7 +2121,7 @@ function updateRing1(centerX, centerY, baseRadius) {
             let ring1 = ring1Group.select(".ring1-circle");
             
             if (ring1.empty()) {
-                console.warn('⚠️ Ring-1 circle not found!');
+                if (!isKernelAtlasMode()) console.warn('⚠️ Ring-1 circle not found!');
                 return; // Ring not created yet
             }
             

@@ -72,6 +72,10 @@
     }
 
     function render(subsystems) {
+        if (window.KernelAtlasPoc && window.KernelAtlasPoc.isEnabled()) {
+            d3.selectAll('.subsystem-indicator, .kai-hit').remove();
+            return;
+        }
         if (typeof isMobileLayout === 'function' && isMobileLayout()) {
             d3.selectAll('.subsystem-indicator').remove();
             return;

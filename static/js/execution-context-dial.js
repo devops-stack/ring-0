@@ -29,7 +29,8 @@
         centerY: null,
         data: null,
         observedAt: 0,
-        rateSamples: 0
+        rateSamples: 0,
+        history: []
     };
 
     function finite(value, fallback) {
@@ -172,7 +173,36 @@
                 .attr("fill", UNKNOWN);
             item.append("title").text("WAITING FOR EXECUTION TELEMETRY");
         });
+        group.append("g")
+            .attr("class", "execution-context-afterimage")
+            .attr("aria-label", "Six previous execution-context states");
         paint();
+    }
+
+    function drawAfterimages(group) {
+        const layer = group.select(".execution-context-afterimage");
+        if (layer.empty()) return;
+        layer.selectAll("*").remove();
+        const count = state.history.length;
+        state.history.forEach((frame, frameIndex) => {
+            const opacity = 0.06 + ((frameIndex + 1) / Math.max(1, count)) * 0.24;
+            frame.forEach((value, index) => {
+                if (!value.known || !value.active) return;
+                const angles = segmentAngles(index);
+                const radius = OUTER_MIN + (OUTER_MAX - OUTER_MIN) * value.intensity;
+                layer.append("path")
+                    .attr("class", "execution-context-afterimage-trace")
+                    .attr("data-context", value.id)
+                    .attr("data-age", count - frameIndex)
+                    .attr("d", arcPath(
+                        state.centerX, state.centerY,
+                        Math.max(INNER, radius - 0.38), radius,
+                        angles.start, angles.end
+                    ))
+                    .attr("fill", ACCENT)
+                    .attr("opacity", opacity.toFixed(3));
+            });
+        });
     }
 
     function paint() {
@@ -208,6 +238,7 @@
                 .attr("r", value.active ? 1.65 : 1.05);
             item.select("title").text(value.detail);
         });
+        drawAfterimages(group);
     }
 
     function ingest(data, observedAt) {
@@ -215,6 +246,8 @@
         state.data = data;
         state.observedAt = finite(observedAt, Date.now());
         state.rateSamples += 1;
+        state.history.push(derive(data, state.rateSamples, false));
+        if (state.history.length > 6) state.history.shift();
         paint();
     }
 
