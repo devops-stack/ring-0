@@ -155,6 +155,14 @@ def describe(max_edges=MAX_EDGES):
         "edges": edges,
         "wakers": [_named(row) for row in (snap.get("wakers") or [])[:6]],
         "wakees": [_named(row) for row in (snap.get("wakees") or [])[:6]],
+        "execution_distance": snap.get("execution_distance") or {
+            "samples": 0,
+            "median_us": None,
+            "p95_us": None,
+            "max_us": None,
+            "migrations": 0,
+            "tasks": [],
+        },
         "observer_tid": observer,
     })
     return out
