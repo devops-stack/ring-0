@@ -95,3 +95,24 @@ def test_the_busiest_ends_are_rolled_up_over_all_edges():
     assert (top[22]["count"], top[22]["partners"]) == (2, 1)
     assert (top[171012]["count"], top[171012]["partners"]) == (2, 2)
     assert (top[0]["count"], top[0]["partners"]) == (1, 1)
+
+
+def test_wakeup_to_cpu_distance_is_measured_from_switch_events():
+    trace = TRACE + """
+            bash-171012  [000] d.... 2741591.920000: sched_wakeup: comm=worker pid=404 prio=120 target_cpu=001
+            bash-171012  [000] d.... 2741591.920100: sched_wakeup: comm=helper pid=405 prio=120 target_cpu=000
+          worker-404     [001] d.... 2741591.920350: sched_switch: prev_comm=idle prev_pid=0 prev_prio=120 prev_state=R ==> next_comm=worker next_pid=404 next_prio=120
+          helper-405     [000] d.... 2741591.921100: sched_switch: prev_comm=bash prev_pid=171012 prev_prio=120 prev_state=R ==> next_comm=helper next_pid=405 next_prio=120
+          worker-404     [001] d.... 2741591.921200: sched_migrate_task: comm=worker pid=404 prio=120 orig_cpu=1 dest_cpu=0
+"""
+
+    distance = collector.parse_execution_distance(trace)
+
+    assert distance["samples"] == 2
+    assert distance["median_us"] == 350
+    assert distance["p95_us"] == 1000
+    assert distance["max_us"] == 1000
+    assert distance["migrations"] == 1
+    worker = next(row for row in distance["tasks"] if row["tid"] == 404)
+    assert worker["target_cpu"] == 1
+    assert worker["ran_cpu"] == 1
