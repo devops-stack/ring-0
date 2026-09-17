@@ -26,6 +26,14 @@ PAYLOAD = {
     "lost": 0,
     "distinct_edges": 31,
     "contexts": {"task": 122, "softirq": 30, "hardirq": 4},
+    "execution_distance": {
+        "samples": 12,
+        "median_us": 84,
+        "p95_us": 410,
+        "max_us": 730,
+        "migrations": 2,
+        "tasks": [],
+    },
     "observer_tid": 999,
     "edges": [
         {"waker_tid": 22, "waker_comm": "kauditd", "waker_pid": 22, "waker_kernel": True,
@@ -142,3 +150,14 @@ def test_dropped_events_reach_the_payload(tmp_path, monkeypatch):
     _snapshot(tmp_path, monkeypatch, dict(PAYLOAD, lost=4231))
 
     assert svc.describe()["lost"] == 4231
+
+
+def test_execution_distance_reaches_the_payload(tmp_path, monkeypatch):
+    _snapshot(tmp_path, monkeypatch, PAYLOAD)
+
+    distance = svc.describe()["execution_distance"]
+
+    assert distance["samples"] == 12
+    assert distance["median_us"] == 84
+    assert distance["p95_us"] == 410
+    assert distance["migrations"] == 2
