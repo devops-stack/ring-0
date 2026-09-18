@@ -13,8 +13,10 @@ from kernel_ai.logging_helpers import log_event
 
 logger = logging.getLogger(__name__)
 
-# Cached counters for per-second I/O pulse deltas (vmstat + disk_io + net + irq).
-_IO_PULSE_PREV = {"ts": None, "vmstat": {}, "disk": None, "net": None, "intr": None}
+# Cached counters for per-second machine-flow deltas.
+_IO_PULSE_PREV = {
+    "ts": None, "vmstat": {}, "disk": None, "net": None, "intr": None, "ctxt": None
+}
 
 # CPU time, I/O wait and throughput are rates, so subsystem load needs its own
 # baseline between polls. Kept separate from _IO_PULSE_PREV: the two are read on
@@ -273,6 +275,57 @@ def _read_intr_total():
     return 0
 
 
+def _read_ctxt_total():
+    """Total scheduler context switches since boot (from /proc/stat)."""
+    try:
+        with open("/proc/stat", "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if line.startswith("ctxt "):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+def _read_stat_procs():
+    """Runnable and uninterruptible task counts from ``/proc/stat``.
+
+    ``calc_load`` folds ``nr_running + nr_uninterruptible``. The nearest
+    public pair is ``procs_running`` and ``procs_blocked``.
+    """
+    running = 0
+    blocked = 0
+    try:
+        with open("/proc/stat", "r", encoding="utf-8", errors="ignore") as handle:
+            for line in handle:
+                if line.startswith("procs_running "):
+                    running = int(line.split()[1])
+                elif line.startswith("procs_blocked "):
+                    blocked = int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return running, blocked
+
+
+def _loadavg_fields():
+    """Instantaneous load-average snapshot. These are levels, not rates."""
+    _runnable, averages = _read_loadavg()
+    running, blocked = _read_stat_procs()
+    padded = list(averages or []) + [0.0, 0.0, 0.0]
+    try:
+        cpus = int(psutil.cpu_count() or 1)
+    except (psutil.Error, TypeError, ValueError):
+        cpus = 1
+    return {
+        "load1": round(float(padded[0]), 2),
+        "load5": round(float(padded[1]), 2),
+        "load15": round(float(padded[2]), 2),
+        "procs_running": running,
+        "procs_blocked": blocked,
+        "cpu_count": max(1, cpus),
+    }
+
+
 def _io_pulse_zero():
     return {
         "pgfault_per_sec": 0,
@@ -285,6 +338,13 @@ def _io_pulse_zero():
         "disk_write_iops": 0,
         "net_mb_s": 0.0,
         "intr_per_sec": 0,
+        "ctxt_per_sec": 0,
+        "load1": 0.0,
+        "load5": 0.0,
+        "load15": 0.0,
+        "procs_running": 0,
+        "procs_blocked": 0,
+        "cpu_count": 1,
     }
 
 
@@ -308,6 +368,7 @@ def get_io_pulse():
         except (psutil.Error, OSError):
             net = None
         intr = _read_intr_total()
+        ctxt = _read_ctxt_total()
 
         prev = _IO_PULSE_PREV
         prev_ts = prev.get("ts")
@@ -315,6 +376,7 @@ def get_io_pulse():
         prev_disk = prev.get("disk")
         prev_net = prev.get("net")
         prev_intr = prev.get("intr")
+        prev_ctxt = prev.get("ctxt")
 
         # Update cache for next call.
         _IO_PULSE_PREV["ts"] = now
@@ -322,9 +384,10 @@ def get_io_pulse():
         _IO_PULSE_PREV["disk"] = disk
         _IO_PULSE_PREV["net"] = net
         _IO_PULSE_PREV["intr"] = intr
+        _IO_PULSE_PREV["ctxt"] = ctxt
 
         if prev_ts is None:
-            return _io_pulse_zero()
+            return {**_io_pulse_zero(), **_loadavg_fields()}
 
         dt = max(0.001, now - prev_ts)
 
@@ -355,6 +418,10 @@ def get_io_pulse():
 
         if prev_intr is not None:
             result["intr_per_sec"] = max(0, int((intr - prev_intr) / dt))
+        result["ctxt_per_sec"] = (
+            max(0, int((ctxt - prev_ctxt) / dt)) if prev_ctxt is not None else 0
+        )
+        result.update(_loadavg_fields())
 
         return result
     except (OSError, ValueError, psutil.Error) as exc:

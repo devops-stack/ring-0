@@ -159,6 +159,9 @@ function setupEventListeners() {
         resizeTimeout = setTimeout(() => {
             syncRealtimeFeedsForViewport();
             draw();
+            // draw() rebuilds the svg. On a phone the flow circuit is the
+            // default screen; elsewhere an open circuit is laid out again.
+            callModuleFunction('KernelThroughputCircuit', 'syncToViewport', []);
             // Render semicircle after draw() completes
             setTimeout(() => {
                 if (window.rightSemicircleMenuManager && !isMobileLayout() && !isKernelAtlasMode()) {
@@ -356,7 +359,8 @@ function draw() {
     // Draw Ring-1 Execution Context
     drawRing1(centerX, centerY);
     drawCentralPulseGridForeground(centerX, centerY);
-    callModuleFunction('SystemCallGate', 'mount', [centerX, centerY]);
+    // The syscall gate is not drawn around Ring-1: its amber doors crowded the
+    // band. The module still loads, because the atlas view reads its values.
 
     // Mobile mode: keep only the central process composition.
     if (mobileLayout) {
@@ -369,6 +373,7 @@ function draw() {
         // Restore namespace shell segments in mobile mode.
         drawIsolationConceptLayer(centerX, centerY, width, height);
         callModuleFunction('TraceContextWorkbench', 'refresh', []);
+        callModuleFunction('KernelThroughputCircuit', 'syncToViewport', []);
         return;
     }
 
@@ -409,6 +414,7 @@ function draw() {
         window.rightSemicircleMenuManager.renderRightSemicircleMenu();
     }
     callModuleFunction('TraceContextWorkbench', 'refresh', []);
+    callModuleFunction('KernelThroughputCircuit', 'syncToViewport', []);
 
     // Rooms index in the same dossier language as a process card: a cascading
     // stack of doors, sitting next to the arc rather than as a second HTML nav.
@@ -1848,7 +1854,8 @@ const processModalTopKeeper = createOverlayTopKeeper(
 function closeOpenKernelCards() {
     ["MemoryCard", "SlubCard", "ThreadsCard", "WaitsCard", "WakeupsCard", "SocketsCard",
         "FlowCard", "FlowHistoryCard", "NamespaceCard", "SyscallCard", "IrqCard",
-        "IrqHistoryCard", "RunqueueCard", "HistoryCard", "IpEntryCard", "TraceContextWorkbench"].forEach((name) => {
+        "IrqHistoryCard", "RunqueueCard", "HistoryCard", "IpEntryCard", "TraceContextWorkbench",
+        "KernelThroughputCircuit"].forEach((name) => {
         const card = window[name];
         if (card && typeof card.close === "function") card.close();
     });
@@ -1942,7 +1949,24 @@ function drawCentralCircle(centerX, centerY) {
         .attr("width", 60)
         .attr("height", 60);
 
-    callModuleFunction('ExecutionContextDial', 'mount', [centerX, centerY]);
+    // The nucleus is the door to the flow circuit: throughput belongs to the
+    // whole machine, so it opens from the middle rather than from one bar.
+    svg.append("circle")
+        .attr("class", "central-circle-door")
+        .attr("cx", centerX)
+        .attr("cy", centerY)
+        .attr("r", 28)
+        .attr("fill", "rgba(255,255,255,0.001)")
+        .style("cursor", "pointer")
+        .on("click", (event) => {
+            event.stopPropagation();
+            callModuleFunction('KernelThroughputCircuit', 'open', []);
+        })
+        .append("title")
+        .text("MACHINE FLOW · SECTOR TIMING");
+
+    // The execution-context dial is not drawn on the nucleus: its amber
+    // wedges crowded the second ring. The module still loads for the atlas.
 }
 
 function drawCentralPulseGrid(centerX, centerY) {
@@ -2601,6 +2625,8 @@ function drawProcessKernelMap(data, centerX, centerY) {
                 .attr("stroke-width", 0.5);
         });
     });
+
+    d3.selectAll('.central-circle-door').raise();
 }
 
 // Draw additional process lines (without circles and names)
@@ -3138,6 +3164,9 @@ function drawProcessKernelMap2(centerX, centerY) {
             // Process lines radiate from the center and wash out the pulse grid;
             // lift it back above them so the central lattice stays visible.
             d3.selectAll('.central-pulse-grid-foreground').raise();
+            // Those same lines land over the nucleus and would swallow the
+            // click that opens the flow circuit.
+            d3.selectAll('.central-circle-door').raise();
         })
         .catch(error => {
             console.error('Error fetching processes:', error);
