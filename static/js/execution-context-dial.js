@@ -1,15 +1,21 @@
-// Execution Context Dial inside the central Ring-0 circle.
+// Execution Context Dial — five activity wedges around the nucleus.
 //
-// The execution endpoint does not expose a CPU's current instruction pointer.
-// It observes parked syscalls and machine-wide IRQ deltas, so the five segments
-// are independent activity indicators rather than an invented single "current
-// context".  The module consumes Ring-1 telemetry and adds no HTTP polling.
+// Drawn inside the flow-circuit overlay, not on the always-on rings: the
+// wedges crowded Ring-0 when they sat there. The execution endpoint does not
+// expose a CPU's current instruction pointer. It observes parked syscalls and
+// machine-wide IRQ deltas, so the segments are independent indicators rather
+// than an invented single "current context". The module consumes Ring-1
+// telemetry and adds no HTTP polling.
 (function initExecutionContextDial() {
     if (window.ExecutionContextDial) return;
 
     const INNER = 42.5;
     const OUTER_MIN = 49;
     const OUTER_MAX = 54;
+    const LABEL_R = 47.2;
+    const PIN_R = 40.3;
+    const LABEL_SIZE = 4.6;
+    const PIN_SIZE = 1.15;
     const GAP = 0.055;
     const STALE_MS = 3500;
     const ACCENT = "#e2a33e";
@@ -27,11 +33,25 @@
     const state = {
         centerX: null,
         centerY: null,
+        scale: 1,
         data: null,
         observedAt: 0,
         rateSamples: 0,
         history: []
     };
+
+    function geom() {
+        const scale = state.scale > 0 ? state.scale : 1;
+        return {
+            inner: INNER * scale,
+            outerMin: OUTER_MIN * scale,
+            outerMax: OUTER_MAX * scale,
+            labelR: LABEL_R * scale,
+            pinR: PIN_R * scale,
+            font: LABEL_SIZE * scale,
+            pin: PIN_SIZE * scale
+        };
+    }
 
     function finite(value, fallback) {
         const number = Number(value);
@@ -129,12 +149,15 @@
         return { start, end, mid: (start + end) / 2 };
     }
 
-    function mount(centerX, centerY) {
+    function mount(centerX, centerY, options) {
+        options = options || {};
         state.centerX = Number(centerX);
         state.centerY = Number(centerY);
-        const root = d3.select("svg");
-        root.selectAll(".execution-context-dial").remove();
-        const group = root.append("g")
+        state.scale = Number(options.scale) > 0 ? Number(options.scale) : 1;
+        const host = options.parent || d3.select("svg");
+        d3.select("svg").selectAll(".execution-context-dial").remove();
+        const ring = geom();
+        const group = host.append("g")
             .attr("class", "execution-context-dial")
             .attr("pointer-events", "none")
             .attr("aria-label", "Execution context activity dial");
@@ -146,30 +169,30 @@
                 .attr("data-context", segment.id);
             item.append("path")
                 .attr("class", "execution-context-wedge")
-                .attr("d", arcPath(state.centerX, state.centerY, INNER, OUTER_MIN, angles.start, angles.end))
+                .attr("d", arcPath(state.centerX, state.centerY, ring.inner, ring.outerMin, angles.start, angles.end))
                 .attr("fill", "rgba(103,200,224,0.025)")
                 .attr("stroke", UNKNOWN)
                 .attr("stroke-width", 0.6)
                 .attr("stroke-dasharray", "1.5 2.5");
 
-            const labelAt = polar(state.centerX, state.centerY, 47.2, angles.mid);
+            const labelAt = polar(state.centerX, state.centerY, ring.labelR, angles.mid);
             const rotation = angles.mid * 180 / Math.PI + 90;
             item.append("text")
                 .attr("class", "execution-context-label")
                 .attr("x", labelAt.x)
-                .attr("y", labelAt.y + 1.7)
+                .attr("y", labelAt.y + 1.7 * state.scale)
                 .attr("text-anchor", "middle")
                 .attr("transform", `rotate(${rotation} ${labelAt.x} ${labelAt.y})`)
                 .attr("fill", UNKNOWN)
                 .attr("font-family", "Share Tech Mono, monospace")
-                .attr("font-size", 4.6)
+                .attr("font-size", ring.font)
                 .attr("letter-spacing", 0.45)
                 .text(segment.label);
 
-            const pinAt = polar(state.centerX, state.centerY, 40.3, angles.mid);
+            const pinAt = polar(state.centerX, state.centerY, ring.pinR, angles.mid);
             item.append("circle")
                 .attr("class", "execution-context-pin")
-                .attr("cx", pinAt.x).attr("cy", pinAt.y).attr("r", 1.15)
+                .attr("cx", pinAt.x).attr("cy", pinAt.y).attr("r", ring.pin)
                 .attr("fill", UNKNOWN);
             item.append("title").text("WAITING FOR EXECUTION TELEMETRY");
         });
@@ -189,14 +212,15 @@
             frame.forEach((value, index) => {
                 if (!value.known || !value.active) return;
                 const angles = segmentAngles(index);
-                const radius = OUTER_MIN + (OUTER_MAX - OUTER_MIN) * value.intensity;
+                const ring = geom();
+                const radius = ring.outerMin + (ring.outerMax - ring.outerMin) * value.intensity;
                 layer.append("path")
                     .attr("class", "execution-context-afterimage-trace")
                     .attr("data-context", value.id)
                     .attr("data-age", count - frameIndex)
                     .attr("d", arcPath(
                         state.centerX, state.centerY,
-                        Math.max(INNER, radius - 0.38), radius,
+                        Math.max(ring.inner, radius - 0.38 * state.scale), radius,
                         angles.start, angles.end
                     ))
                     .attr("fill", ACCENT)
@@ -213,12 +237,13 @@
         const group = root.select(".execution-context-dial");
         if (group.empty()) return;
 
+        const ring = geom();
         values.forEach((value, index) => {
             const angles = segmentAngles(index);
             const item = group.select(`.execution-context-${value.id}`);
             const outer = value.known
-                ? OUTER_MIN + (OUTER_MAX - OUTER_MIN) * value.intensity
-                : OUTER_MIN;
+                ? ring.outerMin + (ring.outerMax - ring.outerMin) * value.intensity
+                : ring.outerMin;
             const fill = value.known && value.active
                 ? `rgba(226,163,62,${(0.08 + value.intensity * 0.28).toFixed(3)})`
                 : (value.known ? "rgba(244,244,236,0.018)" : "rgba(103,200,224,0.025)");
@@ -226,7 +251,7 @@
             item.select(".execution-context-wedge")
                 .interrupt()
                 .transition().duration(260)
-                .attr("d", arcPath(state.centerX, state.centerY, INNER, outer, angles.start, angles.end))
+                .attr("d", arcPath(state.centerX, state.centerY, ring.inner, outer, angles.start, angles.end))
                 .attr("fill", fill)
                 .attr("stroke", stroke)
                 .attr("stroke-width", value.active ? 0.95 : 0.55)
@@ -235,7 +260,7 @@
                 .attr("fill", value.known && value.active ? ACCENT : (value.known ? LABEL_DIM : UNKNOWN));
             item.select(".execution-context-pin")
                 .attr("fill", value.known && value.active ? ACCENT : (value.known ? DIM : UNKNOWN))
-                .attr("r", value.active ? 1.65 : 1.05);
+                .attr("r", (value.active ? 1.65 : 1.05) * state.scale);
             item.select("title").text(value.detail);
         });
         drawAfterimages(group);
@@ -255,6 +280,7 @@
         d3.select("svg").selectAll(".execution-context-dial").remove();
         state.centerX = null;
         state.centerY = null;
+        state.scale = 1;
     }
 
     window.addEventListener("kernel-telemetry", (event) => {

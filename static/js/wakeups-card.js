@@ -21,6 +21,8 @@ const WakeupsCard = (() => {
     let isOpen = false;
     let topKeeper = null;
     let requestSeq = 0;
+    let selectedTaskTid = null;
+    let wakeEvidenceExpanded = false;
 
     const CONTEXT_TAG = { task: "task", softirq: "softirq", hardirq: "irq" };
 
@@ -32,6 +34,8 @@ const WakeupsCard = (() => {
     function close() {
         isOpen = false;
         requestSeq += 1;
+        selectedTaskTid = null;
+        wakeEvidenceExpanded = false;
         svg.selectAll(".wakeups-card-scrim, .wakeups-card-layer").remove();
         if (topKeeper) topKeeper.stop();
         d3.select("body").on("keydown.wakeupscard", null);
@@ -44,6 +48,8 @@ const WakeupsCard = (() => {
             return;
         }
         isOpen = true;
+        selectedTaskTid = null;
+        wakeEvidenceExpanded = false;
         const seq = ++requestSeq;
         Promise.all([
             fetch("/api/wakeups", { cache: "no-store" })
@@ -109,6 +115,7 @@ const WakeupsCard = (() => {
         const samples = Number((distance && distance.samples) || 0);
         const migrations = Number((distance && distance.migrations) || 0);
         const observed = samples > 0;
+        const compact = cw < 480;
         const left = PAD + 12;
         const right = cw - PAD - 12;
         const railY = cy + 37;
@@ -128,7 +135,9 @@ const WakeupsCard = (() => {
             .attr("class", observed ? "kcard-inferred" : "kcard-faint")
             .attr("x", cw - PAD).attr("y", cy + 10)
             .attr("text-anchor", "end")
-            .text(observed ? `${samples} MATCHED WAKE → SWITCH` : "WAITING FOR A MATCHED PAIR");
+            .text(observed
+                ? (compact ? `${samples} MATCHED · SAMPLE` : `SAMPLED · ${samples} MATCHED WAKE → SWITCH`)
+                : (compact ? "NO MATCHED PAIR" : "SAMPLED · WAITING FOR A PAIR"));
 
         stages.forEach((stage, index) => {
             const x = left + index * step;
@@ -174,6 +183,161 @@ const WakeupsCard = (() => {
         };
     }
 
+    function runtime(value) {
+        const milliseconds = Number(value);
+        if (!Number.isFinite(milliseconds)) return "RUNTIME UNKNOWN";
+        if (milliseconds < 1000) return `${milliseconds.toFixed(milliseconds < 10 ? 2 : 1)} MS EXEC`;
+        if (milliseconds < 60000) return `${(milliseconds / 1000).toFixed(1)} S EXEC`;
+        return `${(milliseconds / 60000).toFixed(1)} MIN EXEC`;
+    }
+
+    function signedMs(value, label) {
+        const milliseconds = Number(value);
+        if (!Number.isFinite(milliseconds)) return null;
+        const sign = milliseconds > 0 ? "+" : "";
+        if (Math.abs(milliseconds) < 1) {
+            return `${label} ${sign}${Math.round(milliseconds * 1000)} µS`;
+        }
+        return `${label} ${sign}${milliseconds.toFixed(2)} MS`;
+    }
+
+    function preemptionPairModel(runqueue, preferredTid) {
+        const cpus = Array.isArray(runqueue && runqueue.cpus) ? runqueue.cpus : [];
+        const pairs = cpus.map((cpu) => {
+            const queue = Array.isArray(cpu.queue) ? cpu.queue : [];
+            const current = queue.find((row) => row.current && !row.observer)
+                || queue.find((row) => row.current)
+                || null;
+            const nextTid = cpu.next && Number.isFinite(Number(cpu.next.tid))
+                ? Number(cpu.next.tid)
+                : null;
+            const named = nextTid === null
+                ? null
+                : queue.find((row) => !row.current && Number(row.tid) === nextTid);
+            const preferred = Number.isFinite(Number(preferredTid))
+                ? queue.find((row) => !row.current && Number(row.tid) === Number(preferredTid))
+                : null;
+            const fallback = queue.find((row) => !row.current && !row.observer && row.eligible === true)
+                || queue.find((row) => !row.current && !row.observer)
+                || null;
+            const contender = preferred || named || fallback;
+            if (!current || !contender) return null;
+            return {
+                cpu: cpu.cpu,
+                current,
+                contender,
+                named: !!named,
+                preferred: !!preferred,
+                exact: !!(cpu.next && cpu.next.exact && nextTid === Number(contender.tid)),
+                reason: cpu.next && cpu.next.reason ? String(cpu.next.reason) : null
+            };
+        }).filter(Boolean);
+        return pairs.sort((a, b) => {
+            if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
+            if (a.exact !== b.exact) return a.exact ? -1 : 1;
+            if (a.named !== b.named) return a.named ? -1 : 1;
+            if (!!a.current.observer !== !!b.current.observer) return a.current.observer ? 1 : -1;
+            return Number(a.cpu) - Number(b.cpu);
+        })[0] || null;
+    }
+
+    function drawPreemptionPair(body, runqueue, cw, cy, preferredTid) {
+        const pair = preemptionPairModel(runqueue, preferredTid);
+        const compact = cw < 480;
+        const left = PAD + 12;
+        const right = cw - PAD - 12;
+        const center = cw / 2;
+        const gap = 34;
+        const boxTop = cy + 19;
+        const boxHeight = 31;
+        const boxWidth = Math.max(116, (right - left - gap) / 2);
+
+        body.append("text")
+            .attr("class", "kcard-section preemption-pair-title")
+            .attr("x", PAD).attr("y", cy + 10)
+            .text(compact ? "TASK CONTEXT" : "TASK CONTEXT · CURRENT VS SELECTED");
+        body.append("text")
+            .attr("class", pair && pair.exact ? "kcard-inferred" : "kcard-faint")
+            .attr("x", cw - PAD).attr("y", cy + 10)
+            .attr("text-anchor", "end")
+            .text(pair
+                ? (pair.exact
+                    ? (compact ? `CPU ${pair.cpu} · EXACT NEXT` : `RUNQUEUE SNAPSHOT · CPU ${pair.cpu} · EXACT NEXT`)
+                    : (compact ? `CPU ${pair.cpu} · RANK UNKNOWN` : `RUNQUEUE SNAPSHOT · CPU ${pair.cpu} · RANK UNRESOLVED`))
+                : (compact ? "NO PAIR" : "RUNQUEUE SNAPSHOT · NO PAIR"));
+
+        if (!pair) {
+            body.append("line")
+                .attr("x1", left).attr("x2", right)
+                .attr("y1", boxTop + boxHeight / 2).attr("y2", boxTop + boxHeight / 2)
+                .attr("stroke", "rgba(142,166,181,0.24)").attr("stroke-dasharray", "3 5");
+            body.append("text")
+                .attr("class", "kcard-faint")
+                .attr("x", center).attr("y", boxTop + boxHeight / 2 + 3)
+                .attr("text-anchor", "middle")
+                .text("WAITING FOR ONE CPU WITH BOTH SIDES OBSERVED");
+            return cy + 67;
+        }
+
+        const sides = [
+            {
+                row: pair.current,
+                x: left,
+                label: "ON CPU",
+                metric: runtime(pair.current.sum_exec_ms)
+            },
+            {
+                row: pair.contender,
+                x: right - boxWidth,
+                label: pair.exact ? "NEXT AT SCHEDULE" : "RUNNABLE · RANK UNKNOWN",
+                metric: [signedMs(pair.contender.due_ms, "DUE"), signedMs(pair.contender.vlag_ms, "VLAG")]
+                    .filter(Boolean).join(" · ") || clip(pair.reason || "DECISION FIELDS NOT EXPOSED", 30)
+            }
+        ];
+        sides.forEach((side, index) => {
+            const highlighted = index === 1 && pair.exact;
+            body.append("rect")
+                .attr("class", `preemption-pair-side preemption-pair-${index === 0 ? "current" : "contender"}`)
+                .attr("x", side.x).attr("y", boxTop)
+                .attr("width", boxWidth).attr("height", boxHeight)
+                .attr("fill", highlighted ? "rgba(226,163,62,0.12)" : "rgba(9,12,16,0.82)")
+                .attr("stroke", highlighted ? "#e2a33e" : "rgba(142,166,181,0.42)")
+                .attr("stroke-width", highlighted ? 0.9 : 0.6);
+            body.append("text")
+                .attr("class", highlighted ? "kcard-section" : "kcard-stage")
+                .attr("x", side.x + 6).attr("y", boxTop + 10)
+                .text(side.label);
+            body.append("text")
+                .attr("class", highlighted ? "kcard-section" : "kcard-waiter")
+                .attr("x", side.x + 6).attr("y", boxTop + 21)
+                .text(`${clip(side.row.comm || side.row.process || "TASK", 15).toUpperCase()} · ${side.row.tid}`);
+            body.append("text")
+                .attr("class", "kcard-faint")
+                .attr("x", side.x + boxWidth - 6).attr("y", boxTop + 21)
+                .attr("text-anchor", "end")
+                .text(clip(side.metric, Math.max(13, Math.floor(boxWidth / 6.2))));
+        });
+
+        body.append("path")
+            .attr("class", "preemption-pair-gate")
+            .attr("d", `M${center},${boxTop + 7} L${center + 8},${boxTop + boxHeight / 2} L${center},${boxTop + boxHeight - 7} L${center - 8},${boxTop + boxHeight / 2} Z`)
+            .attr("fill", pair.exact ? "rgba(226,163,62,0.22)" : "rgba(103,200,224,0.06)")
+            .attr("stroke", pair.exact ? "#e2a33e" : "rgba(103,200,224,0.52)")
+            .attr("stroke-width", pair.exact ? 1.05 : 0.7);
+        body.append("text")
+            .attr("class", pair.exact ? "kcard-section" : "kcard-faint")
+            .attr("x", center).attr("y", boxTop + boxHeight / 2 + 2.5)
+            .attr("text-anchor", "middle")
+            .text(pair.exact ? "N" : "?");
+        body.append("text")
+            .attr("class", "kcard-faint")
+            .attr("x", PAD).attr("y", cy + 62)
+            .text(pair.exact
+                ? "NEXT MEANS THE NEXT SCHEDULING DECISION · IT DOES NOT CLAIM AN IMMEDIATE INTERRUPT"
+                : "CONTENDER IS REAL · PREEMPTION ORDER IS NOT EXPOSED BY THIS SNAPSHOT");
+        return cy + 72;
+    }
+
     function serviceName(unit) {
         const value = String(unit || "UNOWNED");
         if (value === "/") return "ROOT CGROUP";
@@ -215,6 +379,7 @@ const WakeupsCard = (() => {
                         unit: serviceName(key),
                         tasks: 0,
                         due_ms: null,
+                        deadlines: [],
                         eligible: false,
                         exact: false
                     };
@@ -222,6 +387,7 @@ const WakeupsCard = (() => {
                     if (Number.isFinite(Number(row.due_ms))) {
                         const due = Number(row.due_ms);
                         item.due_ms = item.due_ms === null ? due : Math.min(item.due_ms, due);
+                        item.deadlines.push(due);
                     }
                     item.eligible = item.eligible || row.eligible === true;
                     item.exact = item.exact || (nextExact && Number(row.tid) === candidateTid);
@@ -229,9 +395,11 @@ const WakeupsCard = (() => {
                 });
                 const services = Array.from(grouped.values())
                     .sort((a, b) => {
-                        if (a.due_ms !== null && b.due_ms !== null) return a.due_ms - b.due_ms;
-                        if (a.due_ms !== null) return -1;
-                        if (b.due_ms !== null) return 1;
+                        // Deadlines from different cgroups use different virtual
+                        // clocks. Never turn their numeric values into a global
+                        // service order: that is not a comparison EEVDF makes.
+                        if (a.exact !== b.exact) return a.exact ? -1 : 1;
+                        if (a.eligible !== b.eligible) return a.eligible ? -1 : 1;
                         return b.tasks - a.tasks || a.unit.localeCompare(b.unit);
                     })
                     .slice(0, 4);
@@ -257,8 +425,11 @@ const WakeupsCard = (() => {
         };
     }
 
-    function drawServicePlane(body, runqueue, cw, cy, executionTarget) {
+    function drawServicePlane(body, runqueue, cw, cy, executionTarget, selectedTid, onTaskSelect) {
         const model = servicePlaneModel(runqueue);
+        const compact = cw < 480;
+        const sourceAge = Number(runqueue && runqueue.source && runqueue.source.age_s);
+        const freshness = Number.isFinite(sourceAge) ? `${sourceAge.toFixed(1)}S AGO` : "AGE UNKNOWN";
         const trajectoryLayer = body.insert("g", ":first-child")
             .attr("class", "service-plane-trajectories");
         const left = PAD + 34;
@@ -275,19 +446,22 @@ const WakeupsCard = (() => {
         body.append("text")
             .attr("class", "kcard-section service-plane-title")
             .attr("x", PAD).attr("y", cy + 10)
-            .text("RUNNABLE SERVICES · EXECUTION PLANE");
+            .text(compact ? "RUNNABLE SERVICES" : "RUNNABLE SERVICES · EXECUTION PLANE");
         body.append("text")
             .attr("class", model.ordered ? "kcard-inferred" : "kcard-faint")
             .attr("x", cw - PAD).attr("y", cy + 10)
             .attr("text-anchor", "end")
-            .text(model.ordered ? "EEVDF DEADLINE ORDER" : "PERSPECTIVE LAYOUT · ORDER HIDDEN");
+            .text(model.ordered
+                ? (compact ? `SNAPSHOT ${freshness}` : `RUNQUEUE ${freshness} · EEVDF`)
+                : (compact ? `SNAPSHOT ${freshness}` : `RUNQUEUE ${freshness} · ORDER HIDDEN`));
 
         body.append("path")
             .attr("class", "service-plane-surface")
             .attr("d", `M${horizonLeft},${top} H${horizonRight} L${right},${bottom} H${left} Z`)
             .attr("fill", "rgba(103,200,224,0.025)")
             .attr("stroke", "rgba(142,166,181,0.28)")
-            .attr("stroke-width", 0.7);
+            .attr("stroke-width", 0.7)
+            .style("pointer-events", "none");
         [0.25, 0.5, 0.75].forEach((fraction) => {
             const y = top + (bottom - top) * fraction;
             const rowLeft = horizonLeft + (left - horizonLeft) * fraction;
@@ -341,6 +515,7 @@ const WakeupsCard = (() => {
                 const bend = ((Math.abs(task.tid || taskIndex) * 29) % 23) - 11;
                 const fan = taskIndex - (tasks.length - 1) / 2;
                 const active = task.exact;
+                const selected = selectedTid !== null && Number(task.tid) === Number(selectedTid);
                 const target = executionTarget || { x: gateX, y: top + 8 };
                 const eligibilityX = gateX + (laneX - gateX) * eligibilityDepth + fan * 1.8;
                 const pickY = top + 21;
@@ -362,42 +537,84 @@ const WakeupsCard = (() => {
                     `${target.x - 102 + fan * 7},${target.y + 48 + fan * 3.5}`,
                     `${target.x},${target.y}`
                 ]) : approach).join(" ");
+                const selectablePath = (reachesPicker ? approach.concat([
+                    `C${eligibilityX + bend * 0.75},${eligibilityY - 19}`,
+                    `${gateX - bend * 0.65},${pickY + 13 + fan}`,
+                    `${gateX},${pickY}`
+                ]) : approach).join(" ");
                 trajectoryLayer.append("path")
                     .attr("class", "service-plane-task-curve-echo")
                     .attr("d", path)
                     .attr("fill", "none")
-                    .attr("stroke", active ? "rgba(226,163,62,0.13)" : "rgba(103,200,224,0.075)")
-                    .attr("stroke-width", active ? 3.2 : 2.1)
+                    .attr("stroke", active ? "rgba(226,163,62,0.13)"
+                        : (selected ? "rgba(244,244,236,0.13)" : "rgba(103,200,224,0.075)"))
+                    .attr("stroke-width", active || selected ? 3.2 : 2.1)
                     .attr("stroke-linecap", "round");
                 const curve = trajectoryLayer.append("path")
-                    .attr("class", "service-plane-task-curve")
+                    .attr("class", `service-plane-task-curve${selected ? " is-selected" : ""}`)
                     .attr("data-tid", task.tid)
                     .attr("data-cpu", cpu.cpu)
                     .attr("d", path)
                     .attr("fill", "none")
-                    .attr("stroke", active ? "#e2a33e" : (task.rt
-                        ? "rgba(226,163,62,0.48)"
-                        : "rgba(103,200,224,0.34)"))
-                    .attr("stroke-width", active ? 1.45 : (task.rt ? 0.9 : 0.65))
-                    .attr("stroke-dasharray", active ? null : "2 4")
+                    .attr("stroke", active ? "#e2a33e" : (selected ? "rgba(244,244,236,0.90)"
+                        : (task.rt ? "rgba(226,163,62,0.48)" : "rgba(103,200,224,0.34)")))
+                    .attr("stroke-width", active ? 1.45 : (selected ? 1.2 : (task.rt ? 0.9 : 0.65)))
+                    .attr("stroke-dasharray", active || selected ? null : "2 4")
                     .attr("stroke-linecap", "round");
                 curve.append("title").text(
                     `${task.comm} · TID ${task.tid} · CPU ${cpu.cpu} · ${task.unit}`
                 );
+                trajectoryLayer.append("path")
+                    .attr("class", "service-plane-task-hit")
+                    .attr("data-tid", task.tid)
+                    .attr("data-cpu", cpu.cpu)
+                    .attr("d", selectablePath)
+                    .attr("fill", "none")
+                    .attr("stroke", "rgba(255,255,255,0.001)")
+                    .attr("stroke-width", 10)
+                    .attr("stroke-linecap", "round")
+                    .style("pointer-events", "stroke")
+                    .style("cursor", "pointer")
+                    .on("click", (event) => {
+                        event.stopPropagation();
+                        if (onTaskSelect) onTaskSelect(task.tid);
+                    })
+                    .append("title")
+                    .text(`${task.comm} · TID ${task.tid} · OPEN TASK CONTEXT`);
                 trajectoryLayer.append("circle")
                     .attr("class", "service-plane-task-origin")
                     .attr("cx", startX).attr("cy", startY).attr("r", active ? 2.6 : 1.7)
-                    .attr("fill", active ? "#e2a33e" : "rgba(103,200,224,0.62)");
+                    .attr("fill", active ? "#e2a33e"
+                        : (selected ? "rgba(244,244,236,0.92)" : "rgba(103,200,224,0.62)"))
+                    .style("cursor", "pointer")
+                    .on("click", (event) => {
+                        event.stopPropagation();
+                        if (onTaskSelect) onTaskSelect(task.tid);
+                    });
                 if (task.due_ms !== null) {
                     trajectoryLayer.append("line")
                         .attr("class", "service-plane-deadline-tick")
                         .attr("x1", startX - 4).attr("x2", startX + 4)
                         .attr("y1", startY).attr("y2", startY)
-                        .attr("stroke", active ? "#e2a33e" : "rgba(244,244,236,0.42)")
+                        .attr("stroke", active ? "#e2a33e"
+                            : (selected ? "rgba(244,244,236,0.82)" : "rgba(244,244,236,0.42)"))
                         .attr("stroke-width", active ? 1.2 : 0.7)
                         .append("title")
                         .text(`VIRTUAL DEADLINE · DUE ${task.due_ms.toFixed(3)} MS`);
                 }
+                trajectoryLayer.append("circle")
+                    .attr("class", "service-plane-task-origin-hit")
+                    .attr("data-tid", task.tid)
+                    .attr("data-cpu", cpu.cpu)
+                    .attr("cx", startX).attr("cy", startY).attr("r", 7)
+                    .attr("fill", "rgba(255,255,255,0.001)")
+                    .style("cursor", "pointer")
+                    .on("click", (event) => {
+                        event.stopPropagation();
+                        if (onTaskSelect) onTaskSelect(task.tid);
+                    })
+                    .append("title")
+                    .text(`${task.comm} · TID ${task.tid} · OPEN TASK CONTEXT`);
             });
 
             const pickerY = top + 21;
@@ -466,6 +683,47 @@ const WakeupsCard = (() => {
                     .attr("x", x + tokenWidth / 2 - 5).attr("y", y + 3)
                     .attr("text-anchor", "end")
                     .text(service.tasks);
+
+                const deadlines = (service.deadlines || [])
+                    .filter(Number.isFinite)
+                    .sort((a, b) => a - b)
+                    .slice(0, 8);
+                if (deadlines.length) {
+                    const combLeft = x - tokenWidth / 2 + 5;
+                    const combRight = x + tokenWidth / 2 - 5;
+                    const combY = y + 12;
+                    const minDue = deadlines[0];
+                    const maxDue = deadlines[deadlines.length - 1];
+                    const deadlineX = (due, index) => {
+                        if (maxDue === minDue) {
+                            return deadlines.length === 1
+                                ? (combLeft + combRight) / 2
+                                : combLeft + (combRight - combLeft) * index / (deadlines.length - 1);
+                        }
+                        return combLeft + (combRight - combLeft) * (due - minDue) / (maxDue - minDue);
+                    };
+                    body.append("line")
+                        .attr("class", "service-plane-deadline-comb")
+                        .attr("x1", combLeft).attr("x2", combRight)
+                        .attr("y1", combY).attr("y2", combY)
+                        .attr("stroke", "rgba(142,166,181,0.24)")
+                        .attr("stroke-width", 0.55);
+                    deadlines.forEach((due, deadlineIndex) => {
+                        body.append("line")
+                            .attr("class", "service-plane-deadline-mark")
+                            .attr("data-due-ms", due)
+                            .attr("x1", deadlineX(due, deadlineIndex))
+                            .attr("x2", deadlineX(due, deadlineIndex))
+                            .attr("y1", combY - (deadlineIndex === 0 ? 4 : 2.5))
+                            .attr("y2", combY + (deadlineIndex === 0 ? 4 : 2.5))
+                            .attr("stroke", deadlineIndex === 0
+                                ? (active ? "#e2a33e" : "rgba(244,244,236,0.72)")
+                                : "rgba(103,200,224,0.52)")
+                            .attr("stroke-width", deadlineIndex === 0 ? 1 : 0.65)
+                            .append("title")
+                            .text(`VIRTUAL DEADLINE · DUE ${due.toFixed(3)} MS · LOCAL TO ${service.unit}`);
+                    });
+                }
             });
         });
 
@@ -473,8 +731,8 @@ const WakeupsCard = (() => {
             .attr("class", "kcard-faint")
             .attr("x", PAD).attr("y", cy + 153)
             .text(model.ordered
-                ? `${model.total} RUNNABLE TASKS · CURVES CONVERGE ON ON-CPU · AMBER IS THE NEXT ELIGIBLE DEADLINE`
-                : `${model.total} RUNNABLE TASKS · CURVES CONVERGE ON ON-CPU · DEPTH IS LAYOUT, NOT QUEUE RANK`);
+                ? `${model.total} RUNNABLE TASKS · CLICK A CURVE · DEADLINES COMPARE ONLY INSIDE ITS SERVICE`
+                : `${model.total} RUNNABLE TASKS · CLICK A CURVE · DEPTH IS LAYOUT, NOT QUEUE RANK`);
         return cy + 164;
     }
 
@@ -486,7 +744,8 @@ const WakeupsCard = (() => {
         const compact = cw < 480;
 
         const available = !!data.available;
-        const edges = (data.edges || []).slice(0, MAX_ROWS);
+        const rowLimit = viewH < 720 ? 4 : (compact ? 6 : MAX_ROWS);
+        const edges = (data.edges || []).slice(0, rowLimit);
         const events = Number(data.events || 0);
         const window_s = Number(data.window_s || 0);
         const lost = Number(data.lost || 0);
@@ -494,6 +753,23 @@ const WakeupsCard = (() => {
         const line = available ? verdict(data.contexts, events) : null;
         const hasObserver = edges.some((e) => (e.waker && e.waker.observer)
             || (e.woken && e.woken.observer));
+        const selectedVisible = selectedTaskTid !== null
+            && (runqueue.cpus || []).some((cpu) => (cpu.queue || [])
+                .some((row) => !row.current && Number(row.tid) === Number(selectedTaskTid)));
+        if (!selectedVisible) selectedTaskTid = null;
+        const redraw = () => {
+            if (!isOpen) return;
+            svg.selectAll(".wakeups-card-scrim, .wakeups-card-layer").interrupt().remove();
+            draw(data, anchor, runqueue);
+        };
+        const selectTask = (tid) => {
+            selectedTaskTid = Number(selectedTaskTid) === Number(tid) ? null : Number(tid);
+            redraw();
+        };
+        const toggleEvidence = () => {
+            wakeEvidenceExpanded = !wakeEvidenceExpanded;
+            redraw();
+        };
 
         // A pair with a big count and a task with many partners are different
         // shapes of busy: one is a conversation, the other is a hub.
@@ -522,15 +798,18 @@ const WakeupsCard = (() => {
         if (!available) {
             h += LINE;
         } else {
-            h += LINE;                       // how many, and whether any were lost
-            h += LINE;                       // the split by context
-            if (line) h += LINE;             // what that split means
             h += 92;                         // wake-to-run execution distance
+            if (selectedTaskTid !== null) h += 72; // selected task context
             h += 172;                        // runnable services on the CPU plane
-            h += 16 + LINE + LINE + edges.length * ROW_STEP;
-            if (hubs.length) h += 16 + LINE + hubs.length * LINE;
+            h += 16 + LINE;                  // collapsed wakeup evidence control
+            if (wakeEvidenceExpanded) {
+                h += LINE + LINE;            // sampled window and context split
+                if (line) h += LINE;         // what that split means
+                h += LINE + edges.length * ROW_STEP;
+                if (hubs.length) h += 16 + LINE + hubs.length * LINE;
+            }
         }
-        if (notes.length) h += 10 + notes.length * LINE;
+        if (wakeEvidenceExpanded && notes.length) h += 10 + notes.length * LINE;
         h += FOOTER;
 
         const from = anchor && Number.isFinite(anchor.x) ? anchor.x : 240;
@@ -576,6 +855,7 @@ const WakeupsCard = (() => {
             .attr("class", "kcard-frame")
             .attr("d", dossierCardPath(0, 0, cw, h, CUT))
             .attr("filter", "url(#dossier-drop)")
+            .style("pointer-events", "none")
             .attr("transform", `translate(0, ${h / 2}) scale(1, 0.02)`)
             .transition().delay(120).duration(200).ease(d3.easeCubicOut)
             .attr("transform", "translate(0,0) scale(1,1)");
@@ -598,9 +878,9 @@ const WakeupsCard = (() => {
         body.append("circle")
             .attr("class", "kcard-glyph-dot")
             .attr("cx", PAD).attr("cy", HEADER / 2).attr("r", 1.6);
-        text("kcard-title", PAD + 12, HEADER / 2 + 3.5, "WAKEUPS · WHO STARTS WHOM");
-        if (available && data.rate_per_s) {
-            text("kcard-meta", cw - 13, HEADER / 2 + 3.5, `${data.rate_per_s} / S`, true)
+        text("kcard-title", PAD + 12, HEADER / 2 + 3.5, "SCHEDULER · EXECUTION PATH");
+        if (available) {
+            text("kcard-meta", cw - 13, HEADER / 2 + 3.5, "SNAPSHOT + SAMPLE", true)
                 .style("fill", "rgba(244, 244, 236, 0.5)");
         }
         body.append("line")
@@ -613,69 +893,81 @@ const WakeupsCard = (() => {
             text("kcard-faint", PAD, cy, missing);
             cy += LINE;
         } else {
-            const ms = Math.round(window_s * 1000);
-            text("kcard-line", PAD, cy,
-                `${events} wakeups in a window of ${ms} ms${lost ? `, ${lost} lost` : ""}`);
-            cy += LINE;
-
-            const split = Object.entries(data.contexts || {})
-                .sort((a, b) => (b[1].count || 0) - (a[1].count || 0))
-                .map(([name, item]) => `${item.count} ${CONTEXT_TAG[name] || name}`);
-            text("kcard-summary", PAD, cy, clip(split.join("  ·  "), compact ? 46 : 70));
-            cy += LINE;
-            if (line) {
-                text("kcard-summary", PAD, cy, clip(line, compact ? 52 : 80));
-                cy += LINE;
-            }
-
             const executionDistance = drawExecutionDistance(body, distance, events, cw, cy + 8);
             cy = executionDistance.nextY;
-            cy = drawServicePlane(body, runqueue, cw, cy + 8, executionDistance.target);
+            if (selectedTaskTid !== null) {
+                cy = drawPreemptionPair(body, runqueue, cw, cy + 8, selectedTaskTid);
+            }
+            cy = drawServicePlane(
+                body, runqueue, cw, cy + 8, executionDistance.target, selectedTaskTid, selectTask
+            );
             cy += 16;
+            const ms = Math.round(window_s * 1000);
             const distinct = Number(data.distinct_edges || edges.length);
-            text("kcard-section", PAD, cy, distinct > edges.length
-                ? `WHO WAKES WHOM · ${edges.length} BUSIEST OF ${distinct} PAIRS`
-                : "WHO WAKES WHOM");
-            cy += LINE;
-
-            text("kcard-stage", PAD, cy, "WAKER");
-            text("kcard-stage", COL_WOKEN, cy, "WOKEN");
-            text("kcard-stage", cw - PAD - TIMES_INSET, cy, "TIMES", true);
-            text("kcard-stage", cw - PAD, cy, "FROM", true);
-            cy += LINE;
-
-            edges.forEach((edge, i) => {
-                const ty = cy + 4 + i * ROW_STEP;
-                const waker = edge.waker || {};
-                const woken = edge.woken || {};
-                if (waker.observer || woken.observer) {
-                    body.append("circle")
-                        .attr("class", "kcard-glyph-dot")
-                        .attr("cx", PAD - 6).attr("cy", ty - 3).attr("r", 1.5);
-                }
-                text(waker.idle ? "kcard-faint" : "kcard-waiter", PAD, ty, side(waker));
-                text("kcard-waiter-dim", COL_WOKEN, ty, side(woken));
-                text("kcard-waiter-dim", cw - PAD - TIMES_INSET, ty, edge.count, true);
-                const where = Object.entries(edge.contexts || {})
-                    .sort((a, b) => b[1] - a[1])[0];
-                const tag = edge.new ? "first run" : (where ? (CONTEXT_TAG[where[0]] || where[0]) : "");
-                text(where && where[0] === "hardirq" ? "kcard-symbol is-sleep" : "kcard-faint",
-                    cw - PAD, ty, tag, true);
-            });
-            cy += edges.length * ROW_STEP;
-
-            if (hubs.length) {
-                cy += 16;
-                text("kcard-section", PAD, cy, "THE BUSIEST ENDS OF THE WINDOW");
-                cy += LINE;
-                hubs.forEach((hubLine) => {
-                    text("kcard-summary", PAD, cy, clip(hubLine, compact ? 52 : 78));
-                    cy += LINE;
+            text("kcard-section", PAD, cy,
+                `WAKEUP EVIDENCE · ${events} EVENTS / ${ms} MS`);
+            text(wakeEvidenceExpanded ? "kcard-section" : "kcard-inferred", cw - PAD, cy,
+                wakeEvidenceExpanded ? "CLOSE −" : `OPEN + · ${distinct} PAIRS`, true)
+                .style("cursor", "pointer")
+                .on("click", (event) => {
+                    event.stopPropagation();
+                    toggleEvidence();
                 });
+            cy += LINE;
+
+            if (wakeEvidenceExpanded) {
+                text("kcard-line", PAD, cy,
+                    `${events} wakeups in a sampled window of ${ms} ms${lost ? `, ${lost} lost` : ""}`);
+                cy += LINE;
+                const split = Object.entries(data.contexts || {})
+                    .sort((a, b) => (b[1].count || 0) - (a[1].count || 0))
+                    .map(([name, item]) => `${item.count} ${CONTEXT_TAG[name] || name}`);
+                text("kcard-summary", PAD, cy, clip(split.join("  ·  "), compact ? 46 : 70));
+                cy += LINE;
+                if (line) {
+                    text("kcard-summary", PAD, cy, clip(line, compact ? 52 : 80));
+                    cy += LINE;
+                }
+
+                text("kcard-stage", PAD, cy, "WAKER");
+                text("kcard-stage", COL_WOKEN, cy, "WOKEN");
+                text("kcard-stage", cw - PAD - TIMES_INSET, cy, "TIMES", true);
+                text("kcard-stage", cw - PAD, cy, "FROM", true);
+                cy += LINE;
+
+                edges.forEach((edge, i) => {
+                    const ty = cy + 4 + i * ROW_STEP;
+                    const waker = edge.waker || {};
+                    const woken = edge.woken || {};
+                    if (waker.observer || woken.observer) {
+                        body.append("circle")
+                            .attr("class", "kcard-glyph-dot")
+                            .attr("cx", PAD - 6).attr("cy", ty - 3).attr("r", 1.5);
+                    }
+                    text(waker.idle ? "kcard-faint" : "kcard-waiter", PAD, ty, side(waker));
+                    text("kcard-waiter-dim", COL_WOKEN, ty, side(woken));
+                    text("kcard-waiter-dim", cw - PAD - TIMES_INSET, ty, edge.count, true);
+                    const where = Object.entries(edge.contexts || {})
+                        .sort((a, b) => b[1] - a[1])[0];
+                    const tag = edge.new ? "first run" : (where ? (CONTEXT_TAG[where[0]] || where[0]) : "");
+                    text(where && where[0] === "hardirq" ? "kcard-symbol is-sleep" : "kcard-faint",
+                        cw - PAD, ty, tag, true);
+                });
+                cy += edges.length * ROW_STEP;
+
+                if (hubs.length) {
+                    cy += 16;
+                    text("kcard-section", PAD, cy, "THE BUSIEST ENDS OF THE WINDOW");
+                    cy += LINE;
+                    hubs.forEach((hubLine) => {
+                        text("kcard-summary", PAD, cy, clip(hubLine, compact ? 52 : 78));
+                        cy += LINE;
+                    });
+                }
             }
         }
 
-        if (notes.length) {
+        if (wakeEvidenceExpanded && notes.length) {
             cy += 10;
             notes.forEach((note) => {
                 text("kcard-faint", PAD, cy, note);
