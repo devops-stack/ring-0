@@ -1,0 +1,47 @@
+[Unit]
+Description=ring-0 kernel visualization (Gunicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=kernel-ai
+Group=kernel-ai
+WorkingDirectory=__PREFIX__
+Environment=PATH=__PREFIX__/venv/bin:/usr/local/bin:/usr/bin
+Environment=LOG_FORMAT=json
+Environment=LOG_LEVEL=INFO
+Environment=LOG_SERVICE_NAME=kernel-ai-backend
+Environment=HOME=/tmp
+ExecStart=__PREFIX__/venv/bin/gunicorn \
+    --bind __BIND__ \
+    --workers 2 \
+    --threads 4 \
+    --timeout 120 \
+    kernel_ai.webapp:app
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+UMask=0027
+ReadWritePaths=__PREFIX__/logs
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
