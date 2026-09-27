@@ -1855,7 +1855,7 @@ function closeOpenKernelCards() {
     ["MemoryCard", "SlubCard", "ThreadsCard", "WaitsCard", "WakeupsCard", "SocketsCard",
         "FlowCard", "FlowHistoryCard", "NamespaceCard", "SyscallCard", "IrqCard",
         "IrqHistoryCard", "RunqueueCard", "HistoryCard", "IpEntryCard", "TraceContextWorkbench",
-        "KernelThroughputCircuit"].forEach((name) => {
+        "KernelThroughputCircuit", "LockdepGame", "ConnectionDevice"].forEach((name) => {
         const card = window[name];
         if (card && typeof card.close === "function") card.close();
     });

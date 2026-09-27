@@ -36,6 +36,15 @@
         memory_management: { text: 'MEM' },
         event_wait: { text: 'WAIT' }
     };
+    const TAG_FILTERS = [null, 'SCHED', 'MEM', 'FS', 'NET', 'WAIT', 'RCU'];
+    const TAG_CANON = {
+        SCH: 'SCHED', SCHED: 'SCHED',
+        MEM: 'MEM', PAGE: 'MEM', SLAB: 'MEM',
+        FS: 'FS', FILE: 'FS', BIO: 'FS', PIPE: 'FS', DMA: 'FS',
+        NET: 'NET', SOCK: 'NET',
+        WAIT: 'WAIT', FUTEX: 'WAIT', LOCK: 'WAIT',
+        RCU: 'RCU', IRQ: 'RCU'
+    };
     const ERR_COLOR = 'rgba(226, 96, 88, 0.95)';
     const WARN_COLOR = D.accent;
 
@@ -103,6 +112,8 @@
         },
         lastRcuRowAt: 0,
         lastRcuTotal: null,
+        tagFilter: null,
+        tagFilterSource: null,
         // The pill is fixed HTML, so an SVG scrim cannot cover it: while a card
         // is berthed against the right edge the pill would float on top of it.
         pillHidden: false
@@ -373,6 +384,16 @@
         const eps = document.createElement('span');
         eps.textContent = '0 ev/s';
         Object.assign(eps.style, { font: `9px/1 ${D.mono}`, letterSpacing: '1px', color: D.faint });
+        const filter = document.createElement('button');
+        filter.className = 'ktape-btn';
+        filter.textContent = 'ALL';
+        filter.title = 'Show one kernel path in this console';
+        Object.assign(filter.style, {
+            cursor: 'pointer', background: 'transparent', border: `1px solid ${D.edge}`,
+            color: D.dim, font: `9px/1 ${D.mono}`, letterSpacing: '1.2px', padding: '3px 6px',
+            minWidth: '44px'
+        });
+        filter.addEventListener('click', cycleTagFilter);
         const pause = document.createElement('button');
         pause.className = 'ktape-btn';
         pause.textContent = 'PAUSE';
@@ -389,8 +410,9 @@
             color: D.dim, font: `12px/1 ${D.mono}`, padding: '0 0 0 2px'
         });
         close.addEventListener('click', () => api.setOpen(false));
-        header.append(title, spacer, eps, pause, close);
+        header.append(title, spacer, eps, filter, pause, close);
         el.closeBtn = close;
+        el.filterBtn = filter;
 
         // Body (newest on top).
         const body = document.createElement('div');
@@ -1006,8 +1028,44 @@
             || null;
     }
 
+    function canonTag(text) {
+        const raw = String(text || '').toUpperCase().trim();
+        if (!raw || raw === 'ALL') return null;
+        if (Object.prototype.hasOwnProperty.call(TAG_CANON, raw)) return TAG_CANON[raw];
+        return TAG_FILTERS.includes(raw) ? raw : null;
+    }
+
+    function rowMatchesFilter(tagText) {
+        if (!state.tagFilter) return true;
+        return canonTag(tagText) === state.tagFilter;
+    }
+
+    function applyTagFilterVis() {
+        if (!el.body) return;
+        el.body.querySelectorAll('.ktape-row').forEach((row) => {
+            const tag = row._ktapeParts && row._ktapeParts.tag
+                ? row._ktapeParts.tag.textContent
+                : '';
+            row.style.display = rowMatchesFilter(tag) ? 'flex' : 'none';
+        });
+    }
+
+    function paintFilterBtn() {
+        if (!el.filterBtn) return;
+        el.filterBtn.textContent = state.tagFilter || 'ALL';
+        el.filterBtn.style.color = state.tagFilter ? D.accent : D.dim;
+        el.filterBtn.style.borderColor = state.tagFilter ? 'rgba(226,163,62,0.45)' : D.edge;
+    }
+
+    function cycleTagFilter() {
+        const index = TAG_FILTERS.indexOf(state.tagFilter);
+        const next = TAG_FILTERS[(index + 1) % TAG_FILTERS.length];
+        api.setTagFilter(next, { source: 'tape' });
+    }
+
     function pushRow(ev, options) {
         if (!el.body) return;
+        if (!rowMatchesFilter(ev.tagText)) return;
         const opts = options || {};
         const row = document.createElement('div');
         row.className = 'ktape-row' + (ev.level === 'err' ? ' err' : '');
@@ -1386,6 +1444,11 @@
         if (state.pidFocus) {
             const scope = state.pidFocus.scope ? ` · ${state.pidFocus.scope}` : '';
             el.title.textContent = `${state.pidFocus.eventSource || 'PROC'} TRACE${scope} · ${state.pidFocus.label}`;
+            el.title.style.color = D.accent;
+            return;
+        }
+        if (state.tagFilter) {
+            el.title.textContent = `KERNEL ACTIVITY · ${state.tagFilter}`;
             el.title.style.color = D.accent;
             return;
         }
@@ -1913,6 +1976,9 @@
                 state.pidFocusSeq += 1;
                 clearPidFocusBlock(state.pidFocus);
                 state.pidFocus = null;
+                state.tagFilter = null;
+                state.tagFilterSource = null;
+                paintFilterBtn();
                 closeInspector();
                 setTitle();
             }
@@ -1924,6 +1990,31 @@
                 el.pauseBtn.textContent = paused ? 'RESUME' : 'PAUSE';
                 el.pauseBtn.style.color = paused ? D.accent : D.dim;
             }
+        },
+        setTagFilter(code, options) {
+            const opts = options || {};
+            const next = canonTag(code);
+            if (next === state.tagFilter && (opts.source || 'tape') === state.tagFilterSource) {
+                applyTagFilterVis();
+                setTitle();
+                paintFilterBtn();
+                return;
+            }
+            state.tagFilter = next;
+            state.tagFilterSource = next ? (opts.source || 'tape') : null;
+            if (next && !state.open) api.setOpen(true);
+            applyTagFilterVis();
+            setTitle();
+            paintFilterBtn();
+        },
+        clearTagFilter(source) {
+            if (!state.tagFilter) return;
+            if (source && state.tagFilterSource !== source) return;
+            state.tagFilter = null;
+            state.tagFilterSource = null;
+            applyTagFilterVis();
+            setTitle();
+            paintFilterBtn();
         },
         // Stand the pill down while something else owns the right edge.
         setPillHidden(hidden) {
