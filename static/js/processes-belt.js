@@ -1,7 +1,7 @@
 // Processes Subsystem Visualization
-// Version: 39 — SCHEDULER default mode, removed RADIAL, observed history vs projection
+// Version: 40 — MATRIX VIEW (select process → resource strip + timeline)
 
-debugLog('🧠 processes-belt.js v39: Script loading...');
+debugLog('🧠 processes-belt.js v42: Script loading...');
 
 class ProcessesSubsystemVisualization {
     constructor() {
@@ -44,6 +44,18 @@ class ProcessesSubsystemVisualization {
         this.schedOverlayHits = [];
         this._schedOverlayPanel = null;
         this._schedT0 = Date.now();      // wall-clock base for overlay animation
+        this.matrixData = [];
+        this.matrixSelectedPid = null;
+        this.matrixInterval = null;
+        this.matrixRoot = null;
+        this.matrixListNode = null;
+        this.matrixRowsNode = null;
+        this.matrixTimelineNode = null;
+        this.matrixFetchingPid = null;
+        this.modePanel = null;
+        this.filterPanel = null;
+        this.hudExitCss = '';
+        this.paperExitCss = '';
     }
 
     init(containerId = 'processes-belt-container') {
@@ -83,9 +95,17 @@ class ProcessesSubsystemVisualization {
         this.container.appendChild(this.exitButton);
         this.overlayNodes.push(this.exitButton);
 
+        this.hudExitCss = this.exitButton.style.cssText;
+        this.paperExitCss = `
+            position:absolute;top:18px;right:18px;padding:8px 14px;z-index:10021;
+            background:rgba(250,244,230,0.92); border:1px solid rgba(56,40,24,0.20);
+            color:#1a1612; font-family:'Share Tech Mono', monospace; font-size:12px; cursor:pointer;
+        `;
+
         this.createModeToggle();
         this.createAutoFocusToggle();
         this.createEdgeFilterToggle();
+        this.createMatrixView();
         return true;
     }
 
@@ -94,11 +114,13 @@ class ProcessesSubsystemVisualization {
         panel.style.cssText = `
             position:absolute;top:18px;left:18px;display:flex;gap:8px;z-index:1001;
         `;
+        this.modePanel = panel;
         const modes = [
             { key: 'scheduler', label: 'SCHEDULER' },
             { key: 'microscope', label: 'MICROSCOPE' },
             { key: 'temporal', label: '3-LAYER GRAPH' },
-            { key: 'wireframe', label: 'WIREFRAME PROC' }
+            { key: 'wireframe', label: 'WIREFRAME PROC' },
+            { key: 'matrix', label: 'MATRIX VIEW' }
         ];
         modes.forEach((m) => {
             const btn = document.createElement('button');
@@ -119,15 +141,24 @@ class ProcessesSubsystemVisualization {
     }
 
     setLayoutMode(modeKey) {
-        this.layoutMode = ['temporal', 'microscope', 'wireframe', 'scheduler'].includes(modeKey) ? modeKey : 'scheduler';
+        this.layoutMode = ['temporal', 'microscope', 'wireframe', 'scheduler', 'matrix'].includes(modeKey) ? modeKey : 'scheduler';
+        const paper = this.layoutMode === 'matrix';
         this.modeButtons.forEach((btn, key) => {
             const active = key === this.layoutMode;
-            btn.style.background = active ? 'rgba(32, 52, 81, 0.92)' : 'rgba(8,12,18,0.86)';
-            btn.style.borderColor = active ? 'rgba(124, 178, 255, 0.9)' : 'rgba(150,164,188,0.35)';
-            btn.style.color = active ? '#d9ecff' : '#bcc8db';
+            if (paper) {
+                btn.style.background = active ? 'rgba(250,244,230,0.96)' : 'rgba(255,255,255,0.55)';
+                btn.style.borderColor = active ? 'rgba(56,40,24,0.35)' : 'rgba(56,40,24,0.16)';
+                btn.style.color = '#1a1612';
+            } else {
+                btn.style.background = active ? 'rgba(32, 52, 81, 0.92)' : 'rgba(8,12,18,0.86)';
+                btn.style.borderColor = active ? 'rgba(124, 178, 255, 0.9)' : 'rgba(150,164,188,0.35)';
+                btn.style.color = active ? '#d9ecff' : '#bcc8db';
+            }
         });
         this.updateAutoFocusButtonState();
         this.updateSchedulerPolling();
+        this.updateMatrixPolling();
+        this.applyMatrixModeChrome();
     }
 
     updateSchedulerPolling() {
@@ -142,6 +173,298 @@ class ProcessesSubsystemVisualization {
             this.schedulerInterval = null;
             this.schedOverlayPid = null;
         }
+    }
+
+    applyMatrixModeChrome() {
+        const on = this.layoutMode === 'matrix';
+        if (this.canvas) this.canvas.style.display = on ? 'none' : 'block';
+        if (this.matrixRoot) this.matrixRoot.style.display = on ? 'flex' : 'none';
+        if (this.filterPanel) this.filterPanel.style.display = on ? 'none' : 'flex';
+        if (this.container) {
+            this.container.style.background = on
+                ? '#e8e8e8'
+                : 'radial-gradient(circle at 50% 40%, #121821 0%, #0a0d12 70%)';
+        }
+        if (this.exitButton) {
+            this.exitButton.style.cssText = on ? this.paperExitCss : this.hudExitCss;
+        }
+        if (this.modePanel) {
+            this.modePanel.style.left = on ? '266px' : '18px';
+            this.modePanel.style.maxWidth = on ? 'calc(100vw - 400px)' : '';
+            this.modePanel.style.flexWrap = on ? 'wrap' : '';
+        }
+        if (this.autoFocusButton) {
+            this.autoFocusButton.style.display = on ? 'none' : 'block';
+        }
+    }
+
+    updateMatrixPolling() {
+        const on = this.layoutMode === 'matrix';
+        if (on && !this.matrixInterval) {
+            this.fetchMatrixData();
+            this.matrixInterval = setInterval(() => {
+                if (this.isActive && this.layoutMode === 'matrix') this.fetchMatrixData();
+            }, 2000);
+        } else if (!on && this.matrixInterval) {
+            clearInterval(this.matrixInterval);
+            this.matrixInterval = null;
+        }
+    }
+
+    createMatrixView() {
+        const root = document.createElement('div');
+        root.style.cssText = `
+            display:none; position:absolute; inset:0; z-index:1000;
+            font-family:'Share Tech Mono', monospace; color:#1a1612;
+        `;
+        root.innerHTML = `
+            <aside style="width:248px; height:100%; background:#1c1c1c; color:#ececec; padding:72px 16px 24px; box-sizing:border-box; overflow:auto;">
+                <div style="font-size:11px; letter-spacing:0.8px; color:rgba(255,255,255,0.45); margin:0 0 14px;">MATRIX VIEW</div>
+                <div data-mx-list></div>
+                <button type="button" data-mx-jump style="display:block; width:100%; margin-top:22px; text-align:left; background:transparent; border:0; color:rgba(255,255,255,0.42); font:inherit; font-size:11px; letter-spacing:0.5px; cursor:pointer; padding:6px 0;">Timeline / Flow</button>
+            </aside>
+            <section style="flex:1; min-width:0; height:100%; padding:72px 28px 24px; box-sizing:border-box; overflow:auto; background:#e8e8e8;">
+                <div style="display:flex; align-items:baseline; justify-content:space-between; margin:0 0 18px;">
+                    <div style="font-size:20px; letter-spacing:0.4px;">Matrix View</div>
+                    <div data-mx-meta style="font-size:10px; color:rgba(26,22,18,0.42);"></div>
+                </div>
+                <div data-mx-head style="display:grid; grid-template-columns: 220px 1fr; gap:16px; padding:0 12px 8px; font-size:10px; letter-spacing:0.6px; color:rgba(26,22,18,0.40);">
+                    <div>PID</div>
+                    <div style="display:grid; grid-template-columns:repeat(5,1fr);">
+                        <span>CPU</span><span>Mem</span><span>IO</span><span>Net</span><span>FD</span>
+                    </div>
+                </div>
+                <div data-mx-rows style="width:100%;"></div>
+                <div data-mx-timeline style="margin-top:36px;"></div>
+            </section>
+        `;
+        root.querySelector('[data-mx-jump]').onclick = () => {
+            const node = this.matrixTimelineNode;
+            if (node) node.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        };
+        this.container.appendChild(root);
+        this.matrixRoot = root;
+        this.matrixListNode = root.querySelector('[data-mx-list]');
+        this.matrixRowsNode = root.querySelector('[data-mx-rows]');
+        this.matrixTimelineNode = root.querySelector('[data-mx-timeline]');
+        this.matrixMetaNode = root.querySelector('[data-mx-meta]');
+        this.overlayNodes.push(root);
+    }
+
+    fetchMatrixData() {
+        return fetch('/api/proc-matrix', { cache: 'no-store' })
+            .then((res) => res.json())
+            .then((data) => {
+                if (!data || data.error) throw new Error(data?.error || 'no matrix');
+                this.matrixData = Array.isArray(data.matrix) ? data.matrix : [];
+                const selected = Number(this.matrixSelectedPid || 0);
+                if (selected && !this.matrixData.some((row) => Number(row.pid) === selected)) {
+                    this.matrixData.unshift({ pid: selected, name: 'process', cpu: 0, mem: 0, io: 0, net: 0, fd: 0 });
+                }
+                if (!this.matrixSelectedPid && this.matrixData[0]) {
+                    this.matrixSelectedPid = Number(this.matrixData[0].pid);
+                }
+                this.renderMatrixList();
+                this.renderMatrixRows();
+                this.refreshMatrixTimeline();
+            })
+            .catch(() => { /* keep last rows */ });
+    }
+
+    selectMatrixPid(pid) {
+        const next = Number(pid || 0);
+        if (next <= 0 || next === this.matrixSelectedPid) return;
+        this.matrixSelectedPid = next;
+        this.matrixFetchingPid = null;
+        this.renderMatrixList();
+        this.renderMatrixRows();
+        this.refreshMatrixTimeline(true);
+    }
+
+    matrixMaxima() {
+        const keys = ['cpu', 'mem', 'io', 'net', 'fd'];
+        const max = { cpu: 1, mem: 1, io: 1, net: 1, fd: 1 };
+        this.matrixData.forEach((row) => {
+            keys.forEach((k) => {
+                const v = Number(row[k] || 0);
+                if (v > max[k]) max[k] = v;
+            });
+        });
+        return max;
+    }
+
+    renderMatrixList() {
+        if (!this.matrixListNode) return;
+        const selected = Number(this.matrixSelectedPid || 0);
+        this.matrixListNode.innerHTML = this.matrixData.map((row) => {
+            const pid = Number(row.pid);
+            const on = pid === selected;
+            const name = this.escapeMatrixText(row.name || 'process');
+            return `<button type="button" data-mx-pid="${pid}" style="
+                display:flex; align-items:center; gap:10px; width:100%;
+                padding:8px 8px; margin:0 0 4px; border:0; border-radius:4px;
+                background:${on ? 'rgba(255,255,255,0.10)' : 'transparent'};
+                color:${on ? '#fff' : 'rgba(255,255,255,0.62)'};
+                font:inherit; font-size:12px; cursor:pointer; text-align:left;
+            "><span style="width:10px; height:10px; border-radius:50%; border:1px solid ${on ? '#fff' : 'rgba(255,255,255,0.35)'}; background:${on ? '#fff' : 'transparent'}; box-sizing:border-box;"></span>${pid} ${name}</button>`;
+        }).join('');
+        this.matrixListNode.querySelectorAll('[data-mx-pid]').forEach((btn) => {
+            btn.onclick = () => this.selectMatrixPid(btn.getAttribute('data-mx-pid'));
+        });
+    }
+
+    renderMatrixRows() {
+        if (!this.matrixRowsNode) return;
+        const selected = Number(this.matrixSelectedPid || 0);
+        const max = this.matrixMaxima();
+        const cols = [
+            { key: 'cpu', color: '#5f8a86' },
+            { key: 'mem', color: '#7d9a78' },
+            { key: 'io', color: '#d2a24a' },
+            { key: 'net', color: '#6d7d6a' },
+            { key: 'fd', color: '#b3b3b3' }
+        ];
+        this.matrixRowsNode.innerHTML = this.matrixData.map((row) => {
+            const pid = Number(row.pid);
+            const on = pid === selected;
+            const name = this.escapeMatrixText(row.name || 'process');
+            const chips = cols.map((col) => {
+                const raw = Number(row[col.key] || 0);
+                const t = Math.max(0.16, Math.min(1, raw / max[col.key]));
+                return `<span title="${col.key} ${this.formatMatrixValue(col.key, raw)}" style="
+                    display:block; height:16px; border-radius:2px; min-width:10px;
+                    background:${col.color}; opacity:${0.34 + t * 0.66};
+                    flex:${(0.35 + t * 1.4).toFixed(3)} 1 0;
+                "></span>`;
+            }).join('');
+            return `<button type="button" data-mx-row="${pid}" style="
+                display:flex; align-items:center; gap:16px; width:100%; box-sizing:border-box;
+                padding:10px 12px; margin:0 0 2px; border:0; border-radius:4px;
+                background:${on ? 'rgba(255,255,255,0.78)' : 'transparent'};
+                color:#1a1612; font:inherit; font-size:12px; cursor:pointer; text-align:left;
+            "><div style="flex:0 0 220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">PID ${pid} ${name}</div><div style="flex:1 1 auto; display:flex; align-items:center; gap:3px; min-width:180px; height:16px;">${chips}</div></button>`;
+        }).join('');
+        this.matrixRowsNode.querySelectorAll('[data-mx-row]').forEach((btn) => {
+            btn.onclick = () => this.selectMatrixPid(btn.getAttribute('data-mx-row'));
+        });
+        if (this.matrixMetaNode) {
+            this.matrixMetaNode.textContent = `${this.matrixData.length} processes`;
+        }
+    }
+
+    formatMatrixValue(key, raw) {
+        if (key === 'cpu') return `${Number(raw).toFixed(1)}%`;
+        if (key === 'mem' || key === 'io') return `${Number(raw).toFixed(1)} MB`;
+        return String(Math.round(Number(raw) || 0));
+    }
+
+    formatBytes(bytes) {
+        const n = Number(bytes || 0);
+        if (n >= 1073741824) return `${(n / 1073741824).toFixed(n >= 1073741824 * 10 ? 0 : 1)}GB`;
+        if (n >= 1048576) return `${Math.round(n / 1048576)}MB`;
+        if (n >= 1024) return `${Math.round(n / 1024)}KB`;
+        return `${Math.round(n)}B`;
+    }
+
+    formatKb(kb) {
+        return this.formatBytes(Number(kb || 0) * 1024);
+    }
+
+    escapeMatrixText(value) {
+        return String(value || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    refreshMatrixTimeline(force) {
+        const pid = Number(this.matrixSelectedPid || 0);
+        if (pid <= 0 || !this.matrixTimelineNode) return;
+        if (!force && this.matrixFetchingPid === pid) return;
+        this.matrixFetchingPid = pid;
+        const row = this.matrixData.find((r) => Number(r.pid) === pid) || { pid, name: 'process' };
+        Promise.all([
+            fetch(`/api/proc-timeline?pid=${pid}`, { cache: 'no-store' }).then((r) => r.json()).catch(() => null),
+            fetch(`/api/process/${pid}/fds`, { cache: 'no-store' }).then((r) => r.json()).catch(() => null),
+            fetch(`/api/process/${pid}/memory`, { cache: 'no-store' }).then((r) => r.json()).catch(() => null),
+            fetch(`/api/process/${pid}/lineage`, { cache: 'no-store' }).then((r) => r.json()).catch(() => null),
+            fetch(`/api/process/${pid}/activity`, { cache: 'no-store' }).then((r) => r.json()).catch(() => null)
+        ]).then(([timeline, fds, memory, lineage, activity]) => {
+            if (this.matrixSelectedPid !== pid) return;
+            this.renderMatrixTimeline(row, timeline, fds, memory, lineage, activity);
+        });
+    }
+
+    composeMatrixPills(row, timeline, fds, memory, lineage, activity) {
+        const pills = [];
+        const chain = Array.isArray(lineage?.chain) ? lineage.chain : [];
+        const parent = chain.length >= 2 ? chain[chain.length - 2] : null;
+        pills.push({
+            kind: 'fork',
+            label: 'fork',
+            detail: parent ? this.escapeMatrixText(parent.name) : '',
+            color: '#d8d8d8',
+            ink: '#444'
+        });
+        pills.push({
+            kind: 'exec',
+            label: 'exec',
+            detail: this.escapeMatrixText(row.name || timeline?.name || ''),
+            color: '#d8d8d8',
+            ink: '#444'
+        });
+        const rssKb = Number(memory?.totals?.rss_kb || 0);
+        const heapKb = Number(memory?.heap_kb || 0);
+        const mmapKb = heapKb || rssKb || (Number(row.mem || 0) * 1024);
+        if (mmapKb > 0) {
+            pills.push({ kind: 'mmap', label: 'mmap', detail: this.formatKb(mmapKb), color: '#8fbf8a', ink: '#1a1612' });
+        }
+        const readBytes = Number(activity?.read_bytes || 0)
+            || Number((Array.isArray(timeline?.timeline) ? timeline.timeline : []).find((e) => e.name === 'read_bytes')?.bytes || 0);
+        if (readBytes > 0) {
+            pills.push({ kind: 'read', label: 'read', detail: this.formatBytes(readBytes), color: '#e2c37a', ink: '#1a1612' });
+        }
+        const conns = (Array.isArray(fds?.connections) ? fds.connections : []).filter((c) => c.remote_address);
+        const sockFds = (Array.isArray(fds?.descriptors) ? fds.descriptors : [])
+            .filter((d) => String(d.type || '').includes('socket'))
+            .map((d) => Number(d.fd))
+            .filter((n) => n >= 0);
+        const remote = conns.find((c) => c.status === 'ESTABLISHED') || conns[0];
+        if (remote || sockFds.length) {
+            const span = sockFds.length ? `${Math.min(...sockFds)}~${Math.max(...sockFds)}` : '';
+            const dest = remote?.remote_address || '';
+            pills.push({
+                kind: 'socket',
+                label: 'socket',
+                detail: [span, dest].filter(Boolean).join(' → '),
+                color: '#7fa3a0',
+                ink: '#1a1612'
+            });
+        }
+        return pills;
+    }
+
+    renderMatrixTimeline(row, timeline, fds, memory, lineage, activity) {
+        if (!this.matrixTimelineNode) return;
+        const pills = this.composeMatrixPills(row, timeline, fds, memory, lineage, activity);
+        const name = this.escapeMatrixText(row.name || timeline?.name || 'process');
+        const nodes = pills.map((p) => `
+            <div style="display:flex; flex-direction:column; align-items:center; min-width:72px;">
+                <div style="padding:7px 12px; border-radius:14px; background:${p.color}; color:${p.ink}; font-size:12px; white-space:nowrap;">
+                    ${p.label}${p.detail ? ` ${p.detail}` : ''}
+                </div>
+                <div style="width:1px; height:14px; background:rgba(26,22,18,0.22);"></div>
+            </div>
+        `).join('<div style="flex:1; height:1px; background:rgba(26,22,18,0.16); margin-top:16px;"></div>');
+        this.matrixTimelineNode.innerHTML = `
+            <div style="font-size:13px; letter-spacing:0.4px; color:rgba(26,22,18,0.45); margin:0 0 10px;">Timeline / Flow</div>
+            <div style="font-size:12px; margin:0 0 16px;">PID ${row.pid} ${name}</div>
+            <div style="display:flex; align-items:flex-start; gap:0; overflow:auto; padding:0 4px 8px;">${nodes}</div>
+            <svg viewBox="0 0 1000 48" preserveAspectRatio="none" style="width:100%; height:48px; display:block;">
+                <path d="M 20 28 C 180 8, 320 46, 500 24 S 820 6, 980 30" fill="none" stroke="rgba(26,22,18,0.22)" stroke-width="1.2"/>
+            </svg>
+        `;
     }
 
     fetchSchedulerData() {
@@ -246,6 +569,7 @@ class ProcessesSubsystemVisualization {
 
     createEdgeFilterToggle() {
         const panel = document.createElement('div');
+        this.filterPanel = panel;
         panel.style.cssText = `
             position:absolute;top:54px;left:18px;display:flex;flex-wrap:wrap;max-width:min(520px,92vw);gap:6px;z-index:1001;
         `;
@@ -2959,6 +3283,7 @@ class ProcessesSubsystemVisualization {
     }
 
     drawScene() {
+        if (this.layoutMode === 'matrix') return;
         if (!this.ctx || !this.canvas) return;
         const w = window.innerWidth;
         const h = window.innerHeight;
@@ -3024,7 +3349,7 @@ class ProcessesSubsystemVisualization {
     animate() {
         if (!this.isActive) return;
         this.animationId = requestAnimationFrame(() => this.animate());
-        this.drawScene();
+        if (this.layoutMode !== 'matrix') this.drawScene();
     }
 
     activate() {
