@@ -79,8 +79,9 @@ if [ "$PURGE" = 1 ]; then
     rm -rf "$PREFIX"
     log "removed $PREFIX"
 else
-    rm -f "$STAMP"
-    log "left $PREFIX (stamp removed). --purge deletes a copied tree."
+    # The stamp stays: it is the only record of whether the tree was copied,
+    # and deleting it here made a later --purge impossible.
+    log "left $PREFIX in place. Re-run with --purge to delete a copied tree."
 fi
 
 log "uninstall done. system user 'kernel-ai' was kept."
