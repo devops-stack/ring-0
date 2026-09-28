@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # ring-0 / kernel-ai visualization installer.
+# Debian/Ubuntu (apt), Fedora/RHEL 8+/Rocky/Alma (dnf), Arch (pacman).
 # No ML (sklearn/mlflow/Postgres). No eBPF sensor.
 #
 #   sudo ./install/install.sh
@@ -21,9 +22,16 @@ SRC=$(cd "$(dirname "$0")/.." && pwd)
 STAMP_NAME=.ring0-viz-install
 EXCLUDE_FILE=
 
+MIN_PY_MAJOR=3
+MIN_PY_MINOR=9
+PY=
+
 usage() {
     cat <<'EOF'
 Install ring-0 visualization on this Linux host (no ML).
+
+Supported: Debian / Ubuntu / Mint (apt), Fedora / RHEL 8+ / Rocky / Alma (dnf),
+Arch / Manjaro (pacman). Needs systemd and python >= 3.9.
 
 Usage: sudo ./install/install.sh [options]
 
@@ -75,19 +83,19 @@ esac
 [ -f "$SRC/requirements-viz.txt" ] || die "missing $SRC/requirements-viz.txt"
 [ -f "$SRC/install/kernel-ai.service.tmpl" ] || die "missing service template"
 
+# Supported set, deliberately narrow: Debian/Ubuntu/Mint, Fedora/RHEL 8+ and
+# its rebuilds, Arch/Manjaro. yum-only hosts (CentOS 7, RHEL 7) and openSUSE
+# were dropped rather than shipped untested -- openSUSE in particular needs a
+# different interpreter package, since Leap 15.6 still ships python3 as 3.6.
 detect_pm() {
     if command -v apt-get >/dev/null 2>&1; then
         echo apt
     elif command -v dnf >/dev/null 2>&1; then
         echo dnf
-    elif command -v yum >/dev/null 2>&1; then
-        echo yum
     elif command -v pacman >/dev/null 2>&1; then
         echo pacman
-    elif command -v zypper >/dev/null 2>&1; then
-        echo zypper
     else
-        die "no supported package manager (need apt, dnf, yum, pacman, or zypper)"
+        die "unsupported distribution: need apt (Debian/Ubuntu), dnf (Fedora/RHEL 8+/Rocky/Alma), or pacman (Arch)"
     fi
 }
 
@@ -108,34 +116,35 @@ install_os_packages() {
                 run dnf install -y nginx
             fi
             ;;
-        yum)
-            run yum install -y python3 python3-pip ca-certificates curl iproute tar
-            if [ "$WITH_NGINX" = 1 ]; then
-                run yum install -y nginx
-            fi
-            ;;
         pacman)
-            run pacman -Sy --noconfirm --needed python python-pip ca-certificates curl iproute2 tar
+            # -Syu, never -Sy: refreshing the database without upgrading is
+            # the documented way to break an Arch host with a partial upgrade.
+            run pacman -Syu --noconfirm --needed python python-pip ca-certificates curl iproute2 tar
             if [ "$WITH_NGINX" = 1 ]; then
-                run pacman -Sy --noconfirm --needed nginx
-            fi
-            ;;
-        zypper)
-            run zypper --non-interactive install \
-                python3 python3-pip python3-venv ca-certificates curl iproute2 tar
-            if [ "$WITH_NGINX" = 1 ]; then
-                run zypper --non-interactive install nginx
+                run pacman -S --noconfirm --needed nginx
             fi
             ;;
     esac
 }
 
-py_ok() {
-    python3 - <<'PY'
+# Newest interpreter that clears the floor. Distros disagree about what
+# `python3` points at -- openSUSE Leap 15.6 still ships 3.6 -- so the version
+# has to be asked for, not assumed.
+pick_python() {
+    local cand
+    for cand in python3.13 python3.12 python3.11 python3.10 python3.9 python3; do
+        command -v "$cand" >/dev/null 2>&1 || continue
+        if "$cand" - "$MIN_PY_MAJOR" "$MIN_PY_MINOR" <<'PY'
 import sys
-need = (3, 9)
+need = (int(sys.argv[1]), int(sys.argv[2]))
 raise SystemExit(0 if sys.version_info[:2] >= need else 1)
 PY
+        then
+            PY=$(command -v "$cand")
+            return 0
+        fi
+    done
+    return 1
 }
 
 ensure_user() {
@@ -217,7 +226,7 @@ sync_tree() {
 
 setup_venv() {
     if [ ! -x "$PREFIX/venv/bin/python" ]; then
-        run python3 -m venv "$PREFIX/venv"
+        run "$PY" -m venv "$PREFIX/venv"
     fi
     run "$PREFIX/venv/bin/python" -m pip install --upgrade pip
     run "$PREFIX/venv/bin/python" -m pip install -r "$PREFIX/requirements-viz.txt"
@@ -256,6 +265,26 @@ install_nginx_site() {
     fi
     if command -v nginx >/dev/null 2>&1; then
         run nginx -t
+    fi
+    open_proxy_path
+}
+
+# On RHEL-family and openSUSE the reverse proxy fails in two ways that produce
+# no error here and a 502 or a timeout later: SELinux forbids httpd from
+# opening a socket to gunicorn, and firewalld does not have port 80 open. Both
+# are best-effort -- a host without them is not a failure.
+open_proxy_path() {
+    if command -v getsebool >/dev/null 2>&1 && command -v setsebool >/dev/null 2>&1; then
+        if getsebool httpd_can_network_connect 2>/dev/null | grep -q ' off$'; then
+            log "SELinux: enabling httpd_can_network_connect (nginx -> 127.0.0.1:8000)"
+            run setsebool -P httpd_can_network_connect 1 || \
+                log "warning: setsebool failed; nginx will get 502 under enforcing SELinux"
+        fi
+    fi
+    if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+        log "firewalld: opening http"
+        run firewall-cmd --permanent --add-service=http >/dev/null || true
+        run firewall-cmd --reload >/dev/null || true
     fi
 }
 
@@ -302,9 +331,14 @@ start_units() {
     [ "$NO_START" = 1 ] && return 0
     command -v systemctl >/dev/null 2>&1 || die "systemd is required"
     run systemctl daemon-reload
-    run systemctl enable kernel-ai.service
+    # Enable only when the unit actually exists: with --replace-unit withheld
+    # and nothing previously installed, `enable` fails and set -e kills the run
+    # after everything else has already been put in place.
     if [ -f /etc/systemd/system/kernel-ai.service ] || systemctl cat kernel-ai.service >/dev/null 2>&1; then
+        run systemctl enable kernel-ai.service
         run systemctl restart kernel-ai.service
+    else
+        log "warning: no kernel-ai.service unit; nothing enabled or started"
     fi
     if [ "$WITH_NGINX" = 1 ]; then
         run systemctl enable nginx
@@ -337,7 +371,8 @@ log "bind: $BIND"
 log "nginx: $WITH_NGINX"
 
 install_os_packages "$PM"
-py_ok || die "python3 >= ${MIN_PY[0]}.${MIN_PY[1]} required"
+pick_python || die "no python >= ${MIN_PY_MAJOR}.${MIN_PY_MINOR} found (tried python3.13 down to python3)"
+log "python: $PY ($("$PY" -V 2>&1))"
 ensure_user
 sync_tree
 setup_venv
@@ -355,4 +390,6 @@ if [ "$WITH_NGINX" = 1 ]; then
     log "  proxy: nginx :80 -> 127.0.0.1:8000"
 fi
 log "  logs: $PREFIX/logs"
-log "  uninstall: sudo $SRC/install/uninstall.sh"
+# The installed tree, not $SRC: a tarball or checkout the user downloaded to
+# /tmp may well be gone by the time they want to uninstall.
+log "  uninstall: sudo $PREFIX/install/uninstall.sh --prefix $PREFIX"
