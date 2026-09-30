@@ -11,6 +11,7 @@ from kernel_ai.ml.collectors.base import (
     resolve_syscall_name,
 )
 from kernel_ai.ml.sequence import NgramTracker
+from kernel_ai.ml.worker import _SEQ_STALE_REPEAT_SEC
 
 
 def test_resolve_syscall_nr_arch_collision():
@@ -122,6 +123,51 @@ def test_demo_events_are_scored_but_never_learned():
     assert tracker.drain_pending() == {"clone|openat|execve": 1}
 
 
+def test_quarantine_withdraws_what_a_hostile_pid_contributed():
+    """The profile must not learn the attack it just reported.
+
+    Measured on 2026-09-29: the four trigrams that make a ptrace injection
+    detectable were created by the first run of the scenario that tests for it.
+    """
+    tracker = NgramTracker(n=3, window=50)
+    tracker.update_stream(_events(41, ["clone", "ptrace", "ptrace", "clone"]))
+    tracker.update_stream(_events(42, ["read", "write", "read", "write"]))
+
+    # Two trigrams from each pid are waiting to be written.
+    assert tracker.quarantine(41) == 2
+
+    pending = tracker.drain_pending()
+    assert "clone|ptrace|ptrace" not in pending
+    assert "ptrace|ptrace|clone" not in pending
+    # The innocent pid is untouched.
+    assert pending["read|write|read"] == 1
+
+    # And it stays quarantined: repeating the attack must not teach it either,
+    # which is the same door an attacker walks through by being patient.
+    tracker.update_stream(_events(41, ["ptrace", "ptrace", "ptrace"]))
+    assert tracker.drain_pending() == {}
+    # Still scored, though — quarantine is about learning, not about blindness.
+    assert "ptrace|ptrace|ptrace" in tracker.recent()
+
+
+def test_quarantine_is_released_with_the_pid_number():
+    """Pids get reused; a stale quarantine would silently stop learning."""
+    tracker = NgramTracker(n=3, window=50)
+    tracker.update_stream(_events(41, ["clone", "ptrace", "ptrace"]))
+    tracker.quarantine(41)
+    tracker.drain_pending()
+
+    # Let pid 41 fall silent while another process keeps the stream moving,
+    # then evict it. That releases the hold, so a later process reusing the
+    # number is learned from normally.
+    tracker.update_stream(_events(99, ["read"] * 10))
+    assert tracker.evict_idle(older_than=5) == 1
+    tracker.drain_pending()
+
+    tracker.update_stream(_events(41, ["read", "write", "read"]))
+    assert tracker.drain_pending() == {"read|write|read": 1}
+
+
 def _guard_worker(stale_after=300.0):
     """A worker stripped to the fields the freshness guard touches (no DB)."""
     from kernel_ai.ml.worker import MLWorker
@@ -132,6 +178,7 @@ def _guard_worker(stale_after=300.0):
     worker._seq_scored_at = -1
     worker._seq_last_event_at = 0.0
     worker._seq_stale_logged = False
+    worker._seq_stale_logged_at = 0.0
     worker._seq_source = "socket"
     return worker
 
@@ -186,7 +233,7 @@ def test_idle_pids_are_evicted():
     assert [pid for pid, _ in tracker.recent_by_pid(min_len=1)] == [7]
 
 
-def test_a_silent_stream_is_reported_once_and_on_recovery(caplog):
+def test_a_silent_stream_is_repeated_while_silent_and_closed_on_recovery(caplog):
     worker = _guard_worker(stale_after=300.0)
     worker.seq_tracker.update_stream(_events(7, ["clone", "openat", "execve"]))
     worker._sequence_evidence_is_fresh(1000.0)
@@ -200,11 +247,17 @@ def test_a_silent_stream_is_reported_once_and_on_recovery(caplog):
         assert [r.levelname for r in caplog.records] == ["WARNING"]
         assert "silent for 400s" in caplog.records[0].getMessage()
 
-        # Still silent: one line per outage, not one per tick.
+        # Still silent: not one line per tick.
         worker._sequence_evidence_is_fresh(1500.0)
         assert len(caplog.records) == 1
 
+        # But it must not go quiet for the rest of the outage either. PROD sat
+        # dead for fifteen days on the strength of a single line logged on day
+        # one, so the warning repeats once an hour until events come back.
+        worker._sequence_evidence_is_fresh(1400.0 + _SEQ_STALE_REPEAT_SEC)
+        assert [r.levelname for r in caplog.records] == ["WARNING", "WARNING"]
+
         worker.seq_tracker.update_stream(_events(7, ["connect"], start=9.0))
-        worker._sequence_evidence_is_fresh(1502.0)
-        assert [r.levelname for r in caplog.records] == ["WARNING", "INFO"]
-        assert "resumed" in caplog.records[1].getMessage()
+        worker._sequence_evidence_is_fresh(1502.0 + _SEQ_STALE_REPEAT_SEC)
+        assert [r.levelname for r in caplog.records] == ["WARNING", "WARNING", "INFO"]
+        assert "resumed" in caplog.records[2].getMessage()

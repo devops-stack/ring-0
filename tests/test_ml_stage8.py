@@ -193,3 +193,117 @@ def test_corpus_file_train(tmp_path):
     assert metrics["source"].startswith("file:")
     blob = joblib.load(out)
     assert "markov" in blob and "encoder" in blob
+
+
+def _stage8_worker(tracker, score_by_pid, *, warn=3.0):
+    """A worker stripped to the fields _tick_stage8 touches (no DB, no model)."""
+    from kernel_ai.ml.worker import MLWorker
+
+    worker = MLWorker.__new__(MLWorker)
+    worker.cfg = SimpleNamespace(
+        stage8_window=64,
+        stage8_score_warn=warn,
+        stage8_score_crit=warn + 2.0,
+        stage8_cooldown_sec=30.0,
+        stage8_log_every_sec=0.0,
+    )
+    worker.seq_tracker = tracker
+    worker.deep_scorer = SimpleNamespace(
+        maybe_reload=lambda: None,
+        ready=True,
+        warn_crit=lambda cfg: (cfg.stage8_score_warn, cfg.stage8_score_crit),
+        score_tokens=lambda tokens: {
+            "model": "markov",
+            "neg_avg_logprob": score_by_pid(tokens),
+            "worst_tokens": tokens[:2],
+        },
+        build_anomaly=lambda score, cfg: {"stage": 8, "pid": score.get("pid")},
+    )
+    worker._stage8_scored_at = -1
+    worker._stage8_pid_marks = {}
+    worker._last_stage8_log = 0.0
+    worker._last_stage8_emit = 0.0
+    return worker
+
+
+def test_stage8_quarantines_the_pid_it_flagged():
+    """Stage 4 is not the only stage whose verdict must gate learning."""
+    from kernel_ai.ml.collectors.base import SyscallEvent
+    from kernel_ai.ml.sequence import NgramTracker
+
+    tracker = NgramTracker(n=3, window=200)
+    hostile = ["ptrace", "memfd_create", "execve", "connect"] * 5
+    tracker.update_stream(
+        [SyscallEvent(ts=i * 0.01, pid=41, uid=0, comm="evil", syscall=s)
+         for i, s in enumerate(hostile)]
+    )
+    # The window reached the profile's waiting room, as any window does.
+    assert sum(sum(b.values()) for b in tracker._pending.values()) > 0
+
+    worker = _stage8_worker(tracker, lambda tokens: 9.0)
+    anomaly = worker._tick_stage8()
+
+    assert anomaly == {"stage": 8, "pid": 41}
+    # Nothing that pid contributed may reach the profile.
+    assert tracker.drain_pending() == {}
+    assert tracker.quarantined_pids() == 1
+
+
+def test_stage8_quarantines_even_when_the_cooldown_eats_the_report():
+    """A swallowed report is still a verdict; the profile must not learn anyway."""
+    from kernel_ai.ml.collectors.base import SyscallEvent
+    from kernel_ai.ml.sequence import NgramTracker
+
+    tracker = NgramTracker(n=3, window=200)
+    worker = _stage8_worker(tracker, lambda tokens: 9.0)
+    import time as _time
+
+    worker._last_stage8_emit = _time.time()  # cooldown wide open
+
+    tracker.update_stream(
+        [SyscallEvent(ts=i * 0.01, pid=41, uid=0, comm="evil", syscall=s)
+         for i, s in enumerate(["ptrace", "memfd_create", "execve", "connect"] * 5)]
+    )
+    assert worker._tick_stage8() is None
+    assert tracker.quarantined_pids() == 1
+    assert tracker.drain_pending() == {}
+
+
+def test_stage8_leaves_a_quiet_pid_learning():
+    """The quarantine must not fire on windows that scored below warn."""
+    from kernel_ai.ml.collectors.base import SyscallEvent
+    from kernel_ai.ml.sequence import NgramTracker
+
+    tracker = NgramTracker(n=3, window=200)
+    tracker.update_stream(
+        [SyscallEvent(ts=i * 0.01, pid=7, uid=0, comm="nginx", syscall="accept4")
+         for i in range(40)]
+    )
+    worker = _stage8_worker(tracker, lambda tokens: 0.2)
+
+    assert worker._tick_stage8() is None
+    assert tracker.quarantined_pids() == 0
+    assert tracker.drain_pending() == {"accept4|accept4|accept4": 38}
+
+
+def test_stage8_announces_a_quarantine_once_not_once_per_tick():
+    """A long-lived hostile pid clears warn on every tick; the log must not."""
+    from kernel_ai.ml.collectors.base import SyscallEvent
+    from kernel_ai.ml.sequence import NgramTracker
+
+    tracker = NgramTracker(n=3, window=200)
+    worker = _stage8_worker(tracker, lambda tokens: 9.0)
+    hostile = ["ptrace", "memfd_create", "execve", "connect"] * 5
+
+    for round_no in range(3):
+        tracker.update_stream(
+            [SyscallEvent(ts=round_no * 10 + i * 0.01, pid=41, uid=0, comm="evil", syscall=s)
+             for i, s in enumerate(hostile)]
+        )
+        worker._last_stage8_emit = 0.0
+        worker._tick_stage8()
+
+    assert tracker.quarantined_pids() == 1
+    assert tracker.is_quarantined(41) is True
+    # Still not learning from it after the first verdict.
+    assert tracker.drain_pending() == {}
