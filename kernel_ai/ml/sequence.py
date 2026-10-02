@@ -102,13 +102,22 @@ class NgramTracker:
         # Per-pid rolling windows — STIDE scores these so connect-spam from one
         # daemon cannot dilute a hostile short chain on another pid.
         self._recent_by_pid: dict[int, deque[str]] = {}
-        # Counts of every n-gram observed since the last flush (profile growth).
-        self._pending: dict[str, int] = {}
+        # Counts of every n-gram observed since the last flush (profile growth),
+        # kept per pid so a pid that turns out to be hostile can have its
+        # contribution withdrawn before it reaches the profile. See quarantine().
+        self._pending: dict[int, dict[str, int]] = {}
+        # Pids whose n-grams must never be learned from again.
+        self._quarantined: set[int] = set()
 
     def _drop_pid(self, pid: int) -> None:
         self._hist.pop(pid, None)
         self._recent_by_pid.pop(pid, None)
         self._pid_stamp.pop(pid, None)
+        self._pending.pop(pid, None)
+        # Released together with the pid: the number gets reused, and holding a
+        # quarantine against a future unrelated process would silently stop the
+        # profile learning from it.
+        self._quarantined.discard(pid)
 
     def _append(self, pid: int, name: str, *, learn: bool = True) -> None:
         self.ingested += 1
@@ -121,8 +130,12 @@ class NgramTracker:
         if len(hist) == self.n:
             key = _SEP.join(hist)
             self._recent.append(key)
-            if learn:
-                self._pending[key] = self._pending.get(key, 0) + 1
+            if learn and pid not in self._quarantined:
+                bucket = self._pending.get(pid)
+                if bucket is None:
+                    bucket = {}
+                    self._pending[pid] = bucket
+                bucket[key] = bucket.get(key, 0) + 1
             pid_win = self._recent_by_pid.get(pid)
             if pid_win is None:
                 pid_win = deque(maxlen=self.window)
@@ -207,11 +220,42 @@ class NgramTracker:
                 out.append((pid, list(dq)))
         return out
 
+    def quarantine(self, pid: int) -> int:
+        """Stop learning from ``pid`` and withdraw what it has not yet flushed.
+
+        Without this the profile learns the attack it just reported. Measured on
+        2026-09-29: the four trigrams that make a ptrace injection detectable
+        (clone|ptrace|ptrace and friends) were created by the first run of the
+        polygon scenario that tests for it, and three runs put 45 observations
+        on them. Left alone, the next retrain folds them into "normal" and the
+        detection disappears — from having been tested.
+
+        The same mechanism is reachable on purpose. An attacker who repeats a
+        harmless-looking action long enough teaches the profile to accept it,
+        then performs it for real. Refusing to learn from a window that was just
+        reported closes that, at the cost of never learning from a pid that
+        produced one false positive.
+
+        Returns the number of observations discarded.
+        """
+        self._quarantined.add(pid)
+        bucket = self._pending.pop(pid, None)
+        return sum(bucket.values()) if bucket else 0
+
+    def quarantined_pids(self) -> int:
+        return len(self._quarantined)
+
+    def is_quarantined(self, pid: int) -> bool:
+        return pid in self._quarantined
+
     def drain_pending(self) -> dict[str, int]:
         """Return + clear n-gram counts accumulated since the last drain."""
-        pending = self._pending
+        merged: dict[str, int] = {}
+        for bucket in self._pending.values():
+            for key, count in bucket.items():
+                merged[key] = merged.get(key, 0) + count
         self._pending = {}
-        return pending
+        return merged
 
 
 def ngrams_to_tokens(ngrams: list[str], *, n: int = 3) -> list[str]:

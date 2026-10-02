@@ -297,8 +297,17 @@ def ml_anomalies():
     """
 
     def _payload():
-        from kernel_ai.ml.config import MLConfig
-        from kernel_ai.ml.store import fetch_recent_anomalies
+        try:
+            from kernel_ai.ml.config import MLConfig
+            from kernel_ai.ml.store import fetch_recent_anomalies
+        except ImportError:
+            return {
+                "timestamp": datetime.now().isoformat(),
+                "since_seconds": 120,
+                "count": 0,
+                "anomalies": [],
+                "available": False,
+            }
 
         try:
             since = int(request.args.get("since_seconds", 120))
@@ -334,8 +343,17 @@ def ml_drift():
     def _payload():
         import os
 
-        from kernel_ai.ml.config import MLConfig
-        from kernel_ai.ml.store import fetch_drift_status
+        try:
+            from kernel_ai.ml.config import MLConfig
+            from kernel_ai.ml.store import fetch_drift_status
+        except ImportError:
+            return {
+                "timestamp": datetime.now().isoformat(),
+                "available": False,
+                "model_age_sec": None,
+                "latest": None,
+                "history": [],
+            }
 
         try:
             history = int(request.args.get("history", 48))

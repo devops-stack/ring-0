@@ -9,8 +9,16 @@ from __future__ import annotations
 from datetime import datetime
 import math
 import os
+import re
 import threading
 import time
+
+_KTHREAD_NAME = re.compile(
+    r"^(kthreadd|kworker|ksoftirqd|rcu_|migration/|cpuhp/|idle_inject|"
+    r"mm_percpu|slub_|netns|kauditd|scsi_|jbd2|kcompactd|kswapd|"
+    r"kintegrityd|kblockd|writeback|kdevtmpfs|watchdog|khungtaskd|"
+    r"ext4-|irq/|kdmflush|kpsmoused)"
+)
 
 import psutil
 
@@ -75,6 +83,9 @@ def get_proc_matrix_data() -> list[dict]:
         try:
             info = proc.info
             pid = info["pid"]
+            name = str(info.get("name") or "unknown")
+            if pid <= 2 or _KTHREAD_NAME.match(name):
+                continue
 
             cpu_percent = info.get("cpu_percent") or 0.0
 
@@ -103,7 +114,7 @@ def get_proc_matrix_data() -> list[dict]:
             processes.append(
                 {
                     "pid": pid,
-                    "name": info.get("name") or "unknown",
+                    "name": name,
                     "cpu": float(cpu_percent),
                     "mem": float(mem_mb),
                     "io": float(io_total_mb),
@@ -114,7 +125,7 @@ def get_proc_matrix_data() -> list[dict]:
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
-    processes.sort(key=lambda p: p["cpu"], reverse=True)
+    processes.sort(key=lambda p: (p["cpu"], p["mem"], p["fd"]), reverse=True)
     return processes[:20]
 
 

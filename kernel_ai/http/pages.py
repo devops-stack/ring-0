@@ -88,6 +88,18 @@ def linux_filesystem_subsystem_html():
     return redirect("/linux-filesystem-subsystem", code=301)
 
 
+def linux_kernel_architecture_page():
+    return render_template("linux-kernel-architecture.html")
+
+
+def linux_kernel_architecture_html():
+    return redirect("/linux-kernel-architecture", code=301)
+
+
+def architecture_page_legacy():
+    return redirect("/linux-kernel-architecture", code=301)
+
+
 def kernel_dna_page():
     return render_template("kernel-dna.html")
 

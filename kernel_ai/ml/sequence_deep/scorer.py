@@ -84,11 +84,24 @@ class DeepSequenceScorer:
             return self.lstm.score_window(ids)
         return None
 
+    def warn_crit(self, cfg: Any) -> tuple[float, float]:
+        """The pair of thresholds a window is judged by, read in one place.
+
+        Hand-set for now, and known to be mis-set: on PROD the live score
+        distribution runs p50=2.34 to max=4.62, so warn=4.0 sits inside ordinary
+        traffic rather than outside it. See the Stage 8 recall measurement before
+        moving it — a threshold cannot be chosen without knowing what an attack
+        scores.
+        """
+        return (
+            float(getattr(cfg, "stage8_score_warn", 3.0)),
+            float(getattr(cfg, "stage8_score_crit", 5.0)),
+        )
+
     def build_anomaly(self, score: dict, cfg: Any) -> dict:
         """Map a Stage 8 score dict onto the shared mutation contract."""
         neg = float(score.get("neg_avg_logprob") or score.get("perplexity") or 0.0)
-        warn = float(getattr(cfg, "stage8_score_warn", 3.0))
-        crit = float(getattr(cfg, "stage8_score_crit", 5.0))
+        warn, crit = self.warn_crit(cfg)
         severity = "high" if neg >= crit else "medium"
         worst = score.get("worst_tokens") or []
         why = " → ".join(str(t) for t in worst) if worst else score.get("model", "deep-seq")
