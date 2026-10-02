@@ -24,6 +24,10 @@ logger = logging.getLogger("kernel_ai.ml.worker")
 
 # Persist baseline state / prune old rows every N ticks (not every tick).
 _HOUSEKEEPING_EVERY = 30
+# How often to repeat the "syscall stream is silent" warning while it stays
+# silent. Hourly is quiet enough not to be noise and loud enough that a feed
+# that has been dead for days is still saying so today.
+_SEQ_STALE_REPEAT_SEC = 3600.0
 
 
 def _build_anomalies(scores: dict[str, Score], cfg: MLConfig) -> list[dict]:
@@ -163,6 +167,7 @@ class MLWorker:
         self._seq_scored_at = -1
         self._seq_last_event_at = 0.0
         self._seq_stale_logged = False
+        self._seq_stale_logged_at = 0.0
         self._seq_pid_marks: dict[int, int] = {}
         self._seq_source = (self.cfg.seq_source or "procfs").strip().lower()
         if self.cfg.enable_stage4 and self._seq_source != "off":
@@ -329,9 +334,15 @@ class MLWorker:
                 self._seq_stale_logged = False
             return True
         silence = now - self._seq_last_event_at
-        if silence >= self.cfg.seq_stale_warn_sec and not self._seq_stale_logged:
-            # Said once per outage, and filebeat ships it: a silent feed should
-            # look like a problem rather than like a calm system.
+        # Repeated, not once per outage. Said once, the warning is only visible
+        # on the day the feed dies: PROD lost its collector at the 2026-09-13
+        # reboot, logged this line once, and by the time anyone looked the
+        # journal had rotated past it. Fifteen days of Stage 4 and Stage 8
+        # scoring nothing then looked exactly like fifteen quiet days.
+        due = not self._seq_stale_logged or (
+            now - self._seq_stale_logged_at
+        ) >= _SEQ_STALE_REPEAT_SEC
+        if silence >= self.cfg.seq_stale_warn_sec and due:
             logger.warning(
                 "syscall stream silent for %.0fs (source=%s): sequence scoring "
                 "paused until events resume",
@@ -339,6 +350,7 @@ class MLWorker:
                 self._seq_source,
             )
             self._seq_stale_logged = True
+            self._seq_stale_logged_at = now
         return False
 
     def _fresh_pid_windows(
@@ -366,15 +378,41 @@ class MLWorker:
         return fresh
 
     def _tick_sequence(self) -> dict | None:
-        """Ingest syscalls, grow the n-gram vocabulary, and score the window."""
+        """Ingest syscalls, score the windows, then grow the n-gram vocabulary.
+
+        The flush is deliberately last. It used to run before scoring, which
+        meant an n-gram could be written into the profile as normal on the same
+        tick it was about to be reported as hostile.
+        """
         if self.seq_tracker is None:
             return None
 
+        if not self._ingest_sequence_events():
+            return None
+
+        now = time.time()
+        # pid is returned whenever the window was hostile, including when the
+        # cooldown swallowed the report, because quarantine is about learning
+        # rather than about alerting.
+        anomaly, pid = self._score_sequence(now)
+        if pid is not None and not self.seq_tracker.is_quarantined(pid):
+            dropped = self.seq_tracker.quarantine(pid)
+            logger.info(
+                "sequence: quarantined pid=%s, withdrew %d unflushed n-gram "
+                "observations (%d pids quarantined)",
+                pid, dropped, self.seq_tracker.quarantined_pids(),
+            )
+        self._flush_sequence_profile(now)
+        return anomaly
+
+    def _ingest_sequence_events(self) -> bool:
+        """Pull whatever the configured source has. False means no source."""
         if self.seq_socket_source is not None:
             events = self.seq_socket_source.drain()
             if events:
                 self.seq_tracker.update_stream(events)
-        elif self.seq_sampler is not None:
+            return True
+        if self.seq_sampler is not None:
             # Burst of rapid sub-samples: parked daemons still yield X,X,X (normal),
             # while actively-working processes reveal real syscall transitions.
             bursts = max(1, self.cfg.seq_subsamples)
@@ -385,23 +423,26 @@ class MLWorker:
                     self.seq_tracker.update(samples)
                 if i < bursts - 1 and gap:
                     time.sleep(gap)
-        else:
-            return None
+            return True
+        return False
 
-        # Periodically persist newly observed n-grams so the profile can grow.
-        now = time.time()
-        if (now - self._last_seq_flush) >= self.cfg.seq_flush_sec:
-            pending = self.seq_tracker.drain_pending()
-            if pending:
-                self.store.upsert_ngram_counts(self.cfg.seq_n, pending)
-            self.seq_tracker.evict_idle(older_than=self.cfg.seq_pid_idle_events)
-            self._last_seq_flush = now
+    def _flush_sequence_profile(self, now: float) -> None:
+        """Periodically persist newly observed n-grams so the profile can grow."""
+        if (now - self._last_seq_flush) < self.cfg.seq_flush_sec:
+            return
+        pending = self.seq_tracker.drain_pending()
+        if pending:
+            self.store.upsert_ngram_counts(self.cfg.seq_n, pending)
+        self.seq_tracker.evict_idle(older_than=self.cfg.seq_pid_idle_events)
+        self._last_seq_flush = now
 
+    def _score_sequence(self, now: float) -> tuple[dict | None, int | None]:
+        """Score the per-pid windows. Returns ``(anomaly, pid)``."""
         if self.seq_model is None:
-            return None
+            return None, None
 
         if not self._sequence_evidence_is_fresh(now):
-            return None
+            return None, None
 
         # Prefer per-pid windows (classic STIDE): high-volume connect/setuid
         # spam from one process must not dilute a hostile chain on another.
@@ -421,17 +462,21 @@ class MLWorker:
                 mismatch, misses = self.seq_model.score_window(window)
                 best = (mismatch, misses, window, None)
         if best is None:
-            return None
+            return None, None
         mismatch, misses, window, pid = best
         if mismatch < self.cfg.seq_mismatch_warn:
-            return None
+            return None, None
         if (now - self._last_seq_emit) < self.cfg.seq_cooldown_sec:
-            return None
+            # Suppressed for reporting, but still hostile: quarantine the pid so
+            # the cooldown cannot become a window in which the profile quietly
+            # learns the very thing it declined to report.
+            return None, pid
         self._last_seq_emit = now
         top = self.seq_model.top_unseen(window, limit=3)
-        return _build_sequence_anomaly(
+        anomaly = _build_sequence_anomaly(
             mismatch, misses, len(window), top, self.cfg, pid=pid
         )
+        return anomaly, pid
 
     def _tick_stage8(self) -> dict | None:
         """Stage 8: score reconstructed syscall tokens if a Markov model is ready."""
@@ -477,6 +522,7 @@ class MLWorker:
         neg, score, pid = best
         score["pid"] = pid
         now = time.time()
+        warn, crit = self.deep_scorer.warn_crit(self.cfg)
         # A heartbeat of the score itself: thresholds for a fresh host should be read
         # off the live distribution, not guessed, and later it shows the model is
         # still scoring rather than quietly dormant.
@@ -486,12 +532,25 @@ class MLWorker:
                 "Stage 8 window score: pid=%s neg_avg_logprob=%.3f (warn=%.2f crit=%.2f) worst=%s",
                 pid,
                 neg,
-                self.cfg.stage8_score_warn,
-                self.cfg.stage8_score_crit,
+                warn,
+                crit,
                 ",".join(str(t) for t in (score.get("worst_tokens") or [])[:3]),
             )
-        if neg < self.cfg.stage8_score_warn:
+        if neg < warn:
             return None
+        # Stage 8 needs the same quarantine as Stage 4, and for the same reason:
+        # its verdict is the only thing standing between a hostile window and
+        # the profile that decides what hostile means. Applied before the
+        # cooldown check, because a suppressed report is still a verdict.
+        # Only the first time: a long-lived hostile pid clears the threshold on
+        # every tick, and re-announcing a quarantine it is already under turned
+        # the journal into one line per tick on PROD pid=784553.
+        if pid is not None and not self.seq_tracker.is_quarantined(pid):
+            dropped = self.seq_tracker.quarantine(pid)
+            logger.info(
+                "stage8: quarantined pid=%s, withdrew %d unflushed n-gram observations",
+                pid, dropped,
+            )
         if (now - self._last_stage8_emit) < self.cfg.stage8_cooldown_sec:
             return None
         self._last_stage8_emit = now

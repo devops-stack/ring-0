@@ -73,6 +73,48 @@ SCENARIOS: dict[str, dict] = {
         "description": "bash → sleep (generic unusual child)",
         "live": True,
     },
+    # ---------------------------------------------------------------- Stage 4/8
+    # Everything above spawns a renamed `sleep`, which is the right shape for
+    # Stage 5 (comm, parent_comm, uid) and invisible to the sequence stages:
+    # measured on 2026-09-29 those processes emit 3-5 syscalls each, all execve,
+    # against seq_pid_min_window=24. The scenarios below do enough work under one
+    # pid to actually be scored, and are chosen by how rare their tokens are in
+    # the live profile — ptrace has 6 observations in 14M, memfd_create has 34.
+    "port_sweep": {
+        "technique": "T1046",
+        "family": "discovery",
+        "description": "60 connect() to closed loopback ports, one pid",
+        "live": False,
+        "sequence": True,
+    },
+    "file_staging": {
+        "technique": "T1074",
+        "family": "collection",
+        "description": "renameat/unlinkat churn in a temp dir, one pid",
+        "live": False,
+        "sequence": True,
+    },
+    "fileless_exec": {
+        "technique": "T1620",
+        "family": "defense_evasion",
+        "description": "memfd_create + exec of /bin/true straight from memory",
+        "live": False,
+        "sequence": True,
+    },
+    "ptrace_probe": {
+        "technique": "T1055",
+        "family": "privilege_escalation",
+        "description": "PTRACE_ATTACH/DETACH against our own child",
+        "live": False,
+        "sequence": True,
+    },
+    "spawn_burst": {
+        "technique": "T1059",
+        "family": "execution",
+        "description": "30 clone+execve of /bin/true from one pid",
+        "live": False,
+        "sequence": True,
+    },
 }
 
 
@@ -240,6 +282,111 @@ def _spawn_fake_nginx_shell(duration: float) -> subprocess.Popen:
     )
 
 
+# Payloads for the sequence scenarios. Each runs in its own child interpreter so
+# the traced syscalls accumulate under one pid, which is what Stage 4 scores.
+# All of them are self-contained: loopback only, temp dirs only, /bin/true only,
+# and ptrace only against a child of our own.
+_SEQUENCE_PAYLOADS: dict[str, str] = {
+    # 60 refused connects. Nothing listens on this range; a refused connect is
+    # still a connect syscall, which is exactly what a sweep looks like.
+    "port_sweep": """
+import socket
+for port in range(39000, 39060):
+    s = socket.socket(); s.settimeout(0.01)
+    try: s.connect(("127.0.0.1", port))
+    except OSError: pass
+    s.close()
+""",
+    # 40 renameat + 40 unlinkat, the shape of staging files before exfiltration.
+    "file_staging": """
+import os, tempfile
+d = tempfile.mkdtemp(prefix="kai-poly-stage-")
+for i in range(40):
+    a, b = os.path.join(d, "f%d" % i), os.path.join(d, "g%d" % i)
+    open(a, "w").close(); os.rename(a, b); os.unlink(b)
+os.rmdir(d)
+""",
+    # memfd_create has 34 observations in a 14M profile, so this should be the
+    # loudest of the set. The binary never exists on disk: /bin/true is copied
+    # into an anonymous memory fd and executed from there.
+    "fileless_exec": """
+import ctypes, os
+libc = ctypes.CDLL("libc.so.6", use_errno=True)
+blob = open("/bin/true", "rb").read()
+for _ in range(20):
+    fd = libc.memfd_create(b"kai-poly", 0)
+    if fd < 0: break
+    os.write(fd, blob)
+    pid = os.fork()
+    if pid == 0:
+        try: os.execv("/proc/self/fd/%d" % fd, ["kai-poly"])
+        except Exception: pass
+        os._exit(1)
+    os.waitpid(pid, 0); os.close(fd)
+""",
+    # ptrace has 6 observations in the whole profile. Attaching to a child we
+    # forked ourselves is the safe shape of the same syscall an injector uses.
+    "ptrace_probe": """
+import ctypes, os, signal, time
+libc = ctypes.CDLL("libc.so.6", use_errno=True)
+PTRACE_ATTACH, PTRACE_DETACH = 16, 17
+for _ in range(15):
+    pid = os.fork()
+    if pid == 0:
+        time.sleep(1.0); os._exit(0)
+    libc.ptrace(PTRACE_ATTACH, pid, 0, 0)
+    os.waitpid(pid, 0)
+    libc.ptrace(PTRACE_DETACH, pid, 0, 0)
+    os.kill(pid, signal.SIGKILL)
+    try: os.waitpid(pid, 0)
+    except ChildProcessError: pass
+""",
+    # 30 clone+execve from one parent: a loader working through a list.
+    "spawn_burst": """
+import os
+for _ in range(30):
+    pid = os.fork()
+    if pid == 0:
+        try: os.execv("/bin/true", ["true"])
+        except Exception: pass
+        os._exit(1)
+    os.waitpid(pid, 0)
+""",
+}
+
+
+def run_sequence(scenarios: list[str], *, timeout: float = 30.0) -> list[dict]:
+    """Run the syscall-active scenarios and return ``[{scenario, pid, rc}]``.
+
+    Unlike run_live these are not held open: the point is the syscalls they emit
+    while running, not the process metadata they present while alive.
+    """
+    out: list[dict] = []
+    for name in scenarios:
+        payload = _SEQUENCE_PAYLOADS.get(name)
+        if payload is None:
+            meta = SCENARIOS.get(name, {})
+            print(f"[skip] {name}: no sequence payload ({meta.get('description', '?')})")
+            continue
+        meta = SCENARIOS[name]
+        proc = subprocess.Popen(
+            [sys.executable, "-c", payload],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            _, err = proc.communicate(timeout=timeout)
+            rc = proc.returncode
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            _, err = proc.communicate()
+            rc = -1
+        note = "" if rc == 0 else f"  rc={rc} {(err or b'').decode()[:160]}"
+        print(f"[run] {name:14} pid={proc.pid:<8} {meta['technique']:6} {meta['description']}{note}")
+        out.append({"scenario": name, "pid": proc.pid, "rc": rc, "technique": meta["technique"]})
+    return out
+
+
 def run_live(scenarios: list[str], *, duration: float = 6.0) -> None:
     """Spawn safe processes for a running ML worker (STAGE5=true) to observe."""
     procs: list[subprocess.Popen] = []
@@ -381,7 +528,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Stage 5/7/8 local polygon (dev only)")
     parser.add_argument(
         "mode",
-        choices=("dry-run", "live", "list", "mimicry", "stream", "http-wordlist", "http-rce"),
+        choices=(
+            "dry-run", "live", "sequence", "list", "mimicry", "stream",
+            "http-wordlist", "http-rce",
+        ),
     )
     parser.add_argument(
         "--scenario",
@@ -397,8 +547,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.mode == "list":
         for name, meta in SCENARIOS.items():
-            live = "live+dry" if meta["live"] else "dry-only"
-            print(f"{name:16} {meta['technique']:8} [{live}] {meta['description']}")
+            if meta.get("sequence"):
+                kind = "sequence"
+            elif meta["live"]:
+                kind = "live+dry"
+            else:
+                kind = "dry-only"
+            print(f"{name:16} {meta['technique']:8} [{kind}] {meta['description']}")
         print(f"{'mimicry':16} {'T1106':8} [dry-only] STIDE miss / Markov hit (Stage 8)")
         print(f"{'stream':16} {'L2':8} [dry-only] Stage 6 socket e2e (demo collector)")
         print(f"{'http-wordlist':16} {'HTTP':8} [dry-only] Stage 9 scanner window")
@@ -437,10 +592,19 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.scenario:
         scenarios = list(dict.fromkeys(args.scenario))
+    elif args.mode == "sequence":
+        scenarios = [n for n, m in SCENARIOS.items() if m.get("sequence")]
     elif args.all or args.mode == "dry-run":
-        scenarios = list(SCENARIOS)
+        # Sequence scenarios have no synthetic ProcSample: they are defined by
+        # the syscalls they emit, not by the process metadata they present.
+        scenarios = [n for n, m in SCENARIOS.items() if not m.get("sequence")]
     else:
         scenarios = [n for n, m in SCENARIOS.items() if m.get("live")]
+
+    if args.mode == "sequence":
+        run_sequence(scenarios)
+        print("\ndone — Stage 4/8 score these on the next worker tick")
+        return 0
 
     if args.mode == "dry-run":
         results = run_dry(scenarios, write_labels=not args.no_labels)
