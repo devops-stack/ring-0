@@ -1,3 +1,4 @@
+# Full tree for this host (includes ML). Host install without ML: requirements-viz.txt
 Flask==3.1.2
 prometheus-client==0.21.1
 psutil==7.0.0

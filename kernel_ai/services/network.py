@@ -601,6 +601,39 @@ def get_flow_history(local=None, remote=None, proto="TCP"):
     }
 
 
+def get_peer_rtt(remote_ip, proto="TCP"):
+    """Lowest round-trip time the kernel has measured to one address.
+
+    The minimum across that peer's sockets rather than the current estimate:
+    srtt rises with every delayed acknowledgement and every byte queued behind
+    a slow reader, so the smoothed value describes the conversation, while the
+    minimum describes the distance.
+    """
+    remote_ip = str(remote_ip or "").strip()
+    if not remote_ip:
+        return {"found": False}
+    best = None
+    for row in _ss_flow_dump(str(proto or "TCP").upper()):
+        address = str(row.get("remote") or "").rsplit(":", 1)[0].strip("[]")
+        if address != remote_ip:
+            continue
+        candidate = row.get("min_rtt_ms")
+        if candidate is None:
+            candidate = row.get("rtt_ms")
+        if candidate is None:
+            continue
+        if best is None or candidate < best["min_rtt_ms"]:
+            best = {
+                "found": True,
+                "min_rtt_ms": candidate,
+                "rtt_ms": row.get("rtt_ms"),
+                "rtt_var_ms": row.get("rtt_var_ms"),
+                "local": row.get("local"),
+                "remote": row.get("remote"),
+            }
+    return best or {"found": False}
+
+
 def _get_ss_tcp_metrics(local=None, remote=None):
     ss_cmd = resolve_binary("ss")
     if not ss_cmd:

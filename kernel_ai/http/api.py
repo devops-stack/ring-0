@@ -35,6 +35,7 @@ from kernel_ai.http.api_handlers.network_system import (
     network_mechanisms,
     network_stack_realtime,
     path_walk,
+    peer_distance,
     traceroute_info,
 )
 from kernel_ai.http.api_handlers.processes import (
