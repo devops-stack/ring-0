@@ -7,6 +7,7 @@ from kernel_ai.http.common import api_json
 from kernel_ai.services import devices as _devices_service
 from kernel_ai.services import network as _network_service
 from kernel_ai.services import network_mechanisms as _network_mechanisms_service
+from kernel_ai.services import peer_distance as _peer_distance_service
 from kernel_ai.services import system_view as _system_view_service
 from kernel_ai.state import get_state_container
 
@@ -41,6 +42,23 @@ def flow_history():
         return _network_service.get_flow_history(local=local, remote=remote, proto=proto)
 
     return api_json(_payload, exception_statuses=[(ValueError, 400)])
+
+
+def peer_distance():
+    def _payload():
+        # The same header the request log trusts, so the address matches what
+        # the sensor saw arrive at nginx rather than nginx's own address.
+        source_ip = request.headers.get("X-Real-IP") or request.headers.get(
+            "X-Forwarded-For", request.remote_addr or ""
+        )
+        source_ip = source_ip.split(",")[0].strip()
+        return _peer_distance_service.get_neighbourhood(
+            source_ip,
+            _network_service.get_ip_layer_map(limit_routes=16, limit_neigh=16),
+            rtt=_network_service.get_peer_rtt(source_ip),
+        )
+
+    return api_json(_payload)
 
 
 def traceroute_info():
