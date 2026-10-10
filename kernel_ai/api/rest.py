@@ -18,6 +18,7 @@ _API_ROUTES = [
     ("/io-open-files", "io_open_files", h.io_open_files, None),
     ("/active-connections", "active_connections", h.active_connections, None),
     ("/traceroute", "traceroute_info", h.traceroute_info, None),
+    ("/peer-distance", "peer_distance", h.peer_distance, None),
     ("/flow-history", "flow_history", h.flow_history, None),
     ("/socket-activity", "socket_activity", h.socket_activity, None),
     ("/ip-entry", "ip_entry", h.ip_entry, None),
