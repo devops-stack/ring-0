@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from stat import S_ISUID as _S_ISUID
 
 
-def collect_security_realtime(security_prev, psutil_module, subprocess_module, random_module, os_module):
+def collect_security_realtime(security_prev, psutil_module, random_module, os_module):
     """
     Stage-1 security subsystem telemetry:
     - Threat decision pipeline
@@ -127,17 +128,29 @@ def collect_security_realtime(security_prev, psutil_module, subprocess_module, r
     root_processes = sum(1 for p in process_rows if p.get("user") == "root")
     suspicious_processes = sum(1 for p in process_rows if p.get("trust") in {"suspicious", "blocked"})
 
+    # Counted in-process rather than by shelling out to `find ... | wc -l`.
+    # The shell version spawned /bin/sh under gunicorn on every request that
+    # reached this panel, which the eBPF proc collector reports as a suspicious
+    # web-stack child. Paired with any passing scanner probe, the SIEM chain rule
+    # then raised a critical "web probe then kernel unexpected exec" — three times
+    # on 2026-10-01 alone, all false. No request data ever reached that command,
+    # so this is noise removal, not a vulnerability fix.
+    #
+    # Non-recursive on purpose: /usr/bin and /usr/sbin hold no subdirectories, so
+    # this matches what `find -xdev -type f` counted (11 on PROD).
     setuid_bins = 0
-    try:
-        out = subprocess_module.check_output(
-            "find /usr/bin /usr/sbin -xdev -perm -4000 -type f 2>/dev/null | wc -l",
-            shell=True,
-            text=True,
-            timeout=1.8,
-        ).strip()
-        setuid_bins = int(out or 0)
-    except (subprocess_module.SubprocessError, OSError, ValueError):
-        setuid_bins = 0
+    for _bin_dir in ("/usr/bin", "/usr/sbin"):
+        try:
+            for _entry in os_module.scandir(_bin_dir):
+                try:
+                    if not _entry.is_file(follow_symlinks=False):
+                        continue
+                    if _entry.stat(follow_symlinks=False).st_mode & _S_ISUID:
+                        setuid_bins += 1
+                except OSError:
+                    continue
+        except OSError:
+            continue
 
     attack_surface = [
         {"name": "open-listen-ports", "value": int(listen_ports), "severity": "high" if listen_ports > 40 else "medium"},

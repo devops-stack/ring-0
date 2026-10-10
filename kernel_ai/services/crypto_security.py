@@ -3,8 +3,6 @@ from __future__ import annotations
 import logging
 import os
 import random
-import subprocess
-
 import psutil
 
 from kernel_ai.services.crypto import aes_math as _aes_math
@@ -110,7 +108,6 @@ def collect_security_realtime(security_prev):
     return _security_pipeline.collect_security_realtime(
         security_prev=security_prev,
         psutil_module=psutil,
-        subprocess_module=subprocess,
         random_module=random,
         os_module=os,
     )
