@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
@@ -25,12 +26,16 @@ import (
 
 	sensorbpf "kernel-ai/sensor/internal/bpf"
 	"kernel-ai/sensor/internal/event"
+	"kernel-ai/sensor/internal/peer"
 )
 
 type config struct {
-	socketPath  string
-	minDuration time.Duration
-	printEvents bool
+	socketPath           string
+	securitySocketPath   string
+	peerSnapshotPath     string
+	peerSnapshotInterval time.Duration
+	minDuration          time.Duration
+	printEvents          bool
 }
 
 type client struct {
@@ -119,7 +124,10 @@ func (b *broker) serve(ctx context.Context, path string) error {
 	}
 }
 
-func syscallNames() map[uint32]string {
+// latencyNames are traced for the visualisation stream: what a process is
+// waiting on. They only matter when they are slow, so they keep the
+// --min-duration floor.
+func latencyNames() map[uint32]string {
 	return map[uint32]string{
 		unix.SYS_READ:            "read",
 		unix.SYS_WRITE:           "write",
@@ -132,15 +140,68 @@ func syscallNames() map[uint32]string {
 		unix.SYS_ACCEPT:          "accept",
 		unix.SYS_ACCEPT4:         "accept4",
 		unix.SYS_CONNECT:         "connect",
+		unix.SYS_OPENAT:          "openat",
+		unix.SYS_EXECVE:          "execve",
+		unix.SYS_CLONE:           "clone",
 		unix.SYS_RECVFROM:        "recvfrom",
 		unix.SYS_RECVMSG:         "recvmsg",
 		unix.SYS_SENDTO:          "sendto",
 		unix.SYS_SENDMSG:         "sendmsg",
-		unix.SYS_OPENAT:          "openat",
-		unix.SYS_EXECVE:          "execve",
-		unix.SYS_CLONE:           "clone",
 		unix.SYS_IO_URING_ENTER:  "io_uring_enter",
 	}
+}
+
+// securityNames are traced for the ML sequence stages. Duration is irrelevant
+// here — the signal is that the call happened at all, and in what order — so
+// these are stored with a zero floor and routed to the security socket.
+//
+// The map below is the arch-independent core. Syscalls that exist in only one
+// ABI live in legacyForkNames(), which is build-tagged, because the unix.SYS_*
+// constants for them do not compile on architectures that lack them.
+//
+// openat and mprotect are deliberately absent, matching the audit rule set
+// that built the existing profile. Measured here, openat alone is 2400/s —
+// 25x every other security syscall combined — and as a bare token it carries
+// almost nothing: its signal is the path argument, which the n-gram contract
+// does not yet transport. Add it back together with argument-aware tokens.
+func securityNames() map[uint32]string {
+	names := map[uint32]string{
+		unix.SYS_EXECVE:            "execve",
+		unix.SYS_EXECVEAT:          "execveat",
+		unix.SYS_CLONE:             "clone",
+		unix.SYS_CLONE3:            "clone3",
+		unix.SYS_CONNECT:           "connect",
+		unix.SYS_ACCEPT:            "accept",
+		unix.SYS_ACCEPT4:           "accept4",
+		unix.SYS_BIND:              "bind",
+		unix.SYS_LISTEN:            "listen",
+		unix.SYS_UNLINKAT:          "unlinkat",
+		unix.SYS_RENAMEAT:          "renameat",
+		unix.SYS_RENAMEAT2:         "renameat2",
+		unix.SYS_SETUID:            "setuid",
+		unix.SYS_SETREUID:          "setreuid",
+		unix.SYS_SETRESUID:         "setresuid",
+		unix.SYS_SETGID:            "setgid",
+		unix.SYS_SETREGID:          "setregid",
+		unix.SYS_SETRESGID:         "setresgid",
+		unix.SYS_PTRACE:            "ptrace",
+		unix.SYS_PROCESS_VM_WRITEV: "process_vm_writev",
+		unix.SYS_MEMFD_CREATE:      "memfd_create",
+		unix.SYS_USERFAULTFD:       "userfaultfd",
+	}
+	for nr, name := range legacyForkNames() {
+		names[nr] = name
+	}
+	return names
+}
+
+// syscallNames is the union used to label events.
+func syscallNames() map[uint32]string {
+	names := latencyNames()
+	for nr, name := range securityNames() {
+		names[nr] = name
+	}
+	return names
 }
 
 func subsystem(name string) string {
@@ -230,7 +291,10 @@ func normalize(raw sensorbpf.RawEvent, sequence uint64, offset int64, names map[
 func parseFlags() config {
 	var cfg config
 	flag.StringVar(&cfg.socketPath, "socket", "/run/kernel-ai/sensor.sock", "unixpacket output socket")
-	flag.DurationVar(&cfg.minDuration, "min-duration", 100*time.Millisecond, "minimum completed syscall duration")
+	flag.StringVar(&cfg.securitySocketPath, "security-socket", "", "unixpacket socket for the security syscall class (empty = class not traced)")
+	flag.StringVar(&cfg.peerSnapshotPath, "peer-distance-snapshot", "", "file to publish per-peer TTL distance to (empty = not measured)")
+	flag.DurationVar(&cfg.peerSnapshotInterval, "peer-distance-interval", 5*time.Second, "how often to republish the peer distance snapshot")
+	flag.DurationVar(&cfg.minDuration, "min-duration", 100*time.Millisecond, "minimum completed syscall duration (latency class only)")
 	flag.BoolVar(&cfg.printEvents, "print", false, "also write event JSON to stdout")
 	flag.Parse()
 	return cfg
@@ -246,22 +310,34 @@ func run(ctx context.Context, cfg config) error {
 	}
 	defer objects.Close()
 
-	names := syscallNames()
-	enabled := uint8(1)
-	for nr := range names {
-		key := nr
-		if err := objects.WatchedSyscalls.Put(key, enabled); err != nil {
+	latency := latencyNames()
+	security := map[uint32]string{}
+	if cfg.securitySocketPath != "" {
+		security = securityNames()
+	}
+	names := latencyNames()
+	for nr, name := range security {
+		names[nr] = name
+	}
+
+	// One floor per syscall. Where the two classes overlap the security floor
+	// wins, because a zero floor is the only one that admits both consumers'
+	// events; the latency socket re-applies its own floor in userspace below.
+	floors := make(map[uint32]uint64, len(names))
+	for nr := range latency {
+		floors[nr] = uint64(cfg.minDuration)
+	}
+	for nr := range security {
+		floors[nr] = 0
+	}
+	for nr, floor := range floors {
+		if err := objects.WatchedSyscalls.Put(nr, floor); err != nil {
 			return fmt.Errorf("watch syscall %d: %w", nr, err)
 		}
 	}
 	self := uint32(os.Getpid())
-	if err := objects.IgnoredTgids.Put(self, enabled); err != nil {
+	if err := objects.IgnoredTgids.Put(self, uint8(1)); err != nil {
 		return fmt.Errorf("ignore sensor process: %w", err)
-	}
-	configKey := uint32(0)
-	minimumNS := uint64(cfg.minDuration)
-	if err := objects.Config.Put(configKey, minimumNS); err != nil {
-		return fmt.Errorf("set minimum duration: %w", err)
 	}
 
 	links := make([]link.Link, 0, 3)
@@ -280,6 +356,16 @@ func run(ctx context.Context, cfg config) error {
 		return fmt.Errorf("attach sched_wakeup: %w", err)
 	}
 	links = append(links, wakeupLink)
+	if cfg.peerSnapshotPath != "" {
+		// The generic handler, not tcp_v4_conn_request: a Go listener reaches
+		// this one without passing through the IPv4 wrapper, so the wrapper
+		// can miss connections depending on who is listening.
+		connLink, err := link.Kprobe("tcp_conn_request", objects.TraceConnRequest, nil)
+		if err != nil {
+			return fmt.Errorf("attach tcp_conn_request: %w", err)
+		}
+		links = append(links, connLink)
+	}
 	defer func() {
 		for _, attached := range links {
 			_ = attached.Close()
@@ -303,12 +389,27 @@ func run(ctx context.Context, cfg config) error {
 		}
 	}()
 
+	var securityStream *broker
+	if cfg.securitySocketPath != "" {
+		securityStream = newBroker()
+		go func() {
+			if serveErr := securityStream.serve(ctx, cfg.securitySocketPath); serveErr != nil && ctx.Err() == nil {
+				log.Printf("security socket server stopped: %v", serveErr)
+			}
+		}()
+	}
+
 	offset, err := bootWallOffset()
 	if err != nil {
 		return fmt.Errorf("clock offset: %w", err)
 	}
+	if cfg.peerSnapshotPath != "" {
+		go publishPeerDistance(ctx, objects.PeerDistance, cfg, offset)
+	}
+
 	var sequence uint64
-	log.Printf("sensor ready socket=%s syscalls=%d min_duration=%s", cfg.socketPath, len(names), cfg.minDuration)
+	log.Printf("sensor ready socket=%s syscalls=%d min_duration=%s security_socket=%q security_syscalls=%d",
+		cfg.socketPath, len(names), cfg.minDuration, cfg.securitySocketPath, len(security))
 	for {
 		record, readErr := reader.Read()
 		if readErr != nil {
@@ -329,11 +430,78 @@ func run(ctx context.Context, cfg config) error {
 			continue
 		}
 		payload = append(payload, '\n')
-		stream.publish(payload)
+		if _, ok := security[raw.NR]; ok && securityStream != nil {
+			securityStream.publish(payload)
+		}
+		// The latency floor is no longer enforced in-kernel for syscalls the
+		// security class also watches, so re-apply it here. Without this the
+		// visualisation stream would suddenly carry every microsecond-long
+		// accept4, which is the load the Stage 6 rollback was avoiding.
+		if _, ok := latency[raw.NR]; ok && raw.DurationNS >= uint64(cfg.minDuration) {
+			stream.publish(payload)
+		}
 		if cfg.printEvents {
 			_, _ = os.Stdout.Write(payload)
 		}
 	}
+}
+
+// publishPeerDistance republishes the whole peer map on an interval.
+//
+// The map is read rather than drained: an entry is the current answer about an
+// address, not a backlog of events, and the kernel side keeps it bounded by
+// evicting the least recently used peer.
+func publishPeerDistance(ctx context.Context, peers *ebpf.Map, cfg config, offset int64) {
+	ticker := time.NewTicker(cfg.peerSnapshotInterval)
+	defer ticker.Stop()
+	var lastFailure string
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		distances, err := readPeerDistance(peers, offset)
+		if err == nil {
+			err = peer.Write(cfg.peerSnapshotPath, distances, time.Now())
+		}
+		if err != nil {
+			// Repeated identical failures would otherwise be one journal line
+			// every interval for as long as the condition lasts.
+			if message := err.Error(); message != lastFailure {
+				lastFailure = message
+				log.Printf("peer distance snapshot: %v", err)
+			}
+			continue
+		}
+		lastFailure = ""
+	}
+}
+
+func readPeerDistance(peers *ebpf.Map, offset int64) ([]peer.Distance, error) {
+	var (
+		key       uint32
+		value     sensorbpf.PeerDistance
+		distances []peer.Distance
+	)
+	entries := peers.Iterate()
+	for entries.Next(&key, &value) {
+		// The key holds the address as it sat on the wire, so the bytes are
+		// laid back out in the order the kernel read them rather than
+		// reinterpreted as a number.
+		address := make(net.IP, net.IPv4len)
+		binary.NativeEndian.PutUint32(address, key)
+		distances = append(distances, peer.Describe(
+			address.String(),
+			value.MinTtl,
+			value.Connections,
+			time.Unix(0, int64(value.LastNs)+offset),
+		))
+	}
+	if err := entries.Err(); err != nil {
+		return nil, fmt.Errorf("iterate peer map: %w", err)
+	}
+	return distances, nil
 }
 
 func main() {
