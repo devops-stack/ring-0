@@ -10,6 +10,11 @@ func LoadObjects(objects *Objects, options *ebpf.CollectionOptions) error {
 	return loadSensorObjects(objects, options)
 }
 
+// PeerDistance is the value side of the peer_distance map. Unlike RawEvent it
+// is generated, because a map binding carries its value type where a ring
+// buffer cannot.
+type PeerDistance = sensorPeerDistance
+
 // RawEvent must remain byte-for-byte aligned with struct sensor_event in
 // sensor.bpf.c. Generated map bindings cannot infer a ring-buffer element type.
 type RawEvent struct {
