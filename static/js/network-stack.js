@@ -3,72 +3,6 @@
 
 debugLog('🌐 network-stack.js v18: Script loading...');
 
-// Homepage blueprint: graphite machine, amber TX, cyan RX, red only for drop.
-const NS_PAPER = {
-    ground: 0xe6e6e6,
-    groundCss: '#e6e6e6',
-    ink: '#222222',
-    dim: 'rgba(34,34,34,0.52)',
-    faint: 'rgba(34,34,34,0.28)',
-    card: 'rgba(255,255,255,0.55)',
-    cardBorder: 'rgba(34,34,34,0.16)',
-    wire: 0x262626,
-    wireMid: 0x4a4a4a,
-    wireSoft: 0x8a8a8a,
-    fill: 0xd2d2ce,
-    emissive: 0x2a2a2a,
-    path: 0xe0564e,
-    live: 0xe2a33e,
-    liveCss: '#c48a14',
-    cool: 0x5a7a8a,
-    coolCss: '#5a7a8a',
-    tx: 0xe2a33e,
-    rx: 0x6a9bb8,
-    txCss: '#c48a14',
-    rxCss: '#5a86a0',
-    plate: '#17181a',
-    plateLit: '#24262a',
-    cream: '#f4f4ec',
-    creamDim: 'rgba(244,244,236,0.52)',
-    creamFaint: 'rgba(244,244,236,0.28)',
-    hair: 'rgba(60,60,60,0.30)',
-    hairSoft: 'rgba(60,60,60,0.13)',
-    dot: 'rgba(45,45,45,0.55)',
-    drop: '#c0392f'
-};
-
-// Flat board geometry. The SVG uses a fixed viewBox and scales to the viewport,
-// so every constant here is in board units, not pixels.
-const NS_BOARD = {
-    W: 1600,
-    H: 940,
-    cx: 800,
-    stageTop: 172,
-    stageGap: 82,
-    plateH: 54,
-    wireY: 736,
-    txRail: 592,
-    rxRail: 1008,
-    labelX: 300,
-    dossierX: 1252,
-    bandY: [792, 834, 876]
-};
-
-// One capsule per real stack layer with a live metric and a drill-down.
-// TC has no layer of its own in the telemetry, so it is named on the DRIVER
-// capsule (qdisc backlog is driver.tx_queue) rather than invented as a stage.
-const NS_STAGES = [
-    { id: 'userspace', name: 'PROCESS', object: 'task_struct · sendmsg()', w: 214 },
-    { id: 'socket', name: 'SOCKET', object: 'struct sock · fd', w: 240 },
-    { id: 'tcp', name: 'TCP / UDP', object: 'struct tcp_sock', w: 252 },
-    { id: 'ip', name: 'IP', object: 'FIB lookup · struct dst', w: 238 },
-    { id: 'netfilter', name: 'NETFILTER', object: 'hooks · nf_conntrack', w: 246 },
-    { id: 'driver', name: 'DRIVER', object: 'qdisc · NAPI · DMA ring', w: 222 },
-    { id: 'nic', name: 'NIC', object: 'PHY/MAC · RX/TX ring', w: 196 }
-];
-
-const NS_SVG = 'http://www.w3.org/2000/svg';
-
 class NetworkStackVisualization {
     constructor() {
         this.scene = null;
@@ -94,7 +28,6 @@ class NetworkStackVisualization {
         this.retransmitProbability = 0.28;
         this.telemetryInterval = null;
         this.telemetryData = null;
-        this.flowNode = null;
         this.layerStatNodes = {};
         this.telemetryErrorNode = null;
         this.layerActivity = {
@@ -147,29 +80,10 @@ class NetworkStackVisualization {
         this.kpiNodes = {};
         this.layersPanelNode = null;
         this.chipLayerNode = null;
-        this.viewModeButton = null;
-        this.puzzleModeButton = null;
-        this.noiseModeButton = null;
-        this.readModeButton = null;
         this.viewDensityMode = 'detailed';
         this.puzzleDetailMode = 'overview';
         this.noiseDetailMode = 'dense';
-        this.readMode = 'scene';
-        this.packetPinned = false;
-        this.packetFocus = 'tx';
-        this.packetLoopId = 0;
-        this.txPos = -0.6;
-        this.rxPos = NS_STAGES.length - 1 + 1.4;
-        this.boardSvg = null;
-        this.boardStages = null;
-        this.boardPackets = null;
-        this.rxPacket = null;
-        this.rxPacketGlow = null;
-        this.boundaryRailNode = null;
-        this.packetDossierNode = null;
-        this.kpiBarNode = null;
-        this._dossierKey = '';
-        this._zoomPlayed = false;
+        this.readMode = 'forensics';
         this.galaxyPanelNode = null;
         this.galaxyNodes = {};
         this.galaxyExplainNode = null;
@@ -202,9 +116,9 @@ class NetworkStackVisualization {
         this._ghostTimer = null;
         this._ghostFadeTimer = null;
         this.hideOsiTiles = true;
-        // Swarm off; one TX and one RX packet are the scene.
+        // Keep the particle swarm and hero packet off — morph stays as panel ribbons.
         this.hideVerticalOrbs = true;
-        this.packetMorphEnabled = true;
+        this.packetMorphEnabled = false;
         this.packetMorphPhase = -1;
         this.packetMorphCtx = null;
         this.packetMorphTag = null;
@@ -311,7 +225,7 @@ class NetworkStackVisualization {
                 inset: 0;
                 width: 100%;
                 height: 100%;
-                background: ${NS_PAPER.groundCss};
+                background: #0E1114;
                 z-index: 9999;
                 display: none;
                 visibility: hidden;
@@ -321,15 +235,48 @@ class NetworkStackVisualization {
             document.body.appendChild(this.container);
         }
 
-        this.layerMap = {};
-        NS_STAGES.forEach((stage, i) => {
-            this.layerMap[stage.id] = i;
-        });
+        let webglSupported = false;
+        try {
+            const canvas = document.createElement('canvas');
+            webglSupported = !!(canvas.getContext('webgl') || canvas.getContext('experimental-webgl'));
+        } catch (e) {
+            webglSupported = false;
+        }
+        if (!webglSupported) {
+            alert('WebGL is required for Network Stack view.');
+            return false;
+        }
 
-        this.buildBoard();
+        this.scene = new THREE.Scene();
+        this.scene.background = new THREE.Color(0x0E1114);
+
+        this.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        this.camera.position.set(0, 1.2, 13.5);
+        this.camera.lookAt(0, 0, 0);
+
+        this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        this.renderer.setSize(window.innerWidth, window.innerHeight);
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        this.container.appendChild(this.renderer.domElement);
+        this.raycaster = new THREE.Raycaster();
+
+        const ambient = new THREE.AmbientLight(0xffffff, 0.8);
+        const key = new THREE.DirectionalLight(0xffffff, 0.4);
+        key.position.set(4, 10, 8);
+        this.scene.add(ambient);
+        this.scene.add(key);
+
+        this.createLayerStack();
+        this.buildPeerBranchRig();
+        this.createPacket();
+        this.createFlowParticles();
         this.createOverlayUI();
         this.addExitButton();
 
+        this.mouseMoveHandler = (event) => this.onMouseMove(event);
+        this.renderer.domElement.addEventListener('mousemove', this.mouseMoveHandler);
+        this.clickHandler = (event) => this.onCanvasClick(event);
+        this.renderer.domElement.addEventListener('click', this.clickHandler);
         this.keyHandler = (event) => {
             if (event.key !== 'Escape') return;
             if (this.bbrOpen) this.closeBbrOverlay();
@@ -377,10 +324,10 @@ class NetworkStackVisualization {
             const material = new THREE.MeshPhongMaterial({
                 color: def.color,
                 transparent: true,
-                opacity: 0.04,
-                shininess: 12,
-                emissive: new THREE.Color(NS_PAPER.emissive),
-                emissiveIntensity: 0.01
+                opacity: 0.06,
+                shininess: 60,
+                emissive: new THREE.Color(0x58b6d8),
+                emissiveIntensity: 0.02
             });
             const mesh = new THREE.Mesh(new THREE.BoxGeometry(layerWidth, layerHeight, layerDepth), material);
             mesh.position.set(0, def.y, 0);
@@ -388,7 +335,7 @@ class NetworkStackVisualization {
 
             const edge = new THREE.LineSegments(
                 new THREE.EdgesGeometry(new THREE.BoxGeometry(layerWidth, layerHeight, layerDepth)),
-                new THREE.LineBasicMaterial({ color: NS_PAPER.wireSoft, transparent: true, opacity: 0.50 })
+                new THREE.LineBasicMaterial({ color: 0x9aa2aa, transparent: true, opacity: 0.22 })
             );
             edge.position.copy(mesh.position);
             this.scene.add(edge);
@@ -397,9 +344,9 @@ class NetworkStackVisualization {
             const strip = new THREE.Mesh(
                 new THREE.BoxGeometry(layerWidth * 0.86, 0.02, 0.06),
                 new THREE.MeshBasicMaterial({
-                    color: NS_PAPER.cool,
+                    color: 0x58b6d8,
                     transparent: true,
-                    opacity: 0.38
+                    opacity: 0.18
                 })
             );
             strip.position.set(0, def.y, layerDepth * 0.34);
@@ -416,19 +363,19 @@ class NetworkStackVisualization {
             const plateFill = new THREE.Mesh(
                 plateGeom,
                 new THREE.MeshPhongMaterial({
-                    color: NS_PAPER.fill,
+                    color: 0x244154,
                     transparent: true,
-                    opacity: 0.58,
-                    shininess: 8,
-                    emissive: new THREE.Color(NS_PAPER.emissive),
-                    emissiveIntensity: 0.06
+                    opacity: 0.22,
+                    shininess: 80,
+                    emissive: new THREE.Color(0x58b6d8),
+                    emissiveIntensity: 0.12
                 })
             );
             plateGroup.add(plateFill);
 
             const plateEdge = new THREE.LineSegments(
                 new THREE.EdgesGeometry(plateGeom),
-                new THREE.LineBasicMaterial({ color: NS_PAPER.wire, transparent: true, opacity: 0.94 })
+                new THREE.LineBasicMaterial({ color: 0xbfe6f2, transparent: true, opacity: 0.85 })
             );
             plateGroup.add(plateEdge);
 
@@ -436,7 +383,7 @@ class NetworkStackVisualization {
             const innerGeom = new THREE.CylinderGeometry(plateRadius * 0.6, plateRadius * 0.6, plateHeight * 1.18, plateFacets, 1, false);
             const innerEdge = new THREE.LineSegments(
                 new THREE.EdgesGeometry(innerGeom),
-                new THREE.LineBasicMaterial({ color: NS_PAPER.cool, transparent: true, opacity: 0.55 })
+                new THREE.LineBasicMaterial({ color: 0x6fb6cf, transparent: true, opacity: 0.45 })
             );
             plateGroup.add(innerEdge);
 
@@ -459,25 +406,9 @@ class NetworkStackVisualization {
                 new THREE.Vector3(0, 3.9, 0),
                 new THREE.Vector3(0, -3.9, 0)
             ]),
-            new THREE.LineBasicMaterial({ color: NS_PAPER.wireSoft, transparent: true, opacity: 0.22 })
+            new THREE.LineBasicMaterial({ color: 0x58b6d8, transparent: true, opacity: 0.35 })
         );
         this.scene.add(flowLine);
-        const txRail = new THREE.Line(
-            new THREE.BufferGeometry().setFromPoints([
-                new THREE.Vector3(-0.62, 3.95, 0),
-                new THREE.Vector3(-0.62, -3.95, 0)
-            ]),
-            new THREE.LineBasicMaterial({ color: NS_PAPER.tx, transparent: true, opacity: 0.32 })
-        );
-        const rxRail = new THREE.Line(
-            new THREE.BufferGeometry().setFromPoints([
-                new THREE.Vector3(0.62, 3.95, 0),
-                new THREE.Vector3(0.62, -3.95, 0)
-            ]),
-            new THREE.LineBasicMaterial({ color: NS_PAPER.rx, transparent: true, opacity: 0.32 })
-        );
-        this.scene.add(txRail);
-        this.scene.add(rxRail);
 
         this.buildTowerFrame(plateHeight, plateFacets);
     }
@@ -524,18 +455,18 @@ class NetworkStackVisualization {
                 const t = s / 3;
                 const r = top.plateRadius + (bottom.plateRadius - top.plateRadius) * t;
                 const y = top.y + (bottom.y - top.y) * t;
-                this.scene.add(this.makeRingLoop(r * 1.02, y, plateFacets, NS_PAPER.wireSoft, 0.52));
+                this.scene.add(this.makeRingLoop(r * 1.02, y, plateFacets, 0x7fc4da, 0.3));
 
                 const subGeom = new THREE.CylinderGeometry(r * 0.9, r * 0.9, 0.1, plateFacets, 1, false);
                 const subPlate = new THREE.Mesh(
                     subGeom,
                     new THREE.MeshPhongMaterial({
-                        color: NS_PAPER.fill,
+                        color: 0x244154,
                         transparent: true,
-                        opacity: 0.40,
-                        shininess: 8,
-                        emissive: new THREE.Color(NS_PAPER.emissive),
-                        emissiveIntensity: 0.05
+                        opacity: 0.16,
+                        shininess: 80,
+                        emissive: new THREE.Color(0x58b6d8),
+                        emissiveIntensity: 0.08
                     })
                 );
                 subPlate.position.set(0, y, 0);
@@ -543,7 +474,7 @@ class NetworkStackVisualization {
 
                 const subEdge = new THREE.LineSegments(
                     new THREE.EdgesGeometry(subGeom),
-                    new THREE.LineBasicMaterial({ color: NS_PAPER.cool, transparent: true, opacity: 0.50 })
+                    new THREE.LineBasicMaterial({ color: 0x8fd0e6, transparent: true, opacity: 0.42 })
                 );
                 subEdge.position.set(0, y, 0);
                 this.scene.add(subEdge);
@@ -551,7 +482,7 @@ class NetworkStackVisualization {
         }
         const struts = new THREE.LineSegments(
             new THREE.BufferGeometry().setFromPoints(strutPts),
-            new THREE.LineBasicMaterial({ color: NS_PAPER.wire, transparent: true, opacity: 0.58 })
+            new THREE.LineBasicMaterial({ color: 0x6fb6cf, transparent: true, opacity: 0.32 })
         );
         this.scene.add(struts);
         this.towerStruts = struts;
@@ -563,11 +494,11 @@ class NetworkStackVisualization {
         const capTopY = first.y + plateHeight / 2;
         const podRadii = [first.plateRadius * 0.78, first.plateRadius * 0.6, first.plateRadius * 0.4, first.plateRadius * 0.22];
         podRadii.forEach((r, idx) => {
-            this.scene.add(this.makeRingLoop(r, capTopY + 0.28 + idx * 0.26, plateFacets, NS_PAPER.wire, 0.72));
+            this.scene.add(this.makeRingLoop(r, capTopY + 0.28 + idx * 0.26, plateFacets, 0x9fd2e4, 0.6));
         });
         const pod = new THREE.LineSegments(
             new THREE.EdgesGeometry(new THREE.SphereGeometry(first.plateRadius * 0.34, 12, 6)),
-            new THREE.LineBasicMaterial({ color: NS_PAPER.wire, transparent: true, opacity: 0.78 })
+            new THREE.LineBasicMaterial({ color: 0xbfe6f2, transparent: true, opacity: 0.6 })
         );
         pod.position.set(0, capTopY + 0.28 + podRadii.length * 0.26 + 0.12, 0);
         this.scene.add(pod);
@@ -576,12 +507,12 @@ class NetworkStackVisualization {
         // and a small base drum, so the column ends solidly like the reference.
         const botPlateY = last.y - plateHeight / 2;
         [0.86, 0.68, 0.52].forEach((f, idx) => {
-            this.scene.add(this.makeRingLoop(last.plateRadius * f, botPlateY - 0.16 - idx * 0.17, plateFacets, NS_PAPER.wire, 0.68));
+            this.scene.add(this.makeRingLoop(last.plateRadius * f, botPlateY - 0.16 - idx * 0.17, plateFacets, 0x9fd2e4, 0.5));
         });
         const baseDrumY = botPlateY - 0.16 - 3 * 0.17;
         const baseDrum = new THREE.LineSegments(
             new THREE.EdgesGeometry(new THREE.CylinderGeometry(last.plateRadius * 0.5, last.plateRadius * 0.4, 0.18, plateFacets, 1, false)),
-            new THREE.LineBasicMaterial({ color: NS_PAPER.wire, transparent: true, opacity: 0.72 })
+            new THREE.LineBasicMaterial({ color: 0x9fd2e4, transparent: true, opacity: 0.55 })
         );
         baseDrum.position.set(0, baseDrumY, 0);
         this.scene.add(baseDrum);
@@ -591,14 +522,14 @@ class NetworkStackVisualization {
         this.createRodBetween(
             new THREE.Vector3(0, first.y + plateHeight / 2 + 0.15, 0),
             new THREE.Vector3(0, baseDrumY - 0.1, 0),
-            0.03, NS_PAPER.wire, 0.62
+            0.03, 0x67c8e0, 0.55
         );
         const axis = new THREE.Line(
             new THREE.BufferGeometry().setFromPoints([
                 new THREE.Vector3(0, pod.position.y + 0.5, 0),
                 new THREE.Vector3(0, baseDrumY - 0.55, 0)
             ]),
-            new THREE.LineBasicMaterial({ color: NS_PAPER.cool, transparent: true, opacity: 0.40 })
+            new THREE.LineBasicMaterial({ color: 0x67c8e0, transparent: true, opacity: 0.45 })
         );
         this.scene.add(axis);
     }
@@ -659,8 +590,8 @@ class NetworkStackVisualization {
 
         const bgAlpha = 0.46 + safeIntensity * 0.34;
         const strokeAlpha = 0.5 + safeIntensity * 0.44;
-        ctx.fillStyle = `rgba(255, 255, 255, ${0.55 + safeIntensity * 0.25})`;
-        ctx.strokeStyle = `rgba(34, 34, 34, ${0.22 + safeIntensity * 0.28})`;
+        ctx.fillStyle = `rgba(8, 13, 20, ${bgAlpha})`;
+        ctx.strokeStyle = `rgba(176, 228, 255, ${strokeAlpha})`;
         ctx.lineWidth = 1.35;
         if (typeof ctx.roundRect === 'function') {
             ctx.beginPath();
@@ -675,10 +606,10 @@ class NetworkStackVisualization {
         const lines = safeText.split('\n').slice(0, 2);
         ctx.font = '14px "Share Tech Mono", monospace';
         ctx.textBaseline = 'middle';
-        ctx.fillStyle = `rgba(34, 34, 34, ${0.72 + safeIntensity * 0.2})`;
-        ctx.strokeStyle = `rgba(255, 255, 255, ${0.4 + safeIntensity * 0.2})`;
+        ctx.fillStyle = `rgba(228, 246, 255, ${0.9 + safeIntensity * 0.1})`;
+        ctx.strokeStyle = `rgba(12, 18, 26, ${0.75 + safeIntensity * 0.2})`;
         ctx.lineWidth = 2.6;
-        ctx.shadowColor = `rgba(34, 34, 34, ${0.08 + safeIntensity * 0.12})`;
+        ctx.shadowColor = `rgba(120, 210, 255, ${0.2 + safeIntensity * 0.4})`;
         ctx.shadowBlur = 6;
         if (lines.length === 1) {
             ctx.strokeText(lines[0], 14, h / 2);
@@ -940,6 +871,10 @@ class NetworkStackVisualization {
         this.disposeSceneObject(rig.tip);
         (rig.beads || []).forEach((b) => this.disposeSceneObject(b));
         (rig.segments || []).forEach((s) => this.disposeSceneObject(s));
+        (rig.fan || []).forEach((ray) => {
+            this.disposeSceneObject(ray.rod);
+            this.disposeSceneObject(ray.dot);
+        });
         (rig.tags || []).forEach((tag) => {
             if (tag?.sprite) this.disposeSceneObject(tag.sprite);
         });
@@ -954,12 +889,14 @@ class NetworkStackVisualization {
     }
 
     syncPathHopDistance() {
+        if (!this.scene) return;
         const peerIp = this.getActivePeerIp();
         if (!peerIp || peerIp === '0.0.0.0' || peerIp === '::' || peerIp === 'N/A') {
-            this.disposePathHopRig();
-            this.pathHopRemote = null;
-            this.pathHopData = null;
-            this.updatePathHopHud(null);
+            // Production had zero established sockets on 443/80 at the moment of
+            // measurement, so a visitor branch driven by live flows would blink
+            // out between requests. The TTL snapshot still remembers the client,
+            // which is what this fallback stands in for (mock until wired).
+            this.showSnapshotVisitor();
             return;
         }
         if (this.pathHopRemote === peerIp && this.pathHopRig) {
@@ -1012,8 +949,40 @@ class NetworkStackVisualization {
         });
     }
 
+    showSnapshotVisitor() {
+        const visitor = (this.distanceData || NetworkStackVisualization.DISTANCE_MOCK).visitor;
+        if (!visitor?.address) {
+            this.disposePathHopRig();
+            this.pathHopRemote = null;
+            this.pathHopData = null;
+            this.updatePathHopHud(null);
+            return;
+        }
+        if (this.pathHopRemote === visitor.address && this.pathHopRig) return;
+        const hops = Math.max(1, Number(visitor.hops) || 1);
+        // No traceroute probe here: the hop count comes from the TTL the client
+        // itself delivered, which is why this works for a peer that has already
+        // closed its connection.
+        const trace = {
+            remote_ip: visitor.address,
+            hop_count: hops,
+            hops: Array.from({ length: hops }, (_, i) => ({
+                hop: hops - i,
+                target: i === 0 ? visitor.address : '*',
+                rtt_ms: i === 0 ? visitor.min_rtt_ms : null
+            })).reverse(),
+            reached: true,
+            note: null,
+            status: 'ttl'
+        };
+        this.pathHopRemote = visitor.address;
+        this.pathHopPending = null;
+        this.pathHopData = trace;
+        this.rebuildPathHopRig(trace);
+        this.updatePathHopHud(trace);
+    }
+
     rebuildPathHopRig(trace) {
-        if (!this.scene) return;
         if (!this.scene) return;
         this.disposePathHopRig();
 
@@ -1136,6 +1105,24 @@ class NetworkStackVisualization {
             }
         });
 
+        // The fan the reference calls "layers on path": an inbound connection
+        // really does traverse all seven, so every layer gets a ray. They land
+        // at z = 0.55 rather than 0 to sit in front of the plane the leader
+        // beams are projected from.
+        const fan = [];
+        this.layers.forEach((layer, order) => {
+            const land = new THREE.Vector3((layer.plateRadius || 0.9) + 0.05, layer.y, 0.55);
+            const rod = this.createRodBetween(end, land, 0.008, pathRed, probing ? 0.12 : 0.2);
+            const dot = new THREE.Mesh(
+                new THREE.SphereGeometry(0.034, 8, 8),
+                new THREE.MeshBasicMaterial({ color: pathRedHot, transparent: true, opacity: 0.3 })
+            );
+            dot.position.copy(land);
+            this.scene.add(dot);
+            // Bottom-up: the packet arrives at the wire and climbs.
+            fan.push({ rod, dot, order: this.layers.length - 1 - order });
+        });
+
         const tipLabel = probing
             ? `path → ${peerIp}\nprobing…`
             : (errored
@@ -1156,6 +1143,7 @@ class NetworkStackVisualization {
             beads,
             segments,
             tags,
+            fan,
             hubPos: hubPos.clone(),
             end: end.clone(),
             hopCount,
@@ -1167,7 +1155,6 @@ class NetworkStackVisualization {
     }
 
     updatePathHopHud(trace) {
-        this.updateBoardPath(trace);
         if (!this.pathHopNode) return;
         const { value, card, label } = this.pathHopNode;
         card.style.borderColor = 'rgba(224, 86, 78, 0.85)';
@@ -1215,6 +1202,156 @@ class NetworkStackVisualization {
             const pulse = 0.5 + 0.5 * Math.sin(rig.phase * 3.0 + idx * 0.55);
             bead.material.opacity = 0.55 + pulse * 0.4;
         });
+        // One ray at a time climbs the fan, so seven overlapping rods never read
+        // as a solid wash across the right-hand readout beams.
+        (rig.fan || []).forEach((ray) => {
+            if (!ray.rod?.material) return;
+            const wave = (rig.phase * 0.85) % (rig.fan.length + 1.4);
+            const near = Math.max(0, 1 - Math.abs(wave - ray.order) * 1.6);
+            ray.rod.material.opacity = (rig.probing ? 0.1 : 0.17) + near * 0.62;
+            if (ray.dot?.material) ray.dot.material.opacity = 0.24 + near * 0.68;
+        });
+    }
+
+    // One branch per remote address, not per role: production shows three roles
+    // (router, DHCP, ARP neighbour) on the single address 172.31.16.1, and three
+    // separate arms to the same place would read as three peers.
+    static get PEER_BRANCH_MOCK() {
+        return [
+            { address: '172.31.16.1', layer: 'nic', role: 'router · dhcp · arp', hops: 0 },
+            { address: '127.0.0.53', layer: 'socket', role: 'stub resolver', hops: 0 },
+            { address: '127.0.0.1:9113', layer: 'userspace', role: 'metrics exporter', hops: 0 },
+            { address: '172.31.0.2', layer: 'ip', role: 'upstream resolver', hops: 1 },
+            { address: '172.31.44.198', layer: 'tcp', role: 'postgres · elastic', hops: 1 },
+            // Documentation range (RFC 5737): the real SSH client address this
+            // was measured from must not ship in a publicly readable bundle.
+            { address: '198.51.100.24', layer: 'netfilter', role: 'ssh session', hops: 12 },
+            { address: '34.160.81.0', layer: 'driver', role: 'outbound tls', hops: 9 }
+        ];
+    }
+
+    // Solved numerically, not chosen by eye. Fourteen leader beams already run
+    // horizontally across this field at the layer-card heights (left rail at
+    // screen x 300, right readouts at W-180), so an arm that leaves the tower
+    // anywhere near horizontal runs along one and vanishes into it — the first
+    // attempt had the driver arm parallel to the NIC card's beam for its whole
+    // length. These values were searched over tilt/depth/run against four
+    // viewports and twelve camera phases; every arm now crosses the beams at
+    // 22 degrees or steeper, keeps 82px from its neighbours, and stays at least
+    // 111px long. Changing one by hand will quietly break that: rerun the
+    // sweep instead. +x at the IP height is reserved for the visitor arm.
+    static get PEER_BRANCH_GEOMETRY() {
+        return {
+            userspace: { side: -1, tilt: 0.55, z: 0.5, run: 1.30 },
+            socket: { side: 1, tilt: -1.00, z: 1.3, run: 1.05 },
+            tcp: { side: -1, tilt: -0.55, z: 0.5, run: 1.30 },
+            ip: { side: -1, tilt: -0.85, z: 2.1, run: 1.80 },
+            netfilter: { side: 1, tilt: -0.85, z: 0.5, run: 1.55 },
+            driver: { side: -1, tilt: -1.00, z: 0.5, run: 1.80 },
+            nic: { side: 1, tilt: -1.00, z: 0.5, run: 1.05 }
+        };
+    }
+
+    disposePeerBranchRig() {
+        const rig = this.peerBranchRig;
+        if (!rig) return;
+        (rig.branches || []).forEach((branch) => {
+            this.disposeSceneObject(branch.rod);
+            this.disposeSceneObject(branch.tip);
+            this.disposeSceneObject(branch.root);
+            (branch.beads || []).forEach((b) => this.disposeSceneObject(b));
+            if (branch.tag?.sprite) this.disposeSceneObject(branch.tag.sprite);
+        });
+        this.peerBranchRig = null;
+    }
+
+    buildPeerBranchRig(peers) {
+        if (!this.scene) return;
+        this.disposePeerBranchRig();
+
+        const list = Array.isArray(peers) && peers.length
+            ? peers
+            : NetworkStackVisualization.PEER_BRANCH_MOCK;
+        const geometry = NetworkStackVisualization.PEER_BRANCH_GEOMETRY;
+        const peerRed = 0xb4544b;
+        const peerRedDim = 0x8c443d;
+        const branches = [];
+        const perLayer = {};
+
+        list.forEach((peer, idx) => {
+            const layer = this.layers.find((l) => l.id === peer.layer);
+            if (!layer) return;
+            const g = geometry[peer.layer] || { side: idx % 2 ? 1 : -1, tilt: -0.7, z: 0.9, run: 1.3 };
+
+            // Second and later peers sharing a layer are nudged out in depth and
+            // reach so they do not land on each other. The swept clearances only
+            // cover one arm per layer, which is what production actually shows.
+            const seat = perLayer[peer.layer] = (perLayer[peer.layer] || 0) + 1;
+            const stagger = seat - 1;
+            const rootX = g.side * ((layer.plateRadius || 0.9) + 0.05);
+            const hops = Math.max(0, Number(peer.hops) || 0);
+            const root = new THREE.Vector3(rootX, layer.y, 0);
+            const tip = new THREE.Vector3(
+                rootX + g.side * (g.run + stagger * 0.5),
+                layer.y + g.tilt,
+                g.z + stagger * 0.75
+            );
+
+            const rod = this.createRodBetween(root, tip, 0.015, peerRed, 0.62);
+            const rootDot = new THREE.Mesh(
+                new THREE.SphereGeometry(0.045, 10, 10),
+                new THREE.MeshBasicMaterial({ color: peerRed, transparent: true, opacity: 0.8 })
+            );
+            rootDot.position.copy(root);
+            this.scene.add(rootDot);
+
+            const tipDot = new THREE.Mesh(
+                new THREE.SphereGeometry(hops === 0 ? 0.08 : 0.064, 12, 12),
+                new THREE.MeshBasicMaterial({ color: peerRed, transparent: true, opacity: 0.9 })
+            );
+            tipDot.position.copy(tip);
+            this.scene.add(tipDot);
+
+            // A bead per intervening hop, so a one-hop peer visibly carries the
+            // router between it and the stack and a zero-hop peer does not.
+            const beads = [];
+            const beadCount = Math.min(hops, 3);
+            for (let b = 0; b < beadCount; b++) {
+                const bead = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.03, 8, 8),
+                    new THREE.MeshBasicMaterial({ color: peerRedDim, transparent: true, opacity: 0.7 })
+                );
+                bead.position.copy(root.clone().lerp(tip, (b + 1) / (beadCount + 1)));
+                this.scene.add(bead);
+                beads.push(bead);
+            }
+
+            const hopText = hops === 0 ? 'on this link' : `${hops} hop${hops === 1 ? '' : 's'}`;
+            const tag = this.createSignalTagSprite(`${peer.address}\n${peer.role} · ${hopText}`);
+            if (tag?.sprite) {
+                tag.sprite.position.copy(tip.clone().add(new THREE.Vector3(g.side * 0.5, 0.17, 0.05)));
+                tag.sprite.scale.set(1.5, 0.34, 1);
+            }
+
+            branches.push({ rod, root: rootDot, tip: tipDot, beads, tag, peer, phase: Math.random() * 6.2 });
+        });
+
+        this.peerBranchRig = { branches, phase: 0 };
+    }
+
+    updatePeerBranchRig(dt) {
+        const rig = this.peerBranchRig;
+        if (!rig) return;
+        rig.phase += dt;
+        (rig.branches || []).forEach((branch) => {
+            const pulse = 0.5 + 0.5 * Math.sin(rig.phase * 1.7 + branch.phase);
+            if (branch.rod?.material) branch.rod.material.opacity = 0.44 + pulse * 0.3;
+            if (branch.tip?.material) branch.tip.material.opacity = 0.7 + pulse * 0.26;
+            branch.beads.forEach((bead, i) => {
+                if (!bead.material) return;
+                bead.material.opacity = 0.45 + 0.4 * (0.5 + 0.5 * Math.sin(rig.phase * 2.4 + i));
+            });
+        });
     }
 
     createFlowParticles() {
@@ -1223,9 +1360,9 @@ class NetworkStackVisualization {
             const p = new THREE.Mesh(
                 new THREE.SphereGeometry(0.03 + Math.random() * 0.015, 8, 8),
                 new THREE.MeshBasicMaterial({
-                    color: i % 3 === 0 ? NS_PAPER.cool : (i % 3 === 1 ? 0xE6C15A : NS_PAPER.wireMid),
+                    color: 0x58b6d8,
                     transparent: true,
-                    opacity: 0.42 + Math.random() * 0.28
+                    opacity: 0.25 + Math.random() * 0.25
                 })
             );
             p.position.set((Math.random() - 0.5) * 0.18, -3.9 + Math.random() * 7.8, (Math.random() - 0.5) * 0.12);
@@ -1247,7 +1384,7 @@ class NetworkStackVisualization {
             const m = new THREE.Mesh(
                 new THREE.SphereGeometry(0.055, 10, 10),
                 new THREE.MeshBasicMaterial({
-                    color: dir < 0 ? 0xE6C15A : NS_PAPER.cool,
+                    color: dir < 0 ? 0xE6C15A : 0x58b6d8,
                     transparent: true,
                     opacity: 0.55
                 })
@@ -1267,25 +1404,23 @@ class NetworkStackVisualization {
     }
 
     createPacket() {
-        const packetMat = new THREE.MeshBasicMaterial({ color: NS_PAPER.tx });
-        this.packet = new THREE.Mesh(new THREE.SphereGeometry(0.16, 14, 14), packetMat);
-        this.packet.position.set(-0.62, this.layerMap.userspace + 0.5, 0);
-        this.packet.userData.kind = 'tx';
+        const packetMat = new THREE.MeshBasicMaterial({ color: 0xE6C15A });
+        this.packet = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 16), packetMat);
+        this.packet.position.set(0, this.layerMap.userspace + 0.5, 0);
         this.scene.add(this.packet);
 
-        const glowMat = new THREE.MeshBasicMaterial({ color: NS_PAPER.tx, transparent: true, opacity: 0.22 });
-        this.packetGlow = new THREE.Mesh(new THREE.SphereGeometry(0.32, 14, 14), glowMat);
+        const glowMat = new THREE.MeshBasicMaterial({ color: 0xE6C15A, transparent: true, opacity: 0.25 });
+        this.packetGlow = new THREE.Mesh(new THREE.SphereGeometry(0.42, 16, 16), glowMat);
         this.packetGlow.position.copy(this.packet.position);
-        this.packetGlow.userData.kind = 'tx';
         this.scene.add(this.packetGlow);
 
         for (let i = 0; i < 6; i++) {
             const trailMat = new THREE.MeshBasicMaterial({
-                color: NS_PAPER.tx,
+                color: 0xE6C15A,
                 transparent: true,
                 opacity: 0.12 - i * 0.015
             });
-            const trail = new THREE.Mesh(new THREE.SphereGeometry(0.09, 10, 10), trailMat);
+            const trail = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 10), trailMat);
             trail.position.copy(this.packet.position);
             this.scene.add(trail);
             this.packetTrail.push(trail);
@@ -1304,32 +1439,6 @@ class NetworkStackVisualization {
             });
             this.ensurePacketMorphTag();
         }
-    }
-
-    createRxPacket() {
-        if (!this.scene || this.rxPacket) return;
-        const mat = new THREE.MeshBasicMaterial({ color: NS_PAPER.rx });
-        this.rxPacket = new THREE.Mesh(new THREE.SphereGeometry(0.14, 14, 14), mat);
-        this.rxPacket.position.set(0.62, this.layerMap.nic - 0.4, 0);
-        this.rxPacket.userData.kind = 'rx';
-        this.scene.add(this.rxPacket);
-        const glow = new THREE.MeshBasicMaterial({ color: NS_PAPER.rx, transparent: true, opacity: 0.2 });
-        this.rxPacketGlow = new THREE.Mesh(new THREE.SphereGeometry(0.28, 14, 14), glow);
-        this.rxPacketGlow.position.copy(this.rxPacket.position);
-        this.rxPacketGlow.userData.kind = 'rx';
-        this.scene.add(this.rxPacketGlow);
-    }
-
-    updateRxPacket(dt) {
-        if (!this.rxPacket) return;
-        this.rxPacket.position.x = 0.62;
-        if (!(this.packetPinned && this.packetFocus === 'rx')) {
-            this.rxPacket.position.y += this.packetSpeed * 0.85 * dt;
-            if (this.rxPacket.position.y > this.layerMap.userspace + 0.65) {
-                this.rxPacket.position.y = this.layerMap.nic - 0.45;
-            }
-        }
-        if (this.rxPacketGlow) this.rxPacketGlow.position.copy(this.rxPacket.position);
     }
 
     ensurePacketMorphTag() {
@@ -1377,8 +1486,8 @@ class NetworkStackVisualization {
         const h = tag.canvas.height;
         ctx.clearRect(0, 0, w, h);
 
-        ctx.fillStyle = `rgba(250, 244, 230, ${0.88 + safeIntensity * 0.1})`;
-        ctx.strokeStyle = `rgba(196, 138, 20, ${0.45 + safeIntensity * 0.4})`;
+        ctx.fillStyle = `rgba(8, 12, 20, ${0.55 + safeIntensity * 0.28})`;
+        ctx.strokeStyle = `rgba(230, 193, 90, ${0.35 + safeIntensity * 0.45})`;
         ctx.lineWidth = 1.4;
         if (typeof ctx.roundRect === 'function') {
             ctx.beginPath();
@@ -1392,16 +1501,22 @@ class NetworkStackVisualization {
 
         const lines = safeText.split('\n').slice(0, 2);
         ctx.textBaseline = 'middle';
-        ctx.shadowColor = 'transparent';
-        ctx.shadowBlur = 0;
+        ctx.shadowColor = `rgba(230, 193, 90, ${0.18 + safeIntensity * 0.35})`;
+        ctx.shadowBlur = 7;
         if (lines[0]) {
             ctx.font = '15px "Share Tech Mono", monospace';
-            ctx.fillStyle = `rgba(26, 22, 18, ${0.88 + safeIntensity * 0.1})`;
+            ctx.fillStyle = `rgba(236, 244, 250, ${0.92 + safeIntensity * 0.08})`;
+            ctx.strokeStyle = 'rgba(10, 14, 20, 0.85)';
+            ctx.lineWidth = 2.4;
+            ctx.strokeText(lines[0], 14, h * 0.34);
             ctx.fillText(lines[0], 14, h * 0.34);
         }
         if (lines[1]) {
             ctx.font = '13px "Share Tech Mono", monospace';
-            ctx.fillStyle = `rgba(58, 74, 98, ${0.82 + safeIntensity * 0.12})`;
+            ctx.fillStyle = `rgba(169, 212, 232, ${0.88 + safeIntensity * 0.1})`;
+            ctx.strokeStyle = 'rgba(10, 14, 20, 0.8)';
+            ctx.lineWidth = 2.2;
+            ctx.strokeText(lines[1], 14, h * 0.72);
             ctx.fillText(lines[1], 14, h * 0.72);
         }
         ctx.shadowBlur = 0;
@@ -1451,7 +1566,7 @@ class NetworkStackVisualization {
 
     applyPacketMorphPhase(phase) {
         if (!this.packet) return;
-        const colors = [0xE6C15A, 0xE6C15A, NS_PAPER.live, NS_PAPER.cool];
+        const colors = [0xE6C15A, 0xE6C15A, 0x96FFBE, 0x67BEE0];
         const scales = [1.0, 0.92, 0.86, 1.08];
         const color = colors[phase] != null ? colors[phase] : 0xE6C15A;
         const scale = scales[phase] != null ? scales[phase] : 1;
@@ -1517,555 +1632,28 @@ class NetworkStackVisualization {
         }
     }
 
-    boardEl(tag, attrs = {}, parent = null) {
-        const node = document.createElementNS(NS_SVG, tag);
-        Object.keys(attrs).forEach((key) => node.setAttribute(key, attrs[key]));
-        if (parent) parent.appendChild(node);
-        return node;
-    }
-
-    boardText(parent, x, y, str, opts = {}) {
-        const node = this.boardEl('text', {
-            x,
-            y,
-            fill: opts.fill || NS_PAPER.faint,
-            'font-size': opts.size == null ? 9 : opts.size,
-            'letter-spacing': opts.spacing == null ? 1 : opts.spacing,
-            'text-anchor': opts.anchor || 'start',
-            'font-family': 'Share Tech Mono, monospace'
-        }, parent);
-        node.textContent = str;
-        return node;
-    }
-
-    stageY(index) {
-        return NS_BOARD.stageTop + index * NS_BOARD.stageGap;
-    }
-
-    buildBoard() {
-        const svg = this.boardEl('svg', {
-            viewBox: `0 0 ${NS_BOARD.W} ${NS_BOARD.H}`,
-            preserveAspectRatio: 'xMidYMid meet'
-        });
-        svg.style.cssText = `position:absolute; inset:0; width:100%; height:100%; display:block; background:${NS_PAPER.groundCss};`;
-        this.container.appendChild(svg);
-        this.overlayNodes.push(svg);
-        this.boardSvg = svg;
-
-        const group = (name) => this.boardEl('g', { 'data-ns': name }, svg);
-        const gHair = group('hair');
-        const gRails = group('rails');
-        const gLeaders = group('leaders');
-        const gPlates = group('plates');
-        const gPackets = group('packets');
-        const gChrome = group('chrome');
-
-        this.boardStages = {};
-        this.buildBoardHead(gChrome);
-        this.buildFilaments(gHair);
-        this.buildRails(gRails);
-        this.buildLeaders(gLeaders);
-        this.buildPlates(gPlates);
-        this.buildPackets(gPackets);
-        this.buildDossier(gChrome);
-        this.buildPathBlock(gChrome);
-        this.buildBands(gChrome);
-    }
-
-    buildBoardHead(g) {
-        this.boardText(g, NS_BOARD.cx, 58, 'NETWORK SUBSYSTEM', {
-            size: 15, spacing: 4.2, anchor: 'middle', fill: NS_PAPER.ink
-        });
-        this.boardText(g, NS_BOARD.cx, 78, 'ONE PACKET THROUGH THE LINUX KERNEL', {
-            size: 8.5, spacing: 2.4, anchor: 'middle'
-        });
-
-        const link = this.boardText(g, NS_BOARD.cx, 108, 'TCP BBR · PATH MODEL', {
-            size: 9, spacing: 1.6, anchor: 'middle', fill: NS_PAPER.dim
-        });
-        link.style.cursor = 'pointer';
-        link.addEventListener('click', () => this.openBbrOverlay());
-        link.addEventListener('mouseenter', () => link.setAttribute('fill', NS_PAPER.ink));
-        link.addEventListener('mouseleave', () => link.setAttribute('fill', NS_PAPER.dim));
-        this.boardEl('line', {
-            x1: NS_BOARD.cx - 84, y1: 114, x2: NS_BOARD.cx + 84, y2: 114,
-            stroke: NS_PAPER.hairSoft, 'stroke-width': 1
-        }, g);
-    }
-
-    // The hair bundles are the signature texture: pinched at process and wire,
-    // widest across the middle of the stack. Each bundle is anchored on its own
-    // rail and bows outward into the gutter, so it never sits under the plates.
-    buildFilaments(g) {
-        const topY = this.stageY(0) - 40;
-        const botY = NS_BOARD.wireY;
-        const midY = (topY + botY) / 2;
-        const jitter = (seed) => {
-            const x = Math.sin(seed * 12.9898) * 43758.5453;
-            return x - Math.floor(x);
-        };
-        const bundles = [
-            ['tx', -1, NS_BOARD.txRail, topY, botY, '150,112,34'],
-            ['rx', 1, NS_BOARD.rxRail, botY, topY, '74,96,114']
-        ];
-        bundles.forEach(([side, dir, rail, originY, farY, tint]) => {
-            const strands = [];
-            const count = 54;
-            for (let i = 0; i < count; i++) {
-                const t = i / (count - 1);
-                const j = jitter(i + (side === 'tx' ? 3 : 91));
-                const startY = originY + (j - 0.5) * 16;
-                const reach = 0.3 + Math.pow(t, 0.85) * 0.7;
-                const tipY = startY + (farY - startY) * reach;
-                const bow = 28 + Math.pow(t, 0.7) * 176 + j * 22;
-                const tipX = rail + dir * bow * (0.5 + j * 0.28);
-                const ctrlX = rail + dir * bow * 0.9;
-                const ctrlY = startY + (tipY - startY) * (0.4 + j * 0.2);
-                strands.push(this.boardEl('path', {
-                    d: `M ${rail} ${startY.toFixed(1)} Q ${ctrlX.toFixed(1)} ${ctrlY.toFixed(1)} `
-                        + `${tipX.toFixed(1)} ${tipY.toFixed(1)}`,
-                    fill: 'none',
-                    stroke: `rgba(${tint},${(0.27 - t * 0.18).toFixed(3)})`,
-                    'stroke-width': (0.85 - t * 0.3).toFixed(2)
-                }, g));
-            }
-            if (side === 'tx') this.txStrands = strands;
-            else this.rxStrands = strands;
-        });
-    }
-
-    buildRails(g) {
-        const top = this.stageY(0) - 40;
-        [['tx', NS_BOARD.txRail, 'TX ↓'], ['rx', NS_BOARD.rxRail, 'RX ↑']].forEach(([side, x, label]) => {
-            this.boardEl('line', {
-                x1: x, y1: top, x2: x, y2: NS_BOARD.wireY,
-                stroke: NS_PAPER.hair, 'stroke-width': 1
-            }, g);
-            NS_STAGES.forEach((stage, i) => {
-                this.boardEl('line', {
-                    x1: x - 5, y1: this.stageY(i), x2: x + 5, y2: this.stageY(i),
-                    stroke: NS_PAPER.hair, 'stroke-width': 1
-                }, g);
-            });
-            this.boardText(g, x, top - 12, label, {
-                size: 9, spacing: 1.6, anchor: 'middle',
-                fill: side === 'tx' ? NS_PAPER.txCss : NS_PAPER.rxCss
-            });
-        });
-
-        const nicY = this.stageY(NS_STAGES.length - 1) + NS_BOARD.plateH / 2;
-        this.boardEl('line', {
-            x1: NS_BOARD.cx, y1: nicY, x2: NS_BOARD.cx, y2: NS_BOARD.wireY,
-            stroke: NS_PAPER.hair, 'stroke-width': 1
-        }, g);
-        [0, 7].forEach((offset) => {
-            this.boardEl('line', {
-                x1: NS_BOARD.cx - 360, y1: NS_BOARD.wireY + offset,
-                x2: NS_BOARD.cx + 360, y2: NS_BOARD.wireY + offset,
-                stroke: offset ? NS_PAPER.hairSoft : NS_PAPER.hair, 'stroke-width': 1
-            }, g);
-        });
-        this.boardText(g, NS_BOARD.cx, NS_BOARD.wireY + 26, 'WIRE', {
-            size: 9, spacing: 3, anchor: 'middle'
-        });
-    }
-
-    buildLeaders(g) {
-        NS_STAGES.forEach((stage, i) => {
-            const y = this.stageY(i);
-            const plateLeft = NS_BOARD.cx - stage.w / 2;
-            const line = this.boardEl('line', {
-                x1: NS_BOARD.labelX + 14, y1: y, x2: plateLeft - 12, y2: y,
-                stroke: NS_PAPER.hair, 'stroke-width': 1
-            }, g);
-            const dot = this.boardEl('circle', {
-                cx: plateLeft - 7, cy: y, r: 2.6, fill: NS_PAPER.dot
-            }, g);
-            const headline = this.boardText(g, NS_BOARD.labelX, y - 5, '--', {
-                size: 19, spacing: 0.4, anchor: 'end', fill: NS_PAPER.ink
-            });
-            const caption = this.boardText(g, NS_BOARD.labelX, y + 9, '', {
-                size: 8, spacing: 0.7, anchor: 'end'
-            });
-            const satellite = this.boardText(g, NS_BOARD.labelX, y + 22, '', {
-                size: 8, spacing: 0.5, anchor: 'end', fill: NS_PAPER.hair
-            });
-            this.boardStages[stage.id] = { ...(this.boardStages[stage.id] || {}), line, dot, headline, caption, satellite };
-        });
-    }
-
-    buildPlates(g) {
-        NS_STAGES.forEach((stage, i) => {
-            const y = this.stageY(i);
-            const x = NS_BOARD.cx - stage.w / 2;
-            const top = y - NS_BOARD.plateH / 2;
-            const cell = this.boardEl('g', { 'data-stage': stage.id }, g);
-            cell.style.cursor = 'pointer';
-
-            const plate = this.boardEl('rect', {
-                x, y: top, width: stage.w, height: NS_BOARD.plateH, rx: 9,
-                fill: NS_PAPER.plate
-            }, cell);
-            this.boardText(cell, x + 20, y - 2, stage.name, {
-                size: 13.5, spacing: 2.6, fill: NS_PAPER.cream
-            });
-            this.boardText(cell, x + 20, y + 15, stage.object, {
-                size: 8.5, spacing: 0.6, fill: NS_PAPER.creamDim
-            });
-            const gauge = this.boardEl('rect', {
-                x: x + 20, y: top + NS_BOARD.plateH - 7, width: 4, height: 2,
-                fill: NS_PAPER.creamFaint
-            }, cell);
-            [0, 6].forEach((dy) => {
-                this.boardEl('circle', {
-                    cx: x + stage.w - 15, cy: y - 3 + dy, r: 1.5, fill: NS_PAPER.creamFaint
-                }, cell);
-            });
-
-            cell.addEventListener('click', () => this.openLayerDrilldown(stage.id));
-            cell.addEventListener('mouseenter', (event) => {
-                plate.setAttribute('fill', NS_PAPER.plateLit);
-                this.showBoardTooltip(stage.id, event);
-            });
-            cell.addEventListener('mouseleave', () => {
-                plate.setAttribute('fill', NS_PAPER.plate);
-                if (this.layerTooltipNode) this.layerTooltipNode.style.display = 'none';
-            });
-
-            this.boardStages[stage.id] = { ...(this.boardStages[stage.id] || {}), cell, plate, gauge, y, width: stage.w };
-        });
-    }
-
-    buildPackets(g) {
-        this.boardPackets = {};
-        [['tx', NS_BOARD.txRail], ['rx', NS_BOARD.rxRail]].forEach(([side, x]) => {
-            const accent = side === 'tx' ? NS_PAPER.txCss : NS_PAPER.rxCss;
-            const cell = this.boardEl('g', { 'data-packet': side }, g);
-            cell.style.cursor = 'pointer';
-            this.boardEl('rect', {
-                x: -24, y: -13, width: 48, height: 26, rx: 5, fill: NS_PAPER.plate
-            }, cell);
-            const segments = [];
-            for (let i = 0; i < 4; i++) {
-                segments.push(this.boardEl('rect', {
-                    x: -19 + i * 9.6, y: -7, width: 8, height: 14, rx: 1.5,
-                    fill: NS_PAPER.creamFaint
-                }, cell));
-            }
-            const halo = this.boardEl('circle', {
-                cx: 0, cy: 0, r: 21, fill: 'none', stroke: accent,
-                'stroke-width': 1.6, opacity: 0.6
-            }, cell);
-            this.boardText(cell, side === 'tx' ? -34 : 34, 4, side === 'tx' ? '↓' : '↑', {
-                size: 11, anchor: 'middle', fill: accent, spacing: 0
-            });
-            cell.addEventListener('click', (event) => {
-                event.stopPropagation();
-                if (this.packetPinned && this.packetFocus === side) this.packetPinned = false;
-                else {
-                    this.packetPinned = true;
-                    this.packetFocus = side;
-                }
-                this._dossierKey = '';
-                this.updateBoardTelemetry();
-            });
-            this.boardPackets[side] = { cell, segments, halo, x };
-        });
-    }
-
-    buildDossier(g) {
-        const x = NS_BOARD.dossierX;
-        this.boardText(g, x, 150, 'LIVE PACKET', { size: 8, spacing: 1.8 });
-        this.dossierHead = this.boardText(g, x, 176, '--', {
-            size: 15, spacing: 1.2, fill: NS_PAPER.ink
-        });
-        this.dossierStage = this.boardText(g, x + 300, 176, '', {
-            size: 9, spacing: 1, anchor: 'end', fill: NS_PAPER.txCss
-        });
-
-        const rows = ['process', 'pid', 'syscall', 'socket', 'protocol', 'state', 'src', 'dst'];
-        this.dossierRows = {};
-        rows.forEach((key, i) => {
-            const y = 208 + i * 19;
-            this.boardText(g, x, y, key, { size: 8.5, spacing: 0.6 });
-            this.dossierRows[key] = this.boardText(g, x + 92, y, '--', {
-                size: 10, spacing: 0.4, fill: NS_PAPER.ink
-            });
-        });
-
-        this.boardText(g, x, 392, 'sk_buff', { size: 9, spacing: 1.8, fill: NS_PAPER.ink });
-        const segs = ['ETH', 'IP', 'TCP', 'DATA'];
-        this.dossierSegs = {};
-        segs.forEach((label, i) => {
-            const sx = x + i * 66;
-            const rect = this.boardEl('rect', {
-                x: sx, y: 406, width: 58, height: 24, rx: 3,
-                fill: 'none', stroke: NS_PAPER.hairSoft, 'stroke-width': 1
-            }, g);
-            const text = this.boardText(g, sx + 29, 422, label, {
-                size: 8.5, spacing: 0.8, anchor: 'middle'
-            });
-            this.dossierSegs[label] = { rect, text };
-        });
-        this.boardText(g, x, 452, 'head → data → transport → network → mac → tail', {
-            size: 7.5, spacing: 0.4, fill: NS_PAPER.hair
-        });
-
-        const tail = [['ethproto', 'protocol'], ['dev', 'dev'], ['cwnd', 'cwnd'], ['srtt', 'srtt']];
-        tail.forEach(([key, label], i) => {
-            const y = 480 + i * 19;
-            this.boardText(g, x, y, label, { size: 8.5, spacing: 0.6 });
-            this.dossierRows[key] = this.boardText(g, x + 92, y, '--', {
-                size: 10, spacing: 0.4, fill: NS_PAPER.ink
-            });
-        });
-
-        this.dossierHint = this.boardText(g, x, 560, 'click a packet to pin it', {
-            size: 8, spacing: 0.8, fill: NS_PAPER.hair
-        });
-    }
-
-    // Continuation of the same story past the NIC: the hops the skb actually
-    // crosses to reach the peer. Rows are drawn on demand from /api/traceroute,
-    // which caps at 8 hops, so the ladder never needs to scroll.
-    buildPathBlock(g) {
-        const x = NS_BOARD.dossierX;
-        this.boardText(g, x, 620, 'PATH TO PEER', { size: 8, spacing: 1.8 });
-        this.pathHead = this.boardText(g, x, 646, '—', {
-            size: 13, spacing: 1.2, fill: NS_PAPER.ink
-        });
-        this.pathPeer = this.boardText(g, x + 300, 646, '', {
-            size: 9, spacing: 0.4, anchor: 'end', fill: NS_PAPER.dim
-        });
-        this.pathRowsGroup = this.boardEl('g', {}, g);
-        this.pathRenderKey = null;
-    }
-
-    updateBoardPath(trace) {
-        if (!this.pathHead || !this.pathRowsGroup) return;
-        const x = NS_BOARD.dossierX;
-        const hops = Array.isArray(trace?.hops) ? trace.hops.filter((h) => h && h.target != null) : [];
-        const count = Number(trace?.hop_count ?? hops.length) || 0;
-
-        if (!trace) this.pathHead.textContent = '—';
-        else if (trace.status === 'probe') this.pathHead.textContent = 'probe…';
-        else if (!count) this.pathHead.textContent = 'n/a';
-        else this.pathHead.textContent = `${count} hops ${trace.reached ? '✓' : '~'}`;
-        this.pathPeer.textContent = trace?.remote_ip || '';
-
-        const key = JSON.stringify([trace?.remote_ip, hops.map((h) => [h.hop, h.target, h.rtt_ms])]);
-        if (key === this.pathRenderKey) return;
-        this.pathRenderKey = key;
-        while (this.pathRowsGroup.firstChild) this.pathRowsGroup.removeChild(this.pathRowsGroup.firstChild);
-
-        const top = 680;
-        const step = 25;
-        if (hops.length > 1) {
-            this.boardEl('line', {
-                x1: x + 4, y1: top, x2: x + 4, y2: top + (hops.length - 1) * step,
-                stroke: NS_PAPER.hairSoft, 'stroke-width': 1
-            }, this.pathRowsGroup);
-        }
-        hops.forEach((hop, i) => {
-            const y = top + i * step;
-            const last = i === hops.length - 1;
-            const blind = hop.target === '*' || hop.target === '?';
-            this.boardEl('circle', {
-                cx: x + 4, cy: y, r: last ? 3.4 : 2.4,
-                fill: blind ? 'none' : (last ? NS_PAPER.liveCss : NS_PAPER.dot),
-                stroke: blind ? NS_PAPER.hair : 'none', 'stroke-width': 1
-            }, this.pathRowsGroup);
-            this.boardText(this.pathRowsGroup, x + 20, y + 3.5, String(hop.hop), {
-                size: 8, spacing: 0.4
-            });
-            this.boardText(this.pathRowsGroup, x + 44, y + 3.5, hop.target, {
-                size: 9.5, spacing: 0.4, fill: blind ? NS_PAPER.faint : NS_PAPER.ink
-            });
-            this.boardText(this.pathRowsGroup, x + 300, y + 3.5,
-                hop.rtt_ms == null ? '' : `${Number(hop.rtt_ms).toFixed(1)} ms`, {
-                    size: 8.5, spacing: 0.4, anchor: 'end', fill: NS_PAPER.dim
-                });
-        });
-        if (trace?.note && !hops.length) {
-            this.boardText(this.pathRowsGroup, x, top + 4, trace.note, {
-                size: 8, spacing: 0.4, fill: NS_PAPER.hair
-            });
-        }
-    }
-
-    buildBands(g) {
-        const bands = [
-            { name: 'USERSPACE', nodes: [['userspace', 'process'], ['socket', 'socket']] },
-            {
-                name: 'KERNEL',
-                nodes: [['tcp', 'TCP'], ['ip', 'IP'], ['netfilter', 'NF'], ['driver', 'TC'], ['driver', 'NAPI']]
-            },
-            { name: 'HARDWARE', nodes: [['nic', 'NIC'], ['nic', 'WIRE']] }
-        ];
-        this.boardBandNodes = [];
-        bands.forEach((band, bi) => {
-            const y = NS_BOARD.bandY[bi];
-            const step = 190;
-            this.boardText(g, 100, y + 3, band.name, { size: 8, spacing: 1.6 });
-            this.boardEl('line', {
-                x1: 232, y1: y, x2: 300 + (band.nodes.length - 1) * step + 62, y2: y,
-                stroke: NS_PAPER.hairSoft, 'stroke-width': 1
-            }, g);
-            band.nodes.forEach(([layerId, label], ni) => {
-                const x = 300 + ni * step;
-                const dot = this.boardEl('circle', { cx: x, cy: y, r: 3, fill: NS_PAPER.dot }, g);
-                const text = this.boardText(g, x, y - 11, label, {
-                    size: 8.5, spacing: 0.9, anchor: 'middle', fill: NS_PAPER.dim
-                });
-                [dot, text].forEach((node) => {
-                    node.style.cursor = 'pointer';
-                    node.addEventListener('click', () => this.openLayerDrilldown(layerId));
-                });
-                this.boardBandNodes.push({ layerId, label, dot, text });
-            });
-        });
-    }
-
-    showBoardTooltip(layerId, event) {
-        if (!this.layerTooltipNode) return;
-        this.layerTooltipNode.style.display = 'block';
-        window.setSafeHtml(this.layerTooltipNode, this.getLayerTooltipContent(layerId));
-        this.layerTooltipNode.style.left = `${event.clientX + 14}px`;
-        this.layerTooltipNode.style.top = `${event.clientY - 8}px`;
-    }
-
     createOverlayUI() {
-        const err = document.createElement('div');
-        err.style.cssText = `
-            position: absolute;
-            bottom: 14px;
-            right: 18px;
-            color: ${NS_PAPER.dim};
-            font-family: 'Share Tech Mono', monospace;
-            font-size: 10px;
-            z-index: 1001;
-        `;
-        this.container.appendChild(err);
-        this.overlayNodes.push(err);
-        this.telemetryErrorNode = err;
-
-        // The layer maps render a compact echo into this node. The drill modal is
-        // the surface the user actually reads, so the echo itself stays hidden.
-        const lifecyclePanel = document.createElement('div');
-        lifecyclePanel.style.display = 'none';
-        this.container.appendChild(lifecyclePanel);
-        this.overlayNodes.push(lifecyclePanel);
-        this.lifecyclePanelNode = lifecyclePanel;
-
-        const layerTip = document.createElement('div');
-        layerTip.style.cssText = `
-            position: absolute;
-            z-index: 1002;
-            pointer-events: none;
-            display: none;
-            background: rgba(255, 255, 255, 0.94);
-            border: 1px solid ${NS_PAPER.cardBorder};
-            color: ${NS_PAPER.ink};
-            font-family: 'Share Tech Mono', monospace;
-            font-size: 10px;
-            line-height: 1.45;
-            padding: 8px 10px;
-            max-width: 320px;
-        `;
-        this.container.appendChild(layerTip);
-        this.overlayNodes.push(layerTip);
-        this.layerTooltipNode = layerTip;
-
-        const drillScrim = document.createElement('div');
-        drillScrim.style.cssText = `
-            position: absolute;
-            inset: 0;
-            z-index: 1200;
-            display: none;
-            pointer-events: auto;
-            background: rgba(230, 230, 230, 0.82);
-            font-family: 'Share Tech Mono', monospace;
-        `;
-        const drillPanel = document.createElement('div');
-        drillPanel.style.cssText = `
-            position: absolute;
-            left: 50%;
-            top: 50%;
-            transform: translate(-50%, -50%);
-            width: min(680px, 78vw);
-            background: rgba(248, 248, 248, 0.98);
-            border: 1px solid rgba(34, 34, 34, 0.18);
-            color: ${NS_PAPER.ink};
-            overflow: hidden;
-        `;
-        drillScrim.appendChild(drillPanel);
-        this.container.appendChild(drillScrim);
-        this.overlayNodes.push(drillScrim);
-        this.drillScrim = drillScrim;
-        this.drillPanel = drillPanel;
-        drillScrim.addEventListener('click', (e) => {
-            if (e.target === drillScrim) this.closeLayerDrilldown();
-        });
-
-        const bbrScrim = document.createElement('div');
-        bbrScrim.style.cssText = drillScrim.style.cssText;
-        bbrScrim.style.display = 'none';
-        const bbrPanel = document.createElement('div');
-        bbrPanel.style.cssText = drillPanel.style.cssText;
-        bbrPanel.style.width = 'min(880px, 88vw)';
-        bbrScrim.appendChild(bbrPanel);
-        this.container.appendChild(bbrScrim);
-        this.overlayNodes.push(bbrScrim);
-        this.bbrScrim = bbrScrim;
-        this.bbrPanel = bbrPanel;
-        bbrScrim.addEventListener('click', (e) => {
-            if (e.target === bbrScrim) this.closeBbrOverlay();
-        });
-    }
-
-    createLegacyOverlayUI() {
         const title = document.createElement('div');
         title.style.cssText = `
             position: absolute;
             top: 18px;
             left: 50%;
             transform: translateX(-50%);
-            color: ${NS_PAPER.ink};
+            color: #d3d9e0;
             font-family: 'Share Tech Mono', monospace;
-            font-size: 15px;
-            letter-spacing: 1.6px;
+            font-size: 22px;
+            letter-spacing: 1.2px;
+            text-shadow: 0 0 10px rgba(88, 182, 216, 0.22);
             z-index: 1001;
         `;
-        title.style.textAlign = 'center';
-        title.style.lineHeight = '1.25';
-        title.innerHTML = `NETWORK SUBSYSTEM<br><span style="font-size:9px;letter-spacing:1.6px;color:${NS_PAPER.faint}">LIVE PACKET THROUGH LINUX KERNEL</span>`;
+        title.textContent = 'NETWORK STACK';
         this.container.appendChild(title);
         this.overlayNodes.push(title);
-
-        const flow = document.createElement('div');
-        flow.style.cssText = `
-            position: absolute;
-            top: 58px;
-            left: 50%;
-            transform: translateX(-50%);
-            color: ${NS_PAPER.dim};
-            font-family: 'Share Tech Mono', monospace;
-            font-size: 11px;
-            letter-spacing: 0.45px;
-            background: transparent;
-            border: none;
-            padding: 4px 0;
-            z-index: 1001;
-        `;
-        flow.textContent = 'process -> syscall -> socket -> TCP -> IP -> NIC -> wire -> remote';
-        this.container.appendChild(flow);
-        this.overlayNodes.push(flow);
-        this.flowNode = flow;
 
         const kpiBar = document.createElement('div');
         kpiBar.style.cssText = `
             position: absolute;
-            top: 90px;
+            top: 58px;
             left: 50%;
             transform: translateX(-50%);
             z-index: 1001;
@@ -2076,7 +1664,6 @@ class NetworkStackVisualization {
         `;
         this.container.appendChild(kpiBar);
         this.overlayNodes.push(kpiBar);
-        this.kpiBarNode = kpiBar;
 
         const kpiSpec = [
             { id: 'flow', label: 'FLOW' },
@@ -2089,19 +1676,19 @@ class NetworkStackVisualization {
             const card = document.createElement('div');
             card.style.cssText = `
                 min-width: 116px;
-                background: ${NS_PAPER.card};
-                border: 1px solid ${NS_PAPER.cardBorder};
+                background: rgba(13, 18, 28, 0.88);
+                border: 1px solid rgba(108, 122, 142, 0.32);
                 border-radius: 6px;
                 padding: 6px 9px 7px;
-                color: ${NS_PAPER.ink};
-                box-shadow: none;
+                color: #c8d0da;
+                box-shadow: 0 3px 10px rgba(0, 0, 0, 0.22);
             `;
             const label = document.createElement('div');
             label.style.cssText = `
                 font-family: 'Share Tech Mono', monospace;
                 font-size: 9px;
                 letter-spacing: 0.7px;
-                color: ${NS_PAPER.dim};
+                color: #8391a1;
                 margin-bottom: 3px;
             `;
             label.textContent = spec.label;
@@ -2109,7 +1696,7 @@ class NetworkStackVisualization {
             value.style.cssText = `
                 font-family: 'Share Tech Mono', monospace;
                 font-size: 12px;
-                color: ${NS_PAPER.ink};
+                color: #d8e0ea;
                 line-height: 1.2;
             `;
             value.textContent = '--';
@@ -2137,20 +1724,20 @@ class NetworkStackVisualization {
             display: flex;
             flex-direction: column;
             gap: 4px;
-            background: ${NS_PAPER.card};
-            border: 1px solid ${NS_PAPER.cardBorder};
+            background: rgba(13, 18, 28, 0.88);
+            border: 1px solid rgba(108, 122, 142, 0.32);
             border-radius: 6px;
             padding: 6px 9px 7px;
-            box-shadow: none;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.22);
             font-family: 'Share Tech Mono', monospace;
         `;
         const arrayHead = document.createElement('div');
         arrayHead.style.cssText = 'display:flex; align-items:baseline; gap:6px;';
         const arrayLabel = document.createElement('div');
-        arrayLabel.style.cssText = `font-size:9px; letter-spacing:0.7px; color:${NS_PAPER.dim};`;
+        arrayLabel.style.cssText = 'font-size:9px; letter-spacing:0.7px; color:#8391a1;';
         arrayLabel.textContent = 'NS-ARRAY · STACK ACTIVITY';
         const arrayDesig = document.createElement('div');
-        arrayDesig.style.cssText = `font-size:11px; letter-spacing:0.5px; color:${NS_PAPER.ink};`;
+        arrayDesig.style.cssText = 'font-size:11px; letter-spacing:0.5px; color:#9bd4f2;';
         arrayDesig.textContent = 'TCP';
         arrayHead.appendChild(arrayLabel);
         arrayHead.appendChild(arrayDesig);
@@ -2166,7 +1753,7 @@ class NetworkStackVisualization {
             this.matrixData[r] = new Array(MATRIX_COLS).fill(0);
             for (let c = 0; c < MATRIX_COLS; c++) {
                 const cell = document.createElement('div');
-                cell.style.cssText = 'width:4px; height:4px; background:rgba(34,34,34,0.08);';
+                cell.style.cssText = 'width:4px; height:4px; background:rgba(40,52,64,0.5);';
                 matrix.appendChild(cell);
                 this.matrixCells[r][c] = cell;
             }
@@ -2185,13 +1772,13 @@ class NetworkStackVisualization {
         // [health dot + name] on the left, the live lane in the middle, and the
         // live metric chip on the right, all sharing the same vertical position.
         const layerRows = [
-            { id: 'userspace', name: 'PROCESS', object: 'syscall / task', top: '22%' },
-            { id: 'socket', name: 'SOCKET', object: 'struct sock / fd', top: '30%' },
-            { id: 'tcp', name: 'TCP / UDP', object: 'struct tcp_sock', top: '38%' },
-            { id: 'ip', name: 'IP', object: 'FIB / struct dst', top: '46%' },
-            { id: 'netfilter', name: 'NETFILTER', object: 'hooks / conntrack', top: '54%' },
-            { id: 'driver', name: 'DRIVER', object: 'NAPI / DMA', top: '62%' },
-            { id: 'nic', name: 'NIC', object: 'RX / TX ring', top: '70%' }
+            { id: 'userspace', name: 'USERSPACE', top: '22%' },
+            { id: 'socket', name: 'SOCKET API', top: '30%' },
+            { id: 'tcp', name: 'TCP / UDP', top: '38%' },
+            { id: 'ip', name: 'IP', top: '46%' },
+            { id: 'netfilter', name: 'NETFILTER', top: '54%' },
+            { id: 'driver', name: 'DRIVER', top: '62%' },
+            { id: 'nic', name: 'NIC', top: '70%' }
         ];
 
         // Transparent full-bleed container for the left row labels. Kept as
@@ -2207,19 +1794,42 @@ class NetworkStackVisualization {
         this.overlayNodes.push(layersPanel);
         this.layersPanelNode = layersPanel;
 
-        // Section caption sitting above the first row.
+        // Section caption sitting above the first row. Left edge matches the
+        // galaxy panel at the bottom of the same column; the 96px the mode rail
+        // used to occupy is what both the caption and the rows gave back.
         const stackCaption = document.createElement('div');
         stackCaption.style.cssText = `
             position: absolute;
-            left: 120px;
+            left: 24px;
             top: 16%;
             transform: translateY(-50%);
-            color: ${NS_PAPER.faint};
+            color: #7f8fa2;
             font-family: 'Share Tech Mono', monospace;
             font-size: 10px;
             letter-spacing: 1.1px;
         `;
-        stackCaption.textContent = 'TX ↓   ·   RX ↑';
+        const stackCaptionText = document.createElement('div');
+        stackCaptionText.textContent = 'STACK  ·  userspace → wire';
+        stackCaption.appendChild(stackCaptionText);
+
+        // Live stream counters, formerly the head of the left mode rail. The
+        // caption block is centred on its own anchor, so an added line pushes
+        // out half up and half down and keeps clear of the USERSPACE row at
+        // 22% even on short viewports, where a fixed pixel offset would not.
+        const streamLine = document.createElement('div');
+        streamLine.style.cssText = `
+            margin-top: 5px;
+            font-size: 9.5px;
+            letter-spacing: 0.8px;
+            color: #9bd4f2;
+        `;
+        const streamValue = document.createElement('span');
+        streamValue.textContent = '--';
+        streamLine.appendChild(document.createTextNode('STREAM · ACTIVE  '));
+        streamLine.appendChild(streamValue);
+        stackCaption.appendChild(streamLine);
+        this.modeStatValue = streamValue;
+
         layersPanel.appendChild(stackCaption);
 
         this.layerRows = {};
@@ -2231,7 +1841,7 @@ class NetworkStackVisualization {
             const row = document.createElement('div');
             row.style.cssText = `
                 position: absolute;
-                left: 120px;
+                left: 24px;
                 top: ${spec.top};
                 transform: translateY(-50%);
                 display: flex;
@@ -2239,15 +1849,15 @@ class NetworkStackVisualization {
                 gap: 2px;
                 min-width: 150px;
                 padding: 4px 9px;
-                background: transparent;
-                border: 1px solid transparent;
-                border-left: 2px solid rgba(34, 34, 34, 0.18);
-                border-radius: 0;
+                background: rgba(13, 18, 28, 0.72);
+                border: 1px solid rgba(108, 122, 142, 0.3);
+                border-left: 2px solid rgba(103, 190, 224, 0.7);
+                border-radius: 3px;
                 font-family: 'Share Tech Mono', monospace;
-                box-shadow: none;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
             `;
             const code = document.createElement('div');
-            code.style.cssText = `font-size: 8px; letter-spacing: 1px; color: ${NS_PAPER.faint};`;
+            code.style.cssText = `font-size: 8px; letter-spacing: 1px; color: #6f8597;`;
             code.textContent = `NS-STACK-L${String(level).padStart(2, '0')}`;
             const mainline = document.createElement('div');
             mainline.style.cssText = `display: flex; align-items: center; gap: 7px;`;
@@ -2257,30 +1867,26 @@ class NetworkStackVisualization {
                 height: 8px;
                 border-radius: 50%;
                 flex: 0 0 auto;
-                background: rgba(34, 34, 34, 0.28);
+                background: rgba(122, 150, 168, 0.6);
                 transition: background 220ms ease, box-shadow 220ms ease;
             `;
             const name = document.createElement('span');
             name.style.cssText = `
-                color: ${NS_PAPER.dim};
+                color: #cdd6e0;
                 font-size: 11.5px;
                 letter-spacing: 0.5px;
             `;
             name.textContent = spec.name;
             mainline.appendChild(dot);
             mainline.appendChild(name);
-            const object = document.createElement('div');
-            object.style.cssText = `font-size: 9px; letter-spacing: 0.3px; color: ${NS_PAPER.faint}; padding-left: 15px;`;
-            object.textContent = spec.object || '';
             row.appendChild(code);
             row.appendChild(mainline);
-            row.appendChild(object);
             row.style.pointerEvents = 'auto';
             row.style.cursor = 'pointer';
             row.title = 'Click to inspect layer';
             row.addEventListener('click', () => this.openLayerDrilldown(spec.id));
             layersPanel.appendChild(row);
-            this.layerRows[spec.id] = { row, dot, name, object };
+            this.layerRows[spec.id] = { row, dot, name };
         });
 
         // Connector overlay: leader lines from the channel list to the tower
@@ -2294,7 +1900,7 @@ class NetworkStackVisualization {
 
         const rail = document.createElementNS(svgNS, 'path');
         rail.setAttribute('fill', 'none');
-        rail.setAttribute('stroke', 'rgba(34, 34, 34, 0.18)');
+        rail.setAttribute('stroke', 'rgba(103, 190, 224, 0.28)');
         rail.setAttribute('stroke-width', '1');
         connectorSvg.appendChild(rail);
         this.connectorRail = rail;
@@ -2302,12 +1908,12 @@ class NetworkStackVisualization {
         layerRows.forEach((spec) => {
             const path = document.createElementNS(svgNS, 'path');
             path.setAttribute('fill', 'none');
-            path.setAttribute('stroke', 'rgba(34, 34, 34, 0.28)');
+            path.setAttribute('stroke', 'rgba(103, 190, 224, 0.5)');
             path.setAttribute('stroke-width', '1');
             connectorSvg.appendChild(path);
             const node = document.createElementNS(svgNS, 'circle');
             node.setAttribute('r', '2.6');
-            node.setAttribute('fill', '#3a3a3a');
+            node.setAttribute('fill', '#67c8e0');
             connectorSvg.appendChild(node);
             this.layerConnectors[spec.id] = { path, node, frac: parseFloat(spec.top) / 100 };
         });
@@ -2316,7 +1922,7 @@ class NetworkStackVisualization {
         this.layerConnectorsRight = {};
         const railRight = document.createElementNS(svgNS, 'path');
         railRight.setAttribute('fill', 'none');
-        railRight.setAttribute('stroke', 'rgba(34, 34, 34, 0.18)');
+        railRight.setAttribute('stroke', 'rgba(103, 190, 224, 0.28)');
         railRight.setAttribute('stroke-width', '1');
         connectorSvg.appendChild(railRight);
         this.connectorRailRight = railRight;
@@ -2324,12 +1930,12 @@ class NetworkStackVisualization {
         layerRows.forEach((spec) => {
             const path = document.createElementNS(svgNS, 'path');
             path.setAttribute('fill', 'none');
-            path.setAttribute('stroke', 'rgba(34, 34, 34, 0.28)');
+            path.setAttribute('stroke', 'rgba(103, 190, 224, 0.5)');
             path.setAttribute('stroke-width', '1');
             connectorSvg.appendChild(path);
             const node = document.createElementNS(svgNS, 'circle');
             node.setAttribute('r', '2.6');
-            node.setAttribute('fill', '#3a3a3a');
+            node.setAttribute('fill', '#67c8e0');
             connectorSvg.appendChild(node);
             this.layerConnectorsRight[spec.id] = { path, node, frac: parseFloat(spec.top) / 100 };
         });
@@ -2359,7 +1965,7 @@ class NetworkStackVisualization {
         // Small cyan "›" connector glyph placed between chain modules.
         const makeSep = () => {
             const s = document.createElement('div');
-            s.style.cssText = 'flex:none; color:rgba(34,34,34,0.28); font-size:11px; line-height:1; align-self:center;';
+            s.style.cssText = 'flex:none; color:rgba(103,190,224,0.7); font-size:11px; line-height:1; align-self:center;';
             s.textContent = '›';
             return s;
         };
@@ -2401,10 +2007,10 @@ class NetworkStackVisualization {
             numCap.style.cssText = 'font-size:7px; letter-spacing:0.6px; color:#6f8597; white-space:nowrap;';
             numCap.textContent = spec.name;
             const numVal = document.createElement('div');
-            numVal.style.cssText = `font-size:19px; line-height:1.05; letter-spacing:0.3px; color:${NS_PAPER.ink}; white-space:nowrap;`;
+            numVal.style.cssText = 'font-size:19px; line-height:1.05; letter-spacing:0.3px; color:#cfe6f2; white-space:nowrap;';
             numVal.textContent = '--';
             const numSub = document.createElement('div');
-            numSub.style.cssText = `font-size:8px; letter-spacing:0.3px; color:${NS_PAPER.dim}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;`;
+            numSub.style.cssText = 'font-size:8px; letter-spacing:0.3px; color:#8ba0b2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;';
             numSub.textContent = metricCaption[spec.id] || '';
             numBlock.appendChild(numCap);
             numBlock.appendChild(numVal);
@@ -2415,9 +2021,9 @@ class NetworkStackVisualization {
             intBlock.style.cssText = 'flex:none; display:flex; flex-direction:column; align-items:center;';
             intBlock.appendChild(makeHeader('ACTIVITY'));
             const dial = document.createElement('div');
-            dial.style.cssText = 'position:relative; width:38px; height:38px; border-radius:50%; background:conic-gradient(rgba(34,34,34,0.55) 40deg, rgba(34,34,34,0.08) 0); box-shadow:0 0 0 1px rgba(34,34,34,0.16) inset; display:flex; align-items:center; justify-content:center;';
+            dial.style.cssText = 'position:relative; width:38px; height:38px; border-radius:50%; background:conic-gradient(rgba(103,190,224,0.85) 40deg, rgba(34,44,56,0.7) 0); box-shadow:0 0 0 1px rgba(96,110,128,0.4) inset; display:flex; align-items:center; justify-content:center;';
             const dialNum = document.createElement('div');
-            dialNum.style.cssText = `font-size:13px; color:${NS_PAPER.ink}; letter-spacing:0.3px;`;
+            dialNum.style.cssText = 'font-size:13px; color:#dbe7f0; letter-spacing:0.3px;';
             dialNum.textContent = '0';
             dial.appendChild(dialNum);
             intBlock.appendChild(dial);
@@ -2435,76 +2041,6 @@ class NetworkStackVisualization {
             this.metricChips[spec.id] = null;
             this.chainModules[spec.id] = { numCap, numVal, dialArc: dial, dialNum };
         });
-
-        // Left operation-mode rail (reference style). The active cell follows the
-        // current read mode so it stays meaningful, not decorative.
-        const modePanel = document.createElement('div');
-        modePanel.style.cssText = `
-            position: absolute;
-            left: 14px;
-            top: 15%;
-            z-index: 1001;
-            pointer-events: none;
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-            width: 96px;
-            font-family: 'Share Tech Mono', monospace;
-        `;
-        this.container.appendChild(modePanel);
-        this.overlayNodes.push(modePanel);
-        this.modePanelNode = modePanel;
-
-        const modeStat = document.createElement('div');
-        modeStat.style.cssText = `
-            background: ${NS_PAPER.card};
-            border: 1px solid ${NS_PAPER.cardBorder};
-            border-radius: 3px;
-            padding: 5px 7px;
-            margin-bottom: 3px;
-        `;
-        const modeStatCap = document.createElement('div');
-        modeStatCap.style.cssText = `font-size: 7.5px; letter-spacing: 1.1px; color: ${NS_PAPER.faint};`;
-        modeStatCap.textContent = 'STREAM · ACTIVE';
-        const modeStatVal = document.createElement('div');
-        modeStatVal.style.cssText = `font-size: 14px; letter-spacing: 0.5px; color: ${NS_PAPER.ink}; line-height: 1.1;`;
-        modeStatVal.textContent = '--';
-        modeStat.appendChild(modeStatCap);
-        modeStat.appendChild(modeStatVal);
-        modePanel.appendChild(modeStat);
-        this.modeStatValue = modeStatVal;
-
-        const modeDefs = [
-            { id: 'active', label: 'ACTIVE' },
-            { id: 'setup', label: 'SETUP' },
-            { id: 'system', label: 'SYSTEM' },
-            { id: 'monitor', label: 'MONITOR' },
-            { id: 'diagnostic', label: 'DIAGNOSTIC' },
-            { id: 'log', label: 'LOG' }
-        ];
-        this.modeCells = {};
-        modeDefs.forEach((m) => {
-            const cell = document.createElement('div');
-            cell.style.cssText = `
-                background: transparent;
-                border: 1px solid transparent;
-                border-left: 2px solid rgba(34, 34, 34, 0.16);
-                border-radius: 2px;
-                padding: 4px 7px;
-                line-height: 1.15;
-            `;
-            const cap = document.createElement('div');
-            cap.style.cssText = `font-size: 7px; letter-spacing: 1px; color: ${NS_PAPER.faint};`;
-            cap.textContent = 'MODE';
-            const name = document.createElement('div');
-            name.style.cssText = `font-size: 11px; letter-spacing: 0.5px; color: ${NS_PAPER.dim};`;
-            name.textContent = m.label;
-            cell.appendChild(cap);
-            cell.appendChild(name);
-            modePanel.appendChild(cell);
-            this.modeCells[m.id] = { cell, name };
-        });
-        this.updateModePanel();
 
         const err = document.createElement('div');
         err.style.cssText = `
@@ -2530,15 +2066,15 @@ class NetworkStackVisualization {
             z-index: 1001;
             width: 360px;
             max-width: 30vw;
-            background: ${NS_PAPER.card};
-            border: 1px solid ${NS_PAPER.cardBorder};
+            background: rgba(10, 15, 24, 0.84);
+            border: 1px solid rgba(129, 145, 168, 0.32);
             border-radius: 6px;
             padding: 10px 12px;
-            color: ${NS_PAPER.ink};
+            color: #c7d0da;
             font-family: 'Share Tech Mono', monospace;
             font-size: 10px;
             line-height: 1.45;
-            box-shadow: none;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.24);
             overflow: hidden;
         `;
         this.container.appendChild(galaxyPanel);
@@ -2547,7 +2083,7 @@ class NetworkStackVisualization {
         const galaxyTitle = document.createElement('div');
         galaxyTitle.style.cssText = `
             font-size: 10px;
-            color: ${NS_PAPER.dim};
+            color: #7f8fa2;
             letter-spacing: 0.6px;
             margin-bottom: 6px;
         `;
@@ -2575,8 +2111,8 @@ class NetworkStackVisualization {
             chip.style.cssText = `
                 border-radius: 4px;
                 border: 1px solid rgba(115, 128, 145, 0.32);
-                background: rgba(255, 255, 255, 0.7);
-                color: ${NS_PAPER.ink};
+                background: rgba(16, 22, 32, 0.68);
+                color: #bac4cf;
                 font-family: 'Share Tech Mono', monospace;
                 font-size: 10px;
                 padding: 3px 8px;
@@ -2591,7 +2127,7 @@ class NetworkStackVisualization {
 
         const galaxyExplain = document.createElement('div');
         galaxyExplain.style.cssText = `
-            color: ${NS_PAPER.dim};
+            color: #aeb8c3;
             font-size: 10px;
             line-height: 1.45;
             min-height: 34px;
@@ -2614,15 +2150,15 @@ class NetworkStackVisualization {
             max-width: calc(100vw - 430px);
             min-width: 520px;
             max-height: 36vh;
-            background: ${NS_PAPER.card};
-            border: 1px solid ${NS_PAPER.cardBorder};
+            background: rgba(10, 15, 24, 0.84);
+            border: 1px solid rgba(129, 145, 168, 0.32);
             border-radius: 6px;
             padding: 10px 12px;
-            color: ${NS_PAPER.ink};
+            color: #c7d0da;
             font-family: 'Share Tech Mono', monospace;
             font-size: 9px;
             line-height: 1.5;
-            box-shadow: none;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.24);
             pointer-events: auto;
             overflow: auto;
         `;
@@ -2647,9 +2183,9 @@ class NetworkStackVisualization {
             z-index: 1002;
             pointer-events: none;
             display: none;
-            background: ${NS_PAPER.card};
-            border: 1px solid ${NS_PAPER.cardBorder};
-            color: ${NS_PAPER.ink};
+            background: rgba(12, 18, 28, 0.94);
+            border: 1px solid rgba(160, 170, 190, 0.35);
+            color: #c8ccd4;
             font-family: 'Share Tech Mono', monospace;
             font-size: 10px;
             line-height: 1.45;
@@ -2673,7 +2209,7 @@ class NetworkStackVisualization {
             z-index: 1200;
             display: none;
             pointer-events: auto;
-            background: radial-gradient(ellipse at 50% 46%, rgba(230,230,230,0.55) 0%, rgba(230,230,230,0.82) 62%, rgba(230,230,230,0.92) 100%);
+            background: radial-gradient(ellipse at 50% 46%, rgba(8,12,20,0.62) 0%, rgba(6,9,15,0.86) 62%, rgba(4,6,11,0.94) 100%);
             backdrop-filter: blur(1.5px);
             font-family: 'Share Tech Mono', monospace;
         `;
@@ -2684,11 +2220,11 @@ class NetworkStackVisualization {
             top: 50%;
             transform: translate(-50%, -50%);
             width: min(680px, 78vw);
-            background: rgba(248, 248, 248, 0.96);
-            border: 1px solid rgba(34, 34, 34, 0.16);
+            background: rgba(11, 16, 26, 0.96);
+            border: 1px solid rgba(103, 190, 224, 0.4);
             border-radius: 8px;
-            box-shadow: 0 18px 40px rgba(0, 0, 0, 0.08);
-            color: ${NS_PAPER.ink};
+            box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+            color: #cdd6e0;
             padding: 0;
             overflow: hidden;
         `;
@@ -2731,9 +2267,9 @@ class NetworkStackVisualization {
             font-family: 'Share Tech Mono', monospace;
             font-size: 10px;
             letter-spacing: 1px;
-            color: ${NS_PAPER.ink};
-            background: ${NS_PAPER.card};
-            border: 1px solid ${NS_PAPER.cardBorder};
+            color: #a9d4e8;
+            background: rgba(103,190,224,0.12);
+            border: 1px solid rgba(103,190,224,0.45);
             border-radius: 14px;
             padding: 4px 14px;
             white-space: nowrap;
@@ -2741,147 +2277,219 @@ class NetworkStackVisualization {
         `;
         bbrPill.textContent = '▸ TCP BBR · PATH MODEL';
         bbrPill.title = 'Open the BBR bottleneck-bandwidth + min-RTT model';
-        bbrPill.addEventListener('mouseenter', () => { bbrPill.style.background = 'rgba(255,255,255,0.88)'; });
-        bbrPill.addEventListener('mouseleave', () => { bbrPill.style.background = NS_PAPER.card; });
+        bbrPill.addEventListener('mouseenter', () => { bbrPill.style.background = 'rgba(103,190,224,0.22)'; });
+        bbrPill.addEventListener('mouseleave', () => { bbrPill.style.background = 'rgba(103,190,224,0.12)'; });
         bbrPill.addEventListener('click', () => this.openBbrOverlay());
         this.container.appendChild(bbrPill);
         this.overlayNodes.push(bbrPill);
         this.bbrPillNode = bbrPill;
 
-        // Grouped "VIEW" control rail: the four view toggles live in one compact
-        // card (clearly a control surface, distinct from the read-only metric
-        // chips) instead of four separate floating pills stacked down the edge.
-        const controlCard = document.createElement('div');
-        controlCard.style.cssText = `
-            position: absolute;
-            top: 60px;
-            right: 20px;
-            z-index: 1002;
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-            padding: 7px 7px 8px;
-            background: ${NS_PAPER.card};
-            border: 1px solid ${NS_PAPER.cardBorder};
-            border-radius: 7px;
-            box-shadow: none;
-            pointer-events: auto;
-        `;
-        this.container.appendChild(controlCard);
-        this.overlayNodes.push(controlCard);
-        this.controlCardNode = controlCard;
-
-        const controlHeader = document.createElement('div');
-        controlHeader.style.cssText = `
-            font-family: 'Share Tech Mono', monospace;
-            font-size: 8.5px;
-            letter-spacing: 1.1px;
-            color: ${NS_PAPER.dim};
-            padding: 1px 2px 4px;
-            border-bottom: 1px solid rgba(115, 128, 145, 0.2);
-        `;
-        controlHeader.textContent = 'VIEW';
-        controlCard.appendChild(controlHeader);
-
-        const baseBtnCss = `
-            display: block;
-            width: 132px;
-            text-align: left;
-            padding: 5px 9px;
-            background: rgba(255, 255, 255, 0.72);
-            border: 1px solid ${NS_PAPER.cardBorder};
-            color: ${NS_PAPER.ink};
-            font-family: 'Share Tech Mono', monospace;
-            font-size: 9.5px;
-            letter-spacing: 0.4px;
-            cursor: pointer;
-            border-radius: 4px;
-            transition: all 0.2s ease;
-        `;
-
-        const viewModeBtn = document.createElement('button');
-        viewModeBtn.textContent = 'MODE: DETAILED';
-        viewModeBtn.style.cssText = baseBtnCss;
-        viewModeBtn.onmouseenter = () => {
-            viewModeBtn.style.background = 'rgba(255, 255, 255, 0.92)';
-            viewModeBtn.style.color = NS_PAPER.ink;
-        };
-        viewModeBtn.onmouseleave = () => {
-            viewModeBtn.style.background = 'rgba(255, 255, 255, 0.72)';
-            viewModeBtn.style.color = this.viewDensityMode === 'minimal' ? NS_PAPER.liveCss : NS_PAPER.ink;
-        };
-        viewModeBtn.onclick = () => {
-            this.toggleViewDensityMode();
-        };
-        controlCard.appendChild(viewModeBtn);
-        this.overlayNodes.push(viewModeBtn);
-        this.viewModeButton = viewModeBtn;
-
-        const puzzleModeBtn = document.createElement('button');
-        puzzleModeBtn.textContent = 'PUZZLE: OVERVIEW';
-        puzzleModeBtn.style.cssText = baseBtnCss;
-        puzzleModeBtn.onmouseenter = () => {
-            puzzleModeBtn.style.background = 'rgba(255, 255, 255, 0.92)';
-            puzzleModeBtn.style.color = NS_PAPER.ink;
-        };
-        puzzleModeBtn.onmouseleave = () => {
-            puzzleModeBtn.style.background = 'rgba(255, 255, 255, 0.72)';
-            puzzleModeBtn.style.color = this.puzzleDetailMode === 'overview' ? NS_PAPER.ink : NS_PAPER.liveCss;
-        };
-        puzzleModeBtn.onclick = () => {
-            this.togglePuzzleDetailMode();
-        };
-        controlCard.appendChild(puzzleModeBtn);
-        this.overlayNodes.push(puzzleModeBtn);
-        this.puzzleModeButton = puzzleModeBtn;
-
-        const noiseModeBtn = document.createElement('button');
-        noiseModeBtn.textContent = 'NOISE: DENSE';
-        noiseModeBtn.style.cssText = baseBtnCss;
-        // Default state is dense → start in the active (amber) styling.
-        noiseModeBtn.style.borderColor = 'rgba(230, 193, 90, 0.58)';
-        noiseModeBtn.style.color = NS_PAPER.liveCss;
-        noiseModeBtn.onmouseenter = () => {
-            noiseModeBtn.style.background = 'rgba(255, 255, 255, 0.92)';
-            noiseModeBtn.style.color = NS_PAPER.ink;
-        };
-        noiseModeBtn.onmouseleave = () => {
-            noiseModeBtn.style.background = 'rgba(255, 255, 255, 0.72)';
-            noiseModeBtn.style.color = this.noiseDetailMode === 'dense' ? NS_PAPER.liveCss : NS_PAPER.ink;
-        };
-        noiseModeBtn.onclick = () => {
-            this.toggleNoiseDetailMode();
-        };
-        controlCard.appendChild(noiseModeBtn);
-        this.overlayNodes.push(noiseModeBtn);
-        this.noiseModeButton = noiseModeBtn;
-
-        const readModeBtn = document.createElement('button');
-        readModeBtn.textContent = 'READ: SCENE';
-        readModeBtn.style.cssText = baseBtnCss;
-        readModeBtn.onmouseenter = () => {
-            readModeBtn.style.background = 'rgba(255, 255, 255, 0.92)';
-            readModeBtn.style.color = NS_PAPER.ink;
-        };
-        readModeBtn.onmouseleave = () => {
-            readModeBtn.style.background = 'rgba(255, 255, 255, 0.72)';
-            if (this.readMode === 'ops') readModeBtn.style.color = NS_PAPER.liveCss;
-            else readModeBtn.style.color = NS_PAPER.ink;
-        };
-        readModeBtn.onclick = () => {
-            this.toggleReadMode();
-        };
-        controlCard.appendChild(readModeBtn);
-        this.overlayNodes.push(readModeBtn);
-        this.readModeButton = readModeBtn;
-        this.createAnatomyChrome();
+        this.buildDistanceStrip();
         this.updateBottomPanelsLayout();
         this.updatePacketLifecycleUI();
         this.applyViewDensityMode();
     }
 
+    // Height of the distance ruler. The two bottom panels are lifted by this
+    // much, which is the whole of the layout cost: the page had no free area
+    // left, so the ruler takes the floor and everything above it moves up.
+    static get DISTANCE_STRIP_HEIGHT() { return 104; }
+
+    // Mock neighbourhood, shaped exactly like /api/peer-distance so switching
+    // to live data is a single call. The numbers are the ones measured on
+    // production, not invented: the ARP table there holds one entry, the same
+    // box is router and DHCP server, the resolver stub answers without a
+    // packet leaving, and a real visitor sat eleven hops out at 66 ms.
+    static get DISTANCE_MOCK() {
+        return {
+            sensor_publishing: true,
+            ladder: [
+                { layer: 'L2 / ARP', role: 'link neighbour', address: '172.31.16.1', hops: 0, detail: '02:f3:09:f3:f0:62' },
+                { layer: 'DNS', role: 'stub resolver', address: '127.0.0.53', hops: 0, detail: 'systemd-resolved' },
+                { layer: 'DHCP', role: 'lease server', address: '172.31.16.1', hops: 0, detail: 'gave this host its address' },
+                { layer: 'L3 / route', role: 'default router', address: '172.31.16.1', hops: 1, detail: 'default' },
+                { layer: 'DNS', role: 'upstream resolver', address: '172.31.0.2', hops: 1, detail: 'forwarded queries' },
+                { layer: 'storage', role: 'database', address: '172.31.44.198', hops: 1, detail: 'postgres + elastic' }
+            ],
+            visitor: {
+                address: '203.0.113.9', hops: 11, ttl: 53, initial_ttl: 64,
+                family: 'Linux, macOS or Android', min_rtt_ms: 66.1, measured: true
+            }
+        };
+    }
+
+    buildDistanceStrip() {
+        const strip = document.createElement('div');
+        strip.style.cssText = `
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            height: ${NetworkStackVisualization.DISTANCE_STRIP_HEIGHT}px;
+            z-index: 1000;
+            pointer-events: none;
+            font-family: 'Share Tech Mono', monospace;
+        `;
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('width', '100%');
+        svg.setAttribute('height', '100%');
+        svg.style.cssText = 'display:block;';
+        strip.appendChild(svg);
+        this.container.appendChild(strip);
+        this.overlayNodes.push(strip);
+        this.distanceStripNode = strip;
+        this.distanceStripSvg = svg;
+        this.distanceData = NetworkStackVisualization.DISTANCE_MOCK;
+        this.drawDistanceStrip();
+    }
+
+    drawDistanceStrip() {
+        const svg = this.distanceStripSvg;
+        const data = this.distanceData;
+        if (!svg || !data) return;
+        const W = this.distanceStripNode.clientWidth || window.innerWidth || 1280;
+        while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+        const LEFT = 26;
+        const RIGHT = 26;
+        const visitor = data.visitor || {};
+        const maxHop = Math.max(1, Number(visitor.hops) > 0 ? Number(visitor.hops) : 1);
+        const span = W - LEFT - RIGHT;
+        const atHop = (hop) => LEFT + (span * hop) / maxHop;
+
+        // Lay the labels out before deciding how tall the strip is: how many
+        // rows they need depends on the window width, so a fixed height would
+        // either clip them on a narrow window or leave a gap on a wide one.
+        const ROW = 13;
+        const CHAR = 4.9; // 8px Share Tech Mono advance, measured against the render
+        const placed = [];
+        const rowEnds = [];
+        let usedRows = 1;
+        (data.ladder || [])
+            .map((rung) => ({ rung, hop: Number(rung.hops) || 0 }))
+            .sort((a, b) => a.hop - b.hop)
+            .forEach(({ rung, hop }) => {
+                const start = atHop(hop) + 6;
+                const label = `${rung.role} · ${rung.address}`;
+                let row = 0;
+                while (rowEnds[row] !== undefined && rowEnds[row] > start - 8) row += 1;
+                rowEnds[row] = start + label.length * CHAR;
+                usedRows = Math.max(usedRows, row + 1);
+                placed.push({ x: atHop(hop), start, label, row });
+            });
+
+        // Header, the stacked labels, the axis and the hop numbers beneath it.
+        const H = 18 + usedRows * ROW + 12 + 26;
+        this.distanceStripHeight = H;
+        this.distanceStripNode.style.height = `${H}px`;
+        const axisY = H - 30;
+
+        const line = (x1, y1, x2, y2, stroke, width, opacity) => {
+            const el = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            el.setAttribute('x1', x1.toFixed(1));
+            el.setAttribute('y1', y1.toFixed(1));
+            el.setAttribute('x2', x2.toFixed(1));
+            el.setAttribute('y2', y2.toFixed(1));
+            el.setAttribute('stroke', stroke);
+            el.setAttribute('stroke-width', width);
+            if (opacity !== undefined) el.setAttribute('opacity', opacity);
+            svg.appendChild(el);
+            return el;
+        };
+        const text = (x, y, value, { size = 8, fill = '#8d99a7', anchor = 'start', spacing = 0.5 } = {}) => {
+            const el = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            el.setAttribute('x', x.toFixed(1));
+            el.setAttribute('y', y.toFixed(1));
+            el.setAttribute('fill', fill);
+            el.setAttribute('font-size', size);
+            el.setAttribute('font-family', "'Share Tech Mono', monospace");
+            el.setAttribute('letter-spacing', spacing);
+            el.setAttribute('text-anchor', anchor);
+            el.textContent = value;
+            svg.appendChild(el);
+            return el;
+        };
+
+        line(LEFT, axisY, W - RIGHT, axisY, '#556273', 1, 0.9);
+        text(LEFT, 13, 'DISTANCE IN HOPS', { size: 7, fill: '#6f8597', spacing: 1.1 });
+        text(W - RIGHT, 13, data.sensor_publishing ? 'TTL ON INBOUND SYN' : 'SENSOR NOT PUBLISHING',
+            { size: 7, fill: data.sensor_publishing ? '#6f8597' : '#e69696', anchor: 'end', spacing: 1.1 });
+
+        for (let hop = 0; hop <= maxHop; hop += 1) {
+            const x = atHop(hop);
+            const major = hop === 0 || hop === maxHop;
+            line(x, axisY - (major ? 7 : 4), x, axisY + (major ? 7 : 4), major ? '#a9d4e8' : '#556273', 1, major ? 0.95 : 0.55);
+            text(x, axisY + 20, String(hop), {
+                size: major ? 9 : 8,
+                fill: major ? '#c8ccd4' : '#6f8597',
+                anchor: 'middle'
+            });
+        }
+
+        // The near rungs pile onto hops 0 and 1, and their labels are wider
+        // than the gap between ticks, so stacking per hop is not enough: a
+        // label at hop 0 runs past hop 1 and overprints it. Labels are placed
+        // left to right into the lowest row that is still clear at that x,
+        // which keeps each one beside its own tick and lets the near cluster
+        // grow upward instead of sideways.
+        // Two passes, and a backing plate under each label: a leader rising
+        // from a nearer tick crosses the labels of the ticks behind it, and
+        // row packing only keeps labels off each other, not off the lines.
+        placed.forEach(({ x, row }) => {
+            const y = axisY - 12 - row * ROW;
+            line(x, axisY - 4, x, y + 3, '#6f8597', 1, 0.45);
+        });
+        placed.forEach(({ x, start, label, row }) => {
+            const y = axisY - 12 - row * ROW;
+            const plate = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+            plate.setAttribute('x', (start - 3).toFixed(1));
+            plate.setAttribute('y', (y - 2).toFixed(1));
+            plate.setAttribute('width', (label.length * CHAR + 6).toFixed(1));
+            plate.setAttribute('height', '11');
+            plate.setAttribute('fill', '#0E1114');
+            svg.appendChild(plate);
+            const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            dot.setAttribute('cx', x.toFixed(1));
+            dot.setAttribute('cy', (y + 3).toFixed(1));
+            dot.setAttribute('r', '2');
+            dot.setAttribute('fill', '#a9d4e8');
+            dot.setAttribute('opacity', '0.85');
+            svg.appendChild(dot);
+            text(start, y + 6, label, { size: 8, fill: '#8d99a7' });
+        });
+
+        // The visitor, in the one accent the page reserves for the live value.
+        const vx = atHop(maxHop);
+        const marker = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        marker.setAttribute('cx', vx.toFixed(1));
+        marker.setAttribute('cy', axisY.toFixed(1));
+        marker.setAttribute('r', '3.5');
+        marker.setAttribute('fill', '#e6c15a');
+        svg.appendChild(marker);
+        const vy = axisY - 24;
+        line(vx, axisY - 6, vx, vy, '#e6c15a', 1, 0.6);
+        const rtt = visitor.min_rtt_ms === null || visitor.min_rtt_ms === undefined
+            ? '--'
+            : `${Number(visitor.min_rtt_ms).toFixed(1)} ms`;
+        if (visitor.measured) {
+            text(vx - 7, vy + 4, `YOU · ${visitor.address}`, { size: 9, fill: '#f0dca2', anchor: 'end', spacing: 0.7 });
+            text(vx - 7, vy + 15, `ttl ${visitor.ttl} of ${visitor.initial_ttl} · ${rtt} · ${visitor.family}`,
+                { size: 7.5, fill: '#8d99a7', anchor: 'end' });
+        } else {
+            text(vx - 7, vy + 4, 'YOU · not yet seen by the sensor', { size: 9, fill: '#8d99a7', anchor: 'end' });
+        }
+    }
+
     updateBottomPanelsLayout() {
         const w = window.innerWidth || 1280;
+        // Drawn first, because its height depends on how many label rows the
+        // current window width forces, and the panels above it key off that.
+        this.drawDistanceStrip();
+        const visible = this.distanceStripNode && this.distanceStripNode.style.display !== 'none';
+        const floor = visible ? (this.distanceStripHeight || NetworkStackVisualization.DISTANCE_STRIP_HEIGHT) + 10 : 18;
+        [this.galaxyPanelNode, this.lifecyclePanelNode, this.telemetryErrorNode].forEach((node) => {
+            if (node) node.style.bottom = `${floor}px`;
+        });
         if (this.galaxyPanelNode) {
             if (w <= 1180) {
                 this.galaxyPanelNode.style.width = '300px';
@@ -2919,6 +2527,10 @@ class NetworkStackVisualization {
         if (this.layersPanelNode) {
             this.layersPanelNode.style.display = minimal ? 'none' : 'block';
         }
+        if (this.distanceStripNode) {
+            this.distanceStripNode.style.display = minimal ? 'none' : 'block';
+            this.updateBottomPanelsLayout();
+        }
         if (this.chipLayerNode) {
             this.chipLayerNode.style.display = minimal ? 'none' : 'block';
         }
@@ -2931,364 +2543,24 @@ class NetworkStackVisualization {
         if (this.layerTooltipNode) {
             this.layerTooltipNode.style.display = 'none';
         }
-        if (this.viewModeButton) {
-            this.viewModeButton.textContent = minimal ? 'MODE: MINIMAL' : 'MODE: DETAILED';
-            this.viewModeButton.style.borderColor = minimal
-                ? 'rgba(230, 193, 90, 0.58)'
-                : 'rgba(125, 138, 156, 0.34)';
-            this.viewModeButton.style.color = minimal ? NS_PAPER.liveCss : NS_PAPER.ink;
-        }
-        if (this.puzzleModeButton) {
-            this.puzzleModeButton.style.display = minimal ? 'none' : 'block';
-        }
-        if (this.noiseModeButton) {
-            this.noiseModeButton.style.display = minimal ? 'none' : 'block';
-        }
-        if (this.readModeButton) {
-            this.readModeButton.style.display = minimal ? 'none' : 'block';
-        }
         this.applyReadModeVisibility();
     }
 
-    toggleViewDensityMode() {
-        this.viewDensityMode = this.viewDensityMode === 'minimal' ? 'detailed' : 'minimal';
-        this.applyViewDensityMode();
-    }
-
-    togglePuzzleDetailMode() {
-        this.puzzleDetailMode = this.puzzleDetailMode === 'overview' ? 'deep-dive' : 'overview';
-        if (this.puzzleModeButton) {
-            const isOverview = this.puzzleDetailMode === 'overview';
-            this.puzzleModeButton.textContent = isOverview ? 'PUZZLE: OVERVIEW' : 'PUZZLE: DEEP DIVE';
-            this.puzzleModeButton.style.borderColor = isOverview
-                ? 'rgba(125, 138, 156, 0.34)'
-                : 'rgba(230, 193, 90, 0.58)';
-            this.puzzleModeButton.style.color = isOverview ? NS_PAPER.ink : NS_PAPER.liveCss;
-        }
-        this.updatePacketLifecycleUI();
-    }
-
-    toggleNoiseDetailMode() {
-        this.noiseDetailMode = this.noiseDetailMode === 'dense' ? 'normal' : 'dense';
-        if (this.noiseModeButton) {
-            const dense = this.noiseDetailMode === 'dense';
-            this.noiseModeButton.textContent = dense ? 'NOISE: DENSE' : 'NOISE: NORMAL';
-            this.noiseModeButton.style.borderColor = dense
-                ? 'rgba(230, 193, 90, 0.58)'
-                : 'rgba(125, 138, 156, 0.34)';
-            this.noiseModeButton.style.color = dense ? NS_PAPER.liveCss : NS_PAPER.ink;
-        }
-        Object.keys(this.layerBranchMetricDelta || {}).forEach((layerId) => {
-            const deltas = this.layerBranchMetricDelta[layerId];
-            if (Array.isArray(deltas)) {
-                this.layerBranchMetricDelta[layerId] = deltas.map((v) => Number(v) || 0);
-            }
-        });
-    }
-
+    // The VIEW card that drove the four toggles is gone, so density, puzzle
+    // depth, noise and read mode now stay on their defaults: detailed,
+    // overview, dense, forensics. These two still run on init and on resize.
     applyReadModeVisibility() {
-        const minimal = this.viewDensityMode === 'minimal';
+        if (this.viewDensityMode === 'minimal') return;
         const mode = this.readMode;
-        const scene = !minimal && mode === 'scene';
-        const ops = !minimal && mode === 'ops';
-        const forensics = !minimal && mode === 'forensics';
+        const showLayers = mode !== 'scene';
+        const showChips = mode !== 'scene';
+        const showGalaxy = mode !== 'scene';
+        const showLifecycle = mode === 'forensics';
 
-        if (this.layersPanelNode) this.layersPanelNode.style.display = minimal ? 'none' : 'block';
-        if (this.chipLayerNode) this.chipLayerNode.style.display = (ops || forensics) ? 'block' : 'none';
-        if (this.galaxyPanelNode) this.galaxyPanelNode.style.display = forensics ? 'block' : 'none';
-        if (this.lifecyclePanelNode) this.lifecyclePanelNode.style.display = forensics ? 'block' : 'none';
-        if (this.modePanelNode) this.modePanelNode.style.display = (ops || forensics) ? 'flex' : 'none';
-        if (this.kpiBarNode) this.kpiBarNode.style.display = (ops || forensics) ? 'flex' : 'none';
-        if (this.bbrPillNode) this.bbrPillNode.style.display = (ops || forensics) ? 'block' : 'none';
-        if (this.boundaryRailNode) this.boundaryRailNode.style.display = (scene || ops) ? 'block' : 'none';
-        if (this.packetDossierNode) this.packetDossierNode.style.display = (scene || ops) ? 'block' : 'none';
-        if (this.flowNode) this.flowNode.style.display = scene ? 'none' : 'block';
-        if (this.noiseModeButton) this.noiseModeButton.style.display = forensics ? 'block' : 'none';
-        if (this.puzzleModeButton) this.puzzleModeButton.style.display = forensics ? 'block' : 'none';
-        if (this.viewModeButton) this.viewModeButton.style.display = forensics ? 'block' : 'none';
-    }
-
-    createAnatomyChrome() {
-        const rail = document.createElement('div');
-        rail.style.cssText = `
-            position: absolute;
-            left: 7%;
-            right: 7%;
-            bottom: 18px;
-            z-index: 1001;
-            font-family: 'Share Tech Mono', monospace;
-            pointer-events: auto;
-            color: ${NS_PAPER.ink};
-        `;
-        const bands = [
-            {
-                name: 'USERSPACE',
-                nodes: [
-                    { id: 'userspace', label: 'process' },
-                    { id: 'socket', label: 'socket' }
-                ]
-            },
-            {
-                name: 'KERNEL',
-                nodes: [
-                    { id: 'tcp', label: 'TCP' },
-                    { id: 'ip', label: 'IP' },
-                    { id: 'netfilter', label: 'NF' },
-                    { id: 'tc', label: 'TC' },
-                    { id: 'driver', label: 'NAPI' }
-                ]
-            },
-            {
-                name: 'HARDWARE',
-                nodes: [
-                    { id: 'nic', label: 'NIC' },
-                    { id: 'wire', label: 'WIRE' }
-                ]
-            }
-        ];
-        bands.forEach((band) => {
-            const row = document.createElement('div');
-            row.style.cssText = 'display:flex; align-items:center; gap:10px; margin:3px 0;';
-            const name = document.createElement('div');
-            name.style.cssText = `width:86px; flex:none; font-size:8px; letter-spacing:1.2px; color:${NS_PAPER.faint};`;
-            name.textContent = band.name;
-            const line = document.createElement('div');
-            line.style.cssText = `flex:1 1 auto; height:1px; background:rgba(34,34,34,0.16);`;
-            const nodes = document.createElement('div');
-            nodes.style.cssText = 'display:flex; align-items:center; gap:14px;';
-            band.nodes.forEach((node) => {
-                const btn = document.createElement('button');
-                btn.type = 'button';
-                btn.textContent = node.label;
-                btn.style.cssText = `
-                    background: none;
-                    border: none;
-                    padding: 0;
-                    color: ${NS_PAPER.dim};
-                    font-family: inherit;
-                    font-size: 10px;
-                    letter-spacing: 0.5px;
-                    cursor: pointer;
-                `;
-                btn.addEventListener('mouseenter', () => { btn.style.color = NS_PAPER.ink; });
-                btn.addEventListener('mouseleave', () => { btn.style.color = NS_PAPER.dim; });
-                btn.addEventListener('click', () => {
-                    const layerId = node.id === 'tc' ? 'driver' : (node.id === 'wire' ? 'nic' : node.id);
-                    this.openLayerDrilldown(layerId);
-                });
-                nodes.appendChild(btn);
-            });
-            row.appendChild(name);
-            row.appendChild(line);
-            row.appendChild(nodes);
-            rail.appendChild(row);
-        });
-        this.container.appendChild(rail);
-        this.overlayNodes.push(rail);
-        this.boundaryRailNode = rail;
-
-        const dossier = document.createElement('div');
-        dossier.style.cssText = `
-            position: absolute;
-            top: 168px;
-            right: 22px;
-            width: 236px;
-            z-index: 1001;
-            font-family: 'Share Tech Mono', monospace;
-            color: ${NS_PAPER.ink};
-            background: transparent;
-            pointer-events: auto;
-            cursor: pointer;
-        `;
-        dossier.title = 'Click to pin / unpin the live packet';
-        dossier.addEventListener('click', () => {
-            this.packetPinned = !this.packetPinned;
-            this._dossierKey = '';
-            this.updatePacketDossier();
-        });
-        this.container.appendChild(dossier);
-        this.overlayNodes.push(dossier);
-        this.packetDossierNode = dossier;
-        this.updatePacketDossier();
-    }
-
-    getLayerIdAtY(y) {
-        let best = 'userspace';
-        let bestD = Infinity;
-        Object.keys(this.layerMap || {}).forEach((id) => {
-            const ly = Number(this.layerMap[id]);
-            if (!Number.isFinite(ly)) return;
-            const d = Math.abs(y - ly);
-            if (d < bestD) {
-                bestD = d;
-                best = id;
-            }
-        });
-        return best;
-    }
-
-    packetSerial() {
-        const f = this.telemetryData?.flow || {};
-        const base = `${f.inode || 0}:${f.local || ''}:${f.remote || ''}`;
-        let h = 0;
-        for (let i = 0; i < base.length; i++) h = ((h << 5) - h + base.charCodeAt(i)) | 0;
-        return Math.abs(h % 80000) + 10000 + (this.packetLoopId || 0);
-    }
-
-    skbSegmentForLayer(layerId) {
-        if (layerId === 'nic' || layerId === 'driver') return 'mac';
-        if (layerId === 'ip' || layerId === 'netfilter') return 'net';
-        if (layerId === 'tcp') return 'tr';
-        return 'pl';
-    }
-
-    updatePacketDossier() {
-        if (!this.packetDossierNode) return;
-        const focus = this.packetFocus === 'rx' ? 'rx' : 'tx';
-        const y = focus === 'rx' ? this.rxPacket?.position?.y : this.packet?.position?.y;
-        const layerId = Number.isFinite(y) ? this.getLayerIdAtY(y) : 'userspace';
-        const flow = this.telemetryData?.flow || null;
-        const nic = this.telemetryData?.layer_metrics?.nic || {};
-        const tcp = this.telemetryData?.layer_metrics?.tcp_udp || {};
-        const key = `${focus}|${layerId}|${flow?.remote || ''}|${flow?.local || ''}|${this.packetPinned}|${this.packetLoopId}`;
-        if (key === this._dossierKey) return;
-        this._dossierKey = key;
-
-        const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({
-            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-        }[c]));
-        const process = esc(flow?.process || 'process');
-        const pid = esc(flow?.pid != null ? flow.pid : '—');
-        const fd = esc(flow?.fd != null ? `fd ${flow.fd}` : 'fd —');
-        const proto = esc(String(flow?.type || 'TCP').toUpperCase());
-        const state = esc(flow?.state_name || '—');
-        const local = esc(flow?.local || '—');
-        const remote = esc(flow?.remote || '—');
-        const iface = esc(nic.iface || '—');
-        const syscall = focus === 'rx' ? 'recvmsg()' : 'sendmsg()';
-        const stage = (layerId || '').toUpperCase();
-        const seg = this.skbSegmentForLayer(layerId);
-        const pin = this.packetPinned ? 'PINNED' : 'LIVE';
-        const dir = focus === 'rx' ? 'RX ↑' : 'TX ↓';
-        const accent = focus === 'rx' ? NS_PAPER.rxCss : NS_PAPER.txCss;
-        const cell = (label, on) => `
-            <div style="flex:1; text-align:center; padding:5px 2px; border:1px solid ${on ? 'rgba(34,34,34,0.38)' : 'rgba(34,34,34,0.12)'}; color:${on ? NS_PAPER.ink : NS_PAPER.faint}; background:${on ? 'rgba(255,255,255,0.55)' : 'transparent'};">${label}</div>`;
-
-        const html = `
-            <div style="font-size:8px; letter-spacing:1.3px; color:${NS_PAPER.faint};">PACKET #${this.packetSerial()}</div>
-            <div style="display:flex; justify-content:space-between; align-items:baseline; margin:3px 0 8px;">
-                <div style="font-size:13px; letter-spacing:0.6px;">${dir}</div>
-                <div style="font-size:9px; color:${accent};">${pin} · ${stage}</div>
-            </div>
-            <div style="font-size:10px; line-height:1.55; color:${NS_PAPER.dim};">
-                <div>process&nbsp;&nbsp;${process}</div>
-                <div>pid&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;${pid}</div>
-                <div>syscall&nbsp;&nbsp;${syscall}</div>
-                <div>socket&nbsp;&nbsp;&nbsp;${fd}</div>
-                <div>protocol&nbsp;${proto}</div>
-                <div>state&nbsp;&nbsp;&nbsp;&nbsp;${state}</div>
-                <div>src&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;${local}</div>
-                <div>dst&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;${remote}</div>
-            </div>
-            <div style="margin-top:10px; padding-top:8px; border-top:1px solid rgba(34,34,34,0.12);">
-                <div style="font-size:10px; letter-spacing:0.8px;">skb</div>
-                <div style="display:flex; gap:3px; margin:7px 0 6px; font-size:8px; letter-spacing:0.4px;">
-                    ${cell('ETH', seg === 'mac')}
-                    ${cell('IP', seg === 'net')}
-                    ${cell(proto === 'UDP' ? 'UDP' : 'TCP', seg === 'tr')}
-                    ${cell('DATA', seg === 'pl')}
-                </div>
-                <div style="font-size:8px; color:${NS_PAPER.faint}; line-height:1.45;">
-                    head → data → transport → network → mac → tail
-                </div>
-                <div style="font-size:10px; line-height:1.5; color:${NS_PAPER.dim}; margin-top:6px;">
-                    <div>protocol&nbsp;ETH_P_IP</div>
-                    <div>dev&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;${iface}</div>
-                    <div>cwnd&nbsp;&nbsp;&nbsp;&nbsp;${tcp.cwnd ?? '—'}</div>
-                    <div>srtt&nbsp;&nbsp;&nbsp;&nbsp;${tcp.rtt_ms != null ? `${tcp.rtt_ms} ms` : '—'}</div>
-                </div>
-            </div>
-        `;
-    }
-
-    pulseActiveLayer() {
-        const txY = this.packet?.position?.y;
-        const rxY = this.rxPacket?.position?.y;
-        (this.layers || []).forEach((layer) => {
-            const nearTx = Number.isFinite(txY) && Math.abs(layer.y - txY) < 0.55;
-            const nearRx = Number.isFinite(rxY) && Math.abs(layer.y - rxY) < 0.55;
-            if (layer.plateFill?.material) {
-                layer.plateFill.material.emissiveIntensity = (nearTx || nearRx) ? 0.2 : 0.06;
-                layer.plateFill.material.color.setHex(nearTx ? 0xe4d2ae : (nearRx ? 0xd0d8e0 : NS_PAPER.fill));
-            }
-            const row = this.layerRows && this.layerRows[layer.id];
-            if (row?.row) {
-                row.row.style.borderLeftColor = nearTx
-                    ? NS_PAPER.txCss
-                    : (nearRx ? NS_PAPER.rxCss : 'rgba(34,34,34,0.18)');
-                if (row.name) row.name.style.color = (nearTx || nearRx) ? NS_PAPER.ink : NS_PAPER.dim;
-            }
-            const conn = this.layerConnectors && this.layerConnectors[layer.id];
-            if (conn?.path) {
-                conn.path.setAttribute('stroke', nearTx
-                    ? 'rgba(196,138,20,0.55)'
-                    : (nearRx ? 'rgba(90,134,160,0.45)' : 'rgba(34,34,34,0.28)'));
-            }
-        });
-        if (this.boundaryRailNode) {
-            const active = this.getLayerIdAtY(this.packetFocus === 'rx' ? rxY : txY);
-            this.boundaryRailNode.querySelectorAll('button').forEach((btn) => {
-                const label = (btn.textContent || '').toLowerCase();
-                const hit = (active === 'userspace' && label === 'process')
-                    || (active === 'socket' && label === 'socket')
-                    || (active === 'tcp' && label === 'tcp')
-                    || (active === 'ip' && label === 'ip')
-                    || (active === 'netfilter' && label === 'nf')
-                    || (active === 'driver' && (label === 'napi' || label === 'tc'))
-                    || (active === 'nic' && (label === 'nic' || label === 'wire'));
-                btn.style.color = hit ? NS_PAPER.ink : NS_PAPER.dim;
-            });
-        }
-    }
-
-    toggleReadMode() {
-        const order = ['scene', 'ops', 'forensics'];
-        const idx = order.indexOf(this.readMode);
-        this.readMode = order[(idx + 1) % order.length];
-        if (this.readModeButton) {
-            if (this.readMode === 'scene') {
-                this.readModeButton.textContent = 'READ: SCENE';
-                this.readModeButton.style.borderColor = NS_PAPER.cardBorder;
-                this.readModeButton.style.color = NS_PAPER.ink;
-            } else if (this.readMode === 'ops') {
-                this.readModeButton.textContent = 'READ: OPS';
-                this.readModeButton.style.borderColor = 'rgba(196, 138, 26, 0.55)';
-                this.readModeButton.style.color = NS_PAPER.liveCss;
-            } else {
-                this.readModeButton.textContent = 'READ: FORENSICS';
-                this.readModeButton.style.borderColor = NS_PAPER.cardBorder;
-                this.readModeButton.style.color = NS_PAPER.ink;
-            }
-        }
-        this.applyReadModeVisibility();
-        this.updatePacketLifecycleUI();
-        this.updateModePanel();
-    }
-
-    // Reflect read mode + live load on the left operation-mode rail.
-    updateModePanel() {
-        if (!this.modeCells) return;
-        const readToMode = { scene: 'monitor', ops: 'system', forensics: 'diagnostic' };
-        const lit = new Set(['active', readToMode[this.readMode] || 'monitor']);
-        Object.keys(this.modeCells).forEach((id) => {
-            const c = this.modeCells[id];
-            if (!c) return;
-            const on = lit.has(id);
-            c.cell.style.background = on ? 'rgba(255, 255, 255, 0.82)' : 'rgba(255, 255, 255, 0.42)';
-            c.cell.style.borderColor = on ? 'rgba(34, 34, 34, 0.28)' : NS_PAPER.cardBorder;
-            c.cell.style.borderLeftColor = on ? NS_PAPER.ink : 'rgba(34, 34, 34, 0.18)';
-            c.name.style.color = on ? NS_PAPER.ink : NS_PAPER.dim;
-        });
+        if (this.layersPanelNode) this.layersPanelNode.style.display = showLayers ? 'block' : 'none';
+        if (this.chipLayerNode) this.chipLayerNode.style.display = showChips ? 'block' : 'none';
+        if (this.galaxyPanelNode) this.galaxyPanelNode.style.display = showGalaxy ? 'block' : 'none';
+        if (this.lifecyclePanelNode) this.lifecyclePanelNode.style.display = showLifecycle ? 'block' : 'none';
     }
 
     selectGalaxy(id) {
@@ -3336,7 +2608,6 @@ class NetworkStackVisualization {
 
     updatePacketLifecycleUI() {
         if (!this.lifecyclePanelNode) return;
-        if (this.lifecyclePanelNode.style.display === 'none') return;
         // While IP/TCP map or morph is open, keep the right panel frozen — no live rewrites.
         if (
             this.ipMapPinned || this.tcpMapPinned || this.nfMapPinned || this.sockMapPinned
@@ -3584,23 +2855,23 @@ class NetworkStackVisualization {
             position: absolute;
             top: 20px;
             right: 20px;
-            padding: 9px 18px;
-            background: ${NS_PAPER.plate};
-            border: none;
-            border-radius: 7px;
-            color: ${NS_PAPER.cream};
+            padding: 10px 20px;
+            background: rgba(12, 18, 28, 0.9);
+            border: 1px solid rgba(160, 170, 190, 0.35);
+            color: #c8ccd4;
             font-family: 'Share Tech Mono', monospace;
-            font-size: 11px;
-            letter-spacing: 1.4px;
+            font-size: 12px;
             cursor: pointer;
             z-index: 1001;
-            transition: background 0.2s ease;
+            transition: all 0.25s ease;
         `;
         exitBtn.onmouseenter = () => {
-            exitBtn.style.background = NS_PAPER.plateLit;
+            exitBtn.style.background = 'rgba(20, 26, 36, 0.95)';
+            exitBtn.style.color = '#ffffff';
         };
         exitBtn.onmouseleave = () => {
-            exitBtn.style.background = NS_PAPER.plate;
+            exitBtn.style.background = 'rgba(12, 18, 28, 0.9)';
+            exitBtn.style.color = '#c8ccd4';
         };
         exitBtn.onclick = () => {
             if (window.kernelContextMenu) {
@@ -3615,247 +2886,49 @@ class NetworkStackVisualization {
         this.exitButton = exitBtn;
     }
 
-    // Events are the only place colour is allowed to spike: red for a drop,
-    // amber for a retransmit. Both fade themselves out and leave no node behind.
-    boardFlash(stageId, label, color) {
-        const stage = this.boardStages && this.boardStages[stageId];
-        if (!stage || !this.boardSvg) return;
-        const x = NS_BOARD.txRail;
-        const cell = this.boardEl('g', {}, this.boardSvg);
-        this.boardEl('circle', {
-            cx: x, cy: stage.y, r: 13, fill: 'none', stroke: color, 'stroke-width': 1.4
-        }, cell);
-        this.boardText(cell, x + 22, stage.y + 4, label, {
-            size: 9, spacing: 1.4, fill: color
-        });
-        cell.style.transition = 'opacity 620ms ease';
-        window.setTimeout(() => { cell.style.opacity = '0'; }, 40);
-        window.setTimeout(() => {
-            if (cell.parentNode) cell.parentNode.removeChild(cell);
-        }, 760);
-    }
-
     triggerDrop() {
-        this.boardFlash('netfilter', 'DROP', NS_PAPER.drop);
+        const y = this.layerMap.netfilter;
+        const burst = new THREE.Mesh(
+            new THREE.SphereGeometry(0.36, 12, 12),
+            new THREE.MeshBasicMaterial({ color: 0xff4d4d, transparent: true, opacity: 0.7 })
+        );
+        burst.position.set(this.packet.position.x, y, this.packet.position.z);
+        burst.userData = { ttl: 0.55, kind: 'drop' };
+        this.scene.add(burst);
+        this.fxBursts.push(burst);
     }
 
     triggerRetransmit() {
-        this.boardFlash('tcp', 'RETRANS', NS_PAPER.txCss);
-    }
-
-    boardYForPos(pos) {
-        const maxIdx = NS_STAGES.length - 1;
-        if (pos <= maxIdx) return this.stageY(pos);
-        const over = Math.min(1.4, pos - maxIdx);
-        return this.stageY(maxIdx) + (over / 1.4) * (NS_BOARD.wireY - this.stageY(maxIdx));
-    }
-
-    boardStageAt(pos) {
-        const idx = Math.max(0, Math.min(NS_STAGES.length - 1, Math.round(pos)));
-        return NS_STAGES[idx].id;
-    }
-
-    updateBoardFrame(dt) {
-        if (!this.boardPackets) return;
-        const maxIdx = NS_STAGES.length - 1;
-        const end = maxIdx + 1.4;
-        const rate = Math.max(0.5, this.packetSpeed / 1.15);
-
-        const txPinned = this.packetPinned && this.packetFocus === 'tx';
-        if (!txPinned) {
-            const prev = this.txPos;
-            this.txPos += rate * dt;
-            const crossed = (idx) => prev < idx && this.txPos >= idx;
-            if (crossed(this.layerMap.tcp)) {
-                this.retransmitCooldown -= dt;
-                if (Math.random() < this.retransmitProbability) this.triggerRetransmit();
-            }
-            if (crossed(this.layerMap.netfilter) && Math.random() < this.dropProbability) {
-                this.triggerDrop();
-                this.txPos = -0.6;
-                this.packetLoopId = (this.packetLoopId || 0) + 1;
-            }
-            if (this.txPos > end) {
-                this.txPos = -0.6;
-                this.packetLoopId = (this.packetLoopId || 0) + 1;
-            }
-        }
-
-        const rxPinned = this.packetPinned && this.packetFocus === 'rx';
-        if (!rxPinned) {
-            this.rxPos -= rate * 0.85 * dt;
-            if (this.rxPos < -0.6) this.rxPos = end;
-        }
-
-        const place = (side, pos) => {
-            const p = this.boardPackets[side];
-            if (!p) return;
-            const visible = pos >= -0.35 && pos <= end;
-            p.cell.style.display = visible ? '' : 'none';
-            if (!visible) return;
-            p.cell.setAttribute('transform', `translate(${p.x} ${this.boardYForPos(pos).toFixed(1)})`);
-            const stageId = this.boardStageAt(pos);
-            const active = this.skbSegmentIndex(stageId);
-            p.segments.forEach((seg, i) => {
-                seg.setAttribute('fill', i === active ? NS_PAPER.cream : NS_PAPER.creamFaint);
-            });
-            const pinned = this.packetPinned && this.packetFocus === side;
-            p.halo.setAttribute('opacity', pinned ? '0.9' : '0.3');
-            p.halo.setAttribute('r', pinned ? '25' : '22');
-        };
-        place('tx', this.txPos);
-        place('rx', this.rxPos);
-
-        const smooth = Math.min(1, dt * 4);
-        const txStage = this.boardStageAt(this.txPos);
-        const rxStage = this.boardStageAt(this.rxPos);
-        NS_STAGES.forEach((stage) => {
-            const ref = this.boardStages[stage.id];
-            if (!ref) return;
-            const cur = Number(this.layerActivity[stage.id] ?? 0.2);
-            const target = Number(this.layerActivityTarget[stage.id] ?? cur);
-            const act = cur + (target - cur) * smooth;
-            this.layerActivity[stage.id] = act;
-            if (ref.gauge) {
-                ref.gauge.setAttribute('width', (4 + Math.max(0, Math.min(1, act)) * (stage.w - 44)).toFixed(1));
-            }
-            const hot = stage.id === txStage || stage.id === rxStage;
-            if (ref.dot) ref.dot.setAttribute('fill', hot ? NS_PAPER.txCss : NS_PAPER.dot);
-            if (ref.line) ref.line.setAttribute('stroke', hot ? 'rgba(196,138,20,0.55)' : NS_PAPER.hair);
+        const y = this.layerMap.tcp;
+        const offsets = [-0.45, 0.45];
+        offsets.forEach(offset => {
+            const ghost = new THREE.Mesh(
+                new THREE.SphereGeometry(0.14, 10, 10),
+                new THREE.MeshBasicMaterial({ color: 0x58b6d8, transparent: true, opacity: 0.65 })
+            );
+            ghost.position.set(offset * 0.4, y, 0);
+            ghost.userData = { ttl: 0.65, vx: offset * 0.9 };
+            this.scene.add(ghost);
+            this.fxBursts.push(ghost);
         });
-
-        if (this.boardBandNodes) {
-            this.boardBandNodes.forEach((node) => {
-                const hot = node.layerId === txStage;
-                node.text.setAttribute('fill', hot ? NS_PAPER.ink : NS_PAPER.dim);
-                node.dot.setAttribute('r', hot ? 4 : 3);
-            });
-        }
-
-        this.updateBoardTelemetry();
-    }
-
-    skbSegmentIndex(stageId) {
-        if (stageId === 'nic' || stageId === 'driver') return 0;
-        if (stageId === 'ip' || stageId === 'netfilter') return 1;
-        if (stageId === 'tcp') return 2;
-        return 3;
-    }
-
-    updateBoardTelemetry() {
-        if (!this.boardStages) return;
-        const m = this.telemetryData?.layer_metrics || {};
-        const flow = this.telemetryData?.flow || null;
-        const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
-
-        const captions = {
-            userspace: 'active procs',
-            socket: 'established',
-            tcp: 'srtt ms',
-            ip: 'packets/s',
-            netfilter: 'drops/s',
-            driver: 'qdisc backlog',
-            nic: 'rx+tx errors'
-        };
-        const satellites = {
-            userspace: `sockets ${num(m.socket_api?.active_sockets)}`,
-            socket: `fd ${flow?.fd ?? '—'} · inode ${flow?.inode || '—'}`,
-            tcp: `cwnd ${num(m.tcp_udp?.cwnd)} · retrans ${num(m.tcp_udp?.retrans_per_sec).toFixed(1)}/s`
-                + (m.tcp_udp?.cc && m.tcp_udp.cc !== 'unknown' ? ` · ${m.tcp_udp.cc}` : ''),
-            ip: `in ${num(m.ip?.in_packets_per_sec).toFixed(0)} · out ${num(m.ip?.out_packets_per_sec).toFixed(0)}`,
-            netfilter: `conntrack ${num(m.netfilter?.conntrack_count)}/${num(m.netfilter?.conntrack_max)}`,
-            driver: `rx ${num(m.driver?.rx_mb_s).toFixed(2)} · tx ${num(m.driver?.tx_mb_s).toFixed(2)} MB/s`,
-            nic: `${m.nic?.iface || '—'} · drops ${num(m.nic?.drops_total)}`
-        };
-
-        NS_STAGES.forEach((stage) => {
-            const ref = this.boardStages[stage.id];
-            if (!ref) return;
-            if (ref.headline && this.layerHeadline) {
-                ref.headline.textContent = this.layerHeadline[stage.id] ?? '--';
-            }
-            if (ref.caption) ref.caption.textContent = captions[stage.id] || '';
-            if (ref.satellite) ref.satellite.textContent = satellites[stage.id] || '';
-        });
-
-        const focus = this.packetFocus === 'rx' ? 'rx' : 'tx';
-        const pos = focus === 'rx' ? this.rxPos : this.txPos;
-        const stageId = this.boardStageAt(pos);
-        const proto = String(flow?.type || 'TCP').toUpperCase();
-        const accent = focus === 'rx' ? NS_PAPER.rxCss : NS_PAPER.txCss;
-
-        if (this.dossierHead) {
-            this.dossierHead.textContent = `#${this.packetSerial()}  ${focus === 'rx' ? 'RX ↑' : 'TX ↓'}`;
-        }
-        if (this.dossierStage) {
-            this.dossierStage.setAttribute('fill', accent);
-            this.dossierStage.textContent = `${this.packetPinned ? 'PINNED' : 'LIVE'} · ${stageId.toUpperCase()}`;
-        }
-        if (this.dossierHint) {
-            this.dossierHint.textContent = this.packetPinned
-                ? 'click the packet again to release it'
-                : 'click a packet to pin it';
-        }
-
-        const values = {
-            process: flow?.process || '—',
-            pid: flow?.pid != null ? String(flow.pid) : '—',
-            syscall: focus === 'rx' ? 'recvmsg()' : 'sendmsg()',
-            socket: flow?.fd != null ? `fd ${flow.fd}` : 'fd —',
-            protocol: proto,
-            state: flow?.state_name || '—',
-            src: flow?.local || '—',
-            dst: flow?.remote || '—',
-            dev: m.nic?.iface || '—',
-            cwnd: m.tcp_udp?.cwnd != null ? String(m.tcp_udp.cwnd) : '—',
-            srtt: m.tcp_udp?.rtt_ms != null ? `${m.tcp_udp.rtt_ms} ms` : '—',
-            ethproto: String(flow?.remote || '').includes(']:') ? 'ETH_P_IPV6' : 'ETH_P_IP'
-        };
-        if (this.dossierRows) {
-            Object.keys(values).forEach((key) => {
-                const node = this.dossierRows[key];
-                if (node) node.textContent = values[key];
-            });
-        }
-
-        if (this.dossierSegs) {
-            const activeIdx = this.skbSegmentIndex(stageId);
-            ['ETH', 'IP', 'TCP', 'DATA'].forEach((label, i) => {
-                const seg = this.dossierSegs[label];
-                if (!seg) return;
-                const on = i === activeIdx;
-                seg.rect.setAttribute('fill', on ? NS_PAPER.plate : 'none');
-                seg.rect.setAttribute('stroke', on ? NS_PAPER.plate : NS_PAPER.hairSoft);
-                seg.text.setAttribute('fill', on ? NS_PAPER.cream : NS_PAPER.faint);
-            });
-            if (this.dossierSegs.TCP) {
-                this.dossierSegs.TCP.text.textContent = proto === 'UDP' ? 'UDP' : 'TCP';
-            }
-        }
     }
 
     resetPacketLoop() {
         if (!this.packet || !this.layerMap) return;
-        this.packetLoopId = (this.packetLoopId || 0) + 1;
-        this.packet.position.set(-0.62, this.layerMap.userspace + 0.5, 0);
+        this.packet.position.y = this.layerMap.userspace + 0.5;
         this.packetMorphPhase = -1;
         this.packetMorphCtx = null;
         this.packetMorphPulse = 0;
         this.setPacketMorphVisible(false);
         this.packet.scale.setScalar(1);
         if (this.packetGlow) this.packetGlow.scale.setScalar(1);
-        this._dossierKey = '';
         this.updatePacketColorByFlow();
     }
 
     updatePacket(dt) {
         if (!this.packet) return;
-        this.packet.position.x = -0.62;
-        if (!this.packetPinned || this.packetFocus !== 'tx') {
-            if (!(this.packetPinned && this.packetFocus === 'tx')) {
-                this.packet.position.y -= this.packetSpeed * dt;
-            }
-        }
+
+        this.packet.position.y -= this.packetSpeed * dt;
         if (this.packetGlow) {
             this.packetGlow.position.copy(this.packet.position);
             if (this.packetMorphPhase < 0) {
@@ -3863,30 +2936,32 @@ class NetworkStackVisualization {
             }
         }
 
-        if (!(this.packetPinned && this.packetFocus === 'tx')) {
-            this.retransmitCooldown -= dt;
-            if (this.retransmitCooldown <= 0 && Math.abs(this.packet.position.y - this.layerMap.tcp) < 0.08) {
-                if (Math.random() < this.retransmitProbability) {
-                    this.triggerRetransmit();
-                    this.retransmitCooldown = 1.4;
-                }
-            }
-            this.dropCooldown -= dt;
-            if (this.dropCooldown <= 0 && Math.abs(this.packet.position.y - this.layerMap.netfilter) < 0.08) {
-                if (Math.random() < this.dropProbability) {
-                    this.triggerDrop();
-                    this.resetPacketLoop();
-                    this.dropCooldown = 1.8;
-                    this.pulseActiveLayer();
-                    this.updatePacketDossier();
-                    return;
-                }
-            }
-            if (this.packet.position.y < this.layerMap.nic - 0.75) {
-                this.resetPacketLoop();
+        // Retransmit visual on TCP/UDP layer.
+        this.retransmitCooldown -= dt;
+        if (this.retransmitCooldown <= 0 && Math.abs(this.packet.position.y - this.layerMap.tcp) < 0.08) {
+            if (Math.random() < this.retransmitProbability) {
+                this.triggerRetransmit();
+                this.retransmitCooldown = 1.4;
             }
         }
 
+        // Drop visual on Netfilter.
+        this.dropCooldown -= dt;
+        if (this.dropCooldown <= 0 && Math.abs(this.packet.position.y - this.layerMap.netfilter) < 0.08) {
+            if (Math.random() < this.dropProbability) {
+                this.triggerDrop();
+                this.resetPacketLoop();
+                this.dropCooldown = 1.8;
+                return;
+            }
+        }
+
+        // NIC -> wire -> remote reached; restart packet loop.
+        if (this.packet.position.y < this.layerMap.nic - 0.75) {
+            this.resetPacketLoop();
+        }
+
+        // Trail follows packet.
         for (let i = this.packetTrail.length - 1; i > 0; i--) {
             this.packetTrail[i].position.lerp(this.packetTrail[i - 1].position, 0.65);
         }
@@ -3895,26 +2970,27 @@ class NetworkStackVisualization {
         }
 
         this.updatePacketMorph();
-        this.pulseActiveLayer();
-        this.updatePacketDossier();
     }
 
     updatePacketColorByFlow() {
-        if (!this.packet?.material) return;
-        this.packet.material.color.setHex(NS_PAPER.tx);
-        if (this.packetGlow?.material) this.packetGlow.material.color.setHex(NS_PAPER.tx);
-        if (this.rxPacket?.material) this.rxPacket.material.color.setHex(NS_PAPER.rx);
-        if (this.rxPacketGlow?.material) this.rxPacketGlow.material.color.setHex(NS_PAPER.rx);
+        if (!this.packet || !this.packet.material || !this.telemetryData?.flow) return;
+        const flowType = String(this.telemetryData.flow.type || '').toUpperCase();
+        const color = flowType.includes('UDP') ? 0x58b6d8 : 0xE6C15A;
+        this.packet.material.color.setHex(color);
+        if (this.packetGlow?.material) {
+            this.packetGlow.material.color.setHex(color);
+        }
     }
 
     getHealthTone(level) {
         if (level === 'critical') {
-            return { bg: 'rgba(255,255,255,0.55)', border: 'rgba(224,86,78,0.55)', text: '#a33a34', dot: 'rgba(224,86,78,0.95)', glow: 'rgba(224,86,78,0.35)' };
+            return { bg: 'rgba(65, 20, 24, 0.74)', border: 'rgba(226, 106, 118, 0.65)', text: '#ffb8c0', dot: 'rgba(232, 96, 104, 0.95)', glow: 'rgba(232, 96, 104, 0.55)' };
         }
         if (level === 'warn') {
-            return { bg: 'rgba(255,255,255,0.55)', border: 'rgba(196,138,20,0.45)', text: NS_PAPER.liveCss, dot: 'rgba(226,163,62,0.95)', glow: 'rgba(226,163,62,0.28)' };
+            return { bg: 'rgba(64, 52, 22, 0.72)', border: 'rgba(226, 193, 102, 0.64)', text: '#f2d89b', dot: 'rgba(230, 193, 90, 0.95)', glow: 'rgba(230, 193, 90, 0.5)' };
         }
-        return { bg: 'rgba(255,255,255,0.42)', border: NS_PAPER.cardBorder, text: NS_PAPER.ink, dot: 'rgba(34,34,34,0.28)', glow: 'rgba(0,0,0,0)' };
+        // Idle/healthy stays calm: muted neutral dot so only warn/critical pop.
+        return { bg: 'rgba(16, 22, 32, 0.68)', border: 'rgba(115, 128, 145, 0.32)', text: '#bac4cf', dot: 'rgba(122, 150, 168, 0.6)', glow: 'rgba(0, 0, 0, 0)' };
     }
 
     updateKpiCard(id, value, level = 'normal') {
@@ -3942,7 +3018,7 @@ class NetworkStackVisualization {
         if (row && row.dot) {
             row.dot.style.background = tone.dot;
             row.dot.style.boxShadow = level === 'normal' ? 'none' : `0 0 8px ${tone.glow}`;
-            if (row.name) row.name.style.color = level === 'normal' ? NS_PAPER.dim : tone.text;
+            if (row.name) row.name.style.color = level === 'normal' ? '#cdd6e0' : tone.text;
         }
     }
 
@@ -3979,32 +3055,6 @@ class NetworkStackVisualization {
         const rttLevel = classify(rttMs, 90, 200);
         const driverLevel = classify(driverTxQ, 120, 300);
         const nicLevel = classify(nicErrTotal, 5, 20);
-
-        if (this.flowNode) {
-            if (flow) {
-                const remote = flow.remote || 'remote';
-                this.flowNode.innerHTML = '';
-                const prefix = document.createTextNode(
-                    `process -> syscall -> socket -> ${flowType} ${flowState} -> IP -> NIC -> wire -> `
-                );
-                const remoteSpan = document.createElement('span');
-                remoteSpan.textContent = remote;
-                if (this.flowFollow?.remote) {
-                    remoteSpan.style.color = '#e6c15a';
-                    remoteSpan.style.textShadow = '0 0 8px rgba(230,193,90,0.35)';
-                    this.flowNode.style.borderColor = 'rgba(230,193,90,0.55)';
-                    this.flowNode.style.boxShadow = '0 0 14px rgba(230,193,90,0.12)';
-                } else {
-                    remoteSpan.style.color = '';
-                    this.flowNode.style.borderColor = 'rgba(90, 104, 120, 0.32)';
-                    this.flowNode.style.boxShadow = 'none';
-                }
-                this.flowNode.appendChild(prefix);
-                this.flowNode.appendChild(remoteSpan);
-            } else {
-                this.flowNode.textContent = 'process -> syscall -> socket -> TCP -> IP -> NIC -> wire -> remote (no active flow)';
-            }
-        }
 
         this.updateKpiCard('flow', `${flowType}${flowState ? ` ${flowState}` : ''}`, flow ? 'normal' : 'warn');
         if (this.arrayDesignator) this.arrayDesignator.textContent = flowType || 'TCP';
@@ -4068,10 +3118,8 @@ class NetworkStackVisualization {
             const est = safeNum(m.socket_api?.established ?? 0);
             this.modeStatValue.textContent = `${procs} · ${est}`;
         }
-        this.updateModePanel();
 
         this.updateGalaxyPanel(m, flow);
-        this.updateBoardTelemetry();
 
         this.layerActivityTarget = {
             userspace: Number(a.userspace ?? this.layerActivityTarget.userspace),
@@ -4298,7 +3346,7 @@ class NetworkStackVisualization {
                 m.userData.xDrift = (Math.random() - 0.5) * 0.35;
                 m.position.y = dir < 0 ? yMax + Math.random() * 0.5 : yMin - Math.random() * 0.5;
                 m.position.x = (Math.random() - 0.5) * 2.2;
-                m.material.color.setHex(dir < 0 ? 0xE6C15A : NS_PAPER.cool);
+                m.material.color.setHex(dir < 0 ? 0xE6C15A : 0x58b6d8);
             }
             m.material.opacity = 0.25 + Math.random() * 0.45;
         });
@@ -4831,16 +3879,16 @@ class NetworkStackVisualization {
         const esc = (v) => this.escapeHtml(v);
 
         const step = (sym, title, body, accent) => `
-            <div class="ns-ip-morph-step" style="opacity:0; transform:translateY(6px); transition:opacity 320ms ease, transform 320ms ease; flex:1 1 140px; min-width:132px; background:rgba(255,255,255,0.78); border:1px solid ${accent}; border-radius:6px; padding:8px 9px;">
+            <div class="ns-ip-morph-step" style="opacity:0; transform:translateY(6px); transition:opacity 320ms ease, transform 320ms ease; flex:1 1 140px; min-width:132px; background:rgba(8,12,20,0.78); border:1px solid ${accent}; border-radius:6px; padding:8px 9px;">
                 <div style="font-size:8px; letter-spacing:0.7px; color:#7f93a6; margin-bottom:3px;">${esc(title)}</div>
                 <div style="font-size:11px; color:#e8f2f9; line-height:1.35; word-break:break-word;">${body}</div>
-                <div style="margin-top:6px; font-size:8.5px; letter-spacing:0.4px; color:#444444;">${esc(sym)}</div>
+                <div style="margin-top:6px; font-size:8.5px; letter-spacing:0.4px; color:#a9d4e8;">${esc(sym)}</div>
             </div>`;
 
         const arrow = `<div class="ns-ip-morph-arrow" style="opacity:0; transition:opacity 280ms ease; color:#556273; font-size:14px; padding:0 2px;">↓</div>`;
 
         return `
-            <div class="ns-ip-morph" data-morph="1" style="margin:0 0 12px; padding:10px 12px; border:1px solid rgba(230,193,90,0.35); border-radius:8px; background:linear-gradient(180deg, rgba(230,193,90,0.08), rgba(255,255,255,0.35));">
+            <div class="ns-ip-morph" data-morph="1" style="margin:0 0 12px; padding:10px 12px; border:1px solid rgba(230,193,90,0.35); border-radius:8px; background:linear-gradient(180deg, rgba(230,193,90,0.08), rgba(8,12,20,0.35));">
                 <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
                     <div style="flex:1;">
                         <div style="font-size:9px; letter-spacing:1px; color:#e6c15a;">IP → KERNEL TRANSLATION</div>
@@ -4855,29 +3903,29 @@ class NetworkStackVisualization {
                     `, 'rgba(212,221,231,0.28)')}
                     ${arrow}
                     ${step('__be32 / htons', '2 · WIRE INTEGERS', `
-                        <span style="color:#444444">${esc(addr?.hex || '0x????????')}</span>
+                        <span style="color:#a9d4e8">${esc(addr?.hex || '0x????????')}</span>
                         <span style="color:#6f8597;"> :</span>
-                        <span style="color:#444444">${esc(port.hex)}</span><br>
+                        <span style="color:#a9d4e8">${esc(port.hex)}</span><br>
                         <span style="color:#8d99a7;font-size:10px;">${esc(addr?.bytes || '')} · port be16</span>
-                    `, 'rgba(34,34,34,0.4)')}
+                    `, 'rgba(103,190,224,0.4)')}
                     ${arrow}
                     ${step('fib_table_lookup', '3 · fib_result', `
                         dest <span style="color:#e6c15a">${esc(destLabel)}</span><br>
-                        nh/gw <span style="color:#444444">${esc(gwLabel)}</span>
-                        · oif <span style="color:#3d6b4f">${esc(ctx.iface)}</span><br>
+                        nh/gw <span style="color:#a9d4e8">${esc(gwLabel)}</span>
+                        · oif <span style="color:#96ffbe">${esc(ctx.iface)}</span><br>
                         <span style="color:#8d99a7;font-size:10px;">${esc(fibType)} · metric ${esc(route.metric ?? '—')} · nh ${esc(nhAddr?.hex || '—')}</span>
                     `, 'rgba(230,193,90,0.45)')}
                     ${arrow}
                     ${step('neigh_resolve_output', '4 · neighbour / dst', `
-                        nexthop <span style="color:#444444">${esc(ctx.nexthopIp)}</span><br>
-                        ha[] <span style="color:#3d6b4f">${esc(ha.ha)}</span><br>
+                        nexthop <span style="color:#a9d4e8">${esc(ctx.nexthopIp)}</span><br>
+                        ha[] <span style="color:#96ffbe">${esc(ha.ha)}</span><br>
                         <span style="color:#8d99a7;font-size:10px;">nud=${esc(neighState)} · dst_entry → ha</span>
-                    `, 'rgba(61,107,79,0.35)')}
+                    `, 'rgba(150,255,190,0.35)')}
                     ${arrow}
                     ${step('dev_queue_xmit', '5 · sk_buff → NIC', `
-                        skb → dev <span style="color:#3d6b4f">${esc(ctx.iface)}</span> ring<br>
+                        skb → dev <span style="color:#96ffbe">${esc(ctx.iface)}</span> ring<br>
                         <span style="color:#8d99a7;font-size:10px;">eth hdr · TTL ${esc(ttl)} · qdisc / NAPI path</span>
-                    `, 'rgba(34,34,34,0.35)')}
+                    `, 'rgba(103,190,224,0.35)')}
                 </div>
                 <div style="margin-top:8px; font-size:8.5px; color:#556273; letter-spacing:0.4px;">
                     symbols: ip_route_output_key → fib_table_lookup → neigh_lookup → neigh_resolve_output → dev_queue_xmit
@@ -4939,7 +3987,7 @@ class NetworkStackVisualization {
             'letter-spacing:0.4px',
             'color:rgba(230,193,90,0.88)',
             'text-shadow:0 0 10px rgba(230,193,90,0.35)',
-            'background:rgba(255,255,255,0.55)',
+            'background:rgba(8,12,20,0.55)',
             'border:1px solid rgba(230,193,90,0.28)',
             'border-radius:4px',
             'padding:3px 8px',
@@ -5053,19 +4101,19 @@ class NetworkStackVisualization {
             const info = this.getLayerDrillInfo('ip');
             if (!info || !this.drillPanel) return;
             const act = Math.round(Math.max(0, Math.min(1, Number(this.layerActivity.ip ?? 0))) * 100);
-            const actCol = act > 80 ? 'rgba(232,96,104,0.95)' : (act > 55 ? 'rgba(230,193,90,0.95)' : 'rgba(34,34,34,0.95)');
+            const actCol = act > 80 ? 'rgba(232,96,104,0.95)' : (act > 55 ? 'rgba(230,193,90,0.95)' : 'rgba(103,190,224,0.95)');
             const metrics = this.getLayerDrillMetrics('ip');
             const metricCells = metrics.map(([k, v]) => `
-                <div style="background:rgba(255,255,255,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">
+                <div style="background:rgba(8,12,20,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">
                     <div style="font-size:8.5px; letter-spacing:0.6px; color:#7f93a6; text-transform:uppercase;">${k}</div>
                     <div style="font-size:18px; color:#e2edf5; line-height:1.15; margin-top:2px;">${v}</div>
                 </div>`).join('');
             const morph = this.ipMorphTarget ? this.buildIpKernelMorphHtml(this.ipMorphTarget) : `
                 <div style="margin:0 0 10px; font-size:10px; color:#6f8597; letter-spacing:0.4px;">
-                    tip: click a <span style="color:#e6c15a">route</span> or <span style="color:#444444">neigh</span> row to watch IP → kernel translation
+                    tip: click a <span style="color:#e6c15a">route</span> or <span style="color:#a9d4e8">neigh</span> row to watch IP → kernel translation
                 </div>`;
             const html = `
-                <div style="display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid rgba(230,193,90,0.35); background:linear-gradient(90deg, rgba(230,193,90,0.12), rgba(34,34,34,0.05));">
+                <div style="display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid rgba(230,193,90,0.35); background:linear-gradient(90deg, rgba(230,193,90,0.12), rgba(103,190,224,0.05));">
                     <div style="flex:1 1 auto;">
                         <div style="font-size:8px; letter-spacing:1.4px; color:#6f8597;">STACK LAYER · NETWORK · L04</div>
                         <div style="font-size:20px; letter-spacing:1.2px; color:#e8f2f9;">IP · FIB / ROUTE / NEIGH / ICMP</div>
@@ -5078,8 +4126,8 @@ class NetworkStackVisualization {
                 </div>
                 <div style="padding:14px 18px 16px; max-height:78vh; overflow:auto;">
                     <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin-bottom:12px;">${metricCells}</div>
-                    <div style="font-size:11.5px; line-height:1.6; color:#333333; margin-bottom:10px;">${info.what}</div>
-                    <div style="margin-bottom:8px; font-size:10.5px; line-height:1.55; color:#555555; border-left:2px solid rgba(230,193,90,0.6); padding-left:9px;"><span style="color:#e6c15a; letter-spacing:0.5px;">WATCH · </span>${info.watch}</div>
+                    <div style="font-size:11.5px; line-height:1.6; color:#c2cede; margin-bottom:10px;">${info.what}</div>
+                    <div style="margin-bottom:8px; font-size:10.5px; line-height:1.55; color:#9db6c8; border-left:2px solid rgba(230,193,90,0.6); padding-left:9px;"><span style="color:#e6c15a; letter-spacing:0.5px;">WATCH · </span>${info.watch}</div>
                     ${morph}
                     ${this.buildIpLayerMapHtml({ compact: false })}
                 </div>`;
@@ -5143,7 +4191,7 @@ class NetworkStackVisualization {
                     ? '<span style="color:#e6c15a">default</span>'
                     : `<span style="color:#d4dde7">${this.escapeHtml(r.destination)}</span>`;
                 const via = r.gateway && r.gateway !== '*'
-                    ? `via <span style="color:#444444">${this.escapeHtml(r.gateway)}</span>`
+                    ? `via <span style="color:#a9d4e8">${this.escapeHtml(r.gateway)}</span>`
                     : 'on-link';
                 const active = idx === selectedRoute;
                 return `<div class="ns-ip-route-row" data-route-index="${idx}" title="Translate this route into kernel objects" style="display:flex; gap:8px; flex-wrap:wrap; padding:4px 4px; margin:0 -4px; border-bottom:1px solid rgba(70,82,98,0.25); cursor:pointer; border-radius:4px; background:${active ? 'rgba(230,193,90,0.12)' : 'transparent'};">
@@ -5157,18 +4205,18 @@ class NetworkStackVisualization {
         const neighRows = neigh.length
             ? neigh.map((h, idx) => {
                 const st = String(h.state || 'STALE');
-                const stCol = st === 'REACHABLE' ? '#3d6b4f' : (st === 'INCOMPLETE' ? '#e69696' : '#e6c15a');
+                const stCol = st === 'REACHABLE' ? '#96ffbe' : (st === 'INCOMPLETE' ? '#e69696' : '#e6c15a');
                 const active = idx === selectedNeigh;
-                return `<div class="ns-ip-neigh-row" data-neigh-index="${idx}" title="Translate this neighbour into dst/ha[]" style="display:flex; gap:8px; flex-wrap:wrap; padding:4px 4px; margin:0 -4px; border-bottom:1px solid rgba(70,82,98,0.25); cursor:pointer; border-radius:4px; background:${active ? 'rgba(34,34,34,0.12)' : 'transparent'};">
-                    <span style="color:#444444;min-width:110px;">${this.escapeHtml(h.ip)}</span>
-                    <span style="color:#333333;">${this.escapeHtml(h.mac)}</span>
+                return `<div class="ns-ip-neigh-row" data-neigh-index="${idx}" title="Translate this neighbour into dst/ha[]" style="display:flex; gap:8px; flex-wrap:wrap; padding:4px 4px; margin:0 -4px; border-bottom:1px solid rgba(70,82,98,0.25); cursor:pointer; border-radius:4px; background:${active ? 'rgba(103,190,224,0.12)' : 'transparent'};">
+                    <span style="color:#a9d4e8;min-width:110px;">${this.escapeHtml(h.ip)}</span>
+                    <span style="color:#c2cede;">${this.escapeHtml(h.mac)}</span>
                     <span style="color:#6f8597;">dev ${this.escapeHtml(h.iface)}</span>
                     <span style="color:${stCol};margin-left:auto;letter-spacing:0.5px;">${this.escapeHtml(st)}</span>
                 </div>`;
             }).join('')
             : '<div style="color:#6f8597;">no ARP/neigh entries</div>';
         const chip = (label, value, hot = false) => `
-            <div style="background:rgba(255,255,255,0.7); border:1px solid ${hot ? 'rgba(230,193,90,0.45)' : 'rgba(96,110,128,0.32)'}; border-radius:4px; padding:7px 9px; min-width:88px;">
+            <div style="background:rgba(8,12,20,0.7); border:1px solid ${hot ? 'rgba(230,193,90,0.45)' : 'rgba(96,110,128,0.32)'}; border-radius:4px; padding:7px 9px; min-width:88px;">
                 <div style="font-size:8px; letter-spacing:0.6px; color:#7f93a6; text-transform:uppercase;">${label}</div>
                 <div style="font-size:${compact ? '14px' : '16px'}; color:#e2edf5; margin-top:2px;">${value}</div>
             </div>`;
@@ -5182,9 +4230,9 @@ class NetworkStackVisualization {
                 <span style="color:#6f8597;">LOOKUP</span>
                 <span style="padding:3px 8px; border:1px solid rgba(230,193,90,0.45); border-radius:12px; color:#e6c15a;">FIB</span>
                 <span style="color:#556273;">→</span>
-                <span style="padding:3px 8px; border:1px solid rgba(34,34,34,0.45); border-radius:12px; color:#444444;">NEIGH</span>
+                <span style="padding:3px 8px; border:1px solid rgba(103,190,224,0.45); border-radius:12px; color:#a9d4e8;">NEIGH</span>
                 <span style="color:#556273;">→</span>
-                <span style="padding:3px 8px; border:1px solid rgba(61,107,79,0.35); border-radius:12px; color:#3d6b4f;">L2 / NIC</span>
+                <span style="padding:3px 8px; border:1px solid rgba(150,255,190,0.35); border-radius:12px; color:#96ffbe;">L2 / NIC</span>
                 <span style="color:#556273; margin:0 4px;">|</span>
                 <span style="padding:3px 8px; border:1px solid rgba(232,96,104,0.4); border-radius:12px; color:#e69696;">ICMP</span>
                 <span style="color:#6f8597;">control / errors</span>
@@ -5195,7 +4243,7 @@ class NetworkStackVisualization {
                     <div style="font-size:10px;color:#7f8fa2;letter-spacing:0.6px;">IP LAYER MAP · L04 · ${fwd}</div>
                     <div style="font-size:9px;color:#556273;margin-top:2px;">/proc/net/route · /proc/net/arp · /proc/net/snmp</div>
                 </div>
-                ${compact ? `<button type="button" class="ns-ip-back-puzzle" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.6px; color:#444444; background:rgba(34,34,34,0.1); border:1px solid rgba(34,34,34,0.4); border-radius:12px; padding:4px 10px;">← PUZZLE</button>` : ''}
+                ${compact ? `<button type="button" class="ns-ip-back-puzzle" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.6px; color:#a9d4e8; background:rgba(103,190,224,0.1); border:1px solid rgba(103,190,224,0.4); border-radius:12px; padding:4px 10px;">← PUZZLE</button>` : ''}
             </div>
             ${tip}
             ${flowDiagram}
@@ -5205,7 +4253,7 @@ class NetworkStackVisualization {
                     <div style="max-height:${compact ? '12vh' : '28vh'}; overflow:auto; font-size:9.5px; line-height:1.45;">${routeRows}</div>
                 </div>
                 <div>
-                    <div style="font-size:8px; letter-spacing:1px; color:#444444; margin-bottom:4px;">NEIGH / ARP <span style="color:#556273;letter-spacing:0.3px;">· click</span></div>
+                    <div style="font-size:8px; letter-spacing:1px; color:#a9d4e8; margin-bottom:4px;">NEIGH / ARP <span style="color:#556273;letter-spacing:0.3px;">· click</span></div>
                     <div style="max-height:${compact ? '12vh' : '28vh'}; overflow:auto; font-size:9.5px; line-height:1.45;">${neighRows}</div>
                 </div>
                 <div>
@@ -5273,18 +4321,18 @@ class NetworkStackVisualization {
         const hi = (key, accent) => (focus === key ? accent : 'rgba(96,110,128,0.32)');
 
         const step = (sym, title, body, accent) => `
-            <div class="ns-tcp-morph-step" style="opacity:0; transform:translateY(6px); transition:opacity 320ms ease, transform 320ms ease; flex:1 1 140px; min-width:132px; background:rgba(255,255,255,0.78); border:1px solid ${accent}; border-radius:6px; padding:8px 9px;">
+            <div class="ns-tcp-morph-step" style="opacity:0; transform:translateY(6px); transition:opacity 320ms ease, transform 320ms ease; flex:1 1 140px; min-width:132px; background:rgba(8,12,20,0.78); border:1px solid ${accent}; border-radius:6px; padding:8px 9px;">
                 <div style="font-size:8px; letter-spacing:0.7px; color:#7f93a6; margin-bottom:3px;">${esc(title)}</div>
                 <div style="font-size:11px; color:#e8f2f9; line-height:1.35; word-break:break-word;">${body}</div>
-                <div style="margin-top:6px; font-size:8.5px; letter-spacing:0.4px; color:#444444;">${esc(sym)}</div>
+                <div style="margin-top:6px; font-size:8.5px; letter-spacing:0.4px; color:#a9d4e8;">${esc(sym)}</div>
             </div>`;
         const arrow = `<div class="ns-tcp-morph-arrow" style="opacity:0; transition:opacity 280ms ease; color:#556273; font-size:14px; padding:0 2px;">↓</div>`;
 
         return `
-            <div class="ns-tcp-morph" data-morph="1" style="margin:0 0 12px; padding:10px 12px; border:1px solid rgba(34,34,34,0.4); border-radius:8px; background:linear-gradient(180deg, rgba(34,34,34,0.10), rgba(255,255,255,0.35));">
+            <div class="ns-tcp-morph" data-morph="1" style="margin:0 0 12px; padding:10px 12px; border:1px solid rgba(103,190,224,0.4); border-radius:8px; background:linear-gradient(180deg, rgba(103,190,224,0.10), rgba(8,12,20,0.35));">
                 <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
                     <div style="flex:1;">
-                        <div style="font-size:9px; letter-spacing:1px; color:#444444;">TCP → KERNEL TRANSLATION</div>
+                        <div style="font-size:9px; letter-spacing:1px; color:#a9d4e8;">TCP → KERNEL TRANSLATION</div>
                         <div style="font-size:10px; color:#8d99a7; margin-top:2px;">a flow is not just “connected” — it is tcp_sock fields deciding what may leave the stack</div>
                     </div>
                     <button type="button" class="ns-tcp-morph-close" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.5px; color:#c8ccd4; background:transparent; border:1px solid rgba(160,170,190,0.35); border-radius:12px; padding:4px 10px;">CLOSE</button>
@@ -5293,34 +4341,34 @@ class NetworkStackVisualization {
                     ${step('tcp_v4_connect / tcp_rcv_established', '1 · FLOW', `
                         <span style="color:#d4dde7">${esc(local)}</span>
                         <span style="color:#556273;"> → </span>
-                        <span style="color:#444444">${esc(remote)}</span><br>
+                        <span style="color:#a9d4e8">${esc(remote)}</span><br>
                         <span style="color:#8d99a7;font-size:10px;">state ${esc(state)} · sk → tcp_sock</span>
                     `, hi('flow', 'rgba(212,221,231,0.4)'))}
                     ${arrow}
                     ${step('tcp_ack / tcp_rtt_estimator', '2 · tcp_sock', `
                         snd_cwnd <span style="color:#e6c15a">${esc(cwnd)}</span>
-                        · srtt ≈ <span style="color:#444444">${esc(rtt.toFixed(1))} ms</span><br>
+                        · srtt ≈ <span style="color:#a9d4e8">${esc(rtt.toFixed(1))} ms</span><br>
                         <span style="color:#8d99a7;font-size:10px;">minrtt ${esc(minRtt.toFixed(2))} · retrans/s ${esc(retrans)}</span>
                     `, focus === 'rtt'
-                        ? 'rgba(34,34,34,0.5)'
+                        ? 'rgba(103,190,224,0.5)'
                         : (focus === 'cwnd' || focus === 'retrans' ? 'rgba(230,193,90,0.5)' : 'rgba(96,110,128,0.32)'))}
                     ${arrow}
                     ${step('tcp_snd_wnd / tcp_tso_should_defer', '3 · SEND BUDGET', `
-                        cwnd×MSS = <span style="color:#3d6b4f">${esc(inflightKb)}</span>
+                        cwnd×MSS = <span style="color:#96ffbe">${esc(inflightKb)}</span>
                         <span style="color:#8d99a7;"> (${esc(cwnd)} × ${esc(mss)})</span><br>
                         <span style="color:#8d99a7;font-size:10px;">bytes allowed in flight before ACK</span>
-                    `, hi('budget', 'rgba(61,107,79,0.4)'))}
+                    `, hi('budget', 'rgba(150,255,190,0.4)'))}
                     ${arrow}
                     ${step('tcp_cong_control / ca_ops', '4 · CONGESTION CTL', `
                         cc <span style="color:#e6c15a">${esc(cc)}</span>
-                        · pace <span style="color:#444444">${esc(pacing.toFixed(3))} Mbps</span><br>
+                        · pace <span style="color:#a9d4e8">${esc(pacing.toFixed(3))} Mbps</span><br>
                         <span style="color:#8d99a7;font-size:10px;">delivery ${esc(delivery.toFixed(3))} Mbps · tp-&gt;ca_ops</span>
                     `, hi('cc', 'rgba(230,193,90,0.45)'))}
                     ${arrow}
                     ${step('tcp_transmit_skb → ip_queue_xmit', '5 · sk_buff → IP', `
                         skb leaves TCP → IP output<br>
                         <span style="color:#8d99a7;font-size:10px;">then FIB / neigh morph on L04</span>
-                    `, hi('skb', 'rgba(34,34,34,0.4)'))}
+                    `, hi('skb', 'rgba(103,190,224,0.4)'))}
                 </div>
                 <div style="margin-top:8px; font-size:8.5px; color:#556273; letter-spacing:0.4px;">
                     symbols: tcp_rcv_established → tcp_ack → tcp_cong_control → tcp_write_xmit → tcp_transmit_skb
@@ -5355,7 +4403,7 @@ class NetworkStackVisualization {
         const focus = this.tcpMorphTarget?.focus || '';
         const row = (key, label, value, color) => {
             const active = focus === key;
-            return `<div class="ns-tcp-row" data-tcp-focus="${key}" title="Translate into tcp_sock / ca_ops" style="display:flex; gap:8px; align-items:baseline; padding:5px 6px; margin:0 -4px 3px; border-radius:4px; cursor:pointer; border:1px solid ${active ? color : 'rgba(70,82,98,0.35)'}; background:${active ? 'rgba(34,34,34,0.10)' : 'rgba(255,255,255,0.35)'};">
+            return `<div class="ns-tcp-row" data-tcp-focus="${key}" title="Translate into tcp_sock / ca_ops" style="display:flex; gap:8px; align-items:baseline; padding:5px 6px; margin:0 -4px 3px; border-radius:4px; cursor:pointer; border:1px solid ${active ? color : 'rgba(70,82,98,0.35)'}; background:${active ? 'rgba(103,190,224,0.10)' : 'rgba(8,12,20,0.35)'};">
                 <span style="min-width:${compact ? '64px' : '88px'}; font-size:8px; letter-spacing:0.6px; color:#7f93a6;">${label}</span>
                 <span style="color:${color}; font-size:${compact ? '12px' : '14px'};">${esc(value)}</span>
             </div>`;
@@ -5366,25 +4414,25 @@ class NetworkStackVisualization {
                     <div style="font-size:10px;color:#7f8fa2;letter-spacing:0.6px;">TCP LAYER MAP · L05 · ${esc(cc)}</div>
                     <div style="font-size:9px;color:#556273;margin-top:2px;">ss -tin · tcp_sock · ca_ops</div>
                 </div>
-                ${compact ? `<button type="button" class="ns-tcp-back-puzzle" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.6px; color:#444444; background:rgba(34,34,34,0.1); border:1px solid rgba(34,34,34,0.4); border-radius:12px; padding:4px 10px;">← PUZZLE</button>` : ''}
+                ${compact ? `<button type="button" class="ns-tcp-back-puzzle" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.6px; color:#a9d4e8; background:rgba(103,190,224,0.1); border:1px solid rgba(103,190,224,0.4); border-radius:12px; padding:4px 10px;">← PUZZLE</button>` : ''}
             </div>
             ${compact ? '<div style="font-size:8.5px;color:#556273;margin:0 0 6px;">click a field → TCP→kernel morph (center)</div>' : ''}
             <div style="display:grid; grid-template-columns:${compact ? '1fr' : '1.1fr 0.9fr'}; gap:10px;">
                 <div>
                     ${row('flow', 'FLOW', `${flow.local || '—'} → ${flow.remote || '—'}`, '#d4dde7')}
                     ${row('cwnd', 'CWND', `${cwnd} segments`, '#e6c15a')}
-                    ${row('rtt', 'RTT', `${rtt.toFixed(1)} ms`, '#444444')}
-                    ${row('cc', 'CC', cc, '#3d6b4f')}
+                    ${row('rtt', 'RTT', `${rtt.toFixed(1)} ms`, '#a9d4e8')}
+                    ${row('cc', 'CC', cc, '#96ffbe')}
                     ${row('retrans', 'RETRANS', `${retrans}/s`, retrans > 0 ? '#e69696' : '#8d99a7')}
                 </div>
                 <div style="font-size:9.5px; line-height:1.55; color:#8d99a7;">
                     <div style="font-size:8px; letter-spacing:1px; color:#6f8597; margin-bottom:4px;">PATH</div>
-                    <div>userspace send → <span style="color:#444444">tcp_sendmsg</span></div>
+                    <div>userspace send → <span style="color:#a9d4e8">tcp_sendmsg</span></div>
                     <div>→ window / cwnd check → <span style="color:#e6c15a">tcp_write_xmit</span></div>
-                    <div>→ skb build → <span style="color:#3d6b4f">tcp_transmit_skb</span></div>
+                    <div>→ skb build → <span style="color:#96ffbe">tcp_transmit_skb</span></div>
                     <div>→ <span style="color:#d4dde7">ip_queue_xmit</span> (L04)</div>
                     ${!compact ? `<div style="margin-top:10px;">
-                        <button type="button" class="ns-tcp-open-morph" style="cursor:pointer; font:inherit; font-size:10px; letter-spacing:0.7px; color:#444444; background:rgba(34,34,34,0.12); border:1px solid rgba(34,34,34,0.45); border-radius:14px; padding:5px 12px;">▸ TCP → KERNEL TRANSLATION</button>
+                        <button type="button" class="ns-tcp-open-morph" style="cursor:pointer; font:inherit; font-size:10px; letter-spacing:0.7px; color:#a9d4e8; background:rgba(103,190,224,0.12); border:1px solid rgba(103,190,224,0.45); border-radius:14px; padding:5px 12px;">▸ TCP → KERNEL TRANSLATION</button>
                         <button type="button" class="ns-drill-bbr" style="cursor:pointer; font:inherit; font-size:10px; letter-spacing:0.7px; color:#e6c15a; background:rgba(230,193,90,0.10); border:1px solid rgba(230,193,90,0.4); border-radius:14px; padding:5px 12px; margin-left:6px;">▸ BBR PATH MODEL</button>
                     </div>` : ''}
                 </div>
@@ -5452,20 +4500,20 @@ class NetworkStackVisualization {
             const info = this.getLayerDrillInfo('tcp');
             if (!info || !this.drillPanel) return;
             const act = Math.round(Math.max(0, Math.min(1, Number(this.layerActivity.tcp ?? 0))) * 100);
-            const actCol = act > 80 ? 'rgba(232,96,104,0.95)' : (act > 55 ? 'rgba(230,193,90,0.95)' : 'rgba(34,34,34,0.95)');
+            const actCol = act > 80 ? 'rgba(232,96,104,0.95)' : (act > 55 ? 'rgba(230,193,90,0.95)' : 'rgba(103,190,224,0.95)');
             const metrics = this.getLayerDrillMetrics('tcp');
             const metricCells = metrics.map(([k, v]) => `
-                <div style="background:rgba(255,255,255,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">
+                <div style="background:rgba(8,12,20,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">
                     <div style="font-size:8.5px; letter-spacing:0.6px; color:#7f93a6; text-transform:uppercase;">${k}</div>
                     <div style="font-size:18px; color:#e2edf5; line-height:1.15; margin-top:2px;">${v}</div>
                 </div>`).join('');
             const morph = this.tcpMorphTarget
                 ? this.buildTcpKernelMorphHtml(this.tcpMorphTarget)
                 : `<div style="margin:0 0 10px; font-size:10px; color:#6f8597; letter-spacing:0.4px;">
-                    tip: click <span style="color:#e6c15a">cwnd</span> / <span style="color:#444444">rtt</span> / <span style="color:#3d6b4f">cc</span> — or open the translation ribbon
+                    tip: click <span style="color:#e6c15a">cwnd</span> / <span style="color:#a9d4e8">rtt</span> / <span style="color:#96ffbe">cc</span> — or open the translation ribbon
                    </div>`;
             const html = `
-                <div style="display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid rgba(34,34,34,0.35); background:linear-gradient(90deg, rgba(34,34,34,0.12), rgba(230,193,90,0.05));">
+                <div style="display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid rgba(103,190,224,0.35); background:linear-gradient(90deg, rgba(103,190,224,0.12), rgba(230,193,90,0.05));">
                     <div style="flex:1 1 auto;">
                         <div style="font-size:8px; letter-spacing:1.4px; color:#6f8597;">STACK LAYER · TRANSPORT · L05</div>
                         <div style="font-size:20px; letter-spacing:1.2px; color:#e8f2f9;">TCP · SOCK / CWND / CC / SKB</div>
@@ -5478,8 +4526,8 @@ class NetworkStackVisualization {
                 </div>
                 <div style="padding:14px 18px 16px; max-height:78vh; overflow:auto;">
                     <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin-bottom:12px;">${metricCells}</div>
-                    <div style="font-size:11.5px; line-height:1.6; color:#333333; margin-bottom:10px;">${info.what}</div>
-                    <div style="margin-bottom:8px; font-size:10.5px; line-height:1.55; color:#555555; border-left:2px solid rgba(34,34,34,0.6); padding-left:9px;"><span style="color:#444444; letter-spacing:0.5px;">WATCH · </span>${info.watch}</div>
+                    <div style="font-size:11.5px; line-height:1.6; color:#c2cede; margin-bottom:10px;">${info.what}</div>
+                    <div style="margin-bottom:8px; font-size:10.5px; line-height:1.55; color:#9db6c8; border-left:2px solid rgba(103,190,224,0.6); padding-left:9px;"><span style="color:#a9d4e8; letter-spacing:0.5px;">WATCH · </span>${info.watch}</div>
                     ${morph}
                     ${this.buildTcpLayerMapHtml({ compact: false })}
                 </div>`;
@@ -5539,15 +4587,15 @@ class NetworkStackVisualization {
         const ctUsage = n(nf.conntrack_usage);
         const engine = nf.nft ? 'nftables' : (nf.nf_conntrack ? 'iptables+ct' : 'netfilter');
         const verdict = drops > 0.5 || ratio > 0.01 ? 'NF_DROP pressure' : 'NF_ACCEPT path';
-        const verdictCol = drops > 0.5 || ratio > 0.01 ? '#e69696' : '#3d6b4f';
+        const verdictCol = drops > 0.5 || ratio > 0.01 ? '#e69696' : '#96ffbe';
         const focus = target.focus || 'hook';
         const hi = (key, accent) => (focus === key ? accent : 'rgba(96,110,128,0.32)');
         const step = (sym, title, body, accent) => (
-            '<div class="ns-nf-morph-step" style="opacity:0; transform:translateY(6px); transition:opacity 320ms ease, transform 320ms ease; flex:1 1 140px; min-width:132px; background:rgba(255,255,255,0.78); border:1px solid '
+            '<div class="ns-nf-morph-step" style="opacity:0; transform:translateY(6px); transition:opacity 320ms ease, transform 320ms ease; flex:1 1 140px; min-width:132px; background:rgba(8,12,20,0.78); border:1px solid '
             + accent + '; border-radius:6px; padding:8px 9px;">'
             + '<div style="font-size:8px; letter-spacing:0.7px; color:#7f93a6; margin-bottom:3px;">' + esc(title) + '</div>'
             + '<div style="font-size:11px; color:#e8f2f9; line-height:1.35; word-break:break-word;">' + body + '</div>'
-            + '<div style="margin-top:6px; font-size:8.5px; letter-spacing:0.4px; color:#444444;">' + esc(sym) + '</div>'
+            + '<div style="margin-top:6px; font-size:8.5px; letter-spacing:0.4px; color:#a9d4e8;">' + esc(sym) + '</div>'
             + '</div>'
         );
         const arrow = '<div class="ns-nf-morph-arrow" style="opacity:0; transition:opacity 280ms ease; color:#556273; font-size:14px; padding:0 2px;">↓</div>';
@@ -5564,11 +4612,11 @@ class NetworkStackVisualization {
             step(
                 'nf_conntrack_in',
                 '2 · CONNTRACK',
-                'ct entries <span style="color:#444444">' + esc(ct) + '</span>'
+                'ct entries <span style="color:#a9d4e8">' + esc(ct) + '</span>'
                 + ' / <span style="color:#8d99a7">' + esc(ctMax || '-') + '</span>'
                 + ' · <span style="color:#e6c15a">' + esc((ctUsage * 100).toFixed(2)) + '%</span><br>'
                 + '<span style="color:#8d99a7;font-size:10px;">tuple → nf_conn · NEW / ESTABLISHED</span>',
-                hi('ct', 'rgba(34,34,34,0.45)')
+                hi('ct', 'rgba(103,190,224,0.45)')
             ),
             arrow,
             step(
@@ -5592,12 +4640,12 @@ class NetworkStackVisualization {
                 '5 · CONTINUE',
                 'ACCEPT → stack continues · DROP → kfree_skb<br>'
                 + '<span style="color:#8d99a7;font-size:10px;">surviving skb → TCP/IP path</span>',
-                hi('continue', 'rgba(61,107,79,0.35)')
+                hi('continue', 'rgba(150,255,190,0.35)')
             ),
         ].join('');
 
         return (
-            '<div class="ns-nf-morph" data-morph="1" style="margin:0 0 12px; padding:10px 12px; border:1px solid rgba(232,96,104,0.4); border-radius:8px; background:linear-gradient(180deg, rgba(232,96,104,0.10), rgba(255,255,255,0.35));">'
+            '<div class="ns-nf-morph" data-morph="1" style="margin:0 0 12px; padding:10px 12px; border:1px solid rgba(232,96,104,0.4); border-radius:8px; background:linear-gradient(180deg, rgba(232,96,104,0.10), rgba(8,12,20,0.35));">'
             + '<div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">'
             + '<div style="flex:1;">'
             + '<div style="font-size:9px; letter-spacing:1px; color:#e69696;">NETFILTER → KERNEL TRANSLATION</div>'
@@ -5640,7 +4688,7 @@ class NetworkStackVisualization {
         const focus = this.nfMorphTarget?.focus || '';
         const row = (key, label, value, color) => {
             const active = focus === key;
-            return `<div class="ns-nf-row" data-nf-focus="${key}" title="Translate into hooks / conntrack / verdict" style="display:flex; gap:8px; align-items:baseline; padding:5px 6px; margin:0 -4px 3px; border-radius:4px; cursor:pointer; border:1px solid ${active ? color : 'rgba(70,82,98,0.35)'}; background:${active ? 'rgba(232,96,104,0.10)' : 'rgba(255,255,255,0.35)'};">
+            return `<div class="ns-nf-row" data-nf-focus="${key}" title="Translate into hooks / conntrack / verdict" style="display:flex; gap:8px; align-items:baseline; padding:5px 6px; margin:0 -4px 3px; border-radius:4px; cursor:pointer; border:1px solid ${active ? color : 'rgba(70,82,98,0.35)'}; background:${active ? 'rgba(232,96,104,0.10)' : 'rgba(8,12,20,0.35)'};">
                 <span style="min-width:${compact ? '64px' : '88px'}; font-size:8px; letter-spacing:0.6px; color:#7f93a6;">${label}</span>
                 <span style="color:${color}; font-size:${compact ? '12px' : '14px'};">${esc(value)}</span>
             </div>`;
@@ -5651,20 +4699,20 @@ class NetworkStackVisualization {
                     <div style="font-size:10px;color:#7f8fa2;letter-spacing:0.6px;">NETFILTER MAP · L03 · ${esc(engine)}</div>
                     <div style="font-size:9px;color:#556273;margin-top:2px;">hooks · nf_conntrack · verdict</div>
                 </div>
-                ${compact ? `<button type="button" class="ns-nf-back-puzzle" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.6px; color:#444444; background:rgba(34,34,34,0.1); border:1px solid rgba(34,34,34,0.4); border-radius:12px; padding:4px 10px;">← PUZZLE</button>` : ''}
+                ${compact ? `<button type="button" class="ns-nf-back-puzzle" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.6px; color:#a9d4e8; background:rgba(103,190,224,0.1); border:1px solid rgba(103,190,224,0.4); border-radius:12px; padding:4px 10px;">← PUZZLE</button>` : ''}
             </div>
             ${compact ? '<div style="font-size:8.5px;color:#556273;margin:0 0 6px;">click a field → Netfilter→kernel morph (center)</div>' : ''}
             <div style="display:grid; grid-template-columns:${compact ? '1fr' : '1.1fr 0.9fr'}; gap:10px;">
                 <div>
                     ${row('hook', 'HOOKS', 'PREROUTING…POSTROUTING', '#e69696')}
-                    ${row('ct', 'CONNTRACK', `${ct} / ${ctMax || '—'}`, '#444444')}
+                    ${row('ct', 'CONNTRACK', `${ct} / ${ctMax || '—'}`, '#a9d4e8')}
                     ${row('verdict', 'DROPS', `${drops}/s · ${(ratio * 100).toFixed(2)}%`, drops > 0 ? '#e69696' : '#8d99a7')}
                     ${row('chain', 'ENGINE', engine, '#e6c15a')}
                 </div>
                 <div style="font-size:9.5px; line-height:1.55; color:#8d99a7;">
                     <div style="font-size:8px; letter-spacing:1px; color:#6f8597; margin-bottom:4px;">RX PATH</div>
                     <div>NIC → <span style="color:#e69696">PREROUTING</span></div>
-                    <div>→ <span style="color:#444444">nf_conntrack_in</span></div>
+                    <div>→ <span style="color:#a9d4e8">nf_conntrack_in</span></div>
                     <div>→ <span style="color:#e6c15a">nft_do_chain</span></div>
                     <div>→ verdict → TCP/IP or drop</div>
                     ${!compact ? `<div style="margin-top:10px;">
@@ -5726,20 +4774,20 @@ class NetworkStackVisualization {
             const info = this.getLayerDrillInfo('netfilter');
             if (!info || !this.drillPanel) return;
             const act = Math.round(Math.max(0, Math.min(1, Number(this.layerActivity.netfilter ?? 0))) * 100);
-            const actCol = act > 80 ? 'rgba(232,96,104,0.95)' : (act > 55 ? 'rgba(230,193,90,0.95)' : 'rgba(34,34,34,0.95)');
+            const actCol = act > 80 ? 'rgba(232,96,104,0.95)' : (act > 55 ? 'rgba(230,193,90,0.95)' : 'rgba(103,190,224,0.95)');
             const metrics = this.getLayerDrillMetrics('netfilter');
             const metricCells = metrics.map(([k, v]) => `
-                <div style="background:rgba(255,255,255,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">
+                <div style="background:rgba(8,12,20,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">
                     <div style="font-size:8.5px; letter-spacing:0.6px; color:#7f93a6; text-transform:uppercase;">${k}</div>
                     <div style="font-size:18px; color:#e2edf5; line-height:1.15; margin-top:2px;">${v}</div>
                 </div>`).join('');
             const morph = this.nfMorphTarget
                 ? this.buildNfKernelMorphHtml(this.nfMorphTarget)
                 : `<div style="margin:0 0 10px; font-size:10px; color:#6f8597; letter-spacing:0.4px;">
-                    tip: click <span style="color:#e69696">hooks</span> / <span style="color:#444444">conntrack</span> / <span style="color:#e6c15a">verdict</span>
+                    tip: click <span style="color:#e69696">hooks</span> / <span style="color:#a9d4e8">conntrack</span> / <span style="color:#e6c15a">verdict</span>
                    </div>`;
             const html = `
-                <div style="display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid rgba(232,96,104,0.35); background:linear-gradient(90deg, rgba(232,96,104,0.12), rgba(34,34,34,0.05));">
+                <div style="display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid rgba(232,96,104,0.35); background:linear-gradient(90deg, rgba(232,96,104,0.12), rgba(103,190,224,0.05));">
                     <div style="flex:1 1 auto;">
                         <div style="font-size:8px; letter-spacing:1.4px; color:#6f8597;">STACK LAYER · FIREWALL · L03</div>
                         <div style="font-size:20px; letter-spacing:1.2px; color:#e8f2f9;">NETFILTER · HOOK / CT / VERDICT</div>
@@ -5752,8 +4800,8 @@ class NetworkStackVisualization {
                 </div>
                 <div style="padding:14px 18px 16px; max-height:78vh; overflow:auto;">
                     <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin-bottom:12px;">${metricCells}</div>
-                    <div style="font-size:11.5px; line-height:1.6; color:#333333; margin-bottom:10px;">${info.what}</div>
-                    <div style="margin-bottom:8px; font-size:10.5px; line-height:1.55; color:#555555; border-left:2px solid rgba(232,96,104,0.6); padding-left:9px;"><span style="color:#e69696; letter-spacing:0.5px;">WATCH · </span>${info.watch}</div>
+                    <div style="font-size:11.5px; line-height:1.6; color:#c2cede; margin-bottom:10px;">${info.what}</div>
+                    <div style="margin-bottom:8px; font-size:10.5px; line-height:1.55; color:#9db6c8; border-left:2px solid rgba(232,96,104,0.6); padding-left:9px;"><span style="color:#e69696; letter-spacing:0.5px;">WATCH · </span>${info.watch}</div>
                     ${morph}
                     ${this.buildNfLayerMapHtml({ compact: false })}
                 </div>`;
@@ -5823,11 +4871,11 @@ class NetworkStackVisualization {
         const skHint = inode > 0 ? ('sk@inode:' + inode) : 'struct sock *';
 
         const step = (sym, title, body, accent) => (
-            '<div class="ns-sock-morph-step" style="opacity:0; transform:translateY(6px); transition:opacity 320ms ease, transform 320ms ease; flex:1 1 140px; min-width:132px; background:rgba(255,255,255,0.78); border:1px solid '
+            '<div class="ns-sock-morph-step" style="opacity:0; transform:translateY(6px); transition:opacity 320ms ease, transform 320ms ease; flex:1 1 140px; min-width:132px; background:rgba(8,12,20,0.78); border:1px solid '
             + accent + '; border-radius:6px; padding:8px 9px;">'
             + '<div style="font-size:8px; letter-spacing:0.7px; color:#7f93a6; margin-bottom:3px;">' + esc(title) + '</div>'
             + '<div style="font-size:11px; color:#e8f2f9; line-height:1.35; word-break:break-word;">' + body + '</div>'
-            + '<div style="margin-top:6px; font-size:8.5px; letter-spacing:0.4px; color:#444444;">' + esc(sym) + '</div>'
+            + '<div style="margin-top:6px; font-size:8.5px; letter-spacing:0.4px; color:#a9d4e8;">' + esc(sym) + '</div>'
             + '</div>'
         );
         const arrow = '<div class="ns-sock-morph-arrow" style="opacity:0; transition:opacity 280ms ease; color:#556273; font-size:14px; padding:0 2px;">↓</div>';
@@ -5835,11 +4883,11 @@ class NetworkStackVisualization {
             step(
                 'fget / fdtable',
                 '1 · FILE DESCRIPTOR',
-                'fd <span style="color:#3d6b4f">' + esc(fdLabel) + '</span>'
-                + ' · pid <span style="color:#444444">' + esc(pidLabel) + '</span>'
+                'fd <span style="color:#96ffbe">' + esc(fdLabel) + '</span>'
+                + ' · pid <span style="color:#a9d4e8">' + esc(pidLabel) + '</span>'
                 + ' <span style="color:#8d99a7;">(' + esc(proc) + ')</span><br>'
                 + '<span style="color:#8d99a7;font-size:10px;">userspace handle → files_struct</span>',
-                hi('fd', 'rgba(61,107,79,0.45)')
+                hi('fd', 'rgba(150,255,190,0.45)')
             ),
             arrow,
             step(
@@ -5854,21 +4902,21 @@ class NetworkStackVisualization {
             step(
                 'sock_alloc / socket->sk',
                 '3 · struct sock *',
-                '<span style="color:#444444">' + esc(skHint) + '</span><br>'
+                '<span style="color:#a9d4e8">' + esc(skHint) + '</span><br>'
                 + '<span style="color:#d4dde7">' + esc(local) + '</span>'
                 + '<span style="color:#556273;"> → </span>'
-                + '<span style="color:#444444">' + esc(remote) + '</span><br>'
+                + '<span style="color:#a9d4e8">' + esc(remote) + '</span><br>'
                 + '<span style="color:#8d99a7;font-size:10px;">state ' + esc(state) + ' · protocol socket object</span>',
-                hi('sk', 'rgba(34,34,34,0.5)')
+                hi('sk', 'rgba(103,190,224,0.5)')
             ),
             arrow,
             step(
                 'sk_receive_queue / sk_write_queue',
                 '4 · QUEUES',
-                'active <span style="color:#444444">' + esc(active) + '</span>'
-                + ' · established <span style="color:#3d6b4f">' + esc(est) + '</span><br>'
+                'active <span style="color:#a9d4e8">' + esc(active) + '</span>'
+                + ' · established <span style="color:#96ffbe">' + esc(est) + '</span><br>'
                 + '<span style="color:#8d99a7;font-size:10px;">recv/send buffers · accept backlog · wakeups</span>',
-                hi('queue', 'rgba(61,107,79,0.35)')
+                hi('queue', 'rgba(150,255,190,0.35)')
             ),
             arrow,
             step(
@@ -5881,10 +4929,10 @@ class NetworkStackVisualization {
         ].join('');
 
         return (
-            '<div class="ns-sock-morph" data-morph="1" style="margin:0 0 12px; padding:10px 12px; border:1px solid rgba(61,107,79,0.4); border-radius:8px; background:linear-gradient(180deg, rgba(61,107,79,0.10), rgba(255,255,255,0.35));">'
+            '<div class="ns-sock-morph" data-morph="1" style="margin:0 0 12px; padding:10px 12px; border:1px solid rgba(150,255,190,0.4); border-radius:8px; background:linear-gradient(180deg, rgba(150,255,190,0.10), rgba(8,12,20,0.35));">'
             + '<div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">'
             + '<div style="flex:1;">'
-            + '<div style="font-size:9px; letter-spacing:1px; color:#3d6b4f;">SOCKET → KERNEL TRANSLATION</div>'
+            + '<div style="font-size:9px; letter-spacing:1px; color:#96ffbe;">SOCKET → KERNEL TRANSLATION</div>'
             + '<div style="font-size:10px; color:#8d99a7; margin-top:2px;">an fd is not the socket — it is a path: fd → file → inode → socket → sock*</div>'
             + '</div>'
             + '<button type="button" class="ns-sock-morph-close" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.5px; color:#c8ccd4; background:transparent; border:1px solid rgba(160,170,190,0.35); border-radius:12px; padding:4px 10px;">CLOSE</button>'
@@ -5931,7 +4979,7 @@ class NetworkStackVisualization {
             return (
                 '<div class="ns-sock-row" data-sock-focus="' + key + '" title="Translate into fd → sock*" style="display:flex; gap:8px; align-items:baseline; padding:5px 6px; margin:0 -4px 3px; border-radius:4px; cursor:pointer; border:1px solid '
                 + (active ? color : 'rgba(70,82,98,0.35)') + '; background:'
-                + (active ? 'rgba(61,107,79,0.10)' : 'rgba(255,255,255,0.35)') + ';">'
+                + (active ? 'rgba(150,255,190,0.10)' : 'rgba(8,12,20,0.35)') + ';">'
                 + '<span style="min-width:' + (compact ? '64px' : '88px') + '; font-size:8px; letter-spacing:0.6px; color:#7f93a6;">' + label + '</span>'
                 + '<span style="color:' + color + '; font-size:' + (compact ? '12px' : '14px') + ';">' + esc(value) + '</span>'
                 + '</div>'
@@ -5944,27 +4992,27 @@ class NetworkStackVisualization {
             + '<div style="font-size:9px;color:#556273;margin-top:2px;">files_struct · inode · struct sock</div>'
             + '</div>'
             + (compact
-                ? '<button type="button" class="ns-sock-back-puzzle" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.6px; color:#444444; background:rgba(34,34,34,0.1); border:1px solid rgba(34,34,34,0.4); border-radius:12px; padding:4px 10px;">← PUZZLE</button>'
+                ? '<button type="button" class="ns-sock-back-puzzle" style="cursor:pointer; font:inherit; font-size:9px; letter-spacing:0.6px; color:#a9d4e8; background:rgba(103,190,224,0.1); border:1px solid rgba(103,190,224,0.4); border-radius:12px; padding:4px 10px;">← PUZZLE</button>'
                 : '')
             + '</div>'
             + (compact ? '<div style="font-size:8.5px;color:#556273;margin:0 0 6px;">click a field → Socket→kernel morph (center)</div>' : '')
             + '<div style="display:grid; grid-template-columns:' + (compact ? '1fr' : '1.1fr 0.9fr') + '; gap:10px;">'
             + '<div>'
-            + row('fd', 'FD', fd != null ? (fd + ' · pid ' + (pid != null ? pid : '?')) : 'n/a (no process match)', '#3d6b4f')
+            + row('fd', 'FD', fd != null ? (fd + ' · pid ' + (pid != null ? pid : '?')) : 'n/a (no process match)', '#96ffbe')
             + row('inode', 'INODE', inode > 0 ? String(inode) : 'n/a', '#e6c15a')
-            + row('sk', 'SOCK*', local + ' → ' + remote, '#444444')
-            + row('queue', 'QUEUES', 'est ' + n(sa.established) + ' / active ' + n(sa.active_sockets), '#3d6b4f')
+            + row('sk', 'SOCK*', local + ' → ' + remote, '#a9d4e8')
+            + row('queue', 'QUEUES', 'est ' + n(sa.established) + ' / active ' + n(sa.active_sockets), '#96ffbe')
             + row('syscall', 'STATE', state + ' · ' + proc, '#d4dde7')
             + '</div>'
             + '<div style="font-size:9.5px; line-height:1.55; color:#8d99a7;">'
             + '<div style="font-size:8px; letter-spacing:1px; color:#6f8597; margin-bottom:4px;">LOOKUP PATH</div>'
-            + '<div>userspace <span style="color:#3d6b4f">fd</span></div>'
+            + '<div>userspace <span style="color:#96ffbe">fd</span></div>'
             + '<div>→ <span style="color:#e6c15a">inode / SOCKET_I</span></div>'
-            + '<div>→ <span style="color:#444444">struct sock *</span></div>'
+            + '<div>→ <span style="color:#a9d4e8">struct sock *</span></div>'
             + '<div>→ queues → TCP/UDP</div>'
             + (!compact
                 ? '<div style="margin-top:10px;">'
-                  + '<button type="button" class="ns-sock-open-morph" style="cursor:pointer; font:inherit; font-size:10px; letter-spacing:0.7px; color:#3d6b4f; background:rgba(61,107,79,0.12); border:1px solid rgba(61,107,79,0.45); border-radius:14px; padding:5px 12px;">▸ SOCKET → KERNEL TRANSLATION</button>'
+                  + '<button type="button" class="ns-sock-open-morph" style="cursor:pointer; font:inherit; font-size:10px; letter-spacing:0.7px; color:#96ffbe; background:rgba(150,255,190,0.12); border:1px solid rgba(150,255,190,0.45); border-radius:14px; padding:5px 12px;">▸ SOCKET → KERNEL TRANSLATION</button>'
                   + '</div>'
                 : '')
             + '</div></div>'
@@ -6023,10 +5071,10 @@ class NetworkStackVisualization {
             const info = this.getLayerDrillInfo('socket');
             if (!info || !this.drillPanel) return;
             const act = Math.round(Math.max(0, Math.min(1, Number(this.layerActivity.socket ?? 0))) * 100);
-            const actCol = act > 80 ? 'rgba(232,96,104,0.95)' : (act > 55 ? 'rgba(230,193,90,0.95)' : 'rgba(34,34,34,0.95)');
+            const actCol = act > 80 ? 'rgba(232,96,104,0.95)' : (act > 55 ? 'rgba(230,193,90,0.95)' : 'rgba(103,190,224,0.95)');
             const metrics = this.getLayerDrillMetrics('socket');
             const metricCells = metrics.map(([k, v]) => (
-                '<div style="background:rgba(255,255,255,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">'
+                '<div style="background:rgba(8,12,20,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">'
                 + '<div style="font-size:8.5px; letter-spacing:0.6px; color:#7f93a6; text-transform:uppercase;">' + this.escapeHtml(k) + '</div>'
                 + '<div style="font-size:18px; color:#e2edf5; line-height:1.15; margin-top:2px;">' + this.escapeHtml(v) + '</div>'
                 + '</div>'
@@ -6034,10 +5082,10 @@ class NetworkStackVisualization {
             const morph = this.sockMorphTarget
                 ? this.buildSockKernelMorphHtml(this.sockMorphTarget)
                 : '<div style="margin:0 0 10px; font-size:10px; color:#6f8597; letter-spacing:0.4px;">'
-                  + 'tip: click <span style="color:#3d6b4f">fd</span> / <span style="color:#e6c15a">inode</span> / <span style="color:#444444">sock*</span>'
+                  + 'tip: click <span style="color:#96ffbe">fd</span> / <span style="color:#e6c15a">inode</span> / <span style="color:#a9d4e8">sock*</span>'
                   + '</div>';
             const html = (
-                '<div style="display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid rgba(61,107,79,0.35); background:linear-gradient(90deg, rgba(61,107,79,0.12), rgba(34,34,34,0.05));">'
+                '<div style="display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid rgba(150,255,190,0.35); background:linear-gradient(90deg, rgba(150,255,190,0.12), rgba(103,190,224,0.05));">'
                 + '<div style="flex:1 1 auto;">'
                 + '<div style="font-size:8px; letter-spacing:1.4px; color:#6f8597;">STACK LAYER · SOCKET API · L06</div>'
                 + '<div style="font-size:20px; letter-spacing:1.2px; color:#e8f2f9;">SOCKET · FD / INODE / SOCK*</div>'
@@ -6050,8 +5098,8 @@ class NetworkStackVisualization {
                 + '</div>'
                 + '<div style="padding:14px 18px 16px; max-height:78vh; overflow:auto;">'
                 + '<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin-bottom:12px;">' + metricCells + '</div>'
-                + '<div style="font-size:11.5px; line-height:1.6; color:#333333; margin-bottom:10px;">' + info.what + '</div>'
-                + '<div style="margin-bottom:8px; font-size:10.5px; line-height:1.55; color:#555555; border-left:2px solid rgba(61,107,79,0.6); padding-left:9px;"><span style="color:#3d6b4f; letter-spacing:0.5px;">WATCH · </span>' + info.watch + '</div>'
+                + '<div style="font-size:11.5px; line-height:1.6; color:#c2cede; margin-bottom:10px;">' + info.what + '</div>'
+                + '<div style="margin-bottom:8px; font-size:10.5px; line-height:1.55; color:#9db6c8; border-left:2px solid rgba(150,255,190,0.6); padding-left:9px;"><span style="color:#96ffbe; letter-spacing:0.5px;">WATCH · </span>' + info.watch + '</div>'
                 + morph
                 + this.buildSockLayerMapHtml({ compact: false })
                 + '</div>'
@@ -6157,21 +5205,21 @@ class NetworkStackVisualization {
         this.clearLayerPinsExcept(null);
         this.drillPanel.style.width = 'min(680px, 78vw)';
         const act = Math.round(Math.max(0, Math.min(1, Number(this.layerActivity[layerId] ?? 0))) * 100);
-        const actCol = act > 80 ? 'rgba(232,96,104,0.95)' : (act > 55 ? 'rgba(230,193,90,0.95)' : 'rgba(34,34,34,0.95)');
+        const actCol = act > 80 ? 'rgba(232,96,104,0.95)' : (act > 55 ? 'rgba(230,193,90,0.95)' : 'rgba(103,190,224,0.95)');
         const metrics = this.getLayerDrillMetrics(layerId);
         const metricCells = metrics.map(([k, v]) => `
-            <div style="background:rgba(255,255,255,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">
+            <div style="background:rgba(8,12,20,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">
                 <div style="font-size:8.5px; letter-spacing:0.6px; color:#7f93a6; text-transform:uppercase;">${k}</div>
-                <div style="font-size:20px; color:${NS_PAPER.ink}; line-height:1.15; margin-top:2px;">${v}</div>
+                <div style="font-size:20px; color:#e2edf5; line-height:1.15; margin-top:2px;">${v}</div>
             </div>`).join('');
         const subs = info.subsystems.map(s =>
-            `<span style="display:inline-block; margin:2px 4px 2px 0; padding:2px 7px; background:rgba(34,34,34,0.12); border:1px solid rgba(34,34,34,0.34); border-radius:10px; font-size:9px; color:#444444;">${s}</span>`
+            `<span style="display:inline-block; margin:2px 4px 2px 0; padding:2px 7px; background:rgba(103,190,224,0.12); border:1px solid rgba(103,190,224,0.34); border-radius:10px; font-size:9px; color:#a9d4e8;">${s}</span>`
         ).join('');
         const html = `
-            <div style="display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid rgba(34,34,34,0.25); background:linear-gradient(90deg, rgba(34,34,34,0.10), rgba(34,34,34,0));">
+            <div style="display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid rgba(103,190,224,0.25); background:linear-gradient(90deg, rgba(103,190,224,0.10), rgba(103,190,224,0));">
                 <div style="flex:1 1 auto;">
                     <div style="font-size:8px; letter-spacing:1.4px; color:#6f8597;">STACK LAYER · ${info.role.toUpperCase()}</div>
-                    <div style="font-size:20px; letter-spacing:1.2px; color:${NS_PAPER.ink};">${info.title}</div>
+                    <div style="font-size:20px; letter-spacing:1.2px; color:#e8f2f9;">${info.title}</div>
                 </div>
                 <div style="flex:none; text-align:right;">
                     <div style="font-size:8px; letter-spacing:1px; color:#6f8597;">LIVE ACTIVITY</div>
@@ -6181,8 +5229,8 @@ class NetworkStackVisualization {
             </div>
             <div style="padding:14px 18px 16px;">
                 <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin-bottom:14px;">${metricCells}</div>
-                <div style="font-size:11.5px; line-height:1.6; color:#333333;">${info.what}</div>
-                <div style="margin-top:10px; font-size:10.5px; line-height:1.55; color:#555555; border-left:2px solid rgba(230,193,90,0.6); padding-left:9px;"><span style="color:#e6c15a; letter-spacing:0.5px;">WATCH · </span>${info.watch}</div>
+                <div style="font-size:11.5px; line-height:1.6; color:#c2cede;">${info.what}</div>
+                <div style="margin-top:10px; font-size:10.5px; line-height:1.55; color:#9db6c8; border-left:2px solid rgba(230,193,90,0.6); padding-left:9px;"><span style="color:#e6c15a; letter-spacing:0.5px;">WATCH · </span>${info.watch}</div>
                 <div style="margin-top:12px;">
                     <div style="font-size:8px; letter-spacing:1px; color:#6f8597; margin-bottom:4px;">KEY SUBSYSTEMS</div>
                     ${subs}
@@ -6318,7 +5366,7 @@ class NetworkStackVisualization {
         s += `<line x1="${padL}" y1="${kneeY.toFixed(1)}" x2="${padL + plotW}" y2="${kneeY.toFixed(1)}" stroke="rgba(230,193,90,0.85)" stroke-width="1.2" stroke-dasharray="5 3"/>`;
         s += `<text x="${padL + 4}" y="${(kneeY - 5).toFixed(1)}" fill="rgba(230,193,90,0.95)" font-size="9" font-family="'Share Tech Mono',monospace">BtlBw · max bandwidth</text>`;
         // RTprop vertical (min RTT).
-        s += `<line x1="${kneeX.toFixed(1)}" y1="${padT}" x2="${kneeX.toFixed(1)}" y2="${padT + plotH}" stroke="rgba(34,34,34,0.85)" stroke-width="1.2" stroke-dasharray="5 3"/>`;
+        s += `<line x1="${kneeX.toFixed(1)}" y1="${padT}" x2="${kneeX.toFixed(1)}" y2="${padT + plotH}" stroke="rgba(103,190,224,0.85)" stroke-width="1.2" stroke-dasharray="5 3"/>`;
         s += `<text x="${(kneeX + 4).toFixed(1)}" y="${padT + 10}" fill="rgba(150,200,230,0.95)" font-size="9" font-family="'Share Tech Mono',monospace">RTprop · min RTT</text>`;
         // History trail.
         const hist = (this.bbrHist || []).slice(-40).filter(s2 => s2.rtt > 0);
@@ -6329,9 +5377,9 @@ class NetworkStackVisualization {
             hist.forEach((pt) => { s += `<circle cx="${px(pt.rtt).toFixed(1)}" cy="${py(pt.dr).toFixed(1)}" r="1.5" fill="rgba(168,200,214,0.45)"/>`; });
         }
         // Optimal operating point (the BDP knee).
-        s += `<circle cx="${kneeX.toFixed(1)}" cy="${kneeY.toFixed(1)}" r="7" fill="none" stroke="rgba(61,107,79,0.9)" stroke-width="1.5"/>`;
-        s += `<circle cx="${kneeX.toFixed(1)}" cy="${kneeY.toFixed(1)}" r="2.5" fill="rgba(61,107,79,0.95)"/>`;
-        s += `<text x="${(kneeX + 9).toFixed(1)}" y="${(kneeY + 13).toFixed(1)}" fill="rgba(61,107,79,0.9)" font-size="8.5" font-family="'Share Tech Mono',monospace">optimal (BDP)</text>`;
+        s += `<circle cx="${kneeX.toFixed(1)}" cy="${kneeY.toFixed(1)}" r="7" fill="none" stroke="rgba(150,255,190,0.9)" stroke-width="1.5"/>`;
+        s += `<circle cx="${kneeX.toFixed(1)}" cy="${kneeY.toFixed(1)}" r="2.5" fill="rgba(150,255,190,0.95)"/>`;
+        s += `<text x="${(kneeX + 9).toFixed(1)}" y="${(kneeY + 13).toFixed(1)}" fill="rgba(150,255,190,0.9)" font-size="8.5" font-family="'Share Tech Mono',monospace">optimal (BDP)</text>`;
         // Current operating point.
         const cx = px(model.curRtt);
         const cy = py(model.curDr);
@@ -6352,18 +5400,18 @@ class NetworkStackVisualization {
         const fmtBytes = (b) => (b >= 1024 * 1024 ? `${(b / 1048576).toFixed(2)} MB` : `${(b / 1024).toFixed(1)} KB`);
         const ratio = m.bdpBytes > 0 ? (m.inflightBytes / m.bdpBytes) : 0;
         const ratioPct = Math.round(ratio * 100);
-        const ratioCol = ratio > 1.25 ? 'rgba(232,96,104,0.95)' : (ratio < 0.6 ? 'rgba(230,193,90,0.95)' : 'rgba(61,107,79,0.95)');
+        const ratioCol = ratio > 1.25 ? 'rgba(232,96,104,0.95)' : (ratio < 0.6 ? 'rgba(230,193,90,0.95)' : 'rgba(150,255,190,0.95)');
         const card = (k, v, sub) => `
-            <div style="background:rgba(255,255,255,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">
+            <div style="background:rgba(8,12,20,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">
                 <div style="font-size:8.5px; letter-spacing:0.6px; color:#7f93a6; text-transform:uppercase;">${k}</div>
                 <div style="font-size:18px; color:#e2edf5; line-height:1.15; margin-top:2px;">${v}</div>
                 ${sub ? `<div style="font-size:8px; color:#728697; margin-top:1px;">${sub}</div>` : ''}
             </div>`;
         const modeNote = m.active
-            ? `This connection runs <b style="color:#444444">BBR</b> — the values below are the kernel's own BtlBw / RTprop estimates.`
+            ? `This connection runs <b style="color:#a9d4e8">BBR</b> — the values below are the kernel's own BtlBw / RTprop estimates.`
             : `This connection runs <b style="color:#e6c15a">${m.cc}</b> (loss-based). BtlBw / RTprop below are the same model BBR would build, estimated from the observed delivery rate (max) and min RTT.`;
         const html = `
-            <div style="display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid rgba(34,34,34,0.25); background:linear-gradient(90deg, rgba(34,34,34,0.10), rgba(34,34,34,0));">
+            <div style="display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid rgba(103,190,224,0.25); background:linear-gradient(90deg, rgba(103,190,224,0.10), rgba(103,190,224,0));">
                 <div style="flex:1 1 auto;">
                     <div style="font-size:8px; letter-spacing:1.4px; color:#6f8597;">CONGESTION CONTROL · LEARNED PATH MODEL</div>
                     <div style="font-size:20px; letter-spacing:1.2px; color:#e8f2f9;">TCP BBR — BOTTLENECK BW × MIN RTT</div>
@@ -6379,20 +5427,20 @@ class NetworkStackVisualization {
                         ${card('BDP', fmtBytes(m.bdpBytes), 'BtlBw × RTprop')}
                         ${card('inflight', fmtBytes(m.inflightBytes), `cwnd ${m.cwnd} × mss ${m.mss}`)}
                     </div>
-                    <div style="background:rgba(255,255,255,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">
+                    <div style="background:rgba(8,12,20,0.7); border:1px solid rgba(96,110,128,0.32); border-radius:4px; padding:8px 10px;">
                         <div style="display:flex; justify-content:space-between; font-size:8.5px; letter-spacing:0.6px; color:#7f93a6;"><span>INFLIGHT vs BDP</span><span style="color:${ratioCol}">${ratioPct}%</span></div>
                         <div style="position:relative; height:8px; margin-top:5px; background:rgba(40,52,64,0.6); border-radius:4px; overflow:hidden;">
                             <div style="position:absolute; left:0; top:0; bottom:0; width:${Math.min(100, ratioPct)}%; background:${ratioCol};"></div>
-                            <div style="position:absolute; left:100%; top:-2px; bottom:-2px; width:1px; background:rgba(61,107,79,0.9);"></div>
+                            <div style="position:absolute; left:100%; top:-2px; bottom:-2px; width:1px; background:rgba(150,255,190,0.9);"></div>
                         </div>
                         <div style="font-size:8px; color:#728697; margin-top:3px;">green line = BDP target · over 100% = queueing (bufferbloat)</div>
                     </div>
-                    <div style="font-size:8.5px; letter-spacing:0.6px; color:#7f93a6;">CC ALGORITHM: <span style="color:#cfe6f2">${m.cc}</span> ${m.active ? '· <span style="color:#3d6b4f">BBR live</span>' : '· <span style="color:#e6c15a">modeled</span>'}</div>
+                    <div style="font-size:8.5px; letter-spacing:0.6px; color:#7f93a6;">CC ALGORITHM: <span style="color:#cfe6f2">${m.cc}</span> ${m.active ? '· <span style="color:#96ffbe">BBR live</span>' : '· <span style="color:#e6c15a">modeled</span>'}</div>
                 </div>
             </div>
             <div style="padding:0 18px 16px;">
-                <div style="font-size:11.5px; line-height:1.6; color:#333333;">BBR continuously measures two things about the path: the maximum delivery rate it has seen (<b style="color:#e6c15a">BtlBw</b>) and the minimum round-trip time (<b style="color:#444444">RTprop</b>). Their product is the bandwidth-delay product (<b style="color:#3d6b4f">BDP</b>) — the amount of data in flight that keeps the pipe exactly full without queueing. BBR paces sending at BtlBw and caps inflight near BDP, avoiding the bufferbloat that loss-based CUBIC causes by filling router buffers until packets drop.</div>
-                <div style="margin-top:9px; font-size:10.5px; line-height:1.55; color:#555555; border-left:2px solid rgba(230,193,90,0.6); padding-left:9px;"><span style="color:#e6c15a;">MODEL · </span>${modeNote} It's control theory, not machine learning — but it's a model of the environment learned online from the traffic itself (the same EWMA-style filtering used in Kernel DNA).</div>
+                <div style="font-size:11.5px; line-height:1.6; color:#c2cede;">BBR continuously measures two things about the path: the maximum delivery rate it has seen (<b style="color:#e6c15a">BtlBw</b>) and the minimum round-trip time (<b style="color:#a9d4e8">RTprop</b>). Their product is the bandwidth-delay product (<b style="color:#96ffbe">BDP</b>) — the amount of data in flight that keeps the pipe exactly full without queueing. BBR paces sending at BtlBw and caps inflight near BDP, avoiding the bufferbloat that loss-based CUBIC causes by filling router buffers until packets drop.</div>
+                <div style="margin-top:9px; font-size:10.5px; line-height:1.55; color:#9db6c8; border-left:2px solid rgba(230,193,90,0.6); padding-left:9px;"><span style="color:#e6c15a;">MODEL · </span>${modeNote} It's control theory, not machine learning — but it's a model of the environment learned online from the traffic itself (the same EWMA-style filtering used in Kernel DNA).</div>
             </div>`;
         window.setSafeHtml(this.bbrPanel, html);
         // The SVG plane must be mounted directly (the HTML sanitizer strips SVG
@@ -6428,32 +5476,8 @@ class NetworkStackVisualization {
         return hits.length ? (hits[0].object?.userData?.layerId || null) : null;
     }
 
-    packetAtPointer(event) {
-        if (!this.raycaster || !this.camera || !this.renderer) return null;
-        const rect = this.renderer.domElement.getBoundingClientRect();
-        this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-        this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-        this.raycaster.setFromCamera(this.mouse, this.camera);
-        const objs = [this.packet, this.packetGlow, this.rxPacket, this.rxPacketGlow].filter(Boolean);
-        const hits = this.raycaster.intersectObjects(objs, false);
-        return hits.length ? hits[0].object : null;
-    }
-
     onCanvasClick(event) {
         if (!this.isActive) return;
-        const hit = this.packetAtPointer(event);
-        if (hit) {
-            const kind = hit.userData?.kind || (hit === this.rxPacket || hit === this.rxPacketGlow ? 'rx' : 'tx');
-            if (this.packetPinned && this.packetFocus === kind) {
-                this.packetPinned = false;
-            } else {
-                this.packetPinned = true;
-                this.packetFocus = kind;
-            }
-            this._dossierKey = '';
-            this.updatePacketDossier();
-            return;
-        }
         const layerId = this.hoveredLayerId || this.layerIdAtPointer(event);
         if (layerId) this.openLayerDrilldown(layerId);
     }
@@ -6503,15 +5527,39 @@ class NetworkStackVisualization {
         const dt = Math.min(0.04, (now - this.lastFrameTime) / 1000);
         this.lastFrameTime = now;
 
-        // A board bug must not freeze the loop, or the page dies on one bad frame.
+        if (!this.hideVerticalOrbs || this.packetMorphEnabled) {
+            this.updatePacket(dt);
+        }
+        this.updateEffects(dt);
+        if (!this.hideVerticalOrbs) {
+            this.updateFlowParticles(dt);
+        }
+        this.updateLayerStrips(dt);
+        this.updatePathHopRig(dt);
+        this.updatePeerBranchRig(dt);
+        this.updatePacketLifecycleUI();
+
+        // Gentle camera drift for cinematic depth.
+        const t = now * 0.00025;
+        this.camera.position.x = Math.sin(t) * 0.9;
+        this.camera.position.z = 13.2 + Math.cos(t) * 0.35;
+        this.camera.lookAt(0, 0, 0);
+
+        // Overlay updates must never block the 3D render: a bug in connector
+        // projection should at worst drop the leader lines, not blank the scene.
         try {
-            this.updateBoardFrame(dt);
+            this.updateConnectors();
+            this.updateRightInstruments();
+            this.updateActivityMatrix();
+            this.updatePatternMatrix();
         } catch (e) {
-            if (!this._boardWarned) {
-                console.warn('board frame failed:', e);
-                this._boardWarned = true;
+            if (!this._connWarned) {
+                console.warn('overlay update failed:', e);
+                this._connWarned = true;
             }
         }
+
+        this.renderer.render(this.scene, this.camera);
     }
 
     // Scroll the stack-activity matrix: each tick pushes the current per-layer
@@ -6532,7 +5580,7 @@ class NetworkStackVisualization {
                 this.matrixCells[r][c].style.background = v > 0.8
                     ? 'rgba(232, 96, 104, 0.9)'
                     : (v > 0.55 ? 'rgba(230, 193, 90, 0.9)'
-                        : (v > 0.25 ? 'rgba(34, 34, 34, 0.45)' : `rgba(34, 34, 34, ${(0.08 + v * 0.2).toFixed(2)})`));
+                        : (v > 0.25 ? 'rgba(103, 190, 224, 0.8)' : `rgba(60, 80, 96, ${(0.28 + v).toFixed(2)})`));
             }
         }
     }
@@ -6553,7 +5601,7 @@ class NetworkStackVisualization {
         const tile = (v, base) => (v > 0.8
             ? ['rgba(232,96,104,0.85)', '#0b0f16']
             : (v > 0.55 ? ['rgba(230,193,90,0.85)', '#0b0f16']
-                : (v > base ? ['rgba(34,34,34,0.8)', '#0b0f16'] : ['rgba(34,44,56,0.6)', '#7b8a9a'])));
+                : (v > base ? ['rgba(103,190,224,0.8)', '#0b0f16'] : ['rgba(34,44,56,0.6)', '#7b8a9a'])));
         this.patternTiles.forEach((t, i) => {
             const col = i % cols;
             const onScan = col === this._patternScan;
@@ -6576,7 +5624,9 @@ class NetworkStackVisualization {
         const el = this.renderer.domElement;
         const W = el.clientWidth || el.width;
         const H = el.clientHeight || el.height;
-        const RAIL = 300;
+        // Tracks the left edge of the layer rows (24px) plus their width; moved
+        // in step with them when the mode rail was removed.
+        const RAIL = 204;
         let minY = Infinity;
         let maxY = -Infinity;
 
@@ -6601,17 +5651,7 @@ class NetworkStackVisualization {
 
         // Right side: tower right edge -> a vertical rail -> drops onto each
         // chain's NUMBER block (reference: short stub, vertical rail, leader in).
-        const chipsHidden = this.chipLayerNode && this.chipLayerNode.style.display === 'none';
-        if (this.layerConnectorsRight && chipsHidden) {
-            Object.values(this.layerConnectorsRight).forEach((conn) => {
-                if (conn?.path) conn.path.setAttribute('d', '');
-                if (conn?.node) {
-                    conn.node.setAttribute('cx', '-20');
-                    conn.node.setAttribute('cy', '-20');
-                }
-            });
-            if (this.connectorRailRight) this.connectorRailRight.setAttribute('d', '');
-        } else if (this.layerConnectorsRight) {
+        if (this.layerConnectorsRight) {
             const numX = W - (this.chainRight || 20) - (this.chainWidth || 452);
             // First pass: project each tower tap point to find the rail position.
             const taps = [];
@@ -6654,7 +5694,7 @@ class NetworkStackVisualization {
         if (advance) this._lastSpectro = now;
         const toneFill = (v) => (v > 0.8
             ? 'rgba(232, 96, 104, 0.8)'
-            : (v > 0.55 ? 'rgba(226, 163, 62, 0.8)' : 'rgba(34, 34, 34, 0.38)'));
+            : (v > 0.55 ? 'rgba(230, 193, 90, 0.8)' : 'rgba(103, 190, 224, 0.7)'));
         Object.keys(this.chainModules).forEach((id) => {
             const mod = this.chainModules[id];
             if (!mod) return;
@@ -6670,8 +5710,8 @@ class NetworkStackVisualization {
             if (mod.dialNum) mod.dialNum.textContent = String(Math.round(act * 99));
             if (mod.dialArc) {
                 const deg = Math.round(act * 360);
-                const col = act > 0.8 ? 'rgba(232,96,104,0.9)' : (act > 0.55 ? 'rgba(226,163,62,0.9)' : 'rgba(34,34,34,0.55)');
-                mod.dialArc.style.background = `conic-gradient(${col} ${deg}deg, rgba(34,34,34,0.08) 0)`;
+                const col = act > 0.8 ? 'rgba(232,96,104,0.9)' : (act > 0.55 ? 'rgba(230,193,90,0.9)' : 'rgba(103,190,224,0.85)');
+                mod.dialArc.style.background = `conic-gradient(${col} ${deg}deg, rgba(34,44,56,0.7) 0)`;
             }
 
             // INDUCTION RESPONSE bars: activity / jitter / stress / branch.
@@ -6718,7 +5758,7 @@ class NetworkStackVisualization {
                 sp.bars[i].setAttribute('height', h.toFixed(2));
                 sp.bars[i].setAttribute('fill', val > 0.8
                     ? 'rgba(232, 96, 104, 0.7)'
-                    : (val > 0.55 ? 'rgba(226, 163, 62, 0.7)' : 'rgba(34, 34, 34, 0.32)'));
+                    : (val > 0.55 ? 'rgba(230, 193, 90, 0.7)' : 'rgba(103, 190, 224, 0.55)'));
             }
         });
     }
@@ -6732,7 +5772,16 @@ class NetworkStackVisualization {
         this.container.style.display = 'block';
         this.container.style.visibility = 'visible';
         this.container.style.pointerEvents = 'auto';
-        this.playZoomIn();
+        // Sync the renderer to the current viewport now that the container is
+        // visible. Without this the canvas can keep a stale size from init time
+        // (e.g. if DevTools/window changed since), pushing the tower out of the
+        // clipped (overflow:hidden) container until the next resize event.
+        this.onResize();
+        requestAnimationFrame(() => { if (this.isActive) this.onResize(); });
+        if (this.renderer?.domElement && !this.mouseMoveHandler) {
+            this.mouseMoveHandler = (event) => this.onMouseMove(event);
+            this.renderer.domElement.addEventListener('mousemove', this.mouseMoveHandler);
+        }
         this.lastFrameTime = null;
         this.fetchTelemetry();
         if (this.telemetryInterval) {
@@ -6758,6 +5807,10 @@ class NetworkStackVisualization {
             clearInterval(this.telemetryInterval);
             this.telemetryInterval = null;
         }
+        if (this.renderer?.domElement && this.mouseMoveHandler) {
+            this.renderer.domElement.removeEventListener('mousemove', this.mouseMoveHandler);
+            this.mouseMoveHandler = null;
+        }
         if (this.layerTooltipNode) {
             this.layerTooltipNode.style.display = 'none';
         }
@@ -6767,33 +5820,24 @@ class NetworkStackVisualization {
             this.container.style.display = 'none';
             this.container.style.visibility = 'hidden';
             this.container.style.pointerEvents = 'none';
-            this.container.style.transform = '';
-            this.container.style.opacity = '';
-            this.container.style.transition = '';
         }
-        this._zoomPlayed = false;
     }
 
-    playZoomIn() {
-        if (!this.container || this._zoomPlayed) return;
-        this._zoomPlayed = true;
-        const fromHome = !!window.kernelContextMenu;
-        this.container.style.transformOrigin = '50% 44%';
-        this.container.style.transition = 'none';
-        this.container.style.transform = fromHome ? 'scale(0.58)' : 'scale(0.96)';
-        this.container.style.opacity = fromHome ? '0.18' : '0.55';
-        requestAnimationFrame(() => {
-            if (!this.container) return;
-            this.container.style.transition = 'transform 860ms cubic-bezier(0.16, 1, 0.3, 1), opacity 640ms ease';
-            this.container.style.transform = 'scale(1)';
-            this.container.style.opacity = '1';
-        });
-    }
-
-    // The board is a viewBox SVG, so the browser scales it for us. Nothing to
-    // recompute on resize beyond dismissing a tooltip anchored to old pixels.
     onResize() {
-        if (this.layerTooltipNode) this.layerTooltipNode.style.display = 'none';
+        if (!this.camera || !this.renderer) return;
+        // Prefer the actual container box; fall back to the window. The container
+        // is fixed/inset:0 so this equals the visible viewport even when DevTools
+        // is docked.
+        const w = (this.container && this.container.clientWidth) || window.innerWidth;
+        const h = (this.container && this.container.clientHeight) || window.innerHeight;
+        if (w < 2 || h < 2) return;
+        this.camera.aspect = w / h;
+        this.camera.updateProjectionMatrix();
+        this.renderer.setSize(w, h);
+        this.updateBottomPanelsLayout();
+        if (this.scene) {
+            this.renderer.render(this.scene, this.camera);
+        }
     }
 }
 

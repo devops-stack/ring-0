@@ -6,7 +6,7 @@
 
     // The bars follow the syscall panel above, whose height moves with the number
     // of waiting processes.
-    const COLUMN_GAP = 30, FALLBACK_TOP = 350;
+    const FALLBACK_TOP = 350;
 
     let lastPayload = null;
 
@@ -122,7 +122,7 @@
             network_stack: 'Network'
         };
 
-        const top = Math.round(window.__leftColumnCursor || FALLBACK_TOP) + COLUMN_GAP;
+        const top = Math.round(window.__leftColumnCursor || FALLBACK_TOP) + window.LeftColumn.gap;
 
         subsystemNames.forEach((name, i) => {
             const subsystem = subsystems[name];
@@ -130,10 +130,12 @@
 
             const usage = subsystem.usage || 0;
             const shown = readings(subsystem);
-            const x = 30;
-            const y = top + i * 25;
-            const barWidth = 200;
-            const barHeight = 15;
+            const LC = window.LeftColumn;
+            const x = LC.x;
+            const y = top + i * LC.step;
+            const barWidth = LC.w;
+            const barHeight = LC.rowH;
+            const mid = y + barHeight / 2 + 3.5;
 
             const rowGroup = svg.append('g')
                 .attr('class', 'subsystem-indicator subsystem-indicator-row')
@@ -144,6 +146,7 @@
                 .attr('y', y)
                 .attr('width', barWidth)
                 .attr('height', barHeight)
+                .attr('rx', LC.radius)
                 .attr('fill', 'rgba(200, 200, 200, 0.2)')
                 .attr('stroke', '#aaa')
                 .attr('stroke-width', 0.5)
@@ -154,6 +157,7 @@
                 .attr('y', y)
                 .attr('width', (usage / 100) * barWidth)
                 .attr('height', barHeight)
+                .attr('rx', LC.radius)
                 .attr('fill', '#888')
                 .attr('opacity', 0.7)
                 .attr('class', 'subsystem-indicator subsystem-indicator-fill');
@@ -171,7 +175,7 @@
 
             rowGroup.append('text')
                 .attr('x', x + 5)
-                .attr('y', y + 11)
+                .attr('y', mid)
                 .text(subsystemLabels[name] || name)
                 .attr('class', 'feature-text subsystem-indicator subsystem-indicator-label')
                 .attr('font-size', '10px')
@@ -181,7 +185,7 @@
             // 72px clears the longest label ("Scheduler") at 10px mono.
             rowGroup.append('text')
                 .attr('x', x + 72)
-                .attr('y', y + 11)
+                .attr('y', mid)
                 .text(shown.detail)
                 .attr('class', 'feature-text subsystem-indicator subsystem-indicator-detail')
                 .attr('font-size', '8px')
@@ -190,7 +194,7 @@
 
             rowGroup.append('text')
                 .attr('x', x + barWidth - 5)
-                .attr('y', y + 11)
+                .attr('y', mid)
                 .text(shown.value)
                 .attr('class', 'feature-text subsystem-indicator subsystem-indicator-label')
                 .attr('font-size', '10px')
@@ -247,12 +251,12 @@
 
         const load = (subsystems.process_scheduler || {}).load;
         if (Array.isArray(load) && load.length === 3) {
-            const loadY = top + subsystemNames.length * 25 + 9;
+            const loadY = top + subsystemNames.length * window.LeftColumn.step + 9;
             const quiet = 'rgba(40, 44, 50, 0.6)';
             const lit = 'rgba(20, 24, 30, 0.95)';
             const loadText = svg.append('text')
                 .attr('class', 'feature-text subsystem-indicator')
-                .attr('x', 30)
+                .attr('x', window.LeftColumn.x)
                 .attr('y', loadY)
                 .attr('font-size', '8px')
                 .attr('letter-spacing', '0.5px')
@@ -265,7 +269,7 @@
                 const box = loadText.node().getBBox();
                 const rule = svg.append('line')
                     .attr('class', 'subsystem-indicator')
-                    .attr('x1', 30).attr('x2', 30 + box.width)
+                    .attr('x1', window.LeftColumn.x).attr('x2', window.LeftColumn.x + box.width)
                     .attr('y1', loadY + 2.5).attr('y2', loadY + 2.5)
                     .attr('stroke', quiet)
                     .attr('stroke-width', 0.5)

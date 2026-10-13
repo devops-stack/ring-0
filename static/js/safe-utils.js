@@ -11,6 +11,25 @@
         }
     };
 
+    // One grid for the whole left column.
+    //
+    // The four blocks down the left edge are drawn by four different modules,
+    // and each carried its own numbers. Measured, they sat at x 20, 26, 29 and
+    // 30 with right edges at 230, 260, 262 and 270: close enough to look
+    // deliberate, far enough that no two shared an edge. That near-miss is
+    // what made the column read as a sketch rather than a panel.
+    //
+    // Modules read these instead of their own constants, so the next block
+    // added to the column cannot invent a fifth alignment.
+    window.LeftColumn = {
+        x: 30,
+        w: 232,
+        rowH: 22,
+        step: 30,     // 8px of air between rows
+        radius: 4,
+        gap: 30       // between one block and the next
+    };
+
     const ALLOWED_TAGS = new Set(['BR', 'STRONG', 'EM', 'B', 'I', 'HR', 'CODE', 'SPAN', 'DIV']);
     const ALLOWED_ATTRS = new Set(['style', 'class']);
 

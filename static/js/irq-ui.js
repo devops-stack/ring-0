@@ -8,8 +8,8 @@
 // vector gets a map with one station and an admission, which is the honest
 // shape of that answer.
 (function initIrqUI(){
-const PANEL_X = 30;
-const PANEL_W = 232;
+const PANEL_X = window.LeftColumn.x;
+const PANEL_W = window.LeftColumn.w;
 const TITLE_H = 22;
 const HARD_ROW = 15;
 const SOFT_ROW = 14;
@@ -57,7 +57,7 @@ function renderIrqStackPanel(executionData) {
         .attr('y', box.y)
         .attr('width', box.w)
         .attr('height', box.h)
-        .attr('rx', 8)
+        .attr('rx', window.LeftColumn.radius)
         .style('fill', '#333')
         .style('stroke', '#555')
         .style('stroke-width', '1px');

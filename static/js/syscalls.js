@@ -208,23 +208,19 @@ class SyscallsManager {
         const manager = this;
         const rows = this.currentSyscalls;
 
-        const panelX = 30;
-        const panelWidth = 230;
-        const panelHeight = 22;
-        const rowStep = 30;
+        const LC = window.LeftColumn;
+        const panelX = LC.x;
+        const panelWidth = LC.w;
+        const panelHeight = LC.rowH;
+        const rowStep = LC.step;
         const firstRowY = 35;
         const bodyCount = Math.max(1, rows.length);
 
-        // The frame used to be a fixed 250x330 box sized for ten padded rows. It
-        // keeps its old look but follows the number of real rows, so no empty
-        // box is left hanging under a short list.
-        const frameH = 30 + bodyCount * rowStep + 14;
-        svg.append("rect")
-            .attr("x", 20)
-            .attr("y", 20)
-            .attr("width", 250)
-            .attr("height", frameH)
-            .attr("class", "feature-panel syscall-frame syscall-box");
+        // No enclosing frame. It was the only object in the column that started
+        // at x=20 instead of 30, and a faint outline drawn around a stack of
+        // full-width filled rows adds an edge without adding a boundary: the
+        // rows already say where the list begins and ends.
+        const listBottom = firstRowY + bodyCount * rowStep - (rowStep - panelHeight);
 
         const rowText = (parent, x, y, value, size, fill, anchor) => parent.append("text")
             .attr("x", x)
@@ -246,7 +242,7 @@ class SyscallsManager {
                 .attr("y", firstRowY)
                 .attr("width", panelWidth)
                 .attr("height", panelHeight)
-                .attr("rx", 8)
+                .attr("rx", LC.radius)
                 .attr("class", "syscall-box")
                 .style("fill", "#333")
                 .style("stroke", "#555")
@@ -282,7 +278,7 @@ class SyscallsManager {
                 .attr("y", panelY)
                 .attr("width", panelWidth)
                 .attr("height", panelHeight)
-                .attr("rx", 8) // More rounded corners like in example
+                .attr("rx", LC.radius)
                 .attr("class", "syscall-box")
                 .style("fill", "#333") // Same base color as right menu panels
                 .style("stroke", isPinned ? subsystemTag.color : "#555") // Same border color as right menu panels
@@ -373,19 +369,19 @@ class SyscallsManager {
         if (foot) {
             svg.append("text")
                 .attr("x", panelX)
-                .attr("y", 20 + frameH - 8)
+                .attr("y", listBottom + 12)
                 .attr("class", "syscall-text syscall-foot syscall-box")
                 .style("font-family", "Share Tech Mono, monospace")
                 .style("font-size", "8px")
                 .style("letter-spacing", "0.5px")
-                // Dark ink: this line sits on the light frame, not on a dark panel.
+                // Dark ink: this line sits on the ground, not on a dark row.
                 .style("fill", "rgba(40, 44, 50, 0.6)")
                 .text(foot);
         }
 
         // The subsystem bars sit under this panel, so tell them where it now ends:
         // its height moves with the number of waiters.
-        const bottom = 20 + frameH;
+        const bottom = listBottom + (foot ? 16 : 0);
         if (window.__leftColumnCursor !== bottom) {
             window.__leftColumnCursor = bottom;
             if (window.SubsystemFocus) window.SubsystemFocus.reflow();
