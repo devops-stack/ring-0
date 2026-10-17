@@ -65,7 +65,8 @@ def test_collect_crypto_runtime_sources_marks_live_tls():
 def test_collect_security_realtime_empty_processes(monkeypatch):
     monkeypatch.setattr(svc.psutil, "process_iter", lambda _attrs: [])
     monkeypatch.setattr(svc.psutil, "net_connections", lambda kind="inet": [])
-    monkeypatch.setattr(svc.subprocess, "check_output", lambda *args, **kwargs: "0")
+    # Keeps the setuid count off the real filesystem; it no longer shells out.
+    monkeypatch.setattr(svc.os, "scandir", lambda _p: [])
     monkeypatch.setattr(svc.random, "randint", lambda _a, _b: 10)
 
     out = svc.collect_security_realtime(security_prev={"timestamp": None, "events": 0})
