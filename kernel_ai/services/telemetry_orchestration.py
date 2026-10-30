@@ -233,6 +233,10 @@ def _ml_anomalies_to_mutations(rows):
 def _get_ml_mutations():
     """Read recent ML anomalies from the shared store. Never raises: if the ML
     store is unavailable the Kernel DNA view simply shows rule-based mutations."""
+    from kernel_ai.standby import ml_enabled
+
+    if not ml_enabled():
+        return []
     try:
         from kernel_ai.ml.config import MLConfig
         from kernel_ai.ml.store import fetch_recent_anomalies

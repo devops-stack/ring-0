@@ -6,6 +6,7 @@ from flask import jsonify, redirect, render_template, send_from_directory
 
 from kernel_ai.config import PROJECT_ROOT
 from kernel_ai.services import core_observability as _core_observability_service
+from kernel_ai.standby import peer_is_up, standby_peer
 
 
 def get_system_info():
@@ -146,10 +147,18 @@ def kernel_cutaway_probe_page():
 
 
 def health_check():
-    return jsonify(
-        {
-            "status": "healthy",
-            "timestamp": datetime.now().isoformat(),
-            "system_info": get_system_info(),
-        }
-    )
+    body = {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "system_info": get_system_info(),
+    }
+    peer = standby_peer()
+    if not peer:
+        return jsonify(body)
+    body["role"] = "standby"
+    if peer_is_up(peer):
+        body["status"] = "standby"
+        body["peer"] = "up"
+        return jsonify(body), 503
+    body["peer"] = "down"
+    return jsonify(body)

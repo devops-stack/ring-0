@@ -297,6 +297,17 @@ def ml_anomalies():
     """
 
     def _payload():
+        from kernel_ai.standby import ml_enabled
+
+        if not ml_enabled():
+            return {
+                "timestamp": datetime.now().isoformat(),
+                "since_seconds": 120,
+                "count": 0,
+                "anomalies": [],
+                "available": False,
+                "reason": "disabled",
+            }
         try:
             from kernel_ai.ml.config import MLConfig
             from kernel_ai.ml.store import fetch_recent_anomalies
@@ -343,6 +354,17 @@ def ml_drift():
     def _payload():
         import os
 
+        from kernel_ai.standby import ml_enabled
+
+        if not ml_enabled():
+            return {
+                "timestamp": datetime.now().isoformat(),
+                "available": False,
+                "reason": "disabled",
+                "model_age_sec": None,
+                "latest": None,
+                "history": [],
+            }
         try:
             from kernel_ai.ml.config import MLConfig
             from kernel_ai.ml.store import fetch_drift_status
