@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Linux Kernel Architecture - Narrow Waists, Monolith, RCU, eBPF</title>
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/images/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/images/favicon-16x16.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/images/apple-touch-icon.png">
+    <meta name="description" content="Linux kernel architecture drawn as it actually is: not a layer cake but one repeated pattern — the narrow waist. struct file, sk_buff, struct bio, sched_class, tcp_congestion_ops and the LSM hooks, plus the monolith's single failure domain, context rules, RCU and eBPF attach points.">
+    <meta name="keywords" content="
+linux kernel architecture,
+kernel architecture,
+monolithic kernel,
+narrow waist architecture,
+vfs file_operations,
+sk_buff net_device_ops,
+struct bio block layer,
+sched_class scheduler classes,
+tcp_congestion_ops,
+linux security modules,
+rcu read copy update,
+ebpf attach points,
+mechanism policy separation,
+linux architecture styles
+">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="/linux-kernel-architecture">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="/linux-kernel-architecture">
+    <meta property="og:title" content="Linux Kernel Architecture — The Same Trick, Six Times Over">
+    <meta property="og:description" content="The architectural styles of the Linux kernel drawn as one repeated shape: the narrow waist. Contract structs, pluggable policy, context rules, RCU and eBPF.">
+    <meta property="og:image" content="/static/images/009.png">
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="/linux-kernel-architecture">
+    <meta property="twitter:title" content="Linux Kernel Architecture — The Same Trick, Six Times Over">
+    <meta property="twitter:description" content="Narrow waists, a single failure domain, mechanism versus policy, context rules, RCU and eBPF attach points.">
+    <meta property="twitter:image" content="/static/images/009.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "WebPage",
+        "name": "Linux Kernel Architecture — The Same Trick, Six Times Over",
+        "url": "https://ring-0.sh/linux-kernel-architecture",
+        "description": "The architectural approaches of the Linux kernel: a monolithic single failure domain, object orientation in C through operations tables, narrow-waist contract structs, mechanism/policy separation, interrupt context rules, RCU, and eBPF extensibility.",
+        "about": [
+            {"@type": "Thing", "name": "Linux kernel architecture"},
+            {"@type": "Thing", "name": "Monolithic kernel"},
+            {"@type": "Thing", "name": "Narrow waist interface"},
+            {"@type": "Thing", "name": "Read-copy-update"},
+            {"@type": "Thing", "name": "eBPF"}
+        ],
+        "isPartOf": {"@type": "WebSite", "name": "ring-0.sh", "url": "https://ring-0.sh/"}
+    }
+    </script>
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/main.css?v=3">
+    <style>
+        body {
+            margin: 0;
+            background: #0b0e13;
+            color: #e4ecf2;
+            font-family: "Share Tech Mono", monospace;
+            overflow: hidden;
+        }
+        .page-nav {
+            position: fixed;
+            top: 14px;
+            left: 18px;
+            z-index: 1000;
+        }
+        .page-nav a {
+            display: inline-block;
+            text-decoration: none;
+            color: #0a0d11;
+            padding: 9px 16px;
+            font-size: 11px;
+            letter-spacing: 1.4px;
+            background: #cf2129;
+            font-family: "Share Tech Mono", monospace;
+            transition: background 160ms linear, box-shadow 160ms ease-out;
+        }
+        .page-nav a:hover {
+            background: #ff4436;
+            box-shadow: 0 0 14px rgba(224, 53, 58, 0.55);
+        }
+        .seo-ka {
+            position: absolute;
+            left: -10000px;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body>
+    <nav class="page-nav"><a href="/">BACK TO MAIN</a></nav>
+    <div id="kernel-architecture-container" style="position:fixed; inset:0; background:#0b0e13; z-index:1"></div>
+
+    <h1 class="seo-ka">Linux Kernel Architecture &mdash; Architectural Approaches and Styles</h1>
+    <section class="seo-ka">
+        <h2>Not a Layer Cake</h2>
+        <p>
+            Most diagrams draw the Linux kernel as a stack: applications on top, system calls
+            below them, then subsystems, then drivers, then hardware. That picture is wrong twice.
+            It implies walls between subsystems, when in fact the kernel is a monolith &mdash; one
+            address space and one failure domain, where the only real boundary is the one with
+            userspace. And it implies that work descends through every layer in order, when real
+            paths skip layers: mmap bypasses the read() path, XDP intercepts packets before the
+            network stack, and io_uring sidesteps part of the VFS call path.
+        </p>
+        <h2>The Narrow Waist</h2>
+        <p>
+            The architecture of the Linux kernel is better described as one pattern repeated at
+            many scales: the narrow waist. Many callers above, one contract structure in the
+            middle, many implementations below. The contract is almost always a struct holding a
+            table of function pointers &mdash; object orientation implemented by hand in C, with
+            struct embedding for inheritance and container_of() for the downcast.
+        </p>
+        <ul>
+            <li><strong>struct file / file_operations</strong> &mdash; the VFS waist between every file syscall and every filesystem, from ext4 and btrfs to procfs and FUSE.</li>
+            <li><strong>sk_buff / net_device_ops</strong> &mdash; the network waist: protocols above never name a driver, drivers below never name a protocol.</li>
+            <li><strong>struct bio / request_queue</strong> &mdash; the block waist, which is why device mapper and md RAID can stack on top of NVMe.</li>
+            <li><strong>sched_class</strong> &mdash; scheduler classes (stop, deadline, rt, fair, idle, ext) as interchangeable policy behind one core mechanism.</li>
+            <li><strong>tcp_congestion_ops</strong> &mdash; pluggable congestion control (cubic, BBR, Reno, DCTCP and more), a waist nested inside the network waist.</li>
+            <li><strong>security_hook_heads</strong> &mdash; Linux Security Module hooks, where the subsystem places the hook and SELinux, AppArmor, Landlock or a BPF program makes the decision.</li>
+        </ul>
+        <h2>Mechanism Versus Policy</h2>
+        <p>
+            Each waist separates mechanism from policy: the kernel keeps the mechanism and lets the
+            policy be swapped. That is why changing the TCP congestion control algorithm or the I/O
+            scheduler is a sysctl rather than a rebuild, and why cgroup controllers, LSM modules and
+            scheduler classes plug in rather than fork the tree.
+        </p>
+        <h2>Concurrency, Context and Deferred Work</h2>
+        <p>
+            Two further architectural decisions shape the code everywhere. First, context is a
+            permission: a hard interrupt handler cannot sleep, so it does the minimum and defers the
+            rest to a softirq, a workqueue or a kernel thread &mdash; the top-half/bottom-half split,
+            of which NAPI is the network example. Second, scalability comes from removing shared
+            writable state rather than from finer locks: RCU lets readers run without locks while a
+            writer publishes a copy, with reclamation deferred until a grace period ends, alongside
+            seqlocks and per-CPU data.
+        </p>
+        <h2>Stable ABI, Unstable Internals, and eBPF</h2>
+        <p>
+            The userspace ABI is never broken, while the in-kernel API is deliberately unstable:
+            there is no stable module interface, which is what makes tree-wide refactoring possible.
+            Hardware is described as data through Device Tree and ACPI rather than as code, and the
+            newest architectural layer is eBPF &mdash; verified, JIT-compiled programs attached at
+            kprobes, tracepoints, XDP, tc, LSM hooks and sched_ext, which lets userspace supply
+            kernel policy without a module.
+        </p>
+    </section>
+
+    <script src="/static/js/safe-utils.js?v=2"></script>
+    <script src="/static/js/frontend-logger.js?v=2"></script>
+    <script src="/static/js/whiteroom.js?v=11"></script>
+    <script src="/static/js/kernel-architecture.js?v=30"></script>
+    <script>
+        (function startKernelArchitecturePage() {
+            if (typeof window.KernelArchitectureVisualization !== 'function') {
+                console.error('KernelArchitectureVisualization is not available');
+                return;
+            }
+            const viz = new window.KernelArchitectureVisualization();
+            const ok = viz.init('kernel-architecture-container');
+            if (ok === false) return;
+            viz.activate();
+        })();
+    </script>
+</body>
+</html>
