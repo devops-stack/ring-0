@@ -7,10 +7,14 @@ After=network.target
 Type=simple
 User=root
 Group=www-data
-RuntimeDirectory=kernel-ai
+RuntimeDirectory=kernel-ai-sensor
 RuntimeDirectoryMode=0775
 RuntimeDirectoryPreserve=yes
-ExecStart=/opt/ring0/kernel-ai/bin/kernel-ai-sensor --socket /run/kernel-ai/sensor.sock --min-duration 100ms
+# Two syscall classes on one set of tracepoints. --socket carries the latency
+# class for the visualisation and keeps the --min-duration floor;
+# --security-socket carries the security class at a zero floor, because execve
+# and setresuid finish in microseconds and must still reach the ML stages.
+ExecStart=/opt/ring0/kernel-ai/bin/kernel-ai-sensor --socket /run/kernel-ai-sensor/sensor.sock --security-socket /run/kernel-ai-sensor/sensor-security.sock --peer-distance-snapshot /run/kernel-ai-sensor/peer-distance.json --min-duration 100ms
 Restart=always
 RestartSec=3
 Nice=10
@@ -25,7 +29,7 @@ ProtectKernelModules=yes
 ProtectKernelTunables=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
-ReadWritePaths=/run/kernel-ai
+ReadWritePaths=/run/kernel-ai-sensor
 KillMode=control-group
 
 [Install]
