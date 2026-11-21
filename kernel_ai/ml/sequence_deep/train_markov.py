@@ -81,6 +81,56 @@ def load_corpus_synthetic(*, repeats: int = 40) -> list[list[str]]:
     return sequences
 
 
+def train_markov_from_dataset(
+    root: str,
+    days: list[str] | None,
+    out_path: str,
+    *,
+    context: str | None,
+    ctx_prior: float = 20.0,
+) -> dict:
+    """Fit Stage 8 on a frozen normal dataset (kernel-ai-normal-recorder days).
+
+    Transitions are taken per pid in arrival order — the same stream the worker
+    reconstructs from its per-pid windows — so training and scoring see the
+    same alphabet and the same adjacency. ``context`` ("comm" or "unit", see
+    :mod:`kernel_ai.ml.replay`) keys each transition by the process as well.
+    """
+    from kernel_ai.ml.replay import iter_dataset_events
+
+    markov = MarkovScorer(
+        order=1,
+        ctx_prior=ctx_prior,
+        meta={"stage": 8, "source": f"normal-dataset:{','.join(days or ['all'])}",
+              "context": context},
+    )
+    encoder = SequenceEncoder()
+    last: dict[int, str] = {}
+    seen: set[str] = set()
+    events = 0
+    for ev in iter_dataset_events(root, days, context=context or "comm"):
+        events += 1
+        if ev.syscall not in seen:
+            seen.add(ev.syscall)
+            encoder.fit([ev.syscall])
+        prev = last.get(ev.pid)
+        last[ev.pid] = ev.syscall
+        if prev is not None:
+            markov.observe_pair(prev, ev.syscall, ev.context if context else None)
+    if markov._total < 50:
+        raise SystemExit(f"Not enough transitions in {root} {days}: {markov._total}")
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    joblib.dump({"encoder": encoder.state_dict(), "markov": markov.state_dict()}, out_path)
+    return {
+        "source": markov.meta["source"],
+        "events": events,
+        "n_transitions": markov._total,
+        "states": len(markov._counts),
+        "contexts": len(markov._ctx_counts),
+        "path": out_path,
+    }
+
+
 def _count_transitions(sequences: list[tuple[list[str], int]]) -> int:
     return sum(max(0, len(s) - 1) * w for s, w in sequences)
 

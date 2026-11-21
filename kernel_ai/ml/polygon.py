@@ -115,6 +115,18 @@ SCENARIOS: dict[str, dict] = {
         "live": False,
         "sequence": True,
     },
+    # Every scenario above is loud in its own right. This one is ordinary
+    # syscalls in an order that is only wrong for *this* process: a worker
+    # named nginx serving loopback connections at nginx's pace, which once
+    # forks a shell. On PROD nginx never forks, while systemd does
+    # accept4→clone on every socket-activated connection.
+    "web_shell_exec": {
+        "technique": "T1505",
+        "family": "persistence",
+        "description": "nginx-named worker: 200 accept4 at ~50/s, one fork+exec sh",
+        "live": False,
+        "sequence": True,
+    },
 }
 
 
@@ -351,6 +363,24 @@ for _ in range(30):
         except Exception: pass
         os._exit(1)
     os.waitpid(pid, 0)
+""",
+    "web_shell_exec": """
+import ctypes, os, socket, time
+ctypes.CDLL("libc.so.6").prctl(15, b"nginx", 0, 0, 0)  # PR_SET_NAME
+srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(64)
+addr = srv.getsockname()
+for i in range(200):
+    c = socket.socket(); c.connect(addr)
+    s, _ = srv.accept()
+    s.close(); c.close()
+    if i == 150:
+        pid = os.fork()
+        if pid == 0:
+            try: os.execv("/bin/sh", ["sh", "-c", "exit 0"])
+            except Exception: pass
+            os._exit(1)
+        os.waitpid(pid, 0)
+    time.sleep(0.02)
 """,
 }
 
