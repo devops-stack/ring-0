@@ -72,13 +72,17 @@ class DeepSequenceScorer:
     def ready(self) -> bool:
         return self.markov.ready or (self.lstm is not None and self.lstm.ready)
 
-    def score_tokens(self, tokens: list[str]) -> dict | None:
-        """Score an ordered token window (syscall names or n-gram keys)."""
+    def score_tokens(self, tokens: list[str], context: str | None = None) -> dict | None:
+        """Score an ordered token window (syscall names or n-gram keys).
+
+        ``context`` (see :func:`comm_context`) only matters to a Markov artifact
+        trained with contexts; others ignore it.
+        """
         self.maybe_reload()
         if not tokens:
             return None
         if self.markov.ready:
-            return self.markov.score_window(tokens)
+            return self.markov.score_window(tokens, context=context)
         if self.lstm is not None and self.lstm.ready:
             ids = self.encoder.encode(tokens, length=getattr(self.cfg, "stage8_window", 64))
             return self.lstm.score_window(ids)
